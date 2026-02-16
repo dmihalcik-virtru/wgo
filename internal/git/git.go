@@ -1,0 +1,251 @@
+// Package git provides Git operations for wgo.
+package git
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/virtru/wgo/pkg/models"
+)
+
+// Client is the interface for Git operations.
+type Client interface {
+	IsRepo(path string) (bool, error)
+	CurrentBranch(repoPath string) (string, error)
+	Status(repoPath string) (models.GitStatus, error)
+	AheadBehind(repoPath, branch string) (ahead int, behind int, err error)
+	LastCommit(repoPath string) (models.CommitInfo, error)
+	RepoName(repoPath string) (string, error)
+	RemoteURL(repoPath string) (string, error)
+}
+
+// CLIClient is a Git client implementation using the git CLI.
+type CLIClient struct {
+	workDir string
+}
+
+// New creates a new CLIClient.
+func New(workDir string) *CLIClient {
+	return &CLIClient{
+		workDir: workDir,
+	}
+}
+
+// NewFromCwd creates a new CLIClient using the current working directory.
+func NewFromCwd() (*CLIClient, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current directory: %w", err)
+	}
+	return New(cwd), nil
+}
+
+// IsRepo checks if a path is a git repository.
+func (c *CLIClient) IsRepo(path string) (bool, error) {
+	output, err := c.runInPath(path, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		return false, nil // Not a repo
+	}
+	return strings.TrimSpace(output) == "true", nil
+}
+
+// CurrentBranch returns the current branch name.
+func (c *CLIClient) CurrentBranch(repoPath string) (string, error) {
+	output, err := c.runInPath(repoPath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("failed to get current branch: %w", err)
+	}
+	return strings.TrimSpace(output), nil
+}
+
+// Status returns the git status.
+func (c *CLIClient) Status(repoPath string) (models.GitStatus, error) {
+	output, err := c.runInPath(repoPath, "status", "--porcelain")
+	if err != nil {
+		return models.GitStatus{}, fmt.Errorf("failed to get status: %w", err)
+	}
+
+	status := models.GitStatus{}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		if len(line) < 3 {
+			continue
+		}
+
+		staged := string(line[0])
+		unstaged := string(line[1])
+
+		switch staged {
+		case "A":
+			status.Added++
+			status.Staged++
+		case "M":
+			status.Modified++
+			status.Staged++
+		case "D":
+			status.Deleted++
+			status.Staged++
+		}
+
+		switch unstaged {
+		case "M":
+			status.Modified++
+		case "D":
+			status.Deleted++
+		case "?":
+			status.Untracked++
+		}
+
+		if strings.HasPrefix(unstaged, "U") || strings.HasPrefix(staged, "U") {
+			status.Conflicts++
+		}
+	}
+
+	return status, nil
+}
+
+// AheadBehind returns how many commits ahead/behind the remote tracking branch.
+func (c *CLIClient) AheadBehind(repoPath, branch string) (ahead int, behind int, err error) {
+	// Get tracking branch
+	trackingBranch, err := c.runInPath(repoPath, "rev-parse", "--abbrev-ref", branch+"@{u}")
+	if err != nil {
+		// No tracking branch
+		return 0, 0, nil
+	}
+
+	trackingBranch = strings.TrimSpace(trackingBranch)
+	if trackingBranch == "" {
+		return 0, 0, nil
+	}
+
+	// Count commits ahead and behind
+	aheadOutput, err := c.runInPath(repoPath, "rev-list", "--count", branch+".."+trackingBranch)
+	if err != nil {
+		return 0, 0, nil
+	}
+
+	behindOutput, err := c.runInPath(repoPath, "rev-list", "--count", trackingBranch+".."+branch)
+	if err != nil {
+		return 0, 0, nil
+	}
+
+	fmt.Sscanf(strings.TrimSpace(aheadOutput), "%d", &behind) // ahead is commits in tracking not in branch
+	fmt.Sscanf(strings.TrimSpace(behindOutput), "%d", &ahead)  // behind is commits in branch not in tracking
+
+	return ahead, behind, nil
+}
+
+// LastCommit returns information about the most recent commit.
+func (c *CLIClient) LastCommit(repoPath string) (models.CommitInfo, error) {
+	output, err := c.runInPath(repoPath, "log", "-1", "--pretty=format:%H|%s|%an|%ai")
+	if err != nil {
+		return models.CommitInfo{}, fmt.Errorf("failed to get last commit: %w", err)
+	}
+
+	parts := strings.Split(strings.TrimSpace(output), "|")
+	if len(parts) < 4 {
+		return models.CommitInfo{}, fmt.Errorf("unexpected git log format")
+	}
+
+	date, _ := time.Parse("2006-01-02 15:04:05 -0700", parts[3])
+
+	return models.CommitInfo{
+		Hash:    parts[0],
+		Message: parts[1],
+		Author:  parts[2],
+		Date:    date,
+	}, nil
+}
+
+// RepoName returns the repository name (directory name of root).
+func (c *CLIClient) RepoName(repoPath string) (string, error) {
+	rootDir, err := c.getRootDir(repoPath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Base(rootDir), nil
+}
+
+// RemoteURL returns the remote origin URL.
+func (c *CLIClient) RemoteURL(repoPath string) (string, error) {
+	output, err := c.runInPath(repoPath, "remote", "get-url", "origin")
+	if err != nil {
+		return "", fmt.Errorf("failed to get remote URL: %w", err)
+	}
+	return strings.TrimSpace(output), nil
+}
+
+// getRootDir returns the repository root directory.
+func (c *CLIClient) getRootDir(repoPath string) (string, error) {
+	output, err := c.runInPath(repoPath, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("failed to get repository root: %w", err)
+	}
+	return strings.TrimSpace(output), nil
+}
+
+// run executes a git command in the working directory.
+func (c *CLIClient) run(args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	if c.workDir != "" {
+		cmd.Dir = c.workDir
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), stderr.String())
+	}
+
+	return stdout.String(), nil
+}
+
+// runInPath executes a git command in a specified path.
+func (c *CLIClient) runInPath(path string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = path
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), stderr.String())
+	}
+
+	return stdout.String(), nil
+}
+
+// RunWithContext executes a git command with context support.
+func (c *CLIClient) RunWithContext(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if c.workDir != "" {
+		cmd.Dir = c.workDir
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), ctx.Err())
+		}
+		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), stderr.String())
+	}
+
+	return stdout.String(), nil
+}
