@@ -1,17 +1,16 @@
 # wgo
 
-A CLI tool for tracking developer work context across your entire filesystem — branches, worktrees, PRs, and AI agent sessions across multiple repositories.
+Track developer context across your computer.
+Follow branches, worktrees, PRs, and AI agent sessions across multiple repositories.
+Sync your current work in a coherent ~/.plan file.
 
-## What Problem Does This Solve?
+## Make Sense of your Chaos
 
 Developers with many branches, worktrees, and repos across multiple checkouts lose track of:
-- **What** branches they created
+
+- **What** branches they created or are following
 - **Why** those branches exist
 - **Where** things are located on their filesystem
-
-AI coding agents compound this problem by creating work across multiple contexts simultaneously. No existing tool maintains a local, human-readable plan file that maps branches to purpose to PR status across repositories.
-
-**wgo fills this gap.**
 
 ## Features
 
@@ -409,22 +408,11 @@ go tool pprof mem.prof
 ## Reference Implementations
 
 This project draws architectural patterns from:
+
 - **gwq** (d-kuro/gwq) — Clean worktree manager with status dashboard
 - **workset** (strantalis/workset) — Multi-repo workspace manager with PR integration
 
-## Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass (`go test ./...`)
-5. Submit a pull request
-
-## License
-
-[Add your license here]
-
 ## Credits
 
-Built with inspiration from gwq and workset. See `CLAUDE.md` for architectural decisions and reference implementations.
+Built with inspiration from gwq and workset.
+See `CLAUDE.md` for architectural decisions and reference implementations.
