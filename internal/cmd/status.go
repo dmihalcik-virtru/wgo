@@ -157,6 +157,7 @@ func runStatus() error {
 	activities := collector.CollectAll(ctx, repos)
 	activities = status.FilterActivities(activities, statusFilter, since)
 	status.SortActivities(activities, sortBy)
+	activities = status.GroupWorktrees(activities)
 
 	// --go: print path and exit
 	if statusGo > 0 {
@@ -208,6 +209,7 @@ func renderWatch(ctx context.Context, collector *status.Collector, repos []disco
 	activities := collector.CollectAll(ctx, repos)
 	activities = status.FilterActivities(activities, statusFilter, since)
 	status.SortActivities(activities, sortBy)
+	activities = status.GroupWorktrees(activities)
 
 	status.RenderWatchHeader(os.Stdout, activities, statusSince, sortBy)
 	status.RenderTable(os.Stdout, activities, statusVerbose)

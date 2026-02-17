@@ -59,29 +59,111 @@ func NewCollector(gitClient git.Client, p *plan.Plan, state *store.State, opts .
 }
 
 // CollectAll gathers status for all discovered repos in parallel.
+// It expands main repos to include all their worktrees via git worktree list.
 func (c *Collector) CollectAll(ctx context.Context, repos []discovery.DiscoveredRepo) []models.RepoActivity {
-	var (
-		mu       sync.Mutex
-		wg       sync.WaitGroup
-		results  []models.RepoActivity
-	)
-
 	cwd, _ := os.Getwd()
 
-	for _, repo := range repos {
+	// Phase 1: Partition discovered repos into main repos vs already-discovered worktrees.
+	// Build a set of discovered paths for dedup.
+	discoveredPaths := make(map[string]bool, len(repos))
+	var mainRepos []discovery.DiscoveredRepo
+	var discoveredWorktrees []discovery.DiscoveredRepo
+
+	for _, r := range repos {
+		discoveredPaths[r.Path] = true
+		if r.IsWorktree {
+			discoveredWorktrees = append(discoveredWorktrees, r)
+		} else {
+			mainRepos = append(mainRepos, r)
+		}
+	}
+
+	// Phase 2: Expand main repos to include their worktrees.
+	type collectionTarget struct {
+		repo         discovery.DiscoveredRepo
+		isWorktree   bool
+		mainRepoName string
+		mainRepoPath string
+	}
+
+	var targets []collectionTarget
+
+	for _, main := range mainRepos {
+		targets = append(targets, collectionTarget{repo: main})
+
+		worktrees, err := c.gitClient.ListWorktrees(main.Path)
+		if err != nil {
+			continue
+		}
+
+		for _, wt := range worktrees {
+			if wt.IsMain || wt.Path == main.Path {
+				continue
+			}
+			// Skip if already in discovery list (will be handled as dedup)
+			if discoveredPaths[wt.Path] {
+				continue
+			}
+			name := filepath.Base(wt.Path)
+			targets = append(targets, collectionTarget{
+				repo: discovery.DiscoveredRepo{
+					Path: wt.Path,
+					Name: name,
+				},
+				isWorktree:   true,
+				mainRepoName: main.Name,
+				mainRepoPath: main.Path,
+			})
+		}
+	}
+
+	// Phase 3: Append discovered worktrees that have a matching main repo,
+	// marking them as worktrees. Orphans (main not found) are appended as-is.
+	for _, dw := range discoveredWorktrees {
+		found := false
+		for _, main := range mainRepos {
+			if dw.MainRepoPath == main.Path {
+				targets = append(targets, collectionTarget{
+					repo:         dw,
+					isWorktree:   true,
+					mainRepoName: main.Name,
+					mainRepoPath: main.Path,
+				})
+				found = true
+				break
+			}
+		}
+		if !found {
+			targets = append(targets, collectionTarget{repo: dw})
+		}
+	}
+
+	// Phase 4: Collect in parallel.
+	var (
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		results = make([]models.RepoActivity, len(targets))
+	)
+
+	for i, target := range targets {
 		wg.Add(1)
-		go func(r discovery.DiscoveredRepo) {
+		go func(idx int, t collectionTarget) {
 			defer wg.Done()
 
 			repoCtx, cancel := context.WithTimeout(ctx, c.repoTimeout)
 			defer cancel()
 
-			activity := c.collectOne(repoCtx, r, cwd)
+			activity := c.collectOne(repoCtx, t.repo, cwd)
+			if t.isWorktree {
+				activity.IsWorktree = true
+				activity.MainRepoName = t.mainRepoName
+				activity.MainRepoPath = t.mainRepoPath
+			}
 
 			mu.Lock()
-			results = append(results, activity)
+			results[idx] = activity
 			mu.Unlock()
-		}(repo)
+		}(i, target)
 	}
 
 	wg.Wait()

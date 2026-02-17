@@ -62,4 +62,7 @@ type RepoActivity struct {
 	LastActivity  time.Time  `json:"last_activity"`
 	Annotation    string     `json:"annotation,omitempty"`
 	IsCurrent     bool       `json:"is_current"`
+	IsWorktree    bool       `json:"is_worktree,omitempty"`
+	MainRepoName  string     `json:"main_repo_name,omitempty"`
+	MainRepoPath  string     `json:"main_repo_path,omitempty"`
 }

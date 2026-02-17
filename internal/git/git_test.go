@@ -348,6 +348,78 @@ func TestDiffStat(t *testing.T) {
 	}
 }
 
+func TestListWorktrees(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainDir := filepath.Join(tmpDir, "main-repo")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatalf("failed to create main dir: %v", err)
+	}
+
+	setupGitRepo(t, mainDir)
+	addCommit(t, mainDir, "initial commit")
+
+	// Add a worktree
+	wtDir := filepath.Join(tmpDir, "wt-feat")
+	cmd := exec.Command("git", "worktree", "add", "-b", "feat/test", wtDir)
+	cmd.Dir = mainDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to add worktree: %v\n%s", err, out)
+	}
+
+	client := New(mainDir)
+	worktrees, err := client.ListWorktrees(mainDir)
+	if err != nil {
+		t.Fatalf("ListWorktrees failed: %v", err)
+	}
+
+	if len(worktrees) != 2 {
+		t.Fatalf("expected 2 worktrees, got %d", len(worktrees))
+	}
+
+	// Resolve symlinks for comparison (macOS /var -> /private/var)
+	resolvedMainDir, _ := filepath.EvalSymlinks(mainDir)
+	resolvedWtDir, _ := filepath.EvalSymlinks(wtDir)
+
+	// First should be main
+	if !worktrees[0].IsMain {
+		t.Errorf("expected first worktree to be main")
+	}
+	if worktrees[0].Path != resolvedMainDir {
+		t.Errorf("expected main path %q, got %q", resolvedMainDir, worktrees[0].Path)
+	}
+
+	// Second should be the added worktree
+	if worktrees[1].IsMain {
+		t.Errorf("expected second worktree to not be main")
+	}
+	if worktrees[1].Path != resolvedWtDir {
+		t.Errorf("expected worktree path %q, got %q", resolvedWtDir, worktrees[1].Path)
+	}
+	if worktrees[1].Branch != "feat/test" {
+		t.Errorf("expected branch 'feat/test', got %q", worktrees[1].Branch)
+	}
+}
+
+func TestListWorktrees_SingleRepo(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial commit")
+
+	client := New(tmpDir)
+	worktrees, err := client.ListWorktrees(tmpDir)
+	if err != nil {
+		t.Fatalf("ListWorktrees failed: %v", err)
+	}
+
+	if len(worktrees) != 1 {
+		t.Fatalf("expected 1 worktree for single repo, got %d", len(worktrees))
+	}
+
+	if !worktrees[0].IsMain {
+		t.Errorf("expected the only worktree to be main")
+	}
+}
+
 func TestLastCommitDate(t *testing.T) {
 	tmpDir := t.TempDir()
 	setupGitRepo(t, tmpDir)

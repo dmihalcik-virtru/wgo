@@ -64,6 +64,44 @@ func compareActivity(a, b models.RepoActivity) int {
 	return strings.Compare(a.Name, b.Name)
 }
 
+// GroupWorktrees reorders activities so worktrees appear immediately after
+// their main repo. The relative order of main repos is preserved from the
+// prior sort. Orphan worktrees (main repo not in list) are appended at the end.
+func GroupWorktrees(activities []models.RepoActivity) []models.RepoActivity {
+	// Index worktrees by their main repo path.
+	worktreesByMain := make(map[string][]models.RepoActivity)
+	var mains []models.RepoActivity
+
+	for _, a := range activities {
+		if a.IsWorktree && a.MainRepoPath != "" {
+			worktreesByMain[a.MainRepoPath] = append(worktreesByMain[a.MainRepoPath], a)
+		} else {
+			mains = append(mains, a)
+		}
+	}
+
+	// Interleave: for each main repo, append its worktrees.
+	result := make([]models.RepoActivity, 0, len(activities))
+	claimed := make(map[string]bool)
+
+	for _, m := range mains {
+		result = append(result, m)
+		if wts, ok := worktreesByMain[m.Path]; ok {
+			result = append(result, wts...)
+			claimed[m.Path] = true
+		}
+	}
+
+	// Append orphan worktrees whose main repo was not in the list.
+	for path, wts := range worktreesByMain {
+		if !claimed[path] {
+			result = append(result, wts...)
+		}
+	}
+
+	return result
+}
+
 // statePriority returns sort priority for states (lower = more important).
 func statePriority(s models.RepoState) int {
 	switch s {

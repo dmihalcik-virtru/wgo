@@ -111,6 +111,64 @@ func TestRenderCSV(t *testing.T) {
 	}
 }
 
+func TestRenderTable_Worktrees(t *testing.T) {
+	now := time.Now()
+	activities := []models.RepoActivity{
+		{
+			Name:          "wgo",
+			Branch:        "main",
+			State:         models.StateModified,
+			Status:        models.GitStatus{Modified: 3},
+			RecentCommits: 12,
+			LastActivity:  now.Add(-5 * time.Minute),
+			Path:          "/home/user/repos/wgo",
+		},
+		{
+			Name:          "feat-status",
+			Branch:        "feat/status",
+			State:         models.StateModified,
+			Status:        models.GitStatus{Modified: 2},
+			RecentCommits: 3,
+			LastActivity:  now.Add(-10 * time.Minute),
+			Path:          "/home/user/repos/wgo-feat",
+			IsWorktree:    true,
+			MainRepoName:  "wgo",
+			MainRepoPath:  "/home/user/repos/wgo",
+		},
+	}
+
+	var buf bytes.Buffer
+	RenderTable(&buf, activities, false)
+	output := buf.String()
+
+	if !strings.Contains(output, " +- ") {
+		t.Error("expected worktree prefix ' +- ' in output")
+	}
+	if !strings.Contains(output, "feat-status") {
+		t.Error("expected worktree name in output")
+	}
+}
+
+func TestRenderJSON_Worktrees(t *testing.T) {
+	activities := []models.RepoActivity{
+		{Name: "main-repo", Path: "/tmp/main"},
+		{Name: "wt", Path: "/tmp/wt", IsWorktree: true, MainRepoName: "main-repo", MainRepoPath: "/tmp/main"},
+	}
+
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, activities); err != nil {
+		t.Fatalf("RenderJSON failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, `"is_worktree": true`) {
+		t.Error("expected is_worktree in JSON output")
+	}
+	if !strings.Contains(output, `"main_repo_name": "main-repo"`) {
+		t.Error("expected main_repo_name in JSON output")
+	}
+}
+
 func TestFormatChanges(t *testing.T) {
 	tests := []struct {
 		status models.GitStatus

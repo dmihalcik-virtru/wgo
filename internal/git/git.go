@@ -14,6 +14,15 @@ import (
 	"github.com/virtru/wgo/pkg/models"
 )
 
+// WorktreeInfo contains information about a git worktree.
+type WorktreeInfo struct {
+	Path       string
+	Branch     string
+	CommitHash string
+	IsMain     bool
+	IsBare     bool
+}
+
 // Client is the interface for Git operations.
 type Client interface {
 	IsRepo(path string) (bool, error)
@@ -25,6 +34,7 @@ type Client interface {
 	RemoteURL(repoPath string) (string, error)
 	RecentCommitCount(repoPath string, since time.Time) (int, error)
 	DiffStat(repoPath string) (models.DiffStat, error)
+	ListWorktrees(repoPath string) ([]WorktreeInfo, error)
 }
 
 // CLIClient is a Git client implementation using the git CLI.
@@ -217,6 +227,60 @@ func (c *CLIClient) DiffStat(repoPath string) (models.DiffStat, error) {
 	}
 
 	return stat, nil
+}
+
+// ListWorktrees returns all worktrees for the repository at repoPath.
+func (c *CLIClient) ListWorktrees(repoPath string) ([]WorktreeInfo, error) {
+	output, err := c.runInPath(repoPath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list worktrees: %w", err)
+	}
+
+	var worktrees []WorktreeInfo
+	var current WorktreeInfo
+	isFirst := true
+
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			if !isFirst {
+				worktrees = append(worktrees, current)
+			}
+			isFirst = false
+			current = WorktreeInfo{Path: strings.TrimPrefix(line, "worktree ")}
+		case strings.HasPrefix(line, "HEAD "):
+			current.CommitHash = strings.TrimPrefix(line, "HEAD ")
+		case strings.HasPrefix(line, "branch "):
+			branch := strings.TrimPrefix(line, "branch ")
+			current.Branch = strings.TrimPrefix(branch, "refs/heads/")
+		case line == "bare":
+			current.IsBare = true
+		case line == "":
+			// blank line separates entries; handled by next "worktree " prefix
+		}
+	}
+
+	// Append the last entry
+	if !isFirst {
+		worktrees = append(worktrees, current)
+	}
+
+	// Mark first non-bare entry as main
+	if len(worktrees) > 0 && !worktrees[0].IsBare {
+		worktrees[0].IsMain = true
+	}
+
+	// Filter out bare entries
+	filtered := worktrees[:0]
+	for _, wt := range worktrees {
+		if !wt.IsBare {
+			filtered = append(filtered, wt)
+		}
+	}
+
+	return filtered, nil
 }
 
 // parseDiffNumstat parses git diff --numstat output and adds to stat.

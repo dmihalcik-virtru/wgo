@@ -22,7 +22,12 @@ func RenderTable(w io.Writer, activities []models.RepoActivity, verbose bool) {
 	}
 
 	for i, a := range activities {
-		name := truncate(a.Name, 18)
+		var name string
+		if a.IsWorktree {
+			name = " +- " + truncate(a.Name, 14)
+		} else {
+			name = truncate(a.Name, 18)
+		}
 		branch := truncate(a.Branch, 20)
 		state := string(a.State)
 		changes := formatChanges(a.Status)

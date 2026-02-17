@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/virtru/wgo/internal/discovery"
+	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/pkg/models"
 )
 
@@ -19,6 +20,7 @@ type mockGitClient struct {
 	remoteURL   string
 	commitCount int
 	diffStat    models.DiffStat
+	worktrees   map[string][]git.WorktreeInfo // keyed by repo path
 }
 
 func (m *mockGitClient) IsRepo(string) (bool, error)                             { return m.isRepo, nil }
@@ -30,6 +32,14 @@ func (m *mockGitClient) RepoName(string) (string, error)                        
 func (m *mockGitClient) RemoteURL(string) (string, error)                        { return m.remoteURL, nil }
 func (m *mockGitClient) RecentCommitCount(string, time.Time) (int, error)        { return m.commitCount, nil }
 func (m *mockGitClient) DiffStat(string) (models.DiffStat, error)               { return m.diffStat, nil }
+func (m *mockGitClient) ListWorktrees(repoPath string) ([]git.WorktreeInfo, error) {
+	if m.worktrees != nil {
+		if wts, ok := m.worktrees[repoPath]; ok {
+			return wts, nil
+		}
+	}
+	return []git.WorktreeInfo{{Path: repoPath, IsMain: true}}, nil
+}
 
 func TestCollector_DetermineState(t *testing.T) {
 	c := NewCollector(&mockGitClient{}, nil, nil)
@@ -114,6 +124,84 @@ func TestCollector_CollectAll(t *testing.T) {
 		if r.State != models.StateModified {
 			t.Errorf("expected state 'modified', got %q", r.State)
 		}
+	}
+}
+
+func TestCollector_WorktreeExpansion(t *testing.T) {
+	mock := &mockGitClient{
+		isRepo:   true,
+		branch:   "main",
+		commit:   models.CommitInfo{Date: time.Now()},
+		repoName: "myrepo",
+		worktrees: map[string][]git.WorktreeInfo{
+			"/tmp/myrepo": {
+				{Path: "/tmp/myrepo", Branch: "main", IsMain: true},
+				{Path: "/tmp/myrepo-feat", Branch: "feat/new", IsMain: false},
+			},
+		},
+	}
+
+	c := NewCollector(mock, nil, nil)
+
+	repos := []discovery.DiscoveredRepo{
+		{Path: "/tmp/myrepo", Name: "myrepo"},
+	}
+
+	results := c.CollectAll(context.Background(), repos)
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results (main + worktree), got %d", len(results))
+	}
+
+	// Find the worktree entry
+	var foundWorktree bool
+	for _, r := range results {
+		if r.IsWorktree {
+			foundWorktree = true
+			if r.MainRepoName != "myrepo" {
+				t.Errorf("expected main repo name 'myrepo', got %q", r.MainRepoName)
+			}
+			if r.MainRepoPath != "/tmp/myrepo" {
+				t.Errorf("expected main repo path '/tmp/myrepo', got %q", r.MainRepoPath)
+			}
+			if r.Name != "myrepo-feat" {
+				t.Errorf("expected worktree name 'myrepo-feat', got %q", r.Name)
+			}
+		}
+	}
+
+	if !foundWorktree {
+		t.Error("expected to find a worktree entry in results")
+	}
+}
+
+func TestCollector_WorktreeDedup(t *testing.T) {
+	mock := &mockGitClient{
+		isRepo:   true,
+		branch:   "main",
+		commit:   models.CommitInfo{Date: time.Now()},
+		repoName: "myrepo",
+		worktrees: map[string][]git.WorktreeInfo{
+			"/tmp/myrepo": {
+				{Path: "/tmp/myrepo", Branch: "main", IsMain: true},
+				{Path: "/tmp/myrepo-feat", Branch: "feat/new", IsMain: false},
+			},
+		},
+	}
+
+	c := NewCollector(mock, nil, nil)
+
+	// Both main and worktree are already in the discovery list
+	repos := []discovery.DiscoveredRepo{
+		{Path: "/tmp/myrepo", Name: "myrepo"},
+		{Path: "/tmp/myrepo-feat", Name: "myrepo-feat"},
+	}
+
+	results := c.CollectAll(context.Background(), repos)
+
+	// Should still get exactly 2 results (no duplicate for the worktree)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results (deduped), got %d", len(results))
 	}
 }
 
