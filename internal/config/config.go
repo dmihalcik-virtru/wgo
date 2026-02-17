@@ -15,6 +15,14 @@ type Config struct {
 	Discovery DiscoveryConfig `mapstructure:"discovery"`
 	UI        UIConfig        `mapstructure:"ui"`
 	Status    StatusConfig    `mapstructure:"status"`
+	Hooks     HooksConfig     `mapstructure:"hooks"`
+}
+
+// HooksConfig contains git hooks configuration.
+type HooksConfig struct {
+	Enabled         bool     `mapstructure:"enabled"`
+	AutoPlan        bool     `mapstructure:"auto_plan"`
+	ExcludeBranches []string `mapstructure:"exclude_branches"`
 }
 
 // StatusConfig contains status dashboard configuration.
@@ -100,6 +108,9 @@ func setDefaults() {
 	viper.SetDefault("status.default_sort", "activity")
 	viper.SetDefault("status.stale_days", 14)
 	viper.SetDefault("status.refresh_interval", 5)
+	viper.SetDefault("hooks.enabled", true)
+	viper.SetDefault("hooks.auto_plan", true)
+	viper.SetDefault("hooks.exclude_branches", []string{"main", "master", "develop", "release/*"})
 }
 
 // createDefaultConfig creates a default config file.
@@ -124,6 +135,15 @@ icons = false
 
 # Display home directory as ~ in output
 tilde_home = true
+[hooks]
+# Enable passive git hook monitoring
+enabled = true
+
+# Automatically add new branches to the plan file
+auto_plan = true
+
+# Branches to exclude from auto-plan (glob patterns)
+exclude_branches = ["main", "master", "develop", "release/*"]
 `, filepath.Join(home, "Documents", "GitHub"))
 
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

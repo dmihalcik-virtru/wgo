@@ -39,6 +39,20 @@ func New() (*FileStore, error) {
 	}, nil
 }
 
+// NewWithDir creates a FileStore at the specified directory.
+func NewWithDir(baseDir string) *FileStore {
+	return &FileStore{
+		baseDir:   baseDir,
+		stateFile: filepath.Join(baseDir, "state.json"),
+		planFile:  filepath.Join(baseDir, "plan.md"),
+	}
+}
+
+// BaseDir returns the base directory for the store (~/.wgo).
+func (fs *FileStore) BaseDir() string {
+	return fs.baseDir
+}
+
 // EnsureDir creates the store directory if it doesn't exist.
 func (fs *FileStore) EnsureDir() error {
 	if err := os.MkdirAll(fs.baseDir, 0o755); err != nil {
@@ -80,7 +94,7 @@ func (fs *FileStore) LoadState() (*State, error) {
 	return &state, nil
 }
 
-// SaveState saves the state to disk.
+// SaveState saves the state to disk atomically.
 func (fs *FileStore) SaveState(state *State) error {
 	if err := fs.EnsureDir(); err != nil {
 		return err
@@ -91,8 +105,14 @@ func (fs *FileStore) SaveState(state *State) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(fs.stateFile, data, 0o644); err != nil {
+	tmpFile := fs.stateFile + ".tmp"
+	if err := os.WriteFile(tmpFile, data, 0o644); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
+	}
+
+	if err := os.Rename(tmpFile, fs.stateFile); err != nil {
+		os.Remove(tmpFile)
+		return fmt.Errorf("failed to rename state file: %w", err)
 	}
 
 	return nil
@@ -112,14 +132,20 @@ func (fs *FileStore) LoadPlan() (string, error) {
 	return string(data), nil
 }
 
-// SavePlan saves the plan to disk.
+// SavePlan saves the plan to disk atomically.
 func (fs *FileStore) SavePlan(content string) error {
 	if err := fs.EnsureDir(); err != nil {
 		return err
 	}
 
-	if err := os.WriteFile(fs.planFile, []byte(content), 0o644); err != nil {
+	tmpFile := fs.planFile + ".tmp"
+	if err := os.WriteFile(tmpFile, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("failed to write plan file: %w", err)
+	}
+
+	if err := os.Rename(tmpFile, fs.planFile); err != nil {
+		os.Remove(tmpFile)
+		return fmt.Errorf("failed to rename plan file: %w", err)
 	}
 
 	return nil
