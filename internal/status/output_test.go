@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 func sampleActivities() []models.RepoActivity {

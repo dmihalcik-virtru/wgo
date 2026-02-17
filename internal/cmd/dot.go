@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/git"
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 // dotCmd represents the `wgo .` command.

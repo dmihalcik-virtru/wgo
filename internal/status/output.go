@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 // RenderTable writes activities as a formatted table.

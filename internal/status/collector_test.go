@@ -7,7 +7,7 @@ import (
 
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/git"
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 // mockGitClient implements git.Client for testing.

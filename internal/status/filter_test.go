@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 func TestFilterActivities(t *testing.T) {

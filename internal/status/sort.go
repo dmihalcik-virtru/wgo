@@ -4,7 +4,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 // SortActivities sorts repo activities by the given criteria.

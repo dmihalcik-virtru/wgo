@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 // WorktreeInfo contains information about a git worktree.

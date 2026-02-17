@@ -12,7 +12,7 @@ import (
 	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/store"
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 // Collector gathers status information from repositories in parallel.

@@ -15,7 +15,7 @@ import (
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/status"
 	"github.com/virtru/wgo/internal/store"
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 var (

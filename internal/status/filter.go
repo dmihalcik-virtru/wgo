@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 // FilterActivities filters repo activities by state and/or time window.

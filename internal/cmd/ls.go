@@ -11,7 +11,7 @@ import (
 	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/store"
-	"github.com/virtru/wgo/pkg/models"
+	"github.com/virtru/wgo/models"
 )
 
 // lsCmd represents the `wgo ls` command.

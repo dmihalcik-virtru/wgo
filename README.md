@@ -263,6 +263,7 @@ pkg/
 ```
 
 **Key Design Patterns:**
+
 - **Interface-based git client** (workset pattern) for testability
 - **CLI wrapper** (gwq pattern) for git operations
 - **Store abstraction** for persistence layer
@@ -329,7 +330,9 @@ go mod tidy
 ### Project Structure Details
 
 #### internal/git/
+
 Git client abstraction with interface and CLI implementation:
+
 - `Client` interface with 7 methods
 - `CLIClient` implementation wrapping git commands
 - Context support for timeouts
