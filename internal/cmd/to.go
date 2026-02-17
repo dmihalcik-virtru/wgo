@@ -157,17 +157,22 @@ func findExistingCheckout(gitClient *git.CLIClient, cfg *config.Config, owner, r
 	return "", fmt.Errorf("not found")
 }
 
-// matchesRemote checks if a repo's origin remote matches the given owner/repo.
+// matchesRemote checks if any of a repo's remotes match the given owner/repo.
+// This handles fork setups where origin is a fork and upstream is the canonical repo.
 func matchesRemote(gitClient *git.CLIClient, repoPath, owner, repo string) bool {
-	remoteURL, err := gitClient.RemoteURL(repoPath)
+	target := owner + "/" + repo
+	remoteURLs, err := gitClient.RemoteURLs(repoPath)
 	if err != nil {
 		return false
 	}
-	// Normalize: check for owner/repo in the URL
-	target := owner + "/" + repo
-	// Handle HTTPS (github.com/owner/repo.git) and SSH (git@github.com:owner/repo.git)
-	remoteURL = strings.TrimSuffix(remoteURL, ".git")
-	return strings.HasSuffix(remoteURL, target)
+	for _, remoteURL := range remoteURLs {
+		// Handle HTTPS (github.com/owner/repo.git) and SSH (git@github.com:owner/repo.git)
+		remoteURL = strings.TrimSuffix(remoteURL, ".git")
+		if strings.HasSuffix(remoteURL, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // findOrCloneRepo locates an existing clone or creates one.
@@ -191,6 +196,16 @@ func findOrCloneRepo(gitClient *git.CLIClient, cfg *config.Config, owner, repo s
 
 	baseDir := cfg.Discovery.BaseDirs[0]
 	destPath := filepath.Join(baseDir, owner, repo)
+
+	// Check if destPath already exists as a repo (not found by discovery
+	// due to path structure, e.g. missing owner directory level)
+	if _, err := os.Stat(destPath); err == nil {
+		isRepo, _ := gitClient.IsRepo(destPath)
+		if isRepo {
+			logTo("using existing repo at: %s", destPath)
+			return destPath, nil
+		}
+	}
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return "", fmt.Errorf("failed to create directory: %w", err)
@@ -236,6 +251,15 @@ func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Confi
 	case gh.URLTypePR, gh.URLTypeBranch:
 		// Check if branch exists on remote
 		exists, _ := gitClient.BranchExists(repoPath, branch)
+		if !exists && parsed.Type == gh.URLTypePR {
+			// Branch may be from a fork; fetch the PR ref directly
+			num, _ := strconv.Atoi(parsed.Identifier)
+			logTo("branch not on origin, fetching PR #%d ref...", num)
+			if err := gitClient.FetchPRRef(repoPath, num, branch); err != nil {
+				return "", fmt.Errorf("branch %q not found and PR #%d fetch failed: %w", branch, num, err)
+			}
+			exists = true
+		}
 		if !exists {
 			return "", fmt.Errorf("branch %q not found locally or on origin", branch)
 		}

@@ -38,6 +38,7 @@ type Client interface {
 	Clone(url, destPath string) error
 	WorktreeAdd(repoPath, wtPath, branch string, create bool, startPoint string) error
 	Fetch(repoPath string) error
+	FetchPRRef(repoPath string, prNumber int, localBranch string) error
 	DefaultBranch(repoPath string) (string, error)
 	BranchExists(repoPath, branch string) (bool, error)
 }
@@ -203,6 +204,26 @@ func (c *CLIClient) RemoteURL(repoPath string) (string, error) {
 	return strings.TrimSpace(output), nil
 }
 
+// RemoteURLs returns fetch URLs for all configured remotes.
+func (c *CLIClient) RemoteURLs(repoPath string) ([]string, error) {
+	output, err := c.runInPath(repoPath, "remote")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list remotes: %w", err)
+	}
+	var urls []string
+	for _, name := range strings.Split(strings.TrimSpace(output), "\n") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		u, err := c.runInPath(repoPath, "remote", "get-url", name)
+		if err == nil {
+			urls = append(urls, strings.TrimSpace(u))
+		}
+	}
+	return urls, nil
+}
+
 // RecentCommitCount returns the number of commits since a given time.
 func (c *CLIClient) RecentCommitCount(repoPath string, since time.Time) (int, error) {
 	sinceStr := since.Format(time.RFC3339)
@@ -340,6 +361,19 @@ func (c *CLIClient) DefaultBranch(repoPath string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("could not determine default branch")
+}
+
+// FetchPRRef fetches a pull request head ref into a local branch.
+// It tries the upstream remote first (for fork setups), then falls back to origin.
+func (c *CLIClient) FetchPRRef(repoPath string, prNumber int, localBranch string) error {
+	refspec := fmt.Sprintf("pull/%d/head:%s", prNumber, localBranch)
+	// Try upstream first (common in fork setups where PRs live on the upstream repo)
+	_, err := c.runInPath(repoPath, "fetch", "upstream", refspec)
+	if err == nil {
+		return nil
+	}
+	_, err = c.runInPath(repoPath, "fetch", "origin", refspec)
+	return err
 }
 
 // BranchExists checks if a branch exists locally or on origin.
