@@ -32,6 +32,11 @@ func (m *mockGitClient) RepoName(string) (string, error)                        
 func (m *mockGitClient) RemoteURL(string) (string, error)                        { return m.remoteURL, nil }
 func (m *mockGitClient) RecentCommitCount(string, time.Time) (int, error)        { return m.commitCount, nil }
 func (m *mockGitClient) DiffStat(string) (models.DiffStat, error)               { return m.diffStat, nil }
+func (m *mockGitClient) Clone(string, string) error                              { return nil }
+func (m *mockGitClient) WorktreeAdd(string, string, string, bool, string) error  { return nil }
+func (m *mockGitClient) Fetch(string) error                                      { return nil }
+func (m *mockGitClient) DefaultBranch(string) (string, error)                    { return "main", nil }
+func (m *mockGitClient) BranchExists(string, string) (bool, error)              { return false, nil }
 func (m *mockGitClient) ListWorktrees(repoPath string) ([]git.WorktreeInfo, error) {
 	if m.worktrees != nil {
 		if wts, ok := m.worktrees[repoPath]; ok {

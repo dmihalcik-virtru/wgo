@@ -24,14 +24,18 @@ Developers with many branches, worktrees, and repos across multiple checkouts lo
 - **Plan file** — Human-editable markdown at `~/.plan` (symlinked from `~/.wgo/plan.md`)
 - **Fast discovery** — Automatically finds repositories in configured directories
 
-### Coming Soon (Phases 4-6)
+### Jump to Any GitHub URL
 
-- Real-time status dashboard with watch mode
+- **`wgo to <url>`** — Paste a GitHub PR, branch, or issue URL and get a local worktree path back to go to
+- Clones the repo if you don't have it, creates a worktree, and prints the path
+- Works with `cd $(wgo to ...)` or the `wto` shell alias (see [Shell Alias](#shell-alias) below)
+
+### Coming Soon
+
 - GitHub PR integration with cached status
 - Fuzzy finder for quick worktree/branch selection
 - AI agent session tracking
 - Cross-repo effort grouping
-- Passive git hooks for automatic updates
 
 ## Installation
 
@@ -53,6 +57,7 @@ go install ./cmd/wgo
 
 - Go 1.26 or later
 - Git 2.0 or later
+- [GitHub CLI](https://cli.github.com/) (`gh`) — optional, required for `wgo to` with PR/issue URLs
 
 ## Usage
 
@@ -130,6 +135,54 @@ Status codes:
 - `U` = Untracked files
 - `clean` = No changes
 
+### Jump to a GitHub URL
+
+```bash
+wgo to https://github.com/owner/repo/pull/42
+```
+
+Given a GitHub URL, `wgo to` resolves it to a local worktree and prints the path to stdout. It handles PRs, branches, and issues:
+
+```bash
+# PR — looks up the head branch via gh, creates a worktree
+wgo to https://github.com/virtru/platform/pull/123
+
+# Branch — creates a worktree for the branch
+wgo to https://github.com/virtru/platform/tree/feature/auth
+
+# Issue — creates a new branch named "42-issue-title-slug"
+wgo to https://github.com/virtru/platform/issues/42
+```
+
+If the repo isn't cloned locally, `wgo to` clones it first. If a worktree for the branch already exists, it returns the existing path.
+
+Progress messages go to stderr, so you can wrap it with `cd`:
+
+```bash
+cd $(wgo to https://github.com/virtru/platform/pull/123)
+```
+
+Requires the [GitHub CLI](https://cli.github.com/) (`gh`) for PR and issue lookups.
+
+### Shell Alias
+
+For a faster workflow, add a `wto` function to your shell config (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+# wto — cd into a GitHub URL's local worktree
+wto() {
+  local dir
+  dir=$(wgo to "$@") && cd "$dir"
+}
+```
+
+Then just:
+
+```bash
+wto https://github.com/virtru/platform/pull/123
+# you're now in the worktree
+```
+
 ### Track a Repository
 
 ```bash
@@ -178,6 +231,8 @@ wgo maintains the following files:
 | Command | Description |
 |---------|-------------|
 | `wgo .` | Show current repository context |
+| `wgo to <url>` | Start a local checkout of a GitHub PR, branch, or issue |
+| `wto <url>` | `cd` alias for `wgo to` |
 | `wgo plan` | Display your plan file |
 | `wgo plan add "reason"` | Annotate current branch with purpose |
 | `wgo plan edit` | Edit plan file in $EDITOR |

@@ -35,6 +35,11 @@ type Client interface {
 	RecentCommitCount(repoPath string, since time.Time) (int, error)
 	DiffStat(repoPath string) (models.DiffStat, error)
 	ListWorktrees(repoPath string) ([]WorktreeInfo, error)
+	Clone(url, destPath string) error
+	WorktreeAdd(repoPath, wtPath, branch string, create bool, startPoint string) error
+	Fetch(repoPath string) error
+	DefaultBranch(repoPath string) (string, error)
+	BranchExists(repoPath, branch string) (bool, error)
 }
 
 // CLIClient is a Git client implementation using the git CLI.
@@ -281,6 +286,75 @@ func (c *CLIClient) ListWorktrees(repoPath string) ([]WorktreeInfo, error) {
 	}
 
 	return filtered, nil
+}
+
+// Clone clones a repository to the given destination path.
+func (c *CLIClient) Clone(url, destPath string) error {
+	cmd := exec.Command("git", "clone", url, destPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clone: %s", stderr.String())
+	}
+	return nil
+}
+
+// WorktreeAdd adds a new worktree. If create is true, creates a new branch.
+func (c *CLIClient) WorktreeAdd(repoPath, wtPath, branch string, create bool, startPoint string) error {
+	args := []string{"worktree", "add"}
+	if create {
+		args = append(args, "-b", branch, wtPath)
+		if startPoint != "" {
+			args = append(args, startPoint)
+		}
+	} else {
+		args = append(args, wtPath, branch)
+	}
+	_, err := c.runInPath(repoPath, args...)
+	return err
+}
+
+// Fetch runs git fetch --all --prune in the given repo.
+func (c *CLIClient) Fetch(repoPath string) error {
+	_, err := c.runInPath(repoPath, "fetch", "--all", "--prune")
+	return err
+}
+
+// DefaultBranch returns the default branch name (e.g. main or master).
+func (c *CLIClient) DefaultBranch(repoPath string) (string, error) {
+	// Try symbolic-ref first
+	output, err := c.runInPath(repoPath, "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
+	if err == nil {
+		branch := strings.TrimSpace(output)
+		// Strip "origin/" prefix
+		branch = strings.TrimPrefix(branch, "origin/")
+		if branch != "" {
+			return branch, nil
+		}
+	}
+	// Fallback: check if main or master exists
+	for _, candidate := range []string{"main", "master"} {
+		exists, err := c.BranchExists(repoPath, candidate)
+		if err == nil && exists {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not determine default branch")
+}
+
+// BranchExists checks if a branch exists locally or on origin.
+func (c *CLIClient) BranchExists(repoPath, branch string) (bool, error) {
+	// Check local
+	_, err := c.runInPath(repoPath, "rev-parse", "--verify", "refs/heads/"+branch)
+	if err == nil {
+		return true, nil
+	}
+	// Check remote
+	_, err = c.runInPath(repoPath, "rev-parse", "--verify", "refs/remotes/origin/"+branch)
+	if err == nil {
+		return true, nil
+	}
+	return false, nil
 }
 
 // parseDiffNumstat parses git diff --numstat output and adds to stat.
