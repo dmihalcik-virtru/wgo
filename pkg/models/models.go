@@ -30,3 +30,36 @@ type BranchInfo struct {
 	LastCommit  CommitInfo `json:"last_commit"` // Information about the last commit
 	RemoteName  string    `json:"remote_name"`  // Remote branch name if tracking
 }
+
+// RepoState represents the high-level state of a repository.
+type RepoState string
+
+const (
+	StateClean    RepoState = "clean"
+	StateModified RepoState = "modified"
+	StateStaged   RepoState = "staged"
+	StateConflict RepoState = "conflict"
+	StateStale    RepoState = "stale"
+)
+
+// DiffStat contains line-level diff statistics.
+type DiffStat struct {
+	FilesChanged int `json:"files_changed"`
+	Insertions   int `json:"insertions"`
+	Deletions    int `json:"deletions"`
+}
+
+// RepoActivity contains the full status of a single repository.
+type RepoActivity struct {
+	Path          string     `json:"path"`
+	Name          string     `json:"name"`
+	Branch        string     `json:"branch"`
+	Status        GitStatus  `json:"status"`
+	State         RepoState  `json:"state"`
+	LastCommit    CommitInfo `json:"last_commit"`
+	RecentCommits int        `json:"recent_commits"`
+	DiffStat      DiffStat   `json:"diff_stat"`
+	LastActivity  time.Time  `json:"last_activity"`
+	Annotation    string     `json:"annotation,omitempty"`
+	IsCurrent     bool       `json:"is_current"`
+}

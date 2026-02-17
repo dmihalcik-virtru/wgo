@@ -23,6 +23,8 @@ type Client interface {
 	LastCommit(repoPath string) (models.CommitInfo, error)
 	RepoName(repoPath string) (string, error)
 	RemoteURL(repoPath string) (string, error)
+	RecentCommitCount(repoPath string, since time.Time) (int, error)
+	DiffStat(repoPath string) (models.DiffStat, error)
 }
 
 // CLIClient is a Git client implementation using the git CLI.
@@ -184,6 +186,80 @@ func (c *CLIClient) RemoteURL(repoPath string) (string, error) {
 		return "", fmt.Errorf("failed to get remote URL: %w", err)
 	}
 	return strings.TrimSpace(output), nil
+}
+
+// RecentCommitCount returns the number of commits since a given time.
+func (c *CLIClient) RecentCommitCount(repoPath string, since time.Time) (int, error) {
+	sinceStr := since.Format(time.RFC3339)
+	output, err := c.runInPath(repoPath, "rev-list", "--count", "--since="+sinceStr, "HEAD")
+	if err != nil {
+		return 0, nil // No commits or other issue, return 0
+	}
+	var count int
+	fmt.Sscanf(strings.TrimSpace(output), "%d", &count)
+	return count, nil
+}
+
+// DiffStat returns line-level diff statistics for uncommitted changes.
+func (c *CLIClient) DiffStat(repoPath string) (models.DiffStat, error) {
+	var stat models.DiffStat
+
+	// Unstaged changes
+	unstaged, err := c.runInPath(repoPath, "diff", "--numstat")
+	if err == nil {
+		parseDiffNumstat(unstaged, &stat)
+	}
+
+	// Staged changes
+	staged, err := c.runInPath(repoPath, "diff", "--cached", "--numstat")
+	if err == nil {
+		parseDiffNumstat(staged, &stat)
+	}
+
+	return stat, nil
+}
+
+// parseDiffNumstat parses git diff --numstat output and adds to stat.
+func parseDiffNumstat(output string, stat *models.DiffStat) {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		// Binary files show "-" for insertions/deletions
+		if fields[0] == "-" || fields[1] == "-" {
+			stat.FilesChanged++
+			continue
+		}
+		var ins, del int
+		fmt.Sscanf(fields[0], "%d", &ins)
+		fmt.Sscanf(fields[1], "%d", &del)
+		stat.Insertions += ins
+		stat.Deletions += del
+		stat.FilesChanged++
+	}
+}
+
+// RunInPathWithContext executes a git command in a specified path with context support.
+func (c *CLIClient) RunInPathWithContext(ctx context.Context, path string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = path
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), ctx.Err())
+		}
+		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), stderr.String())
+	}
+
+	return stdout.String(), nil
 }
 
 // getRootDir returns the repository root directory.

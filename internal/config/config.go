@@ -14,6 +14,14 @@ import (
 type Config struct {
 	Discovery DiscoveryConfig `mapstructure:"discovery"`
 	UI        UIConfig        `mapstructure:"ui"`
+	Status    StatusConfig    `mapstructure:"status"`
+}
+
+// StatusConfig contains status dashboard configuration.
+type StatusConfig struct {
+	DefaultSort     string `mapstructure:"default_sort"`
+	StaleDays       int    `mapstructure:"stale_days"`
+	RefreshInterval int    `mapstructure:"refresh_interval"`
 }
 
 // DiscoveryConfig contains directory discovery configuration.
@@ -89,6 +97,9 @@ func setDefaults() {
 	})
 	viper.SetDefault("ui.icons", false)
 	viper.SetDefault("ui.tilde_home", true)
+	viper.SetDefault("status.default_sort", "activity")
+	viper.SetDefault("status.stale_days", 14)
+	viper.SetDefault("status.refresh_interval", 5)
 }
 
 // createDefaultConfig creates a default config file.

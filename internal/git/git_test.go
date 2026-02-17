@@ -280,6 +280,74 @@ func TestNewFromCwd(t *testing.T) {
 	}
 }
 
+func TestRecentCommitCount(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "commit 1")
+	addCommit(t, tmpDir, "commit 2")
+	addCommit(t, tmpDir, "commit 3")
+
+	client := New(tmpDir)
+
+	// All commits should be within the last minute
+	since := time.Now().Add(-time.Minute)
+	count, err := client.RecentCommitCount(tmpDir, since)
+	if err != nil {
+		t.Fatalf("RecentCommitCount failed: %v", err)
+	}
+
+	if count != 3 {
+		t.Errorf("expected 3 recent commits, got %d", count)
+	}
+
+	// No commits from the future
+	future := time.Now().Add(time.Hour)
+	count, err = client.RecentCommitCount(tmpDir, future)
+	if err != nil {
+		t.Fatalf("RecentCommitCount failed: %v", err)
+	}
+
+	if count != 0 {
+		t.Errorf("expected 0 recent commits from future, got %d", count)
+	}
+}
+
+func TestDiffStat(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial commit")
+
+	client := New(tmpDir)
+
+	// Clean repo should have no diff
+	stat, err := client.DiffStat(tmpDir)
+	if err != nil {
+		t.Fatalf("DiffStat failed: %v", err)
+	}
+
+	if stat.FilesChanged != 0 {
+		t.Errorf("expected 0 files changed in clean repo, got %d", stat.FilesChanged)
+	}
+
+	// Modify a tracked file
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("line1\nline2\nline3\n"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	stat, err = client.DiffStat(tmpDir)
+	if err != nil {
+		t.Fatalf("DiffStat failed: %v", err)
+	}
+
+	if stat.FilesChanged != 1 {
+		t.Errorf("expected 1 file changed, got %d", stat.FilesChanged)
+	}
+	if stat.Insertions == 0 {
+		t.Errorf("expected some insertions, got 0")
+	}
+}
+
 func TestLastCommitDate(t *testing.T) {
 	tmpDir := t.TempDir()
 	setupGitRepo(t, tmpDir)
