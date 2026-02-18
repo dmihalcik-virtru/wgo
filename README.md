@@ -209,7 +209,7 @@ wto() {
 # Tab completion for wto (delegates to wgo to)
 compdef _wgo_to wto
 _wgo_to() {
-  compadd ${(f)"$(wgo __complete to -- "${words[2,-1]}" 2>/dev/null | grep -v '^:')"}
+  compadd ${(f)"$(wgo __complete to -- "${words[2,-1]}" 2>/dev/null | grep -v '^:' | cut -f1)"}
 }
 ```
 

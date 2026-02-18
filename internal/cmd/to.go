@@ -80,14 +80,22 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 		score      float64
 	}
 
+	var repoPrefix, branchPrefix string
+	hasAt := false
+	if rp, bp, ok := strings.Cut(toComplete, "@"); ok {
+		hasAt = true
+		repoPrefix = rp
+		branchPrefix = bp
+	}
+
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var candidates []candidate
+	seen := make(map[string]bool) // deduplicate by completion key
 
 	now := time.Now()
 
 	for _, r := range repos {
-		r := r
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -105,15 +113,10 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 
 			// Apply prefix filter
 			if toComplete != "" {
-				if atIdx := strings.Index(toComplete, "@"); atIdx >= 0 {
-					// Filter by owner/repo prefix + branch prefix
-					repoPrefix := toComplete[:atIdx]
-					branchPrefix := toComplete[atIdx+1:]
-					if !strings.HasPrefix(ownerRepo, repoPrefix) {
+				if hasAt {
+					if ownerRepo != repoPrefix {
 						return
 					}
-					// Will add branch-specific candidates below
-					_ = branchPrefix
 				} else {
 					if !strings.HasPrefix(ownerRepo, toComplete) {
 						return
@@ -143,16 +146,22 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 				score += 40
 			}
 
-			// Base completion: owner/repo
-			branch, _ := gitClient.CurrentBranch(r.Path)
-			desc := r.Path
-			if branch != "" {
-				desc = fmt.Sprintf("%s (%s)", r.Path, branch)
-			}
-			baseCompletion := ownerRepo + "\t" + desc
-
 			mu.Lock()
-			candidates = append(candidates, candidate{baseCompletion, score})
+			defer mu.Unlock()
+
+			// Base completion: owner/repo (only when not filtering by branch)
+			if !hasAt {
+				branch, _ := gitClient.CurrentBranch(r.Path)
+				desc := r.Path
+				if branch != "" {
+					desc = fmt.Sprintf("%s (%s)", r.Path, branch)
+				}
+				key := ownerRepo
+				if !seen[key] {
+					seen[key] = true
+					candidates = append(candidates, candidate{ownerRepo + "\t" + desc, score})
+				}
+			}
 
 			// Also add worktree-specific completions for non-main branches
 			worktrees, wtErr := gitClient.ListWorktrees(r.Path)
@@ -161,15 +170,16 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 					if wt.Branch == "" || wt.IsMain {
 						continue
 					}
-					wtCompletion := ownerRepo + "@" + wt.Branch + "\t" + wt.Path
-
 					// Apply branch prefix filter if present
-					if atIdx := strings.Index(toComplete, "@"); atIdx >= 0 {
-						branchPrefix := toComplete[atIdx+1:]
-						if !strings.HasPrefix(wt.Branch, branchPrefix) {
-							continue
-						}
+					if hasAt && !strings.HasPrefix(wt.Branch, branchPrefix) {
+						continue
 					}
+
+					key := ownerRepo + "@" + wt.Branch
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
 
 					// Worktree score: slightly decay non-main by recency
 					wtScore := score * math.Exp(-0.1)
@@ -185,10 +195,9 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 							wtScore = 5
 						}
 					}
-					candidates = append(candidates, candidate{wtCompletion, wtScore})
+					candidates = append(candidates, candidate{key + "\t" + wt.Path, wtScore})
 				}
 			}
-			mu.Unlock()
 		}()
 	}
 
@@ -211,13 +220,13 @@ func extractOwnerRepo(remoteURL string) string {
 	remoteURL = strings.TrimSuffix(remoteURL, ".git")
 	// SSH: git@github.com:owner/repo
 	if strings.HasPrefix(remoteURL, "git@") {
-		if idx := strings.Index(remoteURL, ":"); idx >= 0 {
-			return remoteURL[idx+1:]
+		if _, after, ok := strings.Cut(remoteURL, ":"); ok {
+			return after
 		}
 	}
 	// HTTPS: https://github.com/owner/repo
-	if idx := strings.Index(remoteURL, "github.com/"); idx >= 0 {
-		return remoteURL[idx+len("github.com/"):]
+	if _, after, ok := strings.Cut(remoteURL, "github.com/"); ok {
+		return after
 	}
 	return ""
 }
@@ -313,9 +322,9 @@ func resolveBranch(parsed *gh.ParsedURL) (string, error) {
 func runToLocal(short string) error {
 	owner, repo, branch := "", "", ""
 
-	if atIdx := strings.Index(short, "@"); atIdx >= 0 {
-		branch = short[atIdx+1:]
-		short = short[:atIdx]
+	if before, after, ok := strings.Cut(short, "@"); ok {
+		branch = after
+		short = before
 	}
 
 	parts := strings.SplitN(short, "/", 2)
