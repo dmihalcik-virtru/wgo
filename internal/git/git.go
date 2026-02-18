@@ -41,6 +41,11 @@ type Client interface {
 	FetchPRRef(repoPath string, prNumber int, localBranch string) error
 	DefaultBranch(repoPath string) (string, error)
 	BranchExists(repoPath, branch string) (bool, error)
+	RemoveWorktree(repoPath, wtPath string, force bool) error
+	DeleteBranch(repoPath, branch string, force bool) error
+	PruneWorktrees(repoPath string) error
+	ListLocalBranches(repoPath string) ([]string, error)
+	IsBranchMerged(repoPath, branch, base string) (bool, error)
 }
 
 // CLIClient is a Git client implementation using the git CLI.
@@ -387,6 +392,63 @@ func (c *CLIClient) BranchExists(repoPath, branch string) (bool, error) {
 	_, err = c.runInPath(repoPath, "rev-parse", "--verify", "refs/remotes/origin/"+branch)
 	if err == nil {
 		return true, nil
+	}
+	return false, nil
+}
+
+// RemoveWorktree removes a worktree at the given path.
+func (c *CLIClient) RemoveWorktree(repoPath, wtPath string, force bool) error {
+	args := []string{"worktree", "remove"}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, wtPath)
+	_, err := c.runInPath(repoPath, args...)
+	return err
+}
+
+// DeleteBranch deletes a local branch. Use force=true for -D (force delete).
+func (c *CLIClient) DeleteBranch(repoPath, branch string, force bool) error {
+	flag := "-d"
+	if force {
+		flag = "-D"
+	}
+	_, err := c.runInPath(repoPath, "branch", flag, branch)
+	return err
+}
+
+// PruneWorktrees runs git worktree prune to clean up stale worktree references.
+func (c *CLIClient) PruneWorktrees(repoPath string) error {
+	_, err := c.runInPath(repoPath, "worktree", "prune")
+	return err
+}
+
+// ListLocalBranches returns a list of all local branches in the repository.
+func (c *CLIClient) ListLocalBranches(repoPath string) ([]string, error) {
+	output, err := c.runInPath(repoPath, "branch", "--format=%(refname:short)")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list branches: %w", err)
+	}
+	var branches []string
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return branches, nil
+}
+
+// IsBranchMerged reports whether branch has been fully merged into base.
+func (c *CLIClient) IsBranchMerged(repoPath, branch, base string) (bool, error) {
+	output, err := c.runInPath(repoPath, "branch", "--merged", base)
+	if err != nil {
+		return false, fmt.Errorf("failed to check merged branches: %w", err)
+	}
+	for _, line := range strings.Split(output, "\n") {
+		name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "* "))
+		if name == branch {
+			return true, nil
+		}
 	}
 	return false, nil
 }

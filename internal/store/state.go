@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // State represents the persistent state for wgo.
 type State struct {
@@ -103,4 +106,15 @@ func (s *State) GetRepo(path string) *RepoInfo {
 		return &repo
 	}
 	return nil
+}
+
+// UntrackRepo removes a repository and all related annotations from state.
+func (s *State) UntrackRepo(path string) {
+	delete(s.Repos, path)
+	prefix := path + ":"
+	for key := range s.Annotations {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.Annotations, key)
+		}
+	}
 }

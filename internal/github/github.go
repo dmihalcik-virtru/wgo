@@ -2,12 +2,14 @@
 package github
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // URLType represents the type of GitHub URL.
@@ -184,4 +186,124 @@ func slugify(s string) string {
 // RepoCloneURL returns the HTTPS clone URL for a GitHub repo.
 func RepoCloneURL(owner, repo string) string {
 	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+}
+
+// PRInfo contains information about a pull request.
+type PRInfo struct {
+	Number   int        `json:"number"`
+	State    string     `json:"state"`
+	Branch   string     `json:"headRefName"`
+	MergedAt *time.Time `json:"mergedAt"`
+	ClosedAt *time.Time `json:"closedAt"`
+	URL      string     `json:"url"`
+	Title    string     `json:"title"`
+}
+
+// IsMerged reports whether the PR was merged.
+func (p *PRInfo) IsMerged() bool {
+	return strings.EqualFold(p.State, "merged") || p.MergedAt != nil
+}
+
+// IsClosed reports whether the PR was closed without merging.
+func (p *PRInfo) IsClosed() bool {
+	return strings.EqualFold(p.State, "closed") && !p.IsMerged()
+}
+
+// Client is the interface for GitHub operations needed by wgo clean.
+type Client interface {
+	GetPRStatus(repoPath, branch string) (*PRInfo, error)
+	ClosePR(repoPath string, prNumber int) error
+	DeleteRemoteBranch(repoPath, branch string) error
+	Available() bool
+}
+
+// CLIClient is a GitHub Client implementation using the gh CLI.
+type CLIClient struct{}
+
+// NewClient creates a new CLIClient.
+func NewClient() *CLIClient {
+	return &CLIClient{}
+}
+
+// Available returns true if gh is on PATH.
+func (c *CLIClient) Available() bool {
+	_, err := exec.LookPath("gh")
+	return err == nil
+}
+
+// GetPRStatus fetches PR status for a branch. Returns nil PRInfo if gh unavailable
+// or no PR exists.
+func (c *CLIClient) GetPRStatus(repoPath, branch string) (*PRInfo, error) {
+	if !c.Available() {
+		return nil, nil
+	}
+
+	cmd := exec.Command("gh", "pr", "view", branch,
+		"--json", "number,state,headRefName,mergedAt,closedAt,url,title")
+	cmd.Dir = repoPath
+
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		errStr := stderr.String()
+		if strings.Contains(errStr, "no pull requests found") ||
+			strings.Contains(errStr, "Could not find") ||
+			strings.Contains(errStr, "no open pull request") {
+			return nil, nil
+		}
+		return nil, nil // graceful degradation
+	}
+
+	var pr PRInfo
+	if err := json.Unmarshal([]byte(stdout.String()), &pr); err != nil {
+		return nil, fmt.Errorf("failed to parse pr info: %w", err)
+	}
+	return &pr, nil
+}
+
+// ClosePR closes a pull request.
+func (c *CLIClient) ClosePR(repoPath string, prNumber int) error {
+	if !c.Available() {
+		return fmt.Errorf("gh CLI not available")
+	}
+	cmd := exec.Command("gh", "pr", "close", fmt.Sprintf("%d", prNumber))
+	cmd.Dir = repoPath
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh pr close: %s", stderr.String())
+	}
+	return nil
+}
+
+// DeleteRemoteBranch deletes a remote branch via gh API.
+func (c *CLIClient) DeleteRemoteBranch(repoPath, branch string) error {
+	if !c.Available() {
+		return fmt.Errorf("gh CLI not available")
+	}
+	slug, err := c.repoSlug(repoPath)
+	if err != nil {
+		return err
+	}
+	endpoint := fmt.Sprintf("repos/%s/git/refs/heads/%s", slug, branch)
+	cmd := exec.Command("gh", "api", "-X", "DELETE", endpoint)
+	cmd.Dir = repoPath
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh api DELETE branch: %s", stderr.String())
+	}
+	return nil
+}
+
+func (c *CLIClient) repoSlug(repoPath string) (string, error) {
+	cmd := exec.Command("gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("gh repo view: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }

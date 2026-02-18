@@ -438,3 +438,128 @@ func TestLastCommitDate(t *testing.T) {
 		t.Logf("commit time seems off, diff from now: %v", diff)
 	}
 }
+
+func TestListLocalBranches(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial")
+
+	// Create an extra branch
+	cmd := exec.Command("git", "checkout", "-b", "feature-x")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create branch: %v", err)
+	}
+	// Switch back to main/master
+	exec.Command("git", "-C", tmpDir, "checkout", "-").Run()
+
+	client := New(tmpDir)
+	branches, err := client.ListLocalBranches(tmpDir)
+	if err != nil {
+		t.Fatalf("ListLocalBranches failed: %v", err)
+	}
+	if len(branches) < 2 {
+		t.Fatalf("expected at least 2 branches, got %d: %v", len(branches), branches)
+	}
+	found := false
+	for _, b := range branches {
+		if b == "feature-x" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected feature-x in branches: %v", branches)
+	}
+}
+
+func TestIsBranchMerged(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial")
+
+	// Get the default branch name
+	client := New(tmpDir)
+	defaultBranch, _ := client.CurrentBranch(tmpDir)
+
+	// Create and merge a branch
+	exec.Command("git", "-C", tmpDir, "checkout", "-b", "to-merge").Run()
+	addCommit(t, tmpDir, "on feature")
+	exec.Command("git", "-C", tmpDir, "checkout", defaultBranch).Run()
+	exec.Command("git", "-C", tmpDir, "merge", "--no-ff", "-m", "merge feature", "to-merge").Run()
+
+	// Create an unmerged branch
+	exec.Command("git", "-C", tmpDir, "checkout", "-b", "not-merged").Run()
+	addCommit(t, tmpDir, "unmerged work")
+	exec.Command("git", "-C", tmpDir, "checkout", defaultBranch).Run()
+
+	merged, err := client.IsBranchMerged(tmpDir, "to-merge", defaultBranch)
+	if err != nil {
+		t.Fatalf("IsBranchMerged failed: %v", err)
+	}
+	if !merged {
+		t.Errorf("expected to-merge to be merged into %s", defaultBranch)
+	}
+
+	unmerged, err := client.IsBranchMerged(tmpDir, "not-merged", defaultBranch)
+	if err != nil {
+		t.Fatalf("IsBranchMerged failed: %v", err)
+	}
+	if unmerged {
+		t.Errorf("expected not-merged to NOT be merged into %s", defaultBranch)
+	}
+}
+
+func TestDeleteBranch(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial")
+
+	client := New(tmpDir)
+	defaultBranch, _ := client.CurrentBranch(tmpDir)
+
+	// Create and fully merge a branch
+	exec.Command("git", "-C", tmpDir, "checkout", "-b", "deletable").Run()
+	addCommit(t, tmpDir, "branch commit")
+	exec.Command("git", "-C", tmpDir, "checkout", defaultBranch).Run()
+	exec.Command("git", "-C", tmpDir, "merge", "--no-ff", "-m", "merge", "deletable").Run()
+
+	if err := client.DeleteBranch(tmpDir, "deletable", false); err != nil {
+		t.Fatalf("DeleteBranch failed: %v", err)
+	}
+
+	branches, _ := client.ListLocalBranches(tmpDir)
+	for _, b := range branches {
+		if b == "deletable" {
+			t.Errorf("expected deletable branch to be deleted")
+		}
+	}
+}
+
+func TestRemoveWorktree(t *testing.T) {
+	tmpDir := t.TempDir()
+	wtDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial")
+
+	client := New(tmpDir)
+
+	if err := client.WorktreeAdd(tmpDir, wtDir, "wt-branch", true, ""); err != nil {
+		t.Fatalf("WorktreeAdd failed: %v", err)
+	}
+
+	wts, err := client.ListWorktrees(tmpDir)
+	if err != nil {
+		t.Fatalf("ListWorktrees failed: %v", err)
+	}
+	if len(wts) < 2 {
+		t.Fatalf("expected at least 2 worktrees, got %d", len(wts))
+	}
+
+	if err := client.RemoveWorktree(tmpDir, wtDir, false); err != nil {
+		t.Fatalf("RemoveWorktree failed: %v", err)
+	}
+
+	if err := client.PruneWorktrees(tmpDir); err != nil {
+		t.Fatalf("PruneWorktrees failed: %v", err)
+	}
+}

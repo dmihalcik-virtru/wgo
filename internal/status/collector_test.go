@@ -38,6 +38,11 @@ func (m *mockGitClient) Fetch(string) error                                     
 func (m *mockGitClient) FetchPRRef(string, int, string) error                    { return nil }
 func (m *mockGitClient) DefaultBranch(string) (string, error)                    { return "main", nil }
 func (m *mockGitClient) BranchExists(string, string) (bool, error)              { return false, nil }
+func (m *mockGitClient) RemoveWorktree(string, string, bool) error              { return nil }
+func (m *mockGitClient) DeleteBranch(string, string, bool) error                { return nil }
+func (m *mockGitClient) PruneWorktrees(string) error                            { return nil }
+func (m *mockGitClient) ListLocalBranches(string) ([]string, error)             { return nil, nil }
+func (m *mockGitClient) IsBranchMerged(string, string, string) (bool, error)   { return false, nil }
 func (m *mockGitClient) ListWorktrees(repoPath string) ([]git.WorktreeInfo, error) {
 	if m.worktrees != nil {
 		if wts, ok := m.worktrees[repoPath]; ok {
