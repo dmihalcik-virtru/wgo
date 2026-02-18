@@ -135,7 +135,7 @@ func addAnnotation(reason string) error {
 		fmt.Fprintf(os.Stderr, "warning: failed to create ~/.plan symlink: %v\n", err)
 	}
 
-	fmt.Printf("Added annotation: %s:%s — %s\n", repoName, branch, reason)
+	fmt.Fprintf(os.Stderr, "Added annotation: %s:%s — %s\n", repoName, branch, reason)
 	return nil
 }
 

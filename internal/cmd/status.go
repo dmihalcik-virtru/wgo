@@ -30,6 +30,7 @@ var (
 	statusGo       int
 	statusOpen     int
 	statusStale    int
+	statusExitCode bool
 )
 
 var statusCmd = &cobra.Command{
@@ -68,6 +69,7 @@ func init() {
 	statusCmd.Flags().IntVar(&statusGo, "go", 0, "Print path of row N (for cd integration)")
 	statusCmd.Flags().IntVar(&statusOpen, "open", 0, "Open row N's PR in browser, or path in Finder")
 	statusCmd.Flags().IntVar(&statusStale, "stale-days", 0, "Days of inactivity before marking stale (default from config)")
+	statusCmd.Flags().BoolVar(&statusExitCode, "exit-code", false, "Exit 1 if any dirty repos are found")
 }
 
 func runStatus() error {
@@ -120,7 +122,7 @@ func runStatus() error {
 	}
 
 	if len(repos) == 0 {
-		fmt.Println("No repositories discovered. Check your config: ~/.wgo/config.toml")
+		fmt.Fprintln(os.Stderr, "No repositories discovered. Check your config: ~/.wgo/config.toml")
 		return nil
 	}
 
@@ -169,15 +171,38 @@ func runStatus() error {
 		return handleOpen(activities, statusOpen)
 	}
 
-	// Render
-	if statusJSON {
-		return status.RenderJSON(os.Stdout, activities)
-	}
-	if statusCSV {
-		return status.RenderCSV(os.Stdout, activities, statusVerbose)
+	// Check for dirty repos (for --exit-code)
+	hasDirty := false
+	if statusExitCode {
+		for _, a := range activities {
+			if a.State != models.StateClean && a.State != models.StateStale {
+				hasDirty = true
+				break
+			}
+		}
 	}
 
-	status.RenderTable(os.Stdout, activities, statusVerbose)
+	// Render
+	var renderErr error
+	if statusJSON {
+		renderErr = status.RenderJSON(os.Stdout, activities)
+	} else if statusCSV {
+		renderErr = status.RenderCSV(os.Stdout, activities, statusVerbose)
+	} else if !isTerminal() && statusGo == 0 && statusOpen == 0 {
+		// Pipe-aware: print one path per line when stdout is not a terminal.
+		for _, a := range activities {
+			fmt.Println(a.Path)
+		}
+	} else {
+		status.RenderTable(os.Stdout, activities, statusVerbose)
+	}
+
+	if renderErr != nil {
+		return renderErr
+	}
+	if hasDirty {
+		os.Exit(1)
+	}
 	return nil
 }
 

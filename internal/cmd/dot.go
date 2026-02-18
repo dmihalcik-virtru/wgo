@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +12,12 @@ import (
 	"github.com/virtru/wgo/models"
 )
 
+var (
+	dotJSON      bool
+	dotPorcelain bool
+	dotExitCode  bool
+)
+
 // dotCmd represents the `wgo .` command.
 var dotCmd = &cobra.Command{
 	Use:   ".",
@@ -18,8 +25,12 @@ var dotCmd = &cobra.Command{
 	Long: `Shows the current branch, status, remote tracking, and last commit
 for the repository in the current directory.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if err := showContext(); err != nil {
+		dirty, err := showContext()
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if dotExitCode && dirty {
 			os.Exit(1)
 		}
 	},
@@ -27,53 +38,53 @@ for the repository in the current directory.`,
 
 func init() {
 	rootCmd.AddCommand(dotCmd)
+	dotCmd.Flags().BoolVar(&dotJSON, "json", false, "JSON output")
+	dotCmd.Flags().BoolVar(&dotPorcelain, "porcelain", false, "Print only the status word (clean, modified, staged, conflict)")
+	dotCmd.Flags().BoolVar(&dotExitCode, "exit-code", false, "Exit 1 if working tree is dirty")
 }
 
-func showContext() error {
+// showContext prints the current repo context. Returns (dirty, error).
+func showContext() (bool, error) {
 	client, err := git.NewFromCwd()
 	if err != nil {
-		return fmt.Errorf("failed to create git client: %w", err)
+		return false, fmt.Errorf("failed to create git client: %w", err)
 	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("failed to get current directory: %w", err)
+		return false, fmt.Errorf("failed to get current directory: %w", err)
 	}
 
-	// Check if we're in a git repo
 	isRepo, err := client.IsRepo(cwd)
 	if err != nil {
-		return fmt.Errorf("failed to check if directory is a git repository: %w", err)
+		return false, fmt.Errorf("failed to check if directory is a git repository: %w", err)
 	}
-
 	if !isRepo {
-		return fmt.Errorf("not a git repository")
+		return false, fmt.Errorf("not a git repository")
 	}
 
-	// Get repo information
 	repoName, err := client.RepoName(cwd)
 	if err != nil {
-		return fmt.Errorf("failed to get repository name: %w", err)
+		return false, fmt.Errorf("failed to get repository name: %w", err)
 	}
 
 	branch, err := client.CurrentBranch(cwd)
 	if err != nil {
-		return fmt.Errorf("failed to get current branch: %w", err)
+		return false, fmt.Errorf("failed to get current branch: %w", err)
 	}
 
 	status, err := client.Status(cwd)
 	if err != nil {
-		return fmt.Errorf("failed to get git status: %w", err)
+		return false, fmt.Errorf("failed to get git status: %w", err)
 	}
 
 	commit, err := client.LastCommit(cwd)
 	if err != nil {
-		return fmt.Errorf("failed to get last commit: %w", err)
+		return false, fmt.Errorf("failed to get last commit: %w", err)
 	}
 
 	ahead, behind, err := client.AheadBehind(cwd, branch)
 	if err != nil {
-		// Log but don't fail - ahead/behind is optional
 		ahead, behind = 0, 0
 	}
 
@@ -82,7 +93,35 @@ func showContext() error {
 		remoteURL = "(no remote)"
 	}
 
-	// Format output
+	dirty := isDirty(status)
+	statusWord := statusWord(status)
+
+	if dotPorcelain {
+		fmt.Println(statusWord)
+		return dirty, nil
+	}
+
+	if dotJSON {
+		out := map[string]interface{}{
+			"repo":   repoName,
+			"branch": branch,
+			"status": statusWord,
+			"dirty":  dirty,
+			"ahead":  ahead,
+			"behind": behind,
+			"remote": remoteURL,
+			"commit": map[string]interface{}{
+				"hash":    truncateHash(commit.Hash),
+				"message": commit.Message,
+				"author":  commit.Author,
+				"date":    commit.Date.Format(time.RFC3339),
+			},
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return dirty, enc.Encode(out)
+	}
+
 	fmt.Printf("repo:   %s\n", repoName)
 	fmt.Printf("branch: %s\n", branch)
 	fmt.Printf("status: %s\n", formatStatus(status))
@@ -92,7 +131,25 @@ func showContext() error {
 		commit.Message,
 		formatTime(commit.Date))
 
-	return nil
+	return dirty, nil
+}
+
+func isDirty(status models.GitStatus) bool {
+	return status.Modified > 0 || status.Added > 0 || status.Deleted > 0 ||
+		status.Staged > 0 || status.Untracked > 0 || status.Conflicts > 0
+}
+
+func statusWord(status models.GitStatus) string {
+	if status.Conflicts > 0 {
+		return "conflict"
+	}
+	if status.Staged > 0 {
+		return "staged"
+	}
+	if status.Modified > 0 || status.Added > 0 || status.Deleted > 0 || status.Untracked > 0 {
+		return "modified"
+	}
+	return "clean"
 }
 
 func formatStatus(status models.GitStatus) string {
@@ -136,15 +193,10 @@ func formatRemote(ahead, behind int, url string) string {
 		arrows = "↑0 ↓0"
 	}
 
-	// Extract repo name from URL for display
 	repoDisplay := url
 	if !strings.HasPrefix(url, "(no remote)") {
-		// Extract just the repo identifier
 		if idx := strings.LastIndex(url, "/"); idx != -1 {
-			repoDisplay = url[idx+1:]
-			if strings.HasSuffix(repoDisplay, ".git") {
-				repoDisplay = repoDisplay[:len(repoDisplay)-4]
-			}
+			repoDisplay = strings.TrimSuffix(url[idx+1:], ".git")
 		}
 	}
 

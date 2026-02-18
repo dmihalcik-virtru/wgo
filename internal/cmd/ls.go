@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -14,36 +15,64 @@ import (
 	"github.com/virtru/wgo/models"
 )
 
+var lsFormat string
+
 // lsCmd represents the `wgo ls` command.
 var lsCmd = &cobra.Command{
 	Use:   "ls",
 	Short: "List all tracked and discovered repositories",
-	Long:  `List all repositories across configured discovery directories with their current branch and status.`,
+	Long: `List all repositories across configured discovery directories with their current branch and status.
+
+When stdout is not a terminal (e.g. in a pipe), prints one path per line by default.
+Use --format to override: table, path, or json.
+
+Examples:
+  wgo ls                          # table when a TTY, paths when piped
+  wgo ls --format=table           # always table
+  wgo ls --format=path            # one path per line
+  wgo ls --format=json            # JSON array
+  wgo ls | fzf | xargs -I{} git -C {} pull`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return listRepos()
+		return listRepos(cmd)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(lsCmd)
+	lsCmd.Flags().StringVar(&lsFormat, "format", "", "Output format: table, path, json (default: table when TTY, path when piped)")
 }
 
-func listRepos() error {
-	// Initialize config
+func listRepos(cmd *cobra.Command) error {
 	if err := config.Init(); err != nil {
 		return fmt.Errorf("failed to initialize config: %w", err)
 	}
 
 	cfg := config.Get()
 
-	// Discover repos
 	d := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
 	repos, err := d.DiscoverAll()
 	if err != nil {
 		return fmt.Errorf("failed to discover repositories: %w", err)
 	}
 
-	// Load plan and state
+	// Determine format
+	format := lsFormat
+	if format == "" {
+		if isTerminal() {
+			format = "table"
+		} else {
+			format = "path"
+		}
+	}
+
+	if format == "path" {
+		for _, repo := range repos {
+			fmt.Println(repo.Path)
+		}
+		return nil
+	}
+
+	// For table and json we need branch/status/annotations
 	s, err := store.New()
 	if err != nil {
 		return fmt.Errorf("failed to create store: %w", err)
@@ -51,14 +80,17 @@ func listRepos() error {
 
 	planContent, _ := s.LoadPlan()
 	p, _ := plan.Parse(planContent)
-
 	state, _ := s.LoadState()
 
-	// Print header
-	fmt.Printf("%-20s %-20s %-32s %-15s\n", "REPO", "BRANCH", "WHY", "STATUS")
-	fmt.Println(strings.Repeat("-", 87))
+	type row struct {
+		Path   string `json:"path"`
+		Repo   string `json:"repo"`
+		Branch string `json:"branch"`
+		Why    string `json:"why"`
+		Status string `json:"status"`
+	}
 
-	// Print repos
+	rows := make([]row, 0, len(repos))
 	for _, repo := range repos {
 		gitClient := git.New(repo.Path)
 
@@ -67,9 +99,9 @@ func listRepos() error {
 			branch = "?"
 		}
 
-		status, err := gitClient.Status(repo.Path)
+		gitStatus, err := gitClient.Status(repo.Path)
 		if err != nil {
-			status.Modified = -1
+			gitStatus.Modified = -1
 		}
 
 		repoName := repo.Name
@@ -77,7 +109,6 @@ func listRepos() error {
 			repoName = trimHome(repoName)
 		}
 
-		// Get annotation if available
 		why := "—"
 		if p != nil && p.GetBranch(repoName, branch) != nil {
 			why = p.GetBranch(repoName, branch).Reason
@@ -88,16 +119,31 @@ func listRepos() error {
 			}
 		}
 
-		// Limit why to 32 chars
+		rows = append(rows, row{
+			Path:   repo.Path,
+			Repo:   repoName,
+			Branch: branch,
+			Why:    why,
+			Status: formatStatusShort(gitStatus),
+		})
+	}
+
+	if format == "json" {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rows)
+	}
+
+	// table
+	fmt.Printf("%-20s %-20s %-32s %-15s\n", "REPO", "BRANCH", "WHY", "STATUS")
+	fmt.Println(strings.Repeat("-", 87))
+	for _, r := range rows {
+		why := r.Why
 		if len(why) > 32 {
 			why = why[:29] + "..."
 		}
-
-		statusStr := formatStatusShort(status)
-
-		fmt.Printf("%-20s %-20s %-32s %-15s\n", repoName, branch, why, statusStr)
+		fmt.Printf("%-20s %-20s %-32s %-15s\n", r.Repo, r.Branch, why, r.Status)
 	}
-
 	return nil
 }
 

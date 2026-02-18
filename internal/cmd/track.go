@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -74,6 +75,6 @@ func trackRepository(path string) error {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
 
-	fmt.Printf("Tracked: %s (%s)\n", repoName, absPath)
+	fmt.Fprintf(os.Stderr, "Tracked: %s (%s)\n", repoName, absPath)
 	return nil
 }

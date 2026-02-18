@@ -38,10 +38,10 @@ Existing hooks (both global and per-repo) are chained and will still fire.`,
 			return fmt.Errorf("install failed: %w", err)
 		}
 
-		fmt.Println("Git hooks installed.")
-		fmt.Printf("  hooks dir: %s/hooks/\n", wgoDir)
-		fmt.Println("  Chaining to any previous hooks.")
-		fmt.Println("  Run 'wgo hooks status' to verify.")
+		fmt.Fprintln(os.Stderr, "Git hooks installed.")
+		fmt.Fprintf(os.Stderr, "  hooks dir: %s/hooks/\n", wgoDir)
+		fmt.Fprintln(os.Stderr, "  Chaining to any previous hooks.")
+		fmt.Fprintln(os.Stderr, "  Run 'wgo hooks status' to verify.")
 		return nil
 	},
 }
@@ -66,8 +66,8 @@ var hooksUninstallCmd = &cobra.Command{
 			return fmt.Errorf("uninstall failed: %w", err)
 		}
 
-		fmt.Println("Git hooks uninstalled.")
-		fmt.Println("  Previous core.hooksPath restored.")
+		fmt.Fprintln(os.Stderr, "Git hooks uninstalled.")
+		fmt.Fprintln(os.Stderr, "  Previous core.hooksPath restored.")
 		return nil
 	},
 }
