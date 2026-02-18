@@ -164,6 +164,37 @@ cd $(wgo to https://github.com/virtru/platform/pull/123)
 
 Requires the [GitHub CLI](https://cli.github.com/) (`gh`) for PR and issue lookups.
 
+### Shell Completion
+
+`wgo` supports tab completion for all commands via the built-in `completion` subcommand.
+
+#### Zsh
+
+```zsh
+# Add to ~/.zshrc
+eval "$(wgo completion zsh)"
+```
+
+Or install to a file (faster shell startup):
+
+```zsh
+wgo completion zsh > "${fpath[1]}/_wgo"
+```
+
+#### Bash
+
+```bash
+# Add to ~/.bashrc or ~/.bash_profile
+eval "$(wgo completion bash)"
+```
+
+#### Fish
+
+```fish
+# Run once to persist:
+wgo completion fish > ~/.config/fish/completions/wgo.fish
+```
+
 ### Shell Alias
 
 For a faster workflow, add a `wto` function to your shell config (`~/.zshrc` or `~/.bashrc`):
