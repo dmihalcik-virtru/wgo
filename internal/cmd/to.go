@@ -2,10 +2,14 @@ package cmd
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
@@ -15,16 +19,21 @@ import (
 )
 
 var toCmd = &cobra.Command{
-	Use:   "to <github-url>",
+	Use:   "to <github-url|owner/repo[@branch]>",
 	Short: "Jump to a local checkout of a GitHub PR, branch, or issue",
-	Long: `Given a GitHub URL, resolves it to a local worktree path.
+	Long: `Given a GitHub URL or short owner/repo form, resolves it to a local worktree path.
 
-Supports PR URLs, branch URLs, and issue URLs. If no local checkout
-exists, clones the repo and creates a worktree automatically.
+Supports PR URLs, branch URLs, and issue URLs. Also accepts short forms:
+  owner/repo          → local checkout of that repo
+  owner/repo@branch   → specific branch/worktree
+
+If no local checkout exists, clones the repo and creates a worktree automatically.
 
 Output goes to stdout so you can use it with cd:
-  cd $(wgo to https://github.com/owner/repo/pull/42)`,
-	Args: cobra.ExactArgs(1),
+  cd $(wgo to https://github.com/owner/repo/pull/42)
+  cd $(wgo to owner/repo@my-branch)`,
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: toCompletions,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runTo(args[0])
 	},
@@ -40,7 +49,185 @@ func logTo(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
+// isGitHubURL reports whether the argument looks like a full URL.
+func isGitHubURL(s string) bool {
+	return strings.Contains(s, "://") || strings.HasPrefix(s, "git@")
+}
+
+// toCompletions provides shell completions for `wgo to`.
+// It discovers all local repos, extracts owner/repo from remotes, and returns
+// completions sorted by recency (most recently committed first).
+func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	if err := config.Init(); err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	cfg := config.Get()
+
+	disc := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	repos, err := disc.DiscoverAll()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	gitClient := git.New("")
+
+	type candidate struct {
+		completion string
+		score      float64
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var candidates []candidate
+
+	now := time.Now()
+
+	for _, r := range repos {
+		r := r
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			remoteURLs, err := gitClient.RemoteURLs(r.Path)
+			if err != nil || len(remoteURLs) == 0 {
+				return
+			}
+
+			// Extract owner/repo from remote URL
+			ownerRepo := extractOwnerRepo(remoteURLs[0])
+			if ownerRepo == "" {
+				return
+			}
+
+			// Apply prefix filter
+			if toComplete != "" {
+				if atIdx := strings.Index(toComplete, "@"); atIdx >= 0 {
+					// Filter by owner/repo prefix + branch prefix
+					repoPrefix := toComplete[:atIdx]
+					branchPrefix := toComplete[atIdx+1:]
+					if !strings.HasPrefix(ownerRepo, repoPrefix) {
+						return
+					}
+					// Will add branch-specific candidates below
+					_ = branchPrefix
+				} else {
+					if !strings.HasPrefix(ownerRepo, toComplete) {
+						return
+					}
+				}
+			}
+
+			// Score by last commit recency
+			var score float64
+			commit, err := gitClient.LastCommit(r.Path)
+			if err == nil {
+				age := now.Sub(commit.Date)
+				ageDays := age.Hours() / 24
+				switch {
+				case ageDays < 1:
+					score += 30
+				case ageDays < 7:
+					score += 15
+				case ageDays < 30:
+					score += 5
+				}
+			}
+
+			// Bonus for uncommitted changes
+			status, err := gitClient.Status(r.Path)
+			if err == nil && (status.Modified > 0 || status.Staged > 0 || status.Untracked > 0) {
+				score += 40
+			}
+
+			// Base completion: owner/repo
+			branch, _ := gitClient.CurrentBranch(r.Path)
+			desc := r.Path
+			if branch != "" {
+				desc = fmt.Sprintf("%s (%s)", r.Path, branch)
+			}
+			baseCompletion := ownerRepo + "\t" + desc
+
+			mu.Lock()
+			candidates = append(candidates, candidate{baseCompletion, score})
+
+			// Also add worktree-specific completions for non-main branches
+			worktrees, wtErr := gitClient.ListWorktrees(r.Path)
+			if wtErr == nil {
+				for _, wt := range worktrees {
+					if wt.Branch == "" || wt.IsMain {
+						continue
+					}
+					wtCompletion := ownerRepo + "@" + wt.Branch + "\t" + wt.Path
+
+					// Apply branch prefix filter if present
+					if atIdx := strings.Index(toComplete, "@"); atIdx >= 0 {
+						branchPrefix := toComplete[atIdx+1:]
+						if !strings.HasPrefix(wt.Branch, branchPrefix) {
+							continue
+						}
+					}
+
+					// Worktree score: slightly decay non-main by recency
+					wtScore := score * math.Exp(-0.1)
+					wtCommit, err := gitClient.LastCommit(wt.Path)
+					if err == nil {
+						ageDays := now.Sub(wtCommit.Date).Hours() / 24
+						switch {
+						case ageDays < 1:
+							wtScore = 30
+						case ageDays < 7:
+							wtScore = 15
+						case ageDays < 30:
+							wtScore = 5
+						}
+					}
+					candidates = append(candidates, candidate{wtCompletion, wtScore})
+				}
+			}
+			mu.Unlock()
+		}()
+	}
+
+	wg.Wait()
+
+	// Sort by score descending
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	completions := make([]string, len(candidates))
+	for i, c := range candidates {
+		completions[i] = c.completion
+	}
+	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
+// extractOwnerRepo extracts "owner/repo" from a GitHub remote URL.
+func extractOwnerRepo(remoteURL string) string {
+	remoteURL = strings.TrimSuffix(remoteURL, ".git")
+	// SSH: git@github.com:owner/repo
+	if strings.HasPrefix(remoteURL, "git@") {
+		if idx := strings.Index(remoteURL, ":"); idx >= 0 {
+			return remoteURL[idx+1:]
+		}
+	}
+	// HTTPS: https://github.com/owner/repo
+	if idx := strings.Index(remoteURL, "github.com/"); idx >= 0 {
+		return remoteURL[idx+len("github.com/"):]
+	}
+	return ""
+}
+
 func runTo(rawURL string) error {
+	// Short-form: owner/repo or owner/repo@branch
+	if !isGitHubURL(rawURL) {
+		return runToLocal(rawURL)
+	}
+
 	// 1. Parse URL
 	parsed, err := gh.ParseGitHubURL(rawURL)
 	if err != nil {
@@ -120,6 +307,58 @@ func resolveBranch(parsed *gh.ParsedURL) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported URL type")
 	}
+}
+
+// runToLocal handles short-form args like "owner/repo" or "owner/repo@branch".
+func runToLocal(short string) error {
+	owner, repo, branch := "", "", ""
+
+	if atIdx := strings.Index(short, "@"); atIdx >= 0 {
+		branch = short[atIdx+1:]
+		short = short[:atIdx]
+	}
+
+	parts := strings.SplitN(short, "/", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid short form %q: expected owner/repo[@branch]", short)
+	}
+	owner, repo = parts[0], parts[1]
+
+	if err := config.Init(); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	cfg := config.Get()
+	gitClient := git.New("")
+
+	if branch != "" {
+		existing, err := findExistingCheckout(gitClient, cfg, owner, repo, branch)
+		if err == nil && existing != "" {
+			logTo("found existing checkout")
+			fmt.Println(existing)
+			return nil
+		}
+		// Fall back to constructing a GitHub URL
+		rawURL := fmt.Sprintf("https://github.com/%s/%s/tree/%s", owner, repo, branch)
+		return runTo(rawURL)
+	}
+
+	// No branch: find any checkout of owner/repo
+	disc := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	repos, err := disc.DiscoverAll()
+	if err != nil {
+		return fmt.Errorf("discovery: %w", err)
+	}
+	for _, r := range repos {
+		if matchesRemote(gitClient, r.Path, owner, repo) {
+			logTo("found existing checkout")
+			fmt.Println(r.Path)
+			return nil
+		}
+	}
+
+	// Not found locally; clone it
+	rawURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+	return runTo(rawURL)
 }
 
 // findExistingCheckout searches discovered repos for one that matches the

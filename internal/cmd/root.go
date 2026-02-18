@@ -35,7 +35,7 @@ func Execute() {
 
 func init() {
 	rootCmd.CompletionOptions.DisableDefaultCmd = false
-	rootCmd.CompletionOptions.HiddenDefaultCmd = true
+	rootCmd.CompletionOptions.HiddenDefaultCmd = false
 }
 
 // getVersionString returns a formatted version string using build info.

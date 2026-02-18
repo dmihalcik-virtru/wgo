@@ -168,11 +168,17 @@ Requires the [GitHub CLI](https://cli.github.com/) (`gh`) for PR and issue looku
 
 For a faster workflow, add a `wto` function to your shell config (`~/.zshrc` or `~/.bashrc`):
 
-```bash
+```zsh
 # wto — cd into a GitHub URL's local worktree
 wto() {
   local dir
   dir=$(wgo to "$@") && cd "$dir"
+}
+
+# Tab completion for wto (delegates to wgo to)
+compdef _wgo_to wto
+_wgo_to() {
+  compadd ${(f)"$(wgo __complete to -- "${words[2,-1]}" 2>/dev/null | grep -v '^:')"}
 }
 ```
 
