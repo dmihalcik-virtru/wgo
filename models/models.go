@@ -61,6 +61,9 @@ type RepoActivity struct {
 	DiffStat      DiffStat   `json:"diff_stat"`
 	LastActivity  time.Time  `json:"last_activity"`
 	Annotation    string     `json:"annotation,omitempty"`
+	RemoteURL     string     `json:"remote_url,omitempty"`
+	RepoURL       string     `json:"repo_url,omitempty"`
+	BranchURL     string     `json:"branch_url,omitempty"`
 	IsCurrent     bool       `json:"is_current"`
 	IsWorktree    bool       `json:"is_worktree,omitempty"`
 	MainRepoName  string     `json:"main_repo_name,omitempty"`

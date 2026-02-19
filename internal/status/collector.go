@@ -10,6 +10,7 @@ import (
 
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
@@ -193,6 +194,14 @@ func (c *Collector) collectOne(ctx context.Context, repo discovery.DiscoveredRep
 		return activity
 	}
 	activity.Branch = branch
+
+	// Remote URL and GitHub links
+	remoteURL, err := c.gitClient.RemoteURL(repo.Path)
+	if err == nil {
+		activity.RemoteURL = remoteURL
+		activity.RepoURL = links.RepoURL(remoteURL)
+		activity.BranchURL = links.BranchURL(remoteURL, branch)
+	}
 
 	// Status
 	status, err := c.gitClient.Status(repo.Path)

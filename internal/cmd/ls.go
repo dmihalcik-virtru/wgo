@@ -10,6 +10,7 @@ import (
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
@@ -83,11 +84,13 @@ func listRepos(cmd *cobra.Command) error {
 	state, _ := s.LoadState()
 
 	type row struct {
-		Path   string `json:"path"`
-		Repo   string `json:"repo"`
-		Branch string `json:"branch"`
-		Why    string `json:"why"`
-		Status string `json:"status"`
+		Path      string `json:"path"`
+		Repo      string `json:"repo"`
+		Branch    string `json:"branch"`
+		Why       string `json:"why"`
+		Status    string `json:"status"`
+		RepoURL   string `json:"repo_url,omitempty"`
+		BranchURL string `json:"branch_url,omitempty"`
 	}
 
 	rows := make([]row, 0, len(repos))
@@ -119,12 +122,15 @@ func listRepos(cmd *cobra.Command) error {
 			}
 		}
 
+		remoteURL, _ := gitClient.RemoteURL(repo.Path)
 		rows = append(rows, row{
-			Path:   repo.Path,
-			Repo:   repoName,
-			Branch: branch,
-			Why:    why,
-			Status: formatStatusShort(gitStatus),
+			Path:      repo.Path,
+			Repo:      repoName,
+			Branch:    branch,
+			Why:       why,
+			Status:    formatStatusShort(gitStatus),
+			RepoURL:   links.RepoURL(remoteURL),
+			BranchURL: links.BranchURL(remoteURL, branch),
 		})
 	}
 
@@ -135,6 +141,7 @@ func listRepos(cmd *cobra.Command) error {
 	}
 
 	// table
+	tty := isTerminal()
 	fmt.Printf("%-20s %-20s %-32s %-15s\n", "REPO", "BRANCH", "WHY", "STATUS")
 	fmt.Println(strings.Repeat("-", 87))
 	for _, r := range rows {
@@ -142,7 +149,9 @@ func listRepos(cmd *cobra.Command) error {
 		if len(why) > 32 {
 			why = why[:29] + "..."
 		}
-		fmt.Printf("%-20s %-20s %-32s %-15s\n", r.Repo, r.Branch, why, r.Status)
+		repoDisplay := links.Link(r.RepoURL, r.Repo, tty)
+		branchDisplay := links.Link(r.BranchURL, r.Branch, tty)
+		fmt.Printf("%-20s %-20s %-32s %-15s\n", repoDisplay, branchDisplay, why, r.Status)
 	}
 	return nil
 }

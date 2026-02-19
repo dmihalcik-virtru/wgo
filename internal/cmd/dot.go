@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/models"
 )
 
@@ -101,20 +102,27 @@ func showContext() (bool, error) {
 		return dirty, nil
 	}
 
+	repoLink := links.RepoURL(remoteURL)
+	branchLink := links.BranchURL(remoteURL, branch)
+	commitLink := links.CommitURL(remoteURL, commit.Hash)
+
 	if dotJSON {
 		out := map[string]interface{}{
-			"repo":   repoName,
-			"branch": branch,
-			"status": statusWord,
-			"dirty":  dirty,
-			"ahead":  ahead,
-			"behind": behind,
-			"remote": remoteURL,
+			"repo":       repoName,
+			"branch":     branch,
+			"status":     statusWord,
+			"dirty":      dirty,
+			"ahead":      ahead,
+			"behind":     behind,
+			"remote":     remoteURL,
+			"repo_url":   repoLink,
+			"branch_url": branchLink,
 			"commit": map[string]interface{}{
 				"hash":    truncateHash(commit.Hash),
 				"message": commit.Message,
 				"author":  commit.Author,
 				"date":    commit.Date.Format(time.RFC3339),
+				"url":     commitLink,
 			},
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -122,12 +130,13 @@ func showContext() (bool, error) {
 		return dirty, enc.Encode(out)
 	}
 
-	fmt.Printf("repo:   %s\n", repoName)
-	fmt.Printf("branch: %s\n", branch)
+	tty := isTerminal()
+	fmt.Printf("repo:   %s\n", links.Link(repoLink, repoName, tty))
+	fmt.Printf("branch: %s\n", links.Link(branchLink, branch, tty))
 	fmt.Printf("status: %s\n", formatStatus(status))
 	fmt.Printf("remote: %s\n", formatRemote(ahead, behind, remoteURL))
 	fmt.Printf("commit: %s %s (%s)\n",
-		truncateHash(commit.Hash),
+		links.Link(commitLink, truncateHash(commit.Hash), tty),
 		commit.Message,
 		formatTime(commit.Date))
 

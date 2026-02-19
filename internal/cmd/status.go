@@ -194,7 +194,7 @@ func runStatus() error {
 			fmt.Println(a.Path)
 		}
 	} else {
-		status.RenderTable(os.Stdout, activities, statusVerbose)
+		status.RenderTable(os.Stdout, activities, statusVerbose, true)
 	}
 
 	if renderErr != nil {
@@ -237,7 +237,7 @@ func renderWatch(ctx context.Context, collector *status.Collector, repos []disco
 	activities = status.GroupWorktrees(activities)
 
 	status.RenderWatchHeader(os.Stdout, activities, statusSince, sortBy)
-	status.RenderTable(os.Stdout, activities, statusVerbose)
+	status.RenderTable(os.Stdout, activities, statusVerbose, true)
 
 	fmt.Println("\n[Press Ctrl+C to exit]")
 }

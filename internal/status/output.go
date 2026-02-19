@@ -8,11 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/models"
 )
 
 // RenderTable writes activities as a formatted table.
-func RenderTable(w io.Writer, activities []models.RepoActivity, verbose bool) {
+// When tty is true, repo and branch names are rendered as clickable OSC8 hyperlinks.
+func RenderTable(w io.Writer, activities []models.RepoActivity, verbose bool, tty ...bool) {
+	isTTY := len(tty) > 0 && tty[0]
 	if verbose {
 		fmt.Fprintf(w, "  %-3s %-18s %-20s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
 			"#", "REPO", "BRANCH", "STATUS", "CHANGES", "COMMITS", "LINES", "ACTIVITY", "WHY", "PATH")
@@ -28,7 +31,8 @@ func RenderTable(w io.Writer, activities []models.RepoActivity, verbose bool) {
 		} else {
 			name = truncate(a.Name, 18)
 		}
-		branch := truncate(a.Branch, 20)
+		name = links.Link(a.RepoURL, name, isTTY)
+		branch := links.Link(a.BranchURL, truncate(a.Branch, 20), isTTY)
 		state := string(a.State)
 		changes := formatChanges(a.Status)
 		commits := fmt.Sprintf("%d", a.RecentCommits)
