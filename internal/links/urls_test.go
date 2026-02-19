@@ -63,7 +63,7 @@ func TestNonGitHub(t *testing.T) {
 
 func TestHyperlink(t *testing.T) {
 	got := Hyperlink("https://example.com", "click")
-	want := "\033]8;;https://example.com\033\\click\033]8;;\033\\"
+	want := "\033]8;;https://example.com\033\\\033[4mclick\033[24m\033]8;;\033\\"
 	if got != want {
 		t.Errorf("Hyperlink = %q, want %q", got, want)
 	}

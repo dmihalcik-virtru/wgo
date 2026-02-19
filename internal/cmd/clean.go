@@ -7,11 +7,14 @@ import (
 	"os"
 	"strings"
 
+	"regexp"
+
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/cleanup"
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/store"
 )
 
@@ -114,8 +117,23 @@ func runClean(cmd *cobra.Command, args []string) error {
 		}
 
 		if !cleanYes {
+			promptPath := c.DisplayPath()
+			promptReason := c.Reason
+			if isTerminal() {
+				remoteURL := getRemoteURL(gitClient, c.RepoPath)
+				if c.Branch != "" {
+					if branchURL := links.BranchURL(remoteURL, c.Branch); branchURL != "" {
+						promptPath = strings.Replace(promptPath, c.Branch, links.Hyperlink(branchURL, c.Branch), 1)
+					}
+				}
+				if c.PRInfo != nil && c.PRInfo.URL != "" {
+					promptReason = prNumberRe.ReplaceAllStringFunc(promptReason, func(match string) string {
+						return links.Hyperlink(c.PRInfo.URL, match)
+					})
+				}
+			}
 			fmt.Printf("\n[%d/%d] Remove %s %s (%s)? [y/N/a(ll)/q(uit)]: ",
-				i+1, len(candidates), c.Kind, c.DisplayPath(), c.Reason)
+				i+1, len(candidates), c.Kind, promptPath, promptReason)
 			if !scanner.Scan() {
 				break
 			}
@@ -159,19 +177,55 @@ func runClean(cmd *cobra.Command, args []string) error {
 // KindRepo is re-exported from cleanup for use inside this file.
 const KindRepo = cleanup.KindRepo
 
+// remoteURLCache caches remote URLs by repo path to avoid repeated git calls.
+var remoteURLCache = map[string]string{}
+
+func getRemoteURL(gitClient git.Client, repoPath string) string {
+	if u, ok := remoteURLCache[repoPath]; ok {
+		return u
+	}
+	u, err := gitClient.RemoteURL(repoPath)
+	if err != nil {
+		u = ""
+	}
+	remoteURLCache[repoPath] = u
+	return u
+}
+
+var prNumberRe = regexp.MustCompile(`PR #(\d+)`)
+
 func printCandidateTable(candidates []Candidate) {
+	tty := isTerminal()
+	gitClient := git.New("")
+
 	fmt.Printf("\n%-12s %-40s %s\n", "KIND", "LOCATION", "REASON")
 	fmt.Println(strings.Repeat("-", 80))
 	for _, c := range candidates {
 		path := c.DisplayPath()
-		if len(path) > 40 {
-			path = "..." + path[len(path)-37:]
+
+		// Link branch name in display path
+		if tty && c.Branch != "" {
+			remoteURL := getRemoteURL(gitClient, c.RepoPath)
+			branchURL := links.BranchURL(remoteURL, c.Branch)
+			if branchURL != "" {
+				linked := links.Hyperlink(branchURL, c.Branch)
+				path = strings.Replace(path, c.Branch, linked, 1)
+			}
 		}
+
+		// Link PR numbers in reason text
+		reason := c.Reason
+		if tty && c.PRInfo != nil && c.PRInfo.URL != "" {
+			reason = prNumberRe.ReplaceAllStringFunc(reason, func(match string) string {
+				return links.Hyperlink(c.PRInfo.URL, match)
+			})
+		}
+
 		dirtyMarker := ""
 		if c.IsDirty {
 			dirtyMarker = " [dirty]"
 		}
-		fmt.Printf("%-12s %-40s %s%s\n", c.Kind, path, c.Reason, dirtyMarker)
+		fmt.Printf("%-12s %-40s %s%s\n", c.Kind, path, reason, dirtyMarker)
 	}
 }
 
