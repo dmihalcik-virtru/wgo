@@ -2,9 +2,9 @@ package links
 
 import "fmt"
 
-// Hyperlink wraps text in an OSC8 terminal hyperlink escape sequence.
+// Hyperlink wraps text in an OSC8 terminal hyperlink escape sequence with underline.
 func Hyperlink(url, text string) string {
-	return fmt.Sprintf("\033]8;;%s\033\\%s\033]8;;\033\\", url, text)
+	return fmt.Sprintf("\033]8;;%s\033\\\033[4m%s\033[24m\033]8;;\033\\", url, text)
 }
 
 // Link returns an OSC8 hyperlink if isTTY is true, otherwise returns plain text.

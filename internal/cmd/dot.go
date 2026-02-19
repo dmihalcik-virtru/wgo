@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/models"
 )
@@ -94,6 +95,10 @@ func showContext() (bool, error) {
 		remoteURL = "(no remote)"
 	}
 
+	// Fetch PRs for the current branch (gracefully degrades if gh unavailable)
+	gh := github.NewClient()
+	prs, _ := gh.ListPRsForBranch(cwd, branch)
+
 	dirty := isDirty(status)
 	statusWord := statusWord(status)
 
@@ -125,6 +130,18 @@ func showContext() (bool, error) {
 				"url":     commitLink,
 			},
 		}
+		if len(prs) > 0 {
+			prList := make([]map[string]interface{}, len(prs))
+			for i, pr := range prs {
+				prList[i] = map[string]interface{}{
+					"number": pr.Number,
+					"title":  pr.Title,
+					"state":  pr.State,
+					"url":    pr.URL,
+				}
+			}
+			out["prs"] = prList
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return dirty, enc.Encode(out)
@@ -139,6 +156,12 @@ func showContext() (bool, error) {
 		links.Link(commitLink, truncateHash(commit.Hash), tty),
 		commit.Message,
 		formatTime(commit.Date))
+
+	for _, pr := range prs {
+		label := fmt.Sprintf("#%d %s", pr.Number, pr.Title)
+		state := strings.ToUpper(pr.State)
+		fmt.Printf("pr:     %s [%s]\n", links.Link(pr.URL, label, tty), state)
+	}
 
 	return dirty, nil
 }
