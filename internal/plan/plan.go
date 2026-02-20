@@ -6,12 +6,15 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/virtru/wgo/internal/bujo"
 )
 
 // Plan represents the parsed plan file.
 type Plan struct {
 	ActiveBranches map[string]BranchEntry // key: "repo:branch"
 	Efforts        map[string]EffortEntry
+	Tasks          []bujo.Task
 	Notes          string
 	RawContent     string // For preserving manual edits
 }
@@ -69,6 +72,10 @@ func (p *Plan) parseSections(content string) error {
 			sectionStart = i + 1
 		} else if currentSection == "Active Branches" {
 			p.parseActiveBranchLine(line)
+		} else if currentSection == "Tasks" {
+			if task := bujo.ParseTask(line); task != nil && task.Text != "" {
+				p.Tasks = append(p.Tasks, *task)
+			}
 		}
 	}
 
@@ -139,6 +146,16 @@ func (p *Plan) Render() string {
 	var buf strings.Builder
 
 	buf.WriteString("# Plan\n\n")
+
+	// Write tasks section if there are any
+	if len(p.Tasks) > 0 {
+		buf.WriteString("## Tasks\n\n")
+		for _, task := range p.Tasks {
+			buf.WriteString(task.Render() + "\n")
+		}
+		buf.WriteString("\n")
+	}
+
 	buf.WriteString("## Active Branches\n\n")
 
 	// Write active branches
@@ -202,4 +219,62 @@ func (p *Plan) GetBranch(repo, branch string) *BranchEntry {
 func (p *Plan) RemoveBranch(repo, branch string) {
 	key := repo + ":" + branch
 	delete(p.ActiveBranches, key)
+}
+
+// AddTask appends a new task to the Tasks list.
+func (p *Plan) AddTask(bullet bujo.BulletType, text string) {
+	p.Tasks = append(p.Tasks, bujo.Task{
+		Bullet: bullet,
+		Text:   text,
+		Refs:   bujo.ParseRefs(text),
+	})
+}
+
+// RemoveTask removes the first task matching pattern and returns it (or nil if not found).
+func (p *Plan) RemoveTask(pattern string) *bujo.Task {
+	for i, t := range p.Tasks {
+		if t.MatchesPattern(pattern) {
+			removed := p.Tasks[i]
+			p.Tasks = append(p.Tasks[:i], p.Tasks[i+1:]...)
+			return &removed
+		}
+	}
+	return nil
+}
+
+// UpdateTask updates the bullet type of the first task matching pattern.
+func (p *Plan) UpdateTask(pattern string, bullet bujo.BulletType) *bujo.Task {
+	for i, t := range p.Tasks {
+		if t.MatchesPattern(pattern) {
+			p.Tasks[i].Bullet = bullet
+			updated := p.Tasks[i]
+			return &updated
+		}
+	}
+	return nil
+}
+
+// GetPendingTasks returns all tasks that are open, in-progress, or priority.
+func (p *Plan) GetPendingTasks() []bujo.Task {
+	var out []bujo.Task
+	for _, t := range p.Tasks {
+		if t.IsPending() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// GetTasksForBranch returns tasks that reference the given repo:branch.
+func (p *Plan) GetTasksForBranch(repo, branch string) []bujo.Task {
+	var out []bujo.Task
+	for _, t := range p.Tasks {
+		for _, ref := range t.Refs {
+			if ref.Repo == repo && ref.Branch == branch {
+				out = append(out, t)
+				break
+			}
+		}
+	}
+	return out
 }

@@ -11,6 +11,8 @@ import (
 	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/links"
+	"github.com/virtru/wgo/internal/plan"
+	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
 )
 
@@ -161,6 +163,17 @@ func showContext() (bool, error) {
 		label := fmt.Sprintf("#%d %s", pr.Number, pr.Title)
 		state := strings.ToUpper(pr.State)
 		fmt.Printf("pr:     %s [%s]\n", links.Link(pr.URL, label, tty), state)
+	}
+
+	// Show tasks linked to this branch
+	if s, err := store.New(); err == nil {
+		if planContent, err := s.LoadPlan(); err == nil {
+			if p, err := plan.Parse(planContent); err == nil {
+				for _, task := range p.GetTasksForBranch(repoName, branch) {
+					fmt.Printf("task:   %s %s\n", string(task.Bullet), task.Text)
+				}
+			}
+		}
 	}
 
 	return dirty, nil
