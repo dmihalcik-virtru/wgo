@@ -5,8 +5,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/contrib"
-	"github.com/virtru/wgo/internal/store"
+	"github.com/virtru/wgo/internal/discovery"
 )
 
 var contribWeeks int
@@ -14,8 +15,11 @@ var contribWeeks int
 // contribCmd represents the `wgo contrib` command.
 var contribCmd = &cobra.Command{
 	Use:   "contrib",
-	Short: "Git activity heatmap across all tracked repos",
-	Long:  `Show a contributions heatmap of local git activity across all tracked repositories.`,
+	Short: "Git activity heatmap across all discovered repos",
+	Long: `Show a contributions heatmap of local git activity across all discovered repositories.
+
+Repos are discovered automatically from configured base directories (default: ~/Documents/GitHub).
+Configure discovery paths in ~/.wgo/config.toml under [discovery] base_dirs.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return showContrib(contribWeeks)
 	},
@@ -27,24 +31,25 @@ func init() {
 }
 
 func showContrib(weeks int) error {
-	s, err := store.New()
+	if err := config.Init(); err != nil {
+		return fmt.Errorf("failed to initialize config: %w", err)
+	}
+	cfg := config.Get()
+
+	d := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	repos, err := d.DiscoverAll()
 	if err != nil {
-		return fmt.Errorf("failed to create store: %w", err)
+		return fmt.Errorf("failed to discover repositories: %w", err)
 	}
 
-	state, err := s.LoadState()
-	if err != nil {
-		return fmt.Errorf("failed to load state: %w", err)
-	}
-
-	var repoPaths []string
-	for path := range state.Repos {
-		repoPaths = append(repoPaths, path)
-	}
-
-	if len(repoPaths) == 0 {
-		fmt.Println("No tracked repos. Run `wgo track <path>` or `wgo ls` to discover repos.")
+	if len(repos) == 0 {
+		fmt.Println("No repos found. Configure discovery paths in ~/.wgo/config.toml under [discovery] base_dirs.")
 		return nil
+	}
+
+	repoPaths := make([]string, len(repos))
+	for i, r := range repos {
+		repoPaths[i] = r.Path
 	}
 
 	now := time.Now()
@@ -58,7 +63,6 @@ func showContrib(weeks int) error {
 	fmt.Printf("Git Activity — Last %d weeks\n\n", weeks)
 	fmt.Print(contrib.RenderHeatmap(total, weeks, now))
 
-	// Summary
 	totalCommits := 0
 	for _, n := range total {
 		totalCommits += n
