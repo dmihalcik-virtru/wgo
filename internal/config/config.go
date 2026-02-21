@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 
 // Config represents the wgo configuration.
 type Config struct {
+	Author    string          `mapstructure:"author"`
 	Discovery DiscoveryConfig `mapstructure:"discovery"`
 	UI        UIConfig        `mapstructure:"ui"`
 	Status    StatusConfig    `mapstructure:"status"`
@@ -98,6 +100,9 @@ func Init() error {
 func setDefaults() {
 	home, _ := os.UserHomeDir()
 
+	// Default author to git user.email, falling back to user.name
+	viper.SetDefault("author", gitConfigAuthor())
+
 	viper.SetDefault("discovery.base_dirs", []string{filepath.Join(home, "Documents", "GitHub")})
 	viper.SetDefault("discovery.scan_depth", 4)
 	viper.SetDefault("discovery.exclude_patterns", []string{
@@ -151,6 +156,21 @@ exclude_branches = ["main", "master", "develop", "release/*"]
 	}
 
 	return nil
+}
+
+// gitConfigAuthor returns the git user email or name for filtering commits.
+func gitConfigAuthor() string {
+	if out, err := exec.Command("git", "config", "--global", "user.email").Output(); err == nil {
+		if v := strings.TrimSpace(string(out)); v != "" {
+			return v
+		}
+	}
+	if out, err := exec.Command("git", "config", "--global", "user.name").Output(); err == nil {
+		if v := strings.TrimSpace(string(out)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // expandPaths expands ~ in paths.

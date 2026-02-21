@@ -8,9 +8,11 @@ import (
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/contrib"
 	"github.com/virtru/wgo/internal/discovery"
+	"github.com/virtru/wgo/internal/links"
 )
 
 var contribWeeks int
+var contribAuthor string
 
 // contribCmd represents the `wgo contrib` command.
 var contribCmd = &cobra.Command{
@@ -21,20 +23,26 @@ var contribCmd = &cobra.Command{
 Repos are discovered automatically from configured base directories (default: ~/Documents/GitHub).
 Configure discovery paths in ~/.wgo/config.toml under [discovery] base_dirs.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return showContrib(contribWeeks)
+		return showContrib(contribWeeks, contribAuthor)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(contribCmd)
 	contribCmd.Flags().IntVar(&contribWeeks, "weeks", 12, "Number of weeks to show")
+	contribCmd.Flags().StringVar(&contribAuthor, "author", "", "Filter commits by author (email or name); defaults to git user.email")
 }
 
-func showContrib(weeks int) error {
+func showContrib(weeks int, author string) error {
 	if err := config.Init(); err != nil {
 		return fmt.Errorf("failed to initialize config: %w", err)
 	}
 	cfg := config.Get()
+
+	// If no --author flag given, use config default (set from git user.email)
+	if author == "" {
+		author = cfg.Author
+	}
 
 	d := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
 	repos, err := d.DiscoverAll()
@@ -55,7 +63,7 @@ func showContrib(weeks int) error {
 	now := time.Now()
 	since := now.AddDate(0, 0, -weeks*7)
 
-	activities, total, err := contrib.Collect(repoPaths, since)
+	activities, total, err := contrib.Collect(repoPaths, since, author)
 	if err != nil {
 		return fmt.Errorf("failed to collect git activity: %w", err)
 	}
@@ -71,12 +79,14 @@ func showContrib(weeks int) error {
 
 	top := contrib.TopRepos(activities, 5)
 	if len(top) > 0 {
+		isTTY := isTerminal()
 		fmt.Print("Top: ")
 		for i, r := range top {
 			if i > 0 {
 				fmt.Print(", ")
 			}
-			fmt.Printf("%s (%d)", r.Name, r.Total)
+			label := links.Link(r.GitHubURL, r.Name, isTTY)
+			fmt.Printf("%s (%d)", label, r.Total)
 		}
 		fmt.Println()
 	}

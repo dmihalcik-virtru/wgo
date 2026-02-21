@@ -57,14 +57,17 @@ func RenderHeatmap(total DayCount, weeks int, now time.Time) string {
 
 	var b strings.Builder
 
-	// Month labels row
-	b.WriteString("         ")
+	// Month labels row (2 chars per column: char + 1 space)
+	b.WriteString("    ")
+	prevMonth := ""
 	for w := 0; w < weeks; w++ {
-		if monthLabels[w] != "" {
-			b.WriteString(monthLabels[w])
-			b.WriteString(strings.Repeat(" ", 4-len(monthLabels[w])))
+		lbl := monthLabels[w]
+		if lbl != "" && lbl != prevMonth {
+			// Write month abbreviation compressed to 2 chars
+			b.WriteString(lbl[:2])
+			prevMonth = lbl
 		} else {
-			b.WriteString("    ")
+			b.WriteString("  ")
 		}
 	}
 	b.WriteString("\n")
@@ -73,9 +76,9 @@ func RenderHeatmap(total DayCount, weeks int, now time.Time) string {
 	dayNames := []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
 	showRows := []int{1, 3, 5} // Mon, Wed, Fri
 	for _, d := range showRows {
-		b.WriteString(fmt.Sprintf("%-4s ", dayNames[d]))
+		b.WriteString(fmt.Sprintf("%-3s ", dayNames[d]))
 		for w := 0; w < weeks; w++ {
-			b.WriteString(cols[w][d] + "   ")
+			b.WriteString(cols[w][d] + " ")
 		}
 		b.WriteString("\n")
 	}
