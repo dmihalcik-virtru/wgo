@@ -121,8 +121,12 @@ func collectRepo(path, since, author string) (RepoActivity, error) {
 	}, nil
 }
 
-// resolveGitHubURL returns the canonical GitHub HTTPS URL for a repo.
+// ResolveGitHubURL returns the canonical GitHub HTTPS URL for a repo.
 // It prefers the "upstream" remote (fork parent) over "origin".
+func ResolveGitHubURL(path string) string {
+	return resolveGitHubURL(path)
+}
+
 func resolveGitHubURL(path string) string {
 	for _, remote := range []string{"upstream", "origin"} {
 		out, err := exec.Command("git", "-C", path, "remote", "get-url", remote).Output()
@@ -174,4 +178,124 @@ func repoName(path string) string {
 		return path
 	}
 	return parts[len(parts)-1]
+}
+
+// CommitDetail represents a single commit with its changed files.
+type CommitDetail struct {
+	SHA     string
+	Message string
+	Files   []string
+}
+
+// RepoCommits holds commits for a single repo.
+type RepoCommits struct {
+	Name      string
+	GitHubURL string
+	Path      string
+	Branch    string
+	Commits   []CommitDetail
+}
+
+// CollectCommitsWithFiles returns detailed commit info (messages + files changed)
+// for each repo with activity since the given time.
+func CollectCommitsWithFiles(repoPaths []string, since time.Time, author string) ([]RepoCommits, error) {
+	sinceStr := since.Format(time.RFC3339)
+
+	// canonical key → merged commits
+	merged := map[string]*RepoCommits{}
+	var order []string
+
+	for _, path := range repoPaths {
+		rc, err := collectRepoCommits(path, sinceStr, author)
+		if err != nil || len(rc.Commits) == 0 {
+			continue
+		}
+
+		key := rc.canonicalKey()
+		if existing, ok := merged[key]; ok {
+			// Deduplicate by SHA
+			seen := map[string]bool{}
+			for _, c := range existing.Commits {
+				seen[c.SHA] = true
+			}
+			for _, c := range rc.Commits {
+				if !seen[c.SHA] {
+					existing.Commits = append(existing.Commits, c)
+				}
+			}
+		} else {
+			merged[key] = &rc
+			order = append(order, key)
+		}
+	}
+
+	result := make([]RepoCommits, 0, len(order))
+	for _, key := range order {
+		result = append(result, *merged[key])
+	}
+	return result, nil
+}
+
+func (r *RepoCommits) canonicalKey() string {
+	if r.GitHubURL != "" {
+		slug := strings.TrimPrefix(r.GitHubURL, "https://github.com/")
+		slug = strings.TrimSuffix(slug, ".git")
+		return slug
+	}
+	return r.Name
+}
+
+func collectRepoCommits(path, since, author string) (RepoCommits, error) {
+	// Get current branch
+	branchOut, _ := exec.Command("git", "-C", path, "branch", "--show-current").Output()
+	branch := strings.TrimSpace(string(branchOut))
+
+	// Get commits with files: format is SHA<tab>message, followed by file names
+	// Use %x09 for a literal tab character (git --format doesn't interpret \t)
+	args := []string{"-C", path, "log",
+		"--format=%h%x09%s",
+		"--name-only",
+		"--since=" + since,
+	}
+	if author != "" {
+		args = append(args, "--author="+author)
+	}
+	cmd := exec.Command("git", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return RepoCommits{}, fmt.Errorf("git log failed: %w", err)
+	}
+
+	ghURL := resolveGitHubURL(path)
+	name := repoNameFromURL(ghURL, path)
+
+	rc := RepoCommits{
+		Name:      name,
+		GitHubURL: ghURL,
+		Path:      path,
+		Branch:    branch,
+	}
+
+	// Parse the output: commit lines have a tab, file lines don't
+	var current *CommitDetail
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "\t") {
+			// This is a commit line: SHA<tab>message
+			parts := strings.SplitN(line, "\t", 2)
+			commit := CommitDetail{SHA: parts[0]}
+			if len(parts) > 1 {
+				commit.Message = parts[1]
+			}
+			rc.Commits = append(rc.Commits, commit)
+			current = &rc.Commits[len(rc.Commits)-1]
+		} else if current != nil {
+			// This is a filename
+			current.Files = append(current.Files, line)
+		}
+	}
+
+	return rc, nil
 }

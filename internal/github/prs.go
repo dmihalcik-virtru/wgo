@@ -287,6 +287,175 @@ func (c *CLIClient) EnrichWithActivity(prs []ExtendedPRInfo, myLogin string) {
 	wg.Wait()
 }
 
+// CommentedPR represents a PR/issue that the user commented on.
+type CommentedPR struct {
+	Number    int
+	Title     string
+	RepoSlug  string
+	URL       string
+	UpdatedAt time.Time
+}
+
+// ReviewSubmission represents a PR review the user submitted.
+type ReviewSubmission struct {
+	PRNumber int
+	PRTitle  string
+	RepoSlug string
+	PRURL    string
+	State    string // APPROVED, CHANGES_REQUESTED, COMMENTED
+	Time     time.Time
+}
+
+// ListMyCommentedPRs returns PRs/issues the user commented on since the given time.
+func (c *CLIClient) ListMyCommentedPRs(myLogin string, since time.Time) ([]CommentedPR, error) {
+	if !c.Available() {
+		return nil, nil
+	}
+
+	dateStr := since.Format("2006-01-02")
+	query := fmt.Sprintf(`{
+  search(query: "commenter:%s updated:>=%s", type: ISSUE, first: 30) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        repository { nameWithOwner }
+        url
+        updatedAt
+      }
+      ... on Issue {
+        number
+        title
+        repository { nameWithOwner }
+        url
+        updatedAt
+      }
+    }
+  }
+}`, myLogin, dateStr)
+
+	cmd := exec.Command("gh", "api", "graphql", "-f", "query="+query)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("graphql: %s", strings.TrimSpace(stderr.String()))
+	}
+
+	var resp struct {
+		Data struct {
+			Search struct {
+				Nodes []struct {
+					Number     int       `json:"number"`
+					Title      string    `json:"title"`
+					Repository struct {
+						NameWithOwner string `json:"nameWithOwner"`
+					} `json:"repository"`
+					URL       string    `json:"url"`
+					UpdatedAt time.Time `json:"updatedAt"`
+				} `json:"nodes"`
+			} `json:"search"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout.String()), &resp); err != nil {
+		return nil, fmt.Errorf("parse graphql response: %w", err)
+	}
+
+	var result []CommentedPR
+	for _, node := range resp.Data.Search.Nodes {
+		if node.Number == 0 {
+			continue
+		}
+		result = append(result, CommentedPR{
+			Number:    node.Number,
+			Title:     node.Title,
+			RepoSlug:  node.Repository.NameWithOwner,
+			URL:       node.URL,
+			UpdatedAt: node.UpdatedAt,
+		})
+	}
+	return result, nil
+}
+
+// ListMyReviewsToday returns PR reviews the user submitted since the given time.
+func (c *CLIClient) ListMyReviewsToday(myLogin string, since time.Time) ([]ReviewSubmission, error) {
+	if !c.Available() {
+		return nil, nil
+	}
+
+	sinceStr := since.Format(time.RFC3339)
+	query := fmt.Sprintf(`{
+  viewer {
+    contributionsCollection(from: "%s") {
+      pullRequestReviewContributions(first: 30) {
+        nodes {
+          pullRequestReview {
+            state
+            createdAt
+            pullRequest {
+              number
+              title
+              url
+              repository { nameWithOwner }
+            }
+          }
+        }
+      }
+    }
+  }
+}`, sinceStr)
+
+	cmd := exec.Command("gh", "api", "graphql", "-f", "query="+query)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("graphql: %s", strings.TrimSpace(stderr.String()))
+	}
+
+	var resp struct {
+		Data struct {
+			Viewer struct {
+				ContributionsCollection struct {
+					PullRequestReviewContributions struct {
+						Nodes []struct {
+							PullRequestReview struct {
+								State     string    `json:"state"`
+								CreatedAt time.Time `json:"createdAt"`
+								PullRequest struct {
+									Number     int    `json:"number"`
+									Title      string `json:"title"`
+									URL        string `json:"url"`
+									Repository struct {
+										NameWithOwner string `json:"nameWithOwner"`
+									} `json:"repository"`
+								} `json:"pullRequest"`
+							} `json:"pullRequestReview"`
+						} `json:"nodes"`
+					} `json:"pullRequestReviewContributions"`
+				} `json:"contributionsCollection"`
+			} `json:"viewer"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout.String()), &resp); err != nil {
+		return nil, fmt.Errorf("parse graphql response: %w", err)
+	}
+
+	var result []ReviewSubmission
+	for _, node := range resp.Data.Viewer.ContributionsCollection.PullRequestReviewContributions.Nodes {
+		r := node.PullRequestReview
+		result = append(result, ReviewSubmission{
+			PRNumber: r.PullRequest.Number,
+			PRTitle:  r.PullRequest.Title,
+			RepoSlug: r.PullRequest.Repository.NameWithOwner,
+			PRURL:    r.PullRequest.URL,
+			State:    r.State,
+			Time:     r.CreatedAt,
+		})
+	}
+	return result, nil
+}
+
 // EnrichWithChecks fetches CI check status for all PRs in parallel.
 func (c *CLIClient) EnrichWithChecks(prs []ExtendedPRInfo) {
 	var wg sync.WaitGroup
