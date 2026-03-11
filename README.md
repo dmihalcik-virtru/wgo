@@ -263,6 +263,231 @@ wgo maintains the following files:
 - **`~/.wgo/state.json`** — Persistent state (repos, annotations, metadata)
 - **`~/.wgo/config.toml`** — Configuration settings
 
+## Workflows
+
+### Daily Planning and Status
+
+Start your morning with a clear picture of what you shipped yesterday, what's waiting on review, and where you left off.
+
+```bash
+# Full morning review: yesterday's commits, PR activity, active branches, open tasks
+wgo today
+
+# Explicitly review the previous day
+wgo today --yesterday
+```
+
+**Sample output:**
+```
+=== Today: Wednesday, March 11 ===
+
+Commits (3):
+  abc1234  virtru/platform  fix: resolve auth token refresh on retry
+  def5678  virtru/wgo       feat: add status dashboard watch mode
+  789abcd  virtru/api       chore: bump dependency versions
+
+PRs Needing Attention (2):
+  #142  virtru/platform  fix/auth-refresh         review requested
+  #98   virtru/wgo       feat/status-dashboard    CI failing
+
+Active Branches (5):
+  virtru/platform  fix/auth-refresh        2 modified
+  virtru/wgo       feat/status-dashboard   clean
+  ...
+```
+
+Check your contribution heatmap for a weekly cadence review:
+
+```bash
+wgo contrib           # activity across all repos
+wgo contrib --weeks 4 # zoom out to the past month
+```
+
+See what PRs need your attention, then review your task list:
+
+```bash
+wgo pr        # PRs needing attention (review requests, failing CI, stale)
+wgo plan      # current plan and task list
+```
+
+Track tasks through the day:
+
+```bash
+wgo add "write tests for the auth refresh fix"
+wgo add "respond to PR #142 review comments"
+
+# ... work happens ...
+
+wgo done "write tests"     # mark matching task complete
+wgo done "PR #142"         # fuzzy-matches against task text
+```
+
+Pulse check when switching into a repo:
+
+```bash
+cd ~/code/virtru/platform
+wgo .
+# repo:   platform
+# branch: fix/auth-refresh
+# status: 2 modified
+# remote: ↑1 ↓0 (origin/fix/auth-refresh)
+# commit: abc1234 fix: resolve auth token refresh on retry (3 hours ago)
+```
+
+Find repos with uncommitted work before you wrap up:
+
+```bash
+wgo status --since today --filter dirty
+```
+
+---
+
+### Getting Stuff Done
+
+Full feature lifecycle — from getting assigned an issue through merge.
+
+Start by finding what's in your queue:
+
+```bash
+wgo pr           # PRs needing attention across all repos
+wgo pr --mine    # just your open PRs and their CI status
+```
+
+Jump to an issue to start work — `wto` handles cloning, branch creation, and worktree setup in one command:
+
+```bash
+wto https://github.com/virtru/platform/issues/42
+# clones repo if needed, creates branch "42-fix-auth-token", opens worktree
+# you're now in the worktree
+```
+
+Immediately annotate the branch with its purpose:
+
+```bash
+wgo plan add "Fixing auth token refresh on retry — issue #42"
+```
+
+Break down the work into tasks:
+
+```bash
+wgo add "reproduce the token refresh failure"
+wgo add "write a regression test"
+wgo add "fix the retry logic in auth.go"
+wgo add "update CHANGELOG"
+```
+
+While working, keep an eye on status and close tasks as you go:
+
+```bash
+wgo .                          # in-context pulse check
+wgo status --watch             # monitor multiple repos while context-switching
+wgo done "reproduce"           # close completed tasks
+wgo done "regression test"
+```
+
+After pushing, jump to your PR:
+
+```bash
+wto https://github.com/virtru/platform/pull/123
+wgo pr --mine    # confirm CI is green, review status
+```
+
+After the PR merges, clean up:
+
+```bash
+wgo clean --branches    # remove local merged branches
+```
+
+---
+
+### Code Review Workflows
+
+Efficiently review PRs — get the code locally fast, leave useful feedback.
+
+See what's assigned to you for review:
+
+```bash
+wgo pr --review
+# #156  virtru/platform  feat/new-billing-flow     review requested (2 days ago)
+# #161  virtru/api       fix/rate-limit-headers    review requested (4 hours ago)
+```
+
+One command to get the code locally in an isolated worktree — no manual `gh pr checkout`, no branch collision with your own work in progress:
+
+```bash
+wto https://github.com/virtru/platform/pull/156
+# fetches PR branch into a new worktree
+# you're now in ~/code/virtru/platform-pr-156
+```
+
+Confirm you're on the right branch and commit:
+
+```bash
+wgo .
+# repo:   platform
+# branch: feat/new-billing-flow
+# commit: e3f9a12 feat: add Stripe billing integration (1 day ago)
+```
+
+Use Claude Code to accelerate the review:
+
+```bash
+claude   # launches Claude Code in the worktree with full repo context
+# ask: "Review this PR for security issues, edge cases, and API design"
+```
+
+After submitting your review, clean up the worktree:
+
+```bash
+wgo clean --worktrees    # removes worktrees for merged/closed PRs
+```
+
+---
+
+### Keeping It Clean
+
+Weekly hygiene — prune merged branches, stale worktrees, unused forks, and dead draft PRs.
+
+Find repos that haven't had recent activity:
+
+```bash
+wgo status --filter stale          # repos with no commits recently
+wgo contrib --weeks 4              # see which repos you haven't touched
+```
+
+Always preview before removing anything:
+
+```bash
+wgo clean --dry-run
+# Would remove worktree: ~/code/virtru/platform-pr-156 (PR #156 merged)
+# Would remove branch:   fix/old-auth (merged to main 3 weeks ago)
+# Would remove worktree: ~/code/virtru/api-pr-98 (PR #98 closed)
+# 3 items total. Run without --dry-run to remove.
+```
+
+Then clean up interactively (the `[y/N/a/q]` prompt lets you confirm each item, accept all, or quit):
+
+```bash
+wgo clean --worktrees    # remove worktrees for merged/closed PRs
+wgo clean --branches     # remove local branches for merged PRs
+wgo clean --repos        # remove unused fork checkouts
+wgo clean --remote       # close draft/stale PRs on GitHub (with confirmation)
+```
+
+For scripting or CI, skip prompts with `--yes`:
+
+```bash
+wgo clean --worktrees --branches --yes
+```
+
+After cleanup, confirm signal-to-noise improved:
+
+```bash
+wgo status --sort activity    # active repos should now be at the top
+```
+
+---
+
 ## Commands Reference
 
 | Command | Description |
@@ -273,8 +498,29 @@ wgo maintains the following files:
 | `wgo plan` | Display your plan file |
 | `wgo plan add "reason"` | Annotate current branch with purpose |
 | `wgo plan edit` | Edit plan file in $EDITOR |
+| `wgo add "task"` | Add a task to your plan |
+| `wgo done "pattern"` | Mark a matching task as complete |
+| `wgo cancel "pattern"` | Cancel a matching task |
 | `wgo ls` | List all discovered repositories |
+| `wgo status` | Dashboard across all tracked repos |
+| `wgo status --watch` | Live-updating status dashboard |
+| `wgo status --filter dirty` | Show only repos with uncommitted changes |
+| `wgo status --filter stale` | Show only repos with no recent activity |
+| `wgo status --sort activity` | Sort repos by last commit time |
+| `wgo today` | Morning review: commits, PRs, branches, tasks |
+| `wgo today --yesterday` | Review the previous day |
+| `wgo pr` | PRs needing attention across all repos |
+| `wgo pr --mine` | Your open PRs and CI status |
+| `wgo pr --review` | PRs assigned to you for review |
+| `wgo contrib` | Contribution heatmap across repos |
+| `wgo contrib --weeks N` | Heatmap for the past N weeks |
+| `wgo clean --dry-run` | Preview what would be removed |
+| `wgo clean --worktrees` | Remove worktrees for merged/closed PRs |
+| `wgo clean --branches` | Remove local branches for merged PRs |
+| `wgo clean --repos` | Remove unused fork checkouts |
+| `wgo clean --remote` | Close draft/stale PRs on GitHub |
 | `wgo track [path]` | Register a repository for tracking |
+| `wgo hooks install` | Install global git hooks for passive monitoring |
 | `wgo --version` | Show version information |
 | `wgo --help` | Show help |
 
