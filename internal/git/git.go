@@ -424,6 +424,12 @@ func (c *CLIClient) PruneWorktrees(repoPath string) error {
 }
 
 // ListLocalBranches returns a list of all local branches in the repository.
+// Checkout switches the working directory at repoPath to the given branch.
+func (c *CLIClient) Checkout(repoPath, branch string) error {
+	_, err := c.runInPath(repoPath, "checkout", branch)
+	return err
+}
+
 func (c *CLIClient) ListLocalBranches(repoPath string) ([]string, error) {
 	output, err := c.runInPath(repoPath, "branch", "--format=%(refname:short)")
 	if err != nil {

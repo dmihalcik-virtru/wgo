@@ -476,7 +476,15 @@ func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Confi
 
 	// Check if path already exists (e.g. from a previous run)
 	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
-		logTo("worktree path already exists")
+		cur, err := gitClient.CurrentBranch(wtPath)
+		if err == nil && cur != branch {
+			logTo("worktree exists on branch %q, switching to %q...", cur, branch)
+			if err := gitClient.Checkout(wtPath, branch); err != nil {
+				logTo("warning: could not switch branch: %v", err)
+			}
+		} else {
+			logTo("worktree path already exists")
+		}
 		return wtPath, nil
 	}
 
