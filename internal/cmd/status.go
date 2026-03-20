@@ -59,7 +59,7 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 
 	statusCmd.Flags().StringVar(&statusSince, "since", "", "Time filter: 1h, today, yesterday, 3d, 1w")
-	statusCmd.Flags().StringVarP(&statusFilter, "filter", "f", "", "State filter: modified, clean, stale, staged, conflict, dirty")
+	statusCmd.Flags().StringVarP(&statusFilter, "filter", "f", "", "State filter: modified, clean, stale, staged, conflict, dirty, unpushed, behind, diverged")
 	statusCmd.Flags().StringVarP(&statusSort, "sort", "s", "", "Sort: activity, name, status, changes, commits, lines")
 	statusCmd.Flags().BoolVarP(&statusWatch, "watch", "w", false, "Auto-refresh mode")
 	statusCmd.Flags().IntVarP(&statusInterval, "interval", "i", 0, "Refresh interval in seconds (default from config)")

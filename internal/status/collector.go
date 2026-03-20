@@ -229,6 +229,13 @@ func (c *Collector) collectOne(ctx context.Context, repo discovery.DiscoveredRep
 		activity.DiffStat = diffStat
 	}
 
+	// Ahead/behind vs remote
+	ahead, behind, err := c.gitClient.AheadBehind(repo.Path, branch)
+	if err == nil {
+		activity.Status.Ahead = ahead
+		activity.Status.Behind = behind
+	}
+
 	// Last activity: use last commit date, or check tracked files
 	activity.LastActivity = c.determineLastActivity(ctx, repo.Path, commit)
 

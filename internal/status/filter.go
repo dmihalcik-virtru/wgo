@@ -46,6 +46,12 @@ func matchesFilter(a models.RepoActivity, filter string) bool {
 	case "dirty":
 		// dirty = anything not clean
 		return a.State != models.StateClean && a.State != models.StateStale
+	case "unpushed":
+		return a.Status.Ahead > 0
+	case "behind":
+		return a.Status.Behind > 0
+	case "diverged":
+		return a.Status.Ahead > 0 && a.Status.Behind > 0
 	default:
 		return true
 	}

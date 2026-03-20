@@ -102,7 +102,7 @@ func RenderCSV(w io.Writer, activities []models.RepoActivity, verbose bool) erro
 func RenderWatchHeader(w io.Writer, activities []models.RepoActivity, since string, sortBy string) {
 	now := time.Now().Format("15:04:05")
 
-	var modified, clean, stale int
+	var modified, clean, stale, unpushed int
 	for _, a := range activities {
 		switch a.State {
 		case models.StateModified, models.StateStaged, models.StateConflict:
@@ -112,11 +112,14 @@ func RenderWatchHeader(w io.Writer, activities []models.RepoActivity, since stri
 		case models.StateStale:
 			stale++
 		}
+		if a.Status.Ahead > 0 {
+			unpushed++
+		}
 	}
 
 	fmt.Fprintf(w, "wgo status — Updated: %s\n", now)
-	fmt.Fprintf(w, "Total: %d | Modified: %d | Clean: %d | Stale: %d\n",
-		len(activities), modified, clean, stale)
+	fmt.Fprintf(w, "Total: %d | Modified: %d | Unpushed: %d | Clean: %d | Stale: %d\n",
+		len(activities), modified, unpushed, clean, stale)
 
 	parts := []string{}
 	if since != "" {
@@ -126,12 +129,8 @@ func RenderWatchHeader(w io.Writer, activities []models.RepoActivity, since stri
 	fmt.Fprintf(w, "%s\n\n", strings.Join(parts, " | "))
 }
 
-// formatChanges creates a compact change summary like "3M 1U".
+// formatChanges creates a compact change summary like "3M 1U ↑2".
 func formatChanges(s models.GitStatus) string {
-	if s.Modified == 0 && s.Added == 0 && s.Deleted == 0 && s.Untracked == 0 && s.Staged == 0 {
-		return "-"
-	}
-
 	var parts []string
 	if s.Modified > 0 {
 		parts = append(parts, fmt.Sprintf("%dM", s.Modified))
@@ -144,6 +143,15 @@ func formatChanges(s models.GitStatus) string {
 	}
 	if s.Untracked > 0 {
 		parts = append(parts, fmt.Sprintf("%dU", s.Untracked))
+	}
+	if s.Ahead > 0 {
+		parts = append(parts, fmt.Sprintf("↑%d", s.Ahead))
+	}
+	if s.Behind > 0 {
+		parts = append(parts, fmt.Sprintf("↓%d", s.Behind))
+	}
+	if len(parts) == 0 {
+		return "-"
 	}
 	return strings.Join(parts, " ")
 }
