@@ -437,13 +437,12 @@ func findOrCloneRepo(gitClient *git.CLIClient, cfg *config.Config, owner, repo s
 		}
 	}
 
-	// Clone into first base dir
-	if len(cfg.Discovery.BaseDirs) == 0 {
-		return "", fmt.Errorf("no base_dirs configured; cannot clone")
+	// Clone into mains_dir
+	if cfg.Worktree.MainsDir == "" {
+		return "", fmt.Errorf("worktree.mains_dir not configured; cannot clone")
 	}
 
-	baseDir := cfg.Discovery.BaseDirs[0]
-	destPath := filepath.Join(baseDir, owner, repo)
+	destPath := filepath.Join(cfg.Worktree.MainsDir, owner, repo)
 
 	// Check if destPath already exists as a repo (not found by discovery
 	// due to path structure, e.g. missing owner directory level)
@@ -470,9 +469,8 @@ func findOrCloneRepo(gitClient *git.CLIClient, cfg *config.Config, owner, repo s
 
 // createWorktree creates a new worktree for the given branch.
 func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Config, parsed *gh.ParsedURL, branch string) (string, error) {
-	baseDir := cfg.Discovery.BaseDirs[0]
 	sanitized := gh.SanitizeBranch(branch)
-	wtPath := filepath.Join(baseDir, sanitized, parsed.Repo)
+	wtPath := filepath.Join(cfg.Worktree.WorktreesDir, sanitized, parsed.Repo)
 
 	// Check if path already exists (e.g. from a previous run)
 	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {

@@ -46,6 +46,7 @@ type Client interface {
 	PruneWorktrees(repoPath string) error
 	ListLocalBranches(repoPath string) ([]string, error)
 	IsBranchMerged(repoPath, branch, base string) (bool, error)
+	Push(repoPath, branch string) error
 }
 
 // CLIClient is a Git client implementation using the git CLI.
@@ -337,6 +338,12 @@ func (c *CLIClient) WorktreeAdd(repoPath, wtPath, branch string, create bool, st
 		args = append(args, wtPath, branch)
 	}
 	_, err := c.runInPath(repoPath, args...)
+	return err
+}
+
+// Push pushes a branch to origin, setting the upstream tracking reference.
+func (c *CLIClient) Push(repoPath, branch string) error {
+	_, err := c.runInPath(repoPath, "push", "-u", "origin", branch)
 	return err
 }
 

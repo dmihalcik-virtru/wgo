@@ -15,6 +15,7 @@ import (
 type Config struct {
 	Author    string          `mapstructure:"author"`
 	Discovery DiscoveryConfig `mapstructure:"discovery"`
+	Worktree  WorktreeConfig  `mapstructure:"worktree"`
 	UI        UIConfig        `mapstructure:"ui"`
 	Status    StatusConfig    `mapstructure:"status"`
 	Hooks     HooksConfig     `mapstructure:"hooks"`
@@ -36,9 +37,15 @@ type StatusConfig struct {
 
 // DiscoveryConfig contains directory discovery configuration.
 type DiscoveryConfig struct {
-	BaseDirs         []string `mapstructure:"base_dirs"`
-	ScanDepth        int      `mapstructure:"scan_depth"`
-	ExcludePatterns  []string `mapstructure:"exclude_patterns"`
+	BaseDirs        []string `mapstructure:"base_dirs"`
+	ScanDepth       int      `mapstructure:"scan_depth"`
+	ExcludePatterns []string `mapstructure:"exclude_patterns"`
+}
+
+// WorktreeConfig contains paths for clone and worktree roots.
+type WorktreeConfig struct {
+	MainsDir     string `mapstructure:"mains_dir"`
+	WorktreesDir string `mapstructure:"worktrees_dir"`
 }
 
 // UIConfig contains UI-related configuration.
@@ -92,6 +99,8 @@ func Init() error {
 
 	// Expand tilde in paths
 	cfg.Discovery.BaseDirs = expandPaths(cfg.Discovery.BaseDirs)
+	cfg.Worktree.MainsDir = expandPath(cfg.Worktree.MainsDir)
+	cfg.Worktree.WorktreesDir = expandPath(cfg.Worktree.WorktreesDir)
 
 	return nil
 }
@@ -104,6 +113,8 @@ func setDefaults() {
 	viper.SetDefault("author", gitConfigAuthor())
 
 	viper.SetDefault("discovery.base_dirs", []string{filepath.Join(home, "Documents", "GitHub")})
+	viper.SetDefault("worktree.mains_dir", filepath.Join(home, "Documents", "GitHub", "mains"))
+	viper.SetDefault("worktree.worktrees_dir", filepath.Join(home, "Documents", "GitHub", "worktrees"))
 	viper.SetDefault("discovery.scan_depth", 4)
 	viper.SetDefault("discovery.exclude_patterns", []string{
 		"node_modules", ".cache", "vendor", "dist",
@@ -134,12 +145,20 @@ scan_depth = 4
 # Patterns to exclude from discovery
 exclude_patterns = ["node_modules", ".cache", "vendor", "dist"]
 
+[worktree]
+# Where to clone main branches (owner/repo layout)
+mains_dir = "~/Documents/GitHub/mains"
+
+# Where to create feature worktrees (branch/repo layout)
+worktrees_dir = "~/Documents/GitHub/worktrees"
+
 [ui]
 # Display icons in output
 icons = false
 
 # Display home directory as ~ in output
 tilde_home = true
+
 [hooks]
 # Enable passive git hook monitoring
 enabled = true
@@ -173,19 +192,21 @@ func gitConfigAuthor() string {
 	return ""
 }
 
-// expandPaths expands ~ in paths.
-func expandPaths(paths []string) []string {
-	home, _ := os.UserHomeDir()
-	expanded := make([]string, len(paths))
-
-	for i, path := range paths {
-		if strings.HasPrefix(path, "~") {
-			expanded[i] = filepath.Join(home, path[1:])
-		} else {
-			expanded[i] = path
-		}
+// expandPath expands a leading ~ to the user's home directory.
+func expandPath(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, path[1:])
 	}
+	return path
+}
 
+// expandPaths expands ~ in a slice of paths.
+func expandPaths(paths []string) []string {
+	expanded := make([]string, len(paths))
+	for i, p := range paths {
+		expanded[i] = expandPath(p)
+	}
 	return expanded
 }
 
