@@ -78,6 +78,10 @@ func addAnnotation(reason string) error {
 	if err != nil || !isRepo {
 		return fmt.Errorf("not a git repository")
 	}
+	repoRoot, err := gitClient.RootDir(cwd)
+	if err != nil {
+		return fmt.Errorf("failed to get repository root: %w", err)
+	}
 
 	repoName, err := gitClient.RepoName(cwd)
 	if err != nil {
@@ -105,8 +109,22 @@ func addAnnotation(reason string) error {
 		return fmt.Errorf("failed to load state: %w", err)
 	}
 
-	state.AddAnnotation(cwd, branch, reason)
-	state.AddRepo(cwd, "")
+	specInfo, err := findBranchSpec(repoRoot, branch)
+	if err != nil {
+		return fmt.Errorf("failed to resolve spec: %w", err)
+	}
+	specPath := ""
+	specState := ""
+	if specInfo != nil && !specInfo.Missing {
+		specPath = specInfo.RelPath
+		specState = specInfo.Status
+	}
+
+	state.AddAnnotation(repoRoot, branch, reason)
+	state.AddRepo(repoRoot, "")
+	if specPath != "" {
+		state.SetSpec(repoRoot, branch, specPath, specState)
+	}
 
 	if err := s.SaveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
@@ -123,7 +141,7 @@ func addAnnotation(reason string) error {
 		return fmt.Errorf("failed to parse plan: %w", err)
 	}
 
-	p.AddBranch(repoName, branch, reason)
+	p.AddBranch(repoName, branch, reason, specPath)
 
 	if err := s.SavePlan(p.Render()); err != nil {
 		return fmt.Errorf("failed to save plan: %w", err)

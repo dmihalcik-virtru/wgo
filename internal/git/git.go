@@ -194,11 +194,16 @@ func (c *CLIClient) LastCommit(repoPath string) (models.CommitInfo, error) {
 
 // RepoName returns the repository name (directory name of root).
 func (c *CLIClient) RepoName(repoPath string) (string, error) {
-	rootDir, err := c.getRootDir(repoPath)
+	rootDir, err := c.RootDir(repoPath)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Base(rootDir), nil
+}
+
+// RootDir returns the repository root directory.
+func (c *CLIClient) RootDir(repoPath string) (string, error) {
+	return c.getRootDir(repoPath)
 }
 
 // RemoteURL returns the remote origin URL.
@@ -347,6 +352,15 @@ func (c *CLIClient) Push(repoPath, branch string) error {
 	return err
 }
 
+// AddAndCommit stages a path and commits it with the given message.
+func (c *CLIClient) AddAndCommit(repoPath, path, message string) error {
+	if _, err := c.runInPath(repoPath, "add", path); err != nil {
+		return err
+	}
+	_, err := c.runInPath(repoPath, "commit", "-m", message, "--", path)
+	return err
+}
+
 // Fetch runs git fetch --all --prune in the given repo.
 func (c *CLIClient) Fetch(repoPath string) error {
 	_, err := c.runInPath(repoPath, "fetch", "--all", "--prune")
@@ -421,6 +435,12 @@ func (c *CLIClient) DeleteBranch(repoPath, branch string, force bool) error {
 		flag = "-D"
 	}
 	_, err := c.runInPath(repoPath, "branch", flag, branch)
+	return err
+}
+
+// ResetHard resets the worktree to the given ref, discarding local changes.
+func (c *CLIClient) ResetHard(repoPath, ref string) error {
+	_, err := c.runInPath(repoPath, "reset", "--hard", ref)
 	return err
 }
 

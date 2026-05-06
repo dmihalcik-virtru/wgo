@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/bujo"
@@ -14,13 +15,25 @@ import (
 	"github.com/virtru/wgo/internal/git"
 	gh "github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/plan"
+	specdoc "github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 )
 
 var (
 	addPriority bool
 	addRepos    []string
+	addNoSpec   bool
+	addSpecRepo string
 )
+
+type repoSpec struct {
+	owner string
+	repo  string
+}
+
+func (r repoSpec) String() string {
+	return r.owner + "/" + r.repo
+}
 
 var addCmd = &cobra.Command{
 	Use:   "add [TICKET] <task description> [-r owner/repo]...",
@@ -59,6 +72,8 @@ func init() {
 	rootCmd.AddCommand(addCmd)
 	addCmd.Flags().BoolVarP(&addPriority, "priority", "p", false, "Mark as priority task")
 	addCmd.Flags().StringArrayVarP(&addRepos, "repo", "r", nil, "owner/repo to create worktree for (repeatable)")
+	addCmd.Flags().BoolVar(&addNoSpec, "no-spec", false, "Skip spec scaffolding for ticket-based worktrees")
+	addCmd.Flags().StringVar(&addSpecRepo, "spec-repo", "", "owner/repo that should receive the canonical spec file")
 }
 
 func joinArgs(args []string) string {
@@ -111,8 +126,13 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 	gitClient := git.New("")
 
 	var created []struct{ repoPath, wtPath string }
+	var specCommit struct{ wtPath string }
 	defer func() {
 		if retErr != nil {
+			if specCommit.wtPath != "" {
+				fmt.Fprintf(os.Stderr, "rolling back spec commit in %s...\n", specCommit.wtPath)
+				_ = gitClient.ResetHard(specCommit.wtPath, "HEAD~1")
+			}
 			for _, wt := range created {
 				fmt.Fprintf(os.Stderr, "rolling back worktree %s...\n", wt.wtPath)
 				_ = gitClient.RemoveWorktree(wt.repoPath, wt.wtPath, true)
@@ -130,14 +150,16 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 	}
 
 	// Validate and split owner/repo entries.
-	type repoSpec struct{ owner, repo string }
-	specs := make([]repoSpec, 0, len(repos))
-	for _, r := range repos {
-		parts := strings.SplitN(r, "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("invalid repo %q: expected owner/repo", r)
+	specs, err := parseRepoSpecs(repos)
+	if err != nil {
+		return err
+	}
+	specRepo := specs[0]
+	if addSpecRepo != "" {
+		specRepo, err = parseSpecRepoFlag(addSpecRepo, specs)
+		if err != nil {
+			return err
 		}
-		specs = append(specs, repoSpec{parts[0], parts[1]})
 	}
 
 	// Build branch name and shared root dir name.
@@ -179,12 +201,40 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 			return fmt.Errorf("worktree add %s: %w", spec.repo, err)
 		}
 		created = append(created, struct{ repoPath, wtPath string }{repoPath, wtPath})
+	}
 
+	reason := branchReason(ticket, desc)
+	specRel := filepath.ToSlash(filepath.Join("spec", ticket+".md"))
+	specState := ""
+
+	if !addNoSpec {
+		specRepoWtPath := filepath.Join(sharedRoot, specRepo.repo)
+		specAbs := filepath.Join(specRepoWtPath, filepath.FromSlash(specRel))
+
+		wrote, err := writeSpecStub(specAbs, ticket, desc, cfg, branchName, specs)
+		if err != nil {
+			return fmt.Errorf("write spec: %w", err)
+		}
+		if wrote {
+			if err := gitClient.AddAndCommit(specRepoWtPath, specRel, specCommitMessage(ticket, desc)); err != nil {
+				return fmt.Errorf("commit spec: %w", err)
+			}
+			specCommit.wtPath = specRepoWtPath
+		} else {
+			fmt.Fprintf(os.Stderr, "spec already exists: %s (skipping)\n", specRel)
+		}
+
+		if specFile, err := specdoc.Parse(specAbs); err == nil {
+			specState = string(specFile.Frontmatter.Status)
+		}
+	}
+
+	for _, spec := range pushOrder(specs, specRepo, addNoSpec) {
+		wtPath := filepath.Join(sharedRoot, spec.repo)
 		fmt.Fprintf(os.Stderr, "pushing %s...\n", branchName)
 		if err := gitClient.Push(wtPath, branchName); err != nil {
 			return fmt.Errorf("push %s: %w", spec.repo, err)
 		}
-
 		fmt.Fprintf(os.Stderr, "created: %s\n", wtPath)
 	}
 
@@ -195,6 +245,10 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 	}
 	if err := s.EnsureDir(); err != nil {
 		return fmt.Errorf("store ensure dir: %w", err)
+	}
+	state, err := s.LoadState()
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
 	}
 	content, err := s.LoadPlan()
 	if err != nil {
@@ -216,11 +270,25 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 	p.AddTask(bullet, taskText)
 
 	for _, spec := range specs {
-		p.AddBranch(spec.repo, branchName, ticket+": "+desc)
+		relSpec := ""
+		if !addNoSpec && spec == specRepo {
+			relSpec = specRel
+		}
+		p.AddBranch(spec.repo, branchName, reason, relSpec)
+
+		wtPath := filepath.Join(sharedRoot, spec.repo)
+		state.AddAnnotation(wtPath, branchName, reason)
+		state.AddRepo(wtPath, "")
+		if relSpec != "" {
+			state.SetSpec(wtPath, branchName, relSpec, specState)
+		}
 	}
 
 	if err := s.SavePlan(p.Render()); err != nil {
 		return fmt.Errorf("save plan: %w", err)
+	}
+	if err := s.SaveState(state); err != nil {
+		return fmt.Errorf("save state: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "Added task: %s %s\n", string(bullet), taskText)
@@ -276,4 +344,113 @@ func truncateSlug(s string, maxLen int) string {
 		cut = cut[:idx]
 	}
 	return strings.TrimRight(cut, "-")
+}
+
+func parseRepoSpecs(repos []string) ([]repoSpec, error) {
+	specs := make([]repoSpec, 0, len(repos))
+	for _, r := range repos {
+		parts := strings.SplitN(r, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid repo %q: expected owner/repo", r)
+		}
+		specs = append(specs, repoSpec{owner: parts[0], repo: parts[1]})
+	}
+	return specs, nil
+}
+
+func parseSpecRepoFlag(value string, specs []repoSpec) (repoSpec, error) {
+	for _, spec := range specs {
+		if spec.String() == value {
+			return spec, nil
+		}
+	}
+	return repoSpec{}, fmt.Errorf("--spec-repo %q must match one of the configured repos", value)
+}
+
+func pushOrder(specs []repoSpec, specRepo repoSpec, noSpec bool) []repoSpec {
+	if noSpec {
+		return append([]repoSpec(nil), specs...)
+	}
+
+	ordered := make([]repoSpec, 0, len(specs))
+	for _, spec := range specs {
+		if spec != specRepo {
+			ordered = append(ordered, spec)
+		}
+	}
+	ordered = append(ordered, specRepo)
+	return ordered
+}
+
+func branchReason(ticket, desc string) string {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return ticket
+	}
+	return ticket + ": " + desc
+}
+
+func specCommitMessage(ticket, desc string) string {
+	message := fmt.Sprintf("spec: scaffold for %s", ticket)
+	desc = strings.TrimSpace(desc)
+	if desc != "" {
+		message += "\n\n" + desc
+	}
+	return message
+}
+
+func writeSpecStub(path, ticket, desc string, cfg *config.Config, branchName string, specs []repoSpec) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, err
+	}
+
+	data, err := specdoc.RenderTemplate(specdoc.TemplateData{
+		Ticket:      ticket,
+		Title:       strings.TrimSpace(desc),
+		Description: strings.TrimSpace(desc),
+		Authors:     specAuthors(cfg),
+		Branches:    specBranchRefs(specs, branchName),
+		Now:         time.Now(),
+	})
+	if err != nil {
+		return false, err
+	}
+
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+func specAuthors(cfg *config.Config) []string {
+	var authors []string
+	seen := make(map[string]struct{})
+
+	for _, author := range []string{strings.TrimSpace(cfg.Author), strings.TrimSpace(cfg.Pair.Teammate)} {
+		if author == "" {
+			continue
+		}
+		if _, exists := seen[author]; exists {
+			continue
+		}
+		seen[author] = struct{}{}
+		authors = append(authors, author)
+	}
+
+	return authors
+}
+
+func specBranchRefs(specs []repoSpec, branchName string) []string {
+	refs := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		refs = append(refs, spec.String()+":"+branchName)
+	}
+	return refs
 }

@@ -23,6 +23,8 @@ type RepoInfo struct {
 // Annotation contains information about why a branch exists.
 type Annotation struct {
 	Purpose   string    `json:"purpose"`
+	SpecPath  string    `json:"spec_path,omitempty"`
+	SpecState string    `json:"spec_state,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -65,6 +67,8 @@ func (s *State) AddAnnotation(repoPath, branch, purpose string) {
 	if exists {
 		s.Annotations[key] = Annotation{
 			Purpose:   purpose,
+			SpecPath:  existing.SpecPath,
+			SpecState: existing.SpecState,
 			CreatedAt: existing.CreatedAt,
 			UpdatedAt: now,
 		}
@@ -74,6 +78,31 @@ func (s *State) AddAnnotation(repoPath, branch, purpose string) {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
+	}
+}
+
+// SetSpec adds or updates cached spec metadata for a branch.
+func (s *State) SetSpec(repoPath, branch, specPath, specState string) {
+	key := repoPath + ":" + branch
+	now := time.Now()
+
+	existing, exists := s.Annotations[key]
+	if exists {
+		s.Annotations[key] = Annotation{
+			Purpose:   existing.Purpose,
+			SpecPath:  specPath,
+			SpecState: specState,
+			CreatedAt: existing.CreatedAt,
+			UpdatedAt: now,
+		}
+		return
+	}
+
+	s.Annotations[key] = Annotation{
+		SpecPath:  specPath,
+		SpecState: specState,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 }
 

@@ -564,3 +564,30 @@ func TestRemoveWorktree(t *testing.T) {
 		t.Fatalf("PruneWorktrees failed: %v", err)
 	}
 }
+
+func TestAddAndCommit(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial")
+
+	specPath := filepath.Join(tmpDir, "spec", "WGO-101.md")
+	if err := os.MkdirAll(filepath.Dir(specPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	if err := os.WriteFile(specPath, []byte("spec body"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	client := New(tmpDir)
+	if err := client.AddAndCommit(tmpDir, "spec/WGO-101.md", "spec: scaffold for WGO-101"); err != nil {
+		t.Fatalf("AddAndCommit failed: %v", err)
+	}
+
+	commit, err := client.LastCommit(tmpDir)
+	if err != nil {
+		t.Fatalf("LastCommit failed: %v", err)
+	}
+	if commit.Message != "spec: scaffold for WGO-101" {
+		t.Fatalf("expected commit message, got %q", commit.Message)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -71,6 +72,10 @@ func showContext() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to get repository name: %w", err)
 	}
+	repoRoot, err := client.RootDir(cwd)
+	if err != nil {
+		return false, fmt.Errorf("failed to get repository root: %w", err)
+	}
 
 	branch, err := client.CurrentBranch(cwd)
 	if err != nil {
@@ -109,6 +114,19 @@ func showContext() (bool, error) {
 		return dirty, nil
 	}
 
+	var planFile *plan.Plan
+	var specInfo *branchSpecInfo
+	if s, err := store.New(); err == nil {
+		if planContent, err := s.LoadPlan(); err == nil {
+			if parsedPlan, err := plan.Parse(planContent); err == nil {
+				planFile = parsedPlan
+			}
+		}
+		if state, err := s.LoadState(); err == nil {
+			specInfo = dotSpecInfo(s, state, repoRoot, branch)
+		}
+	}
+
 	repoLink := links.RepoURL(remoteURL)
 	branchLink := links.BranchURL(remoteURL, branch)
 	commitLink := links.CommitURL(remoteURL, commit.Hash)
@@ -132,6 +150,23 @@ func showContext() (bool, error) {
 				"url":     commitLink,
 			},
 		}
+		if specInfo != nil {
+			specJSON := map[string]interface{}{
+				"ticket": specInfo.Ticket,
+			}
+			if specInfo.Missing {
+				specJSON["missing"] = true
+			} else {
+				specJSON["path"] = specInfo.RelPath
+				if specInfo.Status != "" {
+					specJSON["status"] = specInfo.Status
+				}
+				if !specInfo.Updated.IsZero() {
+					specJSON["updated"] = specInfo.Updated.Format(time.RFC3339)
+				}
+			}
+			out["spec"] = specJSON
+		}
 		if len(prs) > 0 {
 			prList := make([]map[string]interface{}, len(prs))
 			for i, pr := range prs {
@@ -153,6 +188,9 @@ func showContext() (bool, error) {
 	fmt.Printf("repo:   %s\n", links.Link(repoLink, repoName, tty))
 	fmt.Printf("branch: %s\n", links.Link(branchLink, branch, tty))
 	fmt.Printf("status: %s\n", formatStatus(status))
+	if specInfo != nil {
+		fmt.Printf("spec:   %s\n", formatSpecInfo(specInfo))
+	}
 	fmt.Printf("remote: %s\n", formatRemote(ahead, behind, remoteURL))
 	fmt.Printf("commit: %s %s (%s)\n",
 		links.Link(commitLink, truncateHash(commit.Hash), tty),
@@ -166,13 +204,9 @@ func showContext() (bool, error) {
 	}
 
 	// Show tasks linked to this branch
-	if s, err := store.New(); err == nil {
-		if planContent, err := s.LoadPlan(); err == nil {
-			if p, err := plan.Parse(planContent); err == nil {
-				for _, task := range p.GetTasksForBranch(repoName, branch) {
-					fmt.Printf("task:   %s %s\n", string(task.Bullet), task.Text)
-				}
-			}
+	if planFile != nil {
+		for _, task := range planFile.GetTasksForBranch(repoName, branch) {
+			fmt.Printf("task:   %s %s\n", string(task.Bullet), task.Text)
 		}
 	}
 
@@ -286,4 +320,59 @@ func formatTime(t time.Time) string {
 		return "1 day ago"
 	}
 	return fmt.Sprintf("%d days ago", days)
+}
+
+func dotSpecInfo(s *store.FileStore, state *store.State, repoRoot, branch string) *branchSpecInfo {
+	info, err := findBranchSpec(repoRoot, branch)
+	if err != nil || info == nil {
+		return nil
+	}
+
+	ann := state.GetAnnotation(repoRoot, branch)
+	if info.Status == "" && ann != nil && ann.SpecState != "" {
+		info.Status = ann.SpecState
+	}
+
+	needsSave := false
+	if info.Missing {
+		if ann != nil && (ann.SpecPath != "" || ann.SpecState != "") {
+			state.SetSpec(repoRoot, branch, "", "")
+			needsSave = true
+		}
+	} else {
+		specAbs := filepath.Join(repoRoot, filepath.FromSlash(info.RelPath))
+		stat, statErr := os.Stat(specAbs)
+		if ann == nil || ann.SpecPath != info.RelPath || ann.SpecState != info.Status ||
+			(statErr == nil && stat.ModTime().After(ann.UpdatedAt)) {
+			state.SetSpec(repoRoot, branch, info.RelPath, info.Status)
+			needsSave = true
+		}
+	}
+
+	if needsSave {
+		_ = s.SaveState(state)
+	}
+
+	return info
+}
+
+func formatSpecInfo(info *branchSpecInfo) string {
+	if info == nil {
+		return ""
+	}
+	if info.Missing {
+		return fmt.Sprintf("⚠ no spec (run: wgo spec new %s)", info.Ticket)
+	}
+
+	details := make([]string, 0, 2)
+	if info.Status != "" {
+		details = append(details, info.Status)
+	}
+	if !info.Updated.IsZero() {
+		details = append(details, "updated "+info.Updated.Format(time.DateOnly))
+	}
+	if len(details) == 0 {
+		return fmt.Sprintf("📄 %s", info.RelPath)
+	}
+	return fmt.Sprintf("📄 %s (%s)", info.RelPath, strings.Join(details, ", "))
 }

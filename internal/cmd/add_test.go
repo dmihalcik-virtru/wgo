@@ -1,6 +1,10 @@
 package cmd
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/virtru/wgo/internal/config"
+)
 
 func TestIsJiraTicket(t *testing.T) {
 	tests := []struct {
@@ -72,5 +76,41 @@ func TestTruncateSlug(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("truncateSlug(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
 		}
+	}
+}
+
+func TestParseSpecRepoFlag(t *testing.T) {
+	specs := []repoSpec{
+		{owner: "virtru", repo: "wgo"},
+		{owner: "virtru", repo: "api"},
+	}
+
+	spec, err := parseSpecRepoFlag("virtru/api", specs)
+	if err != nil {
+		t.Fatalf("parseSpecRepoFlag failed: %v", err)
+	}
+	if spec.String() != "virtru/api" {
+		t.Fatalf("expected virtru/api, got %s", spec.String())
+	}
+
+	if _, err := parseSpecRepoFlag("virtru/other", specs); err == nil {
+		t.Fatalf("expected invalid spec repo to fail")
+	}
+}
+
+func TestSpecAuthorsIncludesPair(t *testing.T) {
+	cfg := &config.Config{
+		Author: "dmihalcik",
+		Pair: config.PairConfig{
+			Teammate: "sujan",
+		},
+	}
+
+	authors := specAuthors(cfg)
+	if len(authors) != 2 {
+		t.Fatalf("expected 2 authors, got %d", len(authors))
+	}
+	if authors[0] != "dmihalcik" || authors[1] != "sujan" {
+		t.Fatalf("unexpected authors: %v", authors)
 	}
 }

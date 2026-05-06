@@ -85,13 +85,15 @@ func TestAddBranch(t *testing.T) {
 		Efforts:        make(map[string]EffortEntry),
 	}
 
-	plan.AddBranch("repo1", "feature", "Test feature")
+	plan.AddBranch("repo1", "feature", "Test feature", "spec/WGO-101.md")
 
 	entry := plan.GetBranch("repo1", "feature")
 	if entry == nil {
 		t.Errorf("expected to find added branch")
 	} else if entry.Reason != "Test feature" {
 		t.Errorf("expected reason 'Test feature', got %q", entry.Reason)
+	} else if entry.SpecPath != "spec/WGO-101.md" {
+		t.Errorf("expected spec path preserved, got %q", entry.SpecPath)
 	}
 }
 
@@ -196,5 +198,56 @@ func TestRenderPreservesStructure(t *testing.T) {
 
 	if !strings.Contains(rendered, "Test notes") {
 		t.Errorf("expected notes content in rendered output")
+	}
+}
+
+func TestParseBranchWithSpecPath(t *testing.T) {
+	content := `# Plan
+
+## Active Branches
+
+- **virtru/wgo:WGO-101-spec-scaffold** — WGO-101: scaffold specs 📄 spec/WGO-101.md
+
+## Notes
+`
+
+	plan, err := Parse(content)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	entry := plan.GetBranch("virtru/wgo", "WGO-101-spec-scaffold")
+	if entry == nil {
+		t.Fatalf("expected branch entry")
+	}
+	if entry.SpecPath != "spec/WGO-101.md" {
+		t.Fatalf("expected spec path, got %q", entry.SpecPath)
+	}
+	if entry.Reason != "WGO-101: scaffold specs" {
+		t.Fatalf("expected reason without spec suffix, got %q", entry.Reason)
+	}
+}
+
+func TestAddBranchPreservesExistingSpecPath(t *testing.T) {
+	plan := &Plan{
+		ActiveBranches: map[string]BranchEntry{
+			"repo1:feature": {
+				Repo:     "repo1",
+				Branch:   "feature",
+				Reason:   "old",
+				SpecPath: "spec/WGO-101.md",
+			},
+		},
+		Efforts: make(map[string]EffortEntry),
+	}
+
+	plan.AddBranch("repo1", "feature", "updated")
+
+	entry := plan.GetBranch("repo1", "feature")
+	if entry == nil {
+		t.Fatalf("expected branch entry")
+	}
+	if entry.SpecPath != "spec/WGO-101.md" {
+		t.Fatalf("expected spec path to survive update, got %q", entry.SpecPath)
 	}
 }

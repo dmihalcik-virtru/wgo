@@ -19,6 +19,12 @@ type Config struct {
 	UI        UIConfig        `mapstructure:"ui"`
 	Status    StatusConfig    `mapstructure:"status"`
 	Hooks     HooksConfig     `mapstructure:"hooks"`
+	Pair      PairConfig      `mapstructure:"pair"`
+}
+
+// PairConfig contains optional teammate metadata used by pair workflows.
+type PairConfig struct {
+	Teammate string `mapstructure:"teammate"`
 }
 
 // HooksConfig contains git hooks configuration.
