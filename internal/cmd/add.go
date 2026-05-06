@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/bujo"
@@ -14,12 +15,15 @@ import (
 	"github.com/virtru/wgo/internal/git"
 	gh "github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/plan"
+	"github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 )
 
 var (
-	addPriority bool
-	addRepos    []string
+	addPriority  bool
+	addRepos     []string
+	noSpecFlag   bool
+	specRepoFlag string
 )
 
 var addCmd = &cobra.Command{
@@ -59,6 +63,8 @@ func init() {
 	rootCmd.AddCommand(addCmd)
 	addCmd.Flags().BoolVarP(&addPriority, "priority", "p", false, "Mark as priority task")
 	addCmd.Flags().StringArrayVarP(&addRepos, "repo", "r", nil, "owner/repo to create worktree for (repeatable)")
+	addCmd.Flags().BoolVar(&noSpecFlag, "no-spec", false, "Skip scaffolding a spec file")
+	addCmd.Flags().StringVar(&specRepoFlag, "spec-repo", "", "owner/repo to place the spec in (defaults to first repo)")
 }
 
 func joinArgs(args []string) string {
@@ -130,7 +136,6 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 	}
 
 	// Validate and split owner/repo entries.
-	type repoSpec struct{ owner, repo string }
 	specs := make([]repoSpec, 0, len(repos))
 	for _, r := range repos {
 		parts := strings.SplitN(r, "/", 2)
@@ -188,6 +193,33 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 		fmt.Fprintf(os.Stderr, "created: %s\n", wtPath)
 	}
 
+	// Scaffold spec.
+	specRepo := specs[0]
+	if specRepoFlag != "" {
+		parsed, err := parseSpecRepoFlag(specRepoFlag, specs)
+		if err != nil {
+			return err
+		}
+		specRepo = parsed
+	}
+	specRepoWtPath := filepath.Join(sharedRoot, specRepo.repo)
+	specRel := filepath.Join("spec", ticket+".md")
+	specAbs := filepath.Join(specRepoWtPath, specRel)
+
+	if !noSpecFlag {
+		if err := writeSpecStub(specAbs, ticket, desc, cfg, branchName, specs); err != nil {
+			return fmt.Errorf("write spec: %w", err)
+		}
+		if err := gitClient.AddAndCommit(specRepoWtPath, specRel,
+			fmt.Sprintf("spec: scaffold for %s\n\n%s", ticket, desc)); err != nil {
+			return fmt.Errorf("commit spec: %w", err)
+		}
+		// Push the spec commit
+		if err := gitClient.Push(specRepoWtPath, branchName); err != nil {
+			return fmt.Errorf("push spec commit: %w", err)
+		}
+	}
+
 	// Update plan.
 	s, err := store.New()
 	if err != nil {
@@ -205,6 +237,11 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 		return fmt.Errorf("parse plan: %w", err)
 	}
 
+	state, err := s.LoadState()
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+
 	bullet := bujo.BulletOpen
 	if priority {
 		bullet = bujo.BulletPriority
@@ -215,12 +252,25 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 	}
 	p.AddTask(bullet, taskText)
 
-	for _, spec := range specs {
-		p.AddBranch(spec.repo, branchName, ticket+": "+desc)
+	for _, sp := range specs {
+		relSpec := ""
+		if sp == specRepo && !noSpecFlag {
+			relSpec = specRel
+		}
+		p.AddBranch(sp.repo, branchName, ticket+": "+desc, relSpec)
+
+		// Update state
+		state.AddAnnotation(filepath.Join(sharedRoot, sp.repo), branchName, ticket+": "+desc)
+		if relSpec != "" {
+			state.SetSpec(filepath.Join(sharedRoot, sp.repo), branchName, relSpec, "draft")
+		}
 	}
 
 	if err := s.SavePlan(p.Render()); err != nil {
 		return fmt.Errorf("save plan: %w", err)
+	}
+	if err := s.SaveState(state); err != nil {
+		return fmt.Errorf("save state: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "Added task: %s %s\n", string(bullet), taskText)
@@ -276,4 +326,49 @@ func truncateSlug(s string, maxLen int) string {
 		cut = cut[:idx]
 	}
 	return strings.TrimRight(cut, "-")
+}
+
+type repoSpec struct{ owner, repo string }
+
+func writeSpecStub(path, ticket, desc string, cfg *config.Config, branch string, repos []repoSpec) error {
+	if _, err := os.Stat(path); err == nil {
+		fmt.Fprintf(os.Stderr, "spec already exists: %s (skipping)\n", path)
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	authors := []string{cfg.Author}
+	// TODO: Add pair teammate if configured (WGO-103)
+
+	var branches []string
+	for _, r := range repos {
+		branches = append(branches, fmt.Sprintf("%s/%s:%s", r.owner, r.repo, branch))
+	}
+
+	data := spec.TemplateData{
+		Ticket:      ticket,
+		Description: desc,
+		Authors:     authors,
+		Branches:    branches,
+		Now:         time.Now(),
+	}
+
+	content, err := spec.RenderTemplate(data)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, content, 0644)
+}
+
+func parseSpecRepoFlag(flag string, specs []repoSpec) (repoSpec, error) {
+	for _, s := range specs {
+		if s.owner+"/"+s.repo == flag {
+			return s, nil
+		}
+	}
+	return repoSpec{}, fmt.Errorf("spec-repo %q not in -r list", flag)
 }

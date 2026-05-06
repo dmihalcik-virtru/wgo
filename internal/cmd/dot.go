@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
+	"github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
 )
@@ -158,6 +160,45 @@ func showContext() (bool, error) {
 		links.Link(commitLink, truncateHash(commit.Hash), tty),
 		commit.Message,
 		formatTime(commit.Date))
+
+	// Show Spec info
+	if s, err := store.New(); err == nil {
+		if state, err := s.LoadState(); err == nil {
+			if ann := state.GetAnnotation(cwd, branch); ann != nil {
+				if ann.SpecPath != "" {
+					status := ann.SpecState
+					if status == "" {
+						status = "draft"
+					}
+					fmt.Printf("spec:   📄 %s (%s, updated %s)\n",
+						ann.SpecPath, status, formatTime(ann.UpdatedAt))
+				} else {
+					ticket := spec.ParseTicketFromBranch(branch)
+					if ticket != "" {
+						specPath, err := spec.FindByBranch(cwd, branch)
+						if err != nil {
+							fmt.Printf("spec:   ⚠ no spec (run: wgo spec new %s)\n", ticket)
+						} else {
+							// Found it manually, maybe update state?
+							// For now just show it.
+							rel, _ := filepath.Rel(cwd, specPath)
+							fmt.Printf("spec:   📄 %s (found)\n", rel)
+						}
+					}
+				}
+			} else {
+				// No annotation, but maybe we can still find a spec by branch name
+				ticket := spec.ParseTicketFromBranch(branch)
+				if ticket != "" {
+					specPath, err := spec.FindByBranch(cwd, branch)
+					if err == nil {
+						rel, _ := filepath.Rel(cwd, specPath)
+						fmt.Printf("spec:   📄 %s (found)\n", rel)
+					}
+				}
+			}
+		}
+	}
 
 	for _, pr := range prs {
 		label := fmt.Sprintf("#%d %s", pr.Number, pr.Title)

@@ -24,6 +24,7 @@ type BranchEntry struct {
 	Repo      string
 	Branch    string
 	Reason    string
+	SpecPath  string // relative to repoRoot
 	CreatedAt time.Time
 }
 
@@ -32,6 +33,7 @@ type EffortEntry struct {
 	Name        string
 	Description string
 	Branches    []string // "repo:branch" format
+	SpecPath    string
 }
 
 // Parse parses plan file content.
@@ -95,15 +97,15 @@ func (p *Plan) parseActiveBranchLine(line string) {
 		return
 	}
 
-	// Format: "- **repo/branch** — description"
+	// Format: "- **repo:branch** — description [📄 spec/path.md]"
 	if !strings.HasPrefix(line, "- ") {
 		return
 	}
 
 	line = strings.TrimPrefix(line, "- ")
 
-	// Extract branch info from **...**
-	re := regexp.MustCompile(`\*\*([^:]+):([^\*]+)\*\*\s*(?:—|-)?\s*(.*)`)
+	// Extract branch info from **...** and optional spec path
+	re := regexp.MustCompile(`\*\*([^:]+):([^\*]+)\*\*\s*(?:—|-)?\s*(.*?)(?:\s+📄\s+(\S+))?$`)
 	matches := re.FindStringSubmatch(line)
 	if len(matches) < 4 {
 		// Try alternate format
@@ -131,13 +133,18 @@ func (p *Plan) parseActiveBranchLine(line string) {
 
 	repo := matches[1]
 	branch := matches[2]
-	reason := matches[3]
+	reason := strings.TrimSpace(matches[3])
+	specPath := ""
+	if len(matches) > 4 {
+		specPath = matches[4]
+	}
 
 	key := repo + ":" + branch
 	p.ActiveBranches[key] = BranchEntry{
-		Repo:   repo,
-		Branch: branch,
-		Reason: reason,
+		Repo:     repo,
+		Branch:   branch,
+		Reason:   reason,
+		SpecPath: specPath,
 	}
 }
 
@@ -163,7 +170,11 @@ func (p *Plan) Render() string {
 		if key == "" {
 			continue
 		}
-		buf.WriteString(fmt.Sprintf("- **%s:%s** — %s\n", entry.Repo, entry.Branch, entry.Reason))
+		specSuffix := ""
+		if entry.SpecPath != "" {
+			specSuffix = fmt.Sprintf(" 📄 %s", entry.SpecPath)
+		}
+		buf.WriteString(fmt.Sprintf("- **%s:%s** — %s%s\n", entry.Repo, entry.Branch, entry.Reason, specSuffix))
 	}
 
 	// Write efforts if any
@@ -196,12 +207,17 @@ func (p *Plan) Render() string {
 }
 
 // AddBranch adds or updates a branch entry.
-func (p *Plan) AddBranch(repo, branch, reason string) {
+func (p *Plan) AddBranch(repo, branch, reason string, specPath ...string) {
 	key := repo + ":" + branch
+	sp := ""
+	if len(specPath) > 0 {
+		sp = specPath[0]
+	}
 	p.ActiveBranches[key] = BranchEntry{
 		Repo:      repo,
 		Branch:    branch,
 		Reason:    reason,
+		SpecPath:  sp,
 		CreatedAt: time.Now(),
 	}
 }
