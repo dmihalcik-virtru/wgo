@@ -24,6 +24,7 @@ type BranchEntry struct {
 	Repo      string
 	Branch    string
 	Reason    string
+	SpecPath  string // relative to repo root, e.g. "spec/WGO-101.md"; empty when no spec
 	CreatedAt time.Time
 }
 
@@ -32,6 +33,7 @@ type EffortEntry struct {
 	Name        string
 	Description string
 	Branches    []string // "repo:branch" format
+	SpecPath    string   // canonical spec for cross-repo efforts; empty when no spec
 }
 
 // Parse parses plan file content.
@@ -102,8 +104,9 @@ func (p *Plan) parseActiveBranchLine(line string) {
 
 	line = strings.TrimPrefix(line, "- ")
 
-	// Extract branch info from **...**
-	re := regexp.MustCompile(`\*\*([^:]+):([^\*]+)\*\*\s*(?:—|-)?\s*(.*)`)
+	// Extract branch info from **...**, with an optional trailing
+	// "📄 <spec/path>" suffix marking the canonical spec.
+	re := regexp.MustCompile(`\*\*([^:]+):([^\*]+)\*\*\s*(?:—|-)?\s*(.*?)(?:\s+📄\s+(\S+))?$`)
 	matches := re.FindStringSubmatch(line)
 	if len(matches) < 4 {
 		// Try alternate format
@@ -131,13 +134,18 @@ func (p *Plan) parseActiveBranchLine(line string) {
 
 	repo := matches[1]
 	branch := matches[2]
-	reason := matches[3]
+	reason := strings.TrimSpace(matches[3])
+	specPath := ""
+	if len(matches) >= 5 {
+		specPath = matches[4]
+	}
 
 	key := repo + ":" + branch
 	p.ActiveBranches[key] = BranchEntry{
-		Repo:   repo,
-		Branch: branch,
-		Reason: reason,
+		Repo:     repo,
+		Branch:   branch,
+		Reason:   reason,
+		SpecPath: specPath,
 	}
 }
 
@@ -163,7 +171,11 @@ func (p *Plan) Render() string {
 		if key == "" {
 			continue
 		}
-		buf.WriteString(fmt.Sprintf("- **%s:%s** — %s\n", entry.Repo, entry.Branch, entry.Reason))
+		line := fmt.Sprintf("- **%s:%s** — %s", entry.Repo, entry.Branch, entry.Reason)
+		if entry.SpecPath != "" {
+			line += " 📄 " + entry.SpecPath
+		}
+		buf.WriteString(line + "\n")
 	}
 
 	// Write efforts if any
@@ -195,13 +207,19 @@ func (p *Plan) Render() string {
 	return buf.String()
 }
 
-// AddBranch adds or updates a branch entry.
-func (p *Plan) AddBranch(repo, branch, reason string) {
+// AddBranch adds or updates a branch entry. The optional specPath argument
+// records the canonical spec file for the branch (e.g. "spec/WGO-101.md").
+func (p *Plan) AddBranch(repo, branch, reason string, specPath ...string) {
+	sp := ""
+	if len(specPath) > 0 {
+		sp = specPath[0]
+	}
 	key := repo + ":" + branch
 	p.ActiveBranches[key] = BranchEntry{
 		Repo:      repo,
 		Branch:    branch,
 		Reason:    reason,
+		SpecPath:  sp,
 		CreatedAt: time.Now(),
 	}
 }

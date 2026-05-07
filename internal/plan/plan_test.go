@@ -167,6 +167,84 @@ func TestParseMultipleBranches(t *testing.T) {
 	}
 }
 
+func TestParseBranchWithSpec(t *testing.T) {
+	content := `# Plan
+
+## Active Branches
+
+- **virtru/wgo:WGO-101-spec-foo** — WGO-101: spec scaffold 📄 spec/WGO-101.md
+
+## Notes
+`
+	plan, err := Parse(content)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	entry := plan.GetBranch("virtru/wgo", "WGO-101-spec-foo")
+	if entry == nil {
+		t.Fatalf("expected to find branch entry")
+	}
+	if entry.Reason != "WGO-101: spec scaffold" {
+		t.Errorf("Reason = %q, want %q", entry.Reason, "WGO-101: spec scaffold")
+	}
+	if entry.SpecPath != "spec/WGO-101.md" {
+		t.Errorf("SpecPath = %q, want spec/WGO-101.md", entry.SpecPath)
+	}
+}
+
+func TestRoundTripWithSpec(t *testing.T) {
+	plan := &Plan{
+		ActiveBranches: make(map[string]BranchEntry),
+		Efforts:        make(map[string]EffortEntry),
+	}
+	plan.AddBranch("virtru/wgo", "WGO-101-spec-foo", "WGO-101: spec scaffold", "spec/WGO-101.md")
+
+	rendered := plan.Render()
+	if !strings.Contains(rendered, "📄 spec/WGO-101.md") {
+		t.Errorf("rendered output missing spec marker:\n%s", rendered)
+	}
+
+	plan2, err := Parse(rendered)
+	if err != nil {
+		t.Fatalf("re-parse failed: %v", err)
+	}
+	entry := plan2.GetBranch("virtru/wgo", "WGO-101-spec-foo")
+	if entry == nil {
+		t.Fatalf("expected branch after round-trip")
+	}
+	if entry.SpecPath != "spec/WGO-101.md" {
+		t.Errorf("round-trip SpecPath = %q, want spec/WGO-101.md", entry.SpecPath)
+	}
+	if entry.Reason != "WGO-101: spec scaffold" {
+		t.Errorf("round-trip Reason = %q, want %q", entry.Reason, "WGO-101: spec scaffold")
+	}
+}
+
+func TestParseLegacyBranchLineNoSpec(t *testing.T) {
+	content := `# Plan
+
+## Active Branches
+
+- **repo:branch** — old reason without spec
+
+## Notes
+`
+	plan, err := Parse(content)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	entry := plan.GetBranch("repo", "branch")
+	if entry == nil {
+		t.Fatalf("expected branch entry")
+	}
+	if entry.SpecPath != "" {
+		t.Errorf("legacy line should have empty SpecPath, got %q", entry.SpecPath)
+	}
+	if entry.Reason != "old reason without spec" {
+		t.Errorf("Reason = %q, want %q", entry.Reason, "old reason without spec")
+	}
+}
+
 func TestRenderPreservesStructure(t *testing.T) {
 	plan := &Plan{
 		ActiveBranches: make(map[string]BranchEntry),

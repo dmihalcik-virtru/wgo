@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
+	specpkg "github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
 )
@@ -163,6 +166,24 @@ func showContext() (bool, error) {
 		label := fmt.Sprintf("#%d %s", pr.Number, pr.Title)
 		state := strings.ToUpper(pr.State)
 		fmt.Printf("pr:     %s [%s]\n", links.Link(pr.URL, label, tty), state)
+	}
+
+	// Show spec for ticket-bearing branches.
+	if ticket := specpkg.ParseTicketFromBranch(branch); ticket != "" {
+		repoRoot := cwd
+		if out, rerr := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel").Output(); rerr == nil {
+			repoRoot = strings.TrimSpace(string(out))
+		}
+		specPath, err := specpkg.FindByTicket(repoRoot, ticket)
+		if err == nil {
+			if sf, perr := specpkg.Parse(specPath); perr == nil {
+				rel, _ := filepath.Rel(repoRoot, specPath)
+				updated := sf.Frontmatter.Updated.Format("2006-01-02")
+				fmt.Printf("spec:   📄 %s (%s, updated %s)\n", rel, sf.Frontmatter.Status, updated)
+			}
+		} else {
+			fmt.Printf("spec:   ⚠ no spec (run: wgo spec new %s)\n", ticket)
+		}
 	}
 
 	// Show tasks linked to this branch
