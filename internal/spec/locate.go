@@ -4,14 +4,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
-var ticketRe = regexp.MustCompile(`^([A-Z]+-\d+)`)
+var ticketRe = regexp.MustCompile(`(?i)^([A-Za-z]+-\d+)`)
 
 func ParseTicketFromBranch(branch string) string {
 	matches := ticketRe.FindStringSubmatch(branch)
 	if len(matches) > 1 {
-		return matches[1]
+		return strings.ToUpper(matches[1])
 	}
 	return ""
 }
@@ -20,6 +21,7 @@ func FindByTicket(repoRoot, ticket string) (string, error) {
 	if ticket == "" {
 		return "", os.ErrNotExist
 	}
+	ticket = strings.ToUpper(ticket)
 	path := filepath.Join(repoRoot, "spec", ticket+".md")
 	if _, err := os.Stat(path); err != nil {
 		return "", err
