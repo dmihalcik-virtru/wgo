@@ -23,6 +23,8 @@ type RepoInfo struct {
 // Annotation contains information about why a branch exists.
 type Annotation struct {
 	Purpose   string    `json:"purpose"`
+	SpecPath  string    `json:"spec_path,omitempty"`
+	SpecState string    `json:"spec_state,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -60,20 +62,14 @@ func NewState() *State {
 func (s *State) AddAnnotation(repoPath, branch, purpose string) {
 	key := repoPath + ":" + branch
 	now := time.Now()
-
-	existing, exists := s.Annotations[key]
-	if exists {
-		s.Annotations[key] = Annotation{
-			Purpose:   purpose,
-			CreatedAt: existing.CreatedAt,
-			UpdatedAt: now,
-		}
-	} else {
-		s.Annotations[key] = Annotation{
-			Purpose:   purpose,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
+	createdAt := now
+	if existing, exists := s.Annotations[key]; exists {
+		createdAt = existing.CreatedAt
+	}
+	s.Annotations[key] = Annotation{
+		Purpose:   purpose,
+		CreatedAt: createdAt,
+		UpdatedAt: now,
 	}
 }
 
@@ -84,6 +80,21 @@ func (s *State) GetAnnotation(repoPath, branch string) *Annotation {
 		return &ann
 	}
 	return nil
+}
+
+// SetSpec records spec_path and spec_state on an annotation, creating one if needed.
+// Other fields (Purpose, CreatedAt) are preserved.
+func (s *State) SetSpec(repoPath, branch, specPath, specState string) {
+	key := repoPath + ":" + branch
+	now := time.Now()
+	ann := s.Annotations[key]
+	if ann.CreatedAt.IsZero() {
+		ann.CreatedAt = now
+	}
+	ann.SpecPath = specPath
+	ann.SpecState = specState
+	ann.UpdatedAt = now
+	s.Annotations[key] = ann
 }
 
 // RemoveAnnotation removes an annotation.

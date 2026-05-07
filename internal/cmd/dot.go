@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
+	"github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
 )
@@ -176,7 +178,52 @@ func showContext() (bool, error) {
 		}
 	}
 
+	// Show spec for ticket branches.
+	if ticket := spec.ParseTicketFromBranch(branch); ticket != "" {
+		showSpec(cwd, branch, ticket)
+	}
+
 	return dirty, nil
+}
+
+func showSpec(cwd, branch, ticket string) {
+	var (
+		specPath  string
+		specState string
+		updatedAt time.Time
+	)
+
+	// Fast path: check state annotation.
+	if st, err := store.New(); err == nil {
+		if state, err := st.LoadState(); err == nil {
+			if ann := state.GetAnnotation(cwd, branch); ann != nil && ann.SpecPath != "" {
+				specPath = ann.SpecPath
+				specState = ann.SpecState
+				updatedAt = ann.UpdatedAt
+			}
+		}
+	}
+
+	// Fall back to file discovery.
+	if specPath == "" {
+		if found, err := spec.FindByBranch(cwd, branch); err == nil {
+			if sf, err := spec.Parse(found); err == nil {
+				specPath = filepath.Join("spec", ticket+".md")
+				specState = string(sf.Frontmatter.Status)
+				updatedAt = sf.Frontmatter.Updated
+			}
+		}
+	}
+
+	if specPath == "" {
+		fmt.Printf("spec:   ⚠ no spec (run: wgo spec new %s)\n", ticket)
+		return
+	}
+	dateStr := ""
+	if !updatedAt.IsZero() {
+		dateStr = ", updated " + updatedAt.Format("2006-01-02")
+	}
+	fmt.Printf("spec:   📄 %s (%s%s)\n", specPath, specState, dateStr)
 }
 
 func isDirty(status models.GitStatus) bool {

@@ -24,6 +24,7 @@ type BranchEntry struct {
 	Repo      string
 	Branch    string
 	Reason    string
+	SpecPath  string // relative to repo root, e.g. "spec/WGO-101.md"
 	CreatedAt time.Time
 }
 
@@ -32,6 +33,7 @@ type EffortEntry struct {
 	Name        string
 	Description string
 	Branches    []string // "repo:branch" format
+	SpecPath    string
 }
 
 // Parse parses plan file content.
@@ -88,53 +90,44 @@ func (p *Plan) parseSections(content string) error {
 	return nil
 }
 
+// activeBranchRe matches "- **repo:branch** — reason [📄 spec/path]".
+// Group 1: repo, group 2: branch, group 3: reason, group 4: optional spec path.
+var activeBranchRe = regexp.MustCompile(`\*\*([^:]+):([^\*]+)\*\*\s*(?:—|-)?\s*(.*?)\s*(?:📄\s+(\S+))?$`)
+
 // parseActiveBranchLine parses a single line from the Active Branches section.
 func (p *Plan) parseActiveBranchLine(line string) {
 	line = strings.TrimSpace(line)
-	if line == "" {
-		return
-	}
-
-	// Format: "- **repo/branch** — description"
 	if !strings.HasPrefix(line, "- ") {
 		return
 	}
-
 	line = strings.TrimPrefix(line, "- ")
 
-	// Extract branch info from **...**
-	re := regexp.MustCompile(`\*\*([^:]+):([^\*]+)\*\*\s*(?:—|-)?\s*(.*)`)
-	matches := re.FindStringSubmatch(line)
-	if len(matches) < 4 {
-		// Try alternate format
-		if strings.Contains(line, ":") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				repo := strings.Trim(parts[0], "* ")
-				rest := parts[1]
-
-				if idx := strings.Index(rest, "—"); idx != -1 {
-					branch := strings.TrimSpace(rest[:idx])
-					reason := strings.TrimSpace(rest[idx+1:])
-
-					key := repo + ":" + branch
-					p.ActiveBranches[key] = BranchEntry{
-						Repo:   repo,
-						Branch: branch,
-						Reason: reason,
-					}
-				}
-			}
+	if matches := activeBranchRe.FindStringSubmatch(line); len(matches) >= 4 {
+		entry := BranchEntry{
+			Repo:   matches[1],
+			Branch: matches[2],
+			Reason: matches[3],
 		}
+		if len(matches) >= 5 {
+			entry.SpecPath = matches[4]
+		}
+		p.ActiveBranches[entry.Repo+":"+entry.Branch] = entry
 		return
 	}
 
-	repo := matches[1]
-	branch := matches[2]
-	reason := matches[3]
-
-	key := repo + ":" + branch
-	p.ActiveBranches[key] = BranchEntry{
+	// Fallback for legacy format without ** delimiters: "repo:branch — reason".
+	repo, rest, ok := strings.Cut(line, ":")
+	if !ok {
+		return
+	}
+	branch, reason, ok := strings.Cut(rest, "—")
+	if !ok {
+		return
+	}
+	repo = strings.Trim(repo, "* ")
+	branch = strings.TrimSpace(branch)
+	reason = strings.TrimSpace(reason)
+	p.ActiveBranches[repo+":"+branch] = BranchEntry{
 		Repo:   repo,
 		Branch: branch,
 		Reason: reason,
@@ -163,7 +156,11 @@ func (p *Plan) Render() string {
 		if key == "" {
 			continue
 		}
-		buf.WriteString(fmt.Sprintf("- **%s:%s** — %s\n", entry.Repo, entry.Branch, entry.Reason))
+		line := fmt.Sprintf("- **%s:%s** — %s", entry.Repo, entry.Branch, entry.Reason)
+		if entry.SpecPath != "" {
+			line += " 📄 " + entry.SpecPath
+		}
+		buf.WriteString(line + "\n")
 	}
 
 	// Write efforts if any
@@ -195,13 +192,18 @@ func (p *Plan) Render() string {
 	return buf.String()
 }
 
-// AddBranch adds or updates a branch entry.
-func (p *Plan) AddBranch(repo, branch, reason string) {
-	key := repo + ":" + branch
-	p.ActiveBranches[key] = BranchEntry{
+// AddBranch adds or updates a branch entry. The optional specPath argument
+// records the spec file path (relative to the repo root).
+func (p *Plan) AddBranch(repo, branch, reason string, specPath ...string) {
+	sp := ""
+	if len(specPath) > 0 {
+		sp = specPath[0]
+	}
+	p.ActiveBranches[repo+":"+branch] = BranchEntry{
 		Repo:      repo,
 		Branch:    branch,
 		Reason:    reason,
+		SpecPath:  sp,
 		CreatedAt: time.Now(),
 	}
 }

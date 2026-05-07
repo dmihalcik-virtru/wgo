@@ -47,6 +47,7 @@ type Client interface {
 	ListLocalBranches(repoPath string) ([]string, error)
 	IsBranchMerged(repoPath, branch, base string) (bool, error)
 	Push(repoPath, branch string) error
+	AddAndCommit(wtPath, relPath, message string) error
 }
 
 // CLIClient is a Git client implementation using the git CLI.
@@ -345,6 +346,17 @@ func (c *CLIClient) WorktreeAdd(repoPath, wtPath, branch string, create bool, st
 func (c *CLIClient) Push(repoPath, branch string) error {
 	_, err := c.runInPath(repoPath, "push", "-u", "origin", branch)
 	return err
+}
+
+// AddAndCommit stages relPath and creates a commit with message in wtPath.
+func (c *CLIClient) AddAndCommit(wtPath, relPath, message string) error {
+	if _, err := c.runInPath(wtPath, "add", relPath); err != nil {
+		return fmt.Errorf("git add: %w", err)
+	}
+	if _, err := c.runInPath(wtPath, "commit", "-m", message, "--", relPath); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	return nil
 }
 
 // Fetch runs git fetch --all --prune in the given repo.
