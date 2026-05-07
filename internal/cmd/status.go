@@ -19,18 +19,19 @@ import (
 )
 
 var (
-	statusSince    string
-	statusFilter   string
-	statusSort     string
-	statusWatch    bool
-	statusInterval int
-	statusVerbose  bool
-	statusJSON     bool
-	statusCSV      bool
-	statusGo       int
-	statusOpen     int
-	statusStale    int
-	statusExitCode bool
+	statusSince     string
+	statusFilter    string
+	statusSort      string
+	statusWatch     bool
+	statusInterval  int
+	statusVerbose   bool
+	statusJSON      bool
+	statusCSV       bool
+	statusGo        int
+	statusOpen      int
+	statusStale     int
+	statusExitCode  bool
+	statusNoSpecCol bool
 )
 
 var statusCmd = &cobra.Command{
@@ -70,6 +71,7 @@ func init() {
 	statusCmd.Flags().IntVar(&statusOpen, "open", 0, "Open row N's PR in browser, or path in Finder")
 	statusCmd.Flags().IntVar(&statusStale, "stale-days", 0, "Days of inactivity before marking stale (default from config)")
 	statusCmd.Flags().BoolVar(&statusExitCode, "exit-code", false, "Exit 1 if any dirty repos are found")
+	statusCmd.Flags().BoolVar(&statusNoSpecCol, "no-spec-column", false, "Hide the Spec column")
 }
 
 func runStatus() error {
@@ -182,6 +184,9 @@ func runStatus() error {
 		}
 	}
 
+	// Determine spec column visibility.
+	showSpec := cfg.Status.ShowSpecColumn && !statusNoSpecCol
+
 	// Render
 	var renderErr error
 	if statusJSON {
@@ -194,7 +199,7 @@ func runStatus() error {
 			fmt.Println(a.Path)
 		}
 	} else {
-		status.RenderTable(os.Stdout, activities, statusVerbose, true)
+		status.RenderTableWithSpec(os.Stdout, activities, statusVerbose, showSpec, true)
 	}
 
 	if renderErr != nil {
@@ -236,8 +241,11 @@ func renderWatch(ctx context.Context, collector *status.Collector, repos []disco
 	status.SortActivities(activities, sortBy)
 	activities = status.GroupWorktrees(activities)
 
+	cfg := config.Get()
+	showSpec := cfg.Status.ShowSpecColumn && !statusNoSpecCol
+
 	status.RenderWatchHeader(os.Stdout, activities, statusSince, sortBy)
-	status.RenderTable(os.Stdout, activities, statusVerbose, true)
+	status.RenderTableWithSpec(os.Stdout, activities, statusVerbose, showSpec, true)
 
 	fmt.Println("\n[Press Ctrl+C to exit]")
 }

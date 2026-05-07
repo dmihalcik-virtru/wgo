@@ -12,6 +12,7 @@ import (
 	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
+	"github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
 )
@@ -245,6 +246,9 @@ func (c *Collector) collectOne(ctx context.Context, repo discovery.DiscoveredRep
 	// Annotation from plan or state
 	activity.Annotation = c.lookupAnnotation(repo.Name, repo.Path, branch)
 
+	// Spec glyph
+	activity.SpecGlyph = specGlyph(repo.Path, branch, c.state)
+
 	// Check context cancellation
 	if ctx.Err() != nil {
 		return activity
@@ -286,6 +290,48 @@ func (c *Collector) determineLastActivity(_ context.Context, repoPath string, co
 	}
 
 	return latest
+}
+
+// specGlyph returns the single-character spec status glyph for a branch.
+// It checks the state annotation cache first, then falls back to parsing the spec file.
+func specGlyph(repoPath, branch string, state *store.State) string {
+	ticket := spec.ParseTicketFromBranch(branch)
+	if ticket == "" {
+		return " "
+	}
+
+	// Cache hit: use annotation SpecState.
+	if state != nil {
+		if ann := state.GetAnnotation(repoPath, branch); ann != nil && ann.SpecState != "" {
+			return specStatusGlyph(spec.Status(ann.SpecState))
+		}
+	}
+
+	// Cache miss: parse the spec file directly.
+	specPath, err := spec.FindByTicket(repoPath, ticket)
+	if err != nil {
+		return "⚠"
+	}
+	sf, err := spec.Parse(specPath)
+	if err != nil || sf.Frontmatter.Ticket == "" {
+		return "⚠"
+	}
+	return specStatusGlyph(sf.Frontmatter.Status)
+}
+
+func specStatusGlyph(s spec.Status) string {
+	switch s {
+	case spec.StatusDraft:
+		return "●"
+	case spec.StatusInProgress:
+		return "◐"
+	case spec.StatusShipped:
+		return "✓"
+	case spec.StatusAbandoned:
+		return "−"
+	default:
+		return "●"
+	}
 }
 
 // lookupAnnotation checks plan then state for a branch annotation.

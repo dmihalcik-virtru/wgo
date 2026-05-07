@@ -68,4 +68,5 @@ type RepoActivity struct {
 	IsWorktree    bool       `json:"is_worktree,omitempty"`
 	MainRepoName  string     `json:"main_repo_name,omitempty"`
 	MainRepoPath  string     `json:"main_repo_path,omitempty"`
+	SpecGlyph     string     `json:"spec_glyph,omitempty"`
 }

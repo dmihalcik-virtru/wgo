@@ -14,14 +14,30 @@ import (
 
 // RenderTable writes activities as a formatted table.
 // When tty is true, repo and branch names are rendered as clickable OSC8 hyperlinks.
+// When showSpec is true, a Spec column is appended showing the spec status glyph.
 func RenderTable(w io.Writer, activities []models.RepoActivity, verbose bool, tty ...bool) {
+	RenderTableWithSpec(w, activities, verbose, false, tty...)
+}
+
+// RenderTableWithSpec is like RenderTable but allows controlling the Spec column.
+func RenderTableWithSpec(w io.Writer, activities []models.RepoActivity, verbose, showSpec bool, tty ...bool) {
 	isTTY := len(tty) > 0 && tty[0]
 	if verbose {
-		fmt.Fprintf(w, "  %-3s %-18s %-20s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
-			"#", "REPO", "BRANCH", "STATUS", "CHANGES", "COMMITS", "LINES", "ACTIVITY", "WHY", "PATH")
+		if showSpec {
+			fmt.Fprintf(w, "  %-3s %-18s %-20s %-4s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
+				"#", "REPO", "BRANCH", "SPEC", "STATUS", "CHANGES", "COMMITS", "LINES", "ACTIVITY", "WHY", "PATH")
+		} else {
+			fmt.Fprintf(w, "  %-3s %-18s %-20s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
+				"#", "REPO", "BRANCH", "STATUS", "CHANGES", "COMMITS", "LINES", "ACTIVITY", "WHY", "PATH")
+		}
 	} else {
-		fmt.Fprintf(w, "  %-3s %-18s %-20s %-10s %-10s %-8s %s\n",
-			"#", "REPO", "BRANCH", "STATUS", "CHANGES", "COMMITS", "ACTIVITY")
+		if showSpec {
+			fmt.Fprintf(w, "  %-3s %-18s %-20s %-4s %-10s %-10s %-8s %s\n",
+				"#", "REPO", "BRANCH", "SPEC", "STATUS", "CHANGES", "COMMITS", "ACTIVITY")
+		} else {
+			fmt.Fprintf(w, "  %-3s %-18s %-20s %-10s %-10s %-8s %s\n",
+				"#", "REPO", "BRANCH", "STATUS", "CHANGES", "COMMITS", "ACTIVITY")
+		}
 	}
 
 	for i, a := range activities {
@@ -37,6 +53,7 @@ func RenderTable(w io.Writer, activities []models.RepoActivity, verbose bool, tt
 		changes := formatChanges(a.Status)
 		commits := fmt.Sprintf("%d", a.RecentCommits)
 		activity := formatTimeSince(a.LastActivity)
+		specCol := a.SpecGlyph
 
 		if verbose {
 			lines := formatLines(a.DiffStat)
@@ -44,11 +61,21 @@ func RenderTable(w io.Writer, activities []models.RepoActivity, verbose bool, tt
 			if why == "" {
 				why = "—"
 			}
-			fmt.Fprintf(w, "  %-3d %-18s %-20s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
-				i+1, name, branch, state, changes, commits, lines, activity, why, a.Path)
+			if showSpec {
+				fmt.Fprintf(w, "  %-3d %-18s %-20s %-4s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
+					i+1, name, branch, specCol, state, changes, commits, lines, activity, why, a.Path)
+			} else {
+				fmt.Fprintf(w, "  %-3d %-18s %-20s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
+					i+1, name, branch, state, changes, commits, lines, activity, why, a.Path)
+			}
 		} else {
-			fmt.Fprintf(w, "  %-3d %-18s %-20s %-10s %-10s %-8s %s\n",
-				i+1, name, branch, state, changes, commits, activity)
+			if showSpec {
+				fmt.Fprintf(w, "  %-3d %-18s %-20s %-4s %-10s %-10s %-8s %s\n",
+					i+1, name, branch, specCol, state, changes, commits, activity)
+			} else {
+				fmt.Fprintf(w, "  %-3d %-18s %-20s %-10s %-10s %-8s %s\n",
+					i+1, name, branch, state, changes, commits, activity)
+			}
 		}
 	}
 }

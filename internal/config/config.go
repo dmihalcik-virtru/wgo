@@ -33,6 +33,7 @@ type StatusConfig struct {
 	DefaultSort     string `mapstructure:"default_sort"`
 	StaleDays       int    `mapstructure:"stale_days"`
 	RefreshInterval int    `mapstructure:"refresh_interval"`
+	ShowSpecColumn  bool   `mapstructure:"show_spec_column"`
 }
 
 // DiscoveryConfig contains directory discovery configuration.
@@ -124,6 +125,7 @@ func setDefaults() {
 	viper.SetDefault("status.default_sort", "activity")
 	viper.SetDefault("status.stale_days", 14)
 	viper.SetDefault("status.refresh_interval", 5)
+	viper.SetDefault("status.show_spec_column", true)
 	viper.SetDefault("hooks.enabled", true)
 	viper.SetDefault("hooks.auto_plan", true)
 	viper.SetDefault("hooks.exclude_branches", []string{"main", "master", "develop", "release/*"})
