@@ -198,3 +198,72 @@ func TestRenderPreservesStructure(t *testing.T) {
 		t.Errorf("expected notes content in rendered output")
 	}
 }
+
+func TestBackwardCompatOldPlanFormat(t *testing.T) {
+	content := `# Plan
+
+## Active Branches
+
+- **virtru/wgo:feat/plan-parser** — Add initial plan file parsing
+- **virtru/api:fix/auth** — Fix auth bug
+
+## Notes
+
+Some notes.
+`
+
+	plan, err := Parse(content)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	rendered := plan.Render()
+	plan2, err := Parse(rendered)
+	if err != nil {
+		t.Fatalf("Parse of rendered content failed: %v", err)
+	}
+
+	entry1 := plan2.GetBranch("virtru/wgo", "feat/plan-parser")
+	if entry1 == nil || entry1.SpecPath != "" {
+		t.Errorf("old format should not create SpecPath")
+	}
+}
+
+func TestSpecPathRoundTrip(t *testing.T) {
+	content := `# Plan
+
+## Active Branches
+
+- **virtru/wgo:feat/spec** — Add spec feature 📄 spec/WGO-101.md
+
+## Notes
+`
+
+	plan, err := Parse(content)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	entry := plan.GetBranch("virtru/wgo", "feat/spec")
+	if entry == nil {
+		t.Fatalf("expected to find branch")
+	}
+	if entry.SpecPath != "spec/WGO-101.md" {
+		t.Errorf("expected SpecPath 'spec/WGO-101.md', got %q", entry.SpecPath)
+	}
+
+	rendered := plan.Render()
+	if !strings.Contains(rendered, "📄 spec/WGO-101.md") {
+		t.Errorf("rendered output should contain spec path with emoji")
+	}
+
+	plan2, err := Parse(rendered)
+	if err != nil {
+		t.Fatalf("Parse of rendered content failed: %v", err)
+	}
+
+	entry2 := plan2.GetBranch("virtru/wgo", "feat/spec")
+	if entry2 == nil || entry2.SpecPath != "spec/WGO-101.md" {
+		t.Errorf("spec path not preserved in round-trip")
+	}
+}

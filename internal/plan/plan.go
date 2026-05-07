@@ -24,6 +24,7 @@ type BranchEntry struct {
 	Repo      string
 	Branch    string
 	Reason    string
+	SpecPath  string
 	CreatedAt time.Time
 }
 
@@ -32,6 +33,7 @@ type EffortEntry struct {
 	Name        string
 	Description string
 	Branches    []string // "repo:branch" format
+	SpecPath    string
 }
 
 // Parse parses plan file content.
@@ -95,12 +97,19 @@ func (p *Plan) parseActiveBranchLine(line string) {
 		return
 	}
 
-	// Format: "- **repo/branch** — description"
+	// Format: "- **repo/branch** — description" or "- **repo/branch** — description 📄 spec/path.md"
 	if !strings.HasPrefix(line, "- ") {
 		return
 	}
 
 	line = strings.TrimPrefix(line, "- ")
+
+	// Extract spec path if present (trailing 📄 ...)
+	specPath := ""
+	if idx := strings.Index(line, " 📄 "); idx != -1 {
+		specPath = strings.TrimSpace(line[idx+5:])
+		line = strings.TrimSpace(line[:idx])
+	}
 
 	// Extract branch info from **...**
 	re := regexp.MustCompile(`\*\*([^:]+):([^\*]+)\*\*\s*(?:—|-)?\s*(.*)`)
@@ -119,9 +128,10 @@ func (p *Plan) parseActiveBranchLine(line string) {
 
 					key := repo + ":" + branch
 					p.ActiveBranches[key] = BranchEntry{
-						Repo:   repo,
-						Branch: branch,
-						Reason: reason,
+						Repo:     repo,
+						Branch:   branch,
+						Reason:   reason,
+						SpecPath: specPath,
 					}
 				}
 			}
@@ -135,9 +145,10 @@ func (p *Plan) parseActiveBranchLine(line string) {
 
 	key := repo + ":" + branch
 	p.ActiveBranches[key] = BranchEntry{
-		Repo:   repo,
-		Branch: branch,
-		Reason: reason,
+		Repo:     repo,
+		Branch:   branch,
+		Reason:   reason,
+		SpecPath: specPath,
 	}
 }
 
@@ -163,19 +174,23 @@ func (p *Plan) Render() string {
 		if key == "" {
 			continue
 		}
-		buf.WriteString(fmt.Sprintf("- **%s:%s** — %s\n", entry.Repo, entry.Branch, entry.Reason))
+		line := fmt.Sprintf("- **%s:%s** — %s", entry.Repo, entry.Branch, entry.Reason)
+		if entry.SpecPath != "" {
+			line += " 📄 " + entry.SpecPath
+		}
+		buf.WriteString(line + "\n")
 	}
 
 	// Write efforts if any
 	if len(p.Efforts) > 0 {
 		buf.WriteString("\n## Efforts\n\n")
 		for _, effort := range p.Efforts {
-			buf.WriteString(fmt.Sprintf("### %s\n", effort.Name))
+			fmt.Fprintf(&buf, "### %s\n", effort.Name)
 			if effort.Description != "" {
 				buf.WriteString(effort.Description + "\n\n")
 			}
 			for _, branch := range effort.Branches {
-				buf.WriteString(fmt.Sprintf("- %s\n", branch))
+				fmt.Fprintf(&buf, "- %s\n", branch)
 			}
 			buf.WriteString("\n")
 		}
@@ -196,12 +211,17 @@ func (p *Plan) Render() string {
 }
 
 // AddBranch adds or updates a branch entry.
-func (p *Plan) AddBranch(repo, branch, reason string) {
+func (p *Plan) AddBranch(repo, branch, reason string, specPath ...string) {
 	key := repo + ":" + branch
+	sp := ""
+	if len(specPath) > 0 {
+		sp = specPath[0]
+	}
 	p.ActiveBranches[key] = BranchEntry{
 		Repo:      repo,
 		Branch:    branch,
 		Reason:    reason,
+		SpecPath:  sp,
 		CreatedAt: time.Now(),
 	}
 }

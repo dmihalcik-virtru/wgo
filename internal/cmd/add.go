@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/bujo"
@@ -14,12 +15,15 @@ import (
 	"github.com/virtru/wgo/internal/git"
 	gh "github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/plan"
+	"github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 )
 
 var (
 	addPriority bool
 	addRepos    []string
+	addNoSpec   bool
+	addSpecRepo string
 )
 
 var addCmd = &cobra.Command{
@@ -59,6 +63,8 @@ func init() {
 	rootCmd.AddCommand(addCmd)
 	addCmd.Flags().BoolVarP(&addPriority, "priority", "p", false, "Mark as priority task")
 	addCmd.Flags().StringArrayVarP(&addRepos, "repo", "r", nil, "owner/repo to create worktree for (repeatable)")
+	addCmd.Flags().BoolVar(&addNoSpec, "no-spec", false, "Skip spec scaffold commit")
+	addCmd.Flags().StringVar(&addSpecRepo, "spec-repo", "", "owner/repo to write spec into (default: first -r repo)")
 }
 
 func joinArgs(args []string) string {
@@ -140,6 +146,22 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 		specs = append(specs, repoSpec{parts[0], parts[1]})
 	}
 
+	// Validate --spec-repo if provided (fail-fast before any worktree creation)
+	specRepoIdx := 0
+	if addSpecRepo != "" {
+		found := false
+		for i, sp := range specs {
+			if sp.owner+"/"+sp.repo == addSpecRepo {
+				specRepoIdx = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("--spec-repo %q is not in the -r list", addSpecRepo)
+		}
+	}
+
 	// Build branch name and shared root dir name.
 	branchName := slugTicketBranch(ticket, desc)
 	if branchName == "" || strings.HasSuffix(branchName, "-") {
@@ -152,10 +174,15 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 	fmt.Fprintf(os.Stderr, "shared root: %s\n", sharedRoot)
 
 	// For each repo: find/clone, fetch, create worktree, push.
-	for _, spec := range specs {
+	var specRepoPath string
+	for i, spec := range specs {
 		repoPath, err := findOrCloneRepo(gitClient, cfg, spec.owner, spec.repo)
 		if err != nil {
 			return fmt.Errorf("repo %s/%s: %w", spec.owner, spec.repo, err)
+		}
+
+		if i == specRepoIdx {
+			specRepoPath = repoPath
 		}
 
 		fmt.Fprintf(os.Stderr, "fetching %s/%s...\n", spec.owner, spec.repo)
@@ -188,6 +215,46 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 		fmt.Fprintf(os.Stderr, "created: %s\n", wtPath)
 	}
 
+	// Write and commit spec.
+	specRel := filepath.Join("spec", ticket+".md")
+	specWtPath := filepath.Join(sharedRoot, specs[specRepoIdx].repo)
+	specAbs := filepath.Join(specWtPath, specRel)
+
+	if !addNoSpec {
+		branches := make([]string, len(specs))
+		for i, sp := range specs {
+			branches[i] = sp.owner + "/" + sp.repo + ":" + branchName
+		}
+		if _, statErr := os.Stat(specAbs); os.IsNotExist(statErr) {
+			data, err := spec.RenderTemplate(spec.TemplateData{
+				Ticket:      ticket,
+				Title:       desc,
+				Description: desc,
+				Authors:     []string{cfg.Author},
+				Branches:    branches,
+				Now:         time.Now(),
+			})
+			if err != nil {
+				return fmt.Errorf("render spec template: %w", err)
+			}
+			if err := os.MkdirAll(filepath.Dir(specAbs), 0o755); err != nil {
+				return fmt.Errorf("mkdir spec dir: %w", err)
+			}
+			if err := os.WriteFile(specAbs, data, 0o644); err != nil {
+				return fmt.Errorf("write spec: %w", err)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "spec already exists: %s (skipping)\n", specRel)
+		}
+		if err := gitClient.AddAndCommit(specWtPath, specRel,
+			fmt.Sprintf("spec: scaffold for %s\n\n%s", ticket, desc)); err != nil {
+			return fmt.Errorf("commit spec: %w", err)
+		}
+		if err := gitClient.Push(specWtPath, branchName); err != nil {
+			return fmt.Errorf("push spec: %w", err)
+		}
+	}
+
 	// Update plan.
 	s, err := store.New()
 	if err != nil {
@@ -215,12 +282,25 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 	}
 	p.AddTask(bullet, taskText)
 
-	for _, spec := range specs {
-		p.AddBranch(spec.repo, branchName, ticket+": "+desc)
+	for i, sp := range specs {
+		relSpec := ""
+		if i == specRepoIdx && !addNoSpec {
+			relSpec = specRel
+		}
+		p.AddBranch(sp.repo, branchName, ticket+": "+desc, relSpec)
 	}
 
 	if err := s.SavePlan(p.Render()); err != nil {
 		return fmt.Errorf("save plan: %w", err)
+	}
+
+	// Update state annotation with spec path
+	if !addNoSpec {
+		state, err := s.LoadState()
+		if err == nil {
+			state.SetSpec(specRepoPath, branchName, specRel, "draft")
+			_ = s.SaveState(state)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "Added task: %s %s\n", string(bullet), taskText)
