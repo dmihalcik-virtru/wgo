@@ -44,6 +44,7 @@ func (m *mockGitClient) PruneWorktrees(string) error                            
 func (m *mockGitClient) ListLocalBranches(string) ([]string, error)             { return nil, nil }
 func (m *mockGitClient) IsBranchMerged(string, string, string) (bool, error)    { return false, nil }
 func (m *mockGitClient) Push(string, string) error                              { return nil }
+func (m *mockGitClient) AddAndCommit(string, string, string) error              { return nil }
 func (m *mockGitClient) ListWorktrees(repoPath string) ([]git.WorktreeInfo, error) {
 	if m.worktrees != nil {
 		if wts, ok := m.worktrees[repoPath]; ok {

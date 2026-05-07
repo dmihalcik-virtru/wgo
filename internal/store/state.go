@@ -23,6 +23,8 @@ type RepoInfo struct {
 // Annotation contains information about why a branch exists.
 type Annotation struct {
 	Purpose   string    `json:"purpose"`
+	SpecPath  string    `json:"spec_path,omitempty"`
+	SpecState string    `json:"spec_state,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -90,6 +92,20 @@ func (s *State) GetAnnotation(repoPath, branch string) *Annotation {
 func (s *State) RemoveAnnotation(repoPath, branch string) {
 	key := repoPath + ":" + branch
 	delete(s.Annotations, key)
+}
+
+// SetSpec updates the spec path and state for a branch annotation.
+func (s *State) SetSpec(repoPath, branch, specPath, specState string) {
+	key := repoPath + ":" + branch
+	now := time.Now()
+	ann := s.Annotations[key]
+	ann.SpecPath = specPath
+	ann.SpecState = specState
+	ann.UpdatedAt = now
+	if ann.CreatedAt.IsZero() {
+		ann.CreatedAt = now
+	}
+	s.Annotations[key] = ann
 }
 
 // AddRepo adds or updates a repository.

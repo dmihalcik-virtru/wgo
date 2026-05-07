@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
+	"github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
 )
@@ -173,6 +175,21 @@ func showContext() (bool, error) {
 					fmt.Printf("task:   %s %s\n", string(task.Bullet), task.Text)
 				}
 			}
+		}
+	}
+
+	// Show spec line for ticket branches
+	if ticket := spec.ParseTicketFromBranch(branch); ticket != "" {
+		specPath, err := spec.FindByTicket(cwd, ticket)
+		if err == nil {
+			if sf, err := spec.Parse(specPath); err == nil {
+				rel, _ := filepath.Rel(cwd, specPath)
+				fmt.Printf("spec:   📄 %s (%s, updated %s)\n",
+					rel, string(sf.Frontmatter.Status),
+					sf.Frontmatter.Updated.Format("2006-01-02"))
+			}
+		} else {
+			fmt.Printf("spec:   ⚠ no spec (run: wgo spec new %s)\n", ticket)
 		}
 	}
 
