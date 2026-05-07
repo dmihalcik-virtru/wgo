@@ -3,6 +3,8 @@ package cmd
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/virtru/wgo/internal/config"
 )
 
@@ -24,9 +26,7 @@ func TestIsJiraTicket(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := isJiraTicket(tt.input)
-		if got != tt.want {
-			t.Errorf("isJiraTicket(%q) = %v, want %v", tt.input, got, tt.want)
-		}
+		assert.Equalf(t, tt.want, got, "isJiraTicket(%q)", tt.input)
 	}
 }
 
@@ -46,12 +46,8 @@ func TestSlugTicketBranch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := slugTicketBranch(tt.ticket, tt.desc)
-		if got != tt.want {
-			t.Errorf("slugTicketBranch(%q, %q) = %q, want %q", tt.ticket, tt.desc, got, tt.want)
-		}
-		if len(got) > 0 && got[len(got)-1] == '-' {
-			t.Errorf("slugTicketBranch(%q, %q) = %q ends in dash", tt.ticket, tt.desc, got)
-		}
+		assert.Equalf(t, tt.want, got, "slugTicketBranch(%q, %q)", tt.ticket, tt.desc)
+		assert.Falsef(t, len(got) > 0 && got[len(got)-1] == '-', "slugTicketBranch(%q, %q) = %q ends in dash", tt.ticket, tt.desc, got)
 	}
 }
 
@@ -73,9 +69,7 @@ func TestTruncateSlug(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := truncateSlug(tt.input, tt.maxLen)
-		if got != tt.want {
-			t.Errorf("truncateSlug(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
-		}
+		assert.Equalf(t, tt.want, got, "truncateSlug(%q, %d)", tt.input, tt.maxLen)
 	}
 }
 
@@ -86,16 +80,11 @@ func TestParseSpecRepoFlag(t *testing.T) {
 	}
 
 	spec, err := parseSpecRepoFlag("virtru/api", specs)
-	if err != nil {
-		t.Fatalf("parseSpecRepoFlag failed: %v", err)
-	}
-	if spec.String() != "virtru/api" {
-		t.Fatalf("expected virtru/api, got %s", spec.String())
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "virtru/api", spec.String())
 
-	if _, err := parseSpecRepoFlag("virtru/other", specs); err == nil {
-		t.Fatalf("expected invalid spec repo to fail")
-	}
+	_, err = parseSpecRepoFlag("virtru/other", specs)
+	require.Error(t, err)
 }
 
 func TestSpecAuthorsIncludesPair(t *testing.T) {
@@ -107,10 +96,6 @@ func TestSpecAuthorsIncludesPair(t *testing.T) {
 	}
 
 	authors := specAuthors(cfg)
-	if len(authors) != 2 {
-		t.Fatalf("expected 2 authors, got %d", len(authors))
-	}
-	if authors[0] != "dmihalcik" || authors[1] != "sujan" {
-		t.Fatalf("unexpected authors: %v", authors)
-	}
+	require.Len(t, authors, 2)
+	assert.Equal(t, []string{"dmihalcik", "sujan"}, authors)
 }

@@ -1,8 +1,10 @@
 package plan
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseBasic(t *testing.T) {
@@ -18,20 +20,12 @@ This is a note
 `
 
 	plan, err := Parse(content)
-	if err != nil {
-		t.Fatalf("Parse failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	entry := plan.GetBranch("virtru/wgo", "feat/plan-parser")
-	if entry == nil {
-		t.Errorf("expected to find branch entry")
-	} else if entry.Reason != "Add initial plan file parsing" {
-		t.Errorf("expected reason 'Add initial plan file parsing', got %q", entry.Reason)
-	}
-
-	if !strings.Contains(plan.Notes, "This is a note") {
-		t.Errorf("expected notes to contain 'This is a note'")
-	}
+	require.NotNil(t, entry)
+	assert.Equal(t, "Add initial plan file parsing", entry.Reason)
+	assert.Contains(t, plan.Notes, "This is a note")
 }
 
 func TestRoundTrip(t *testing.T) {
@@ -48,35 +42,24 @@ Some manual notes here.
 `
 
 	plan, err := Parse(content)
-	if err != nil {
-		t.Fatalf("Parse failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	rendered := plan.Render()
 
 	// Parse again
 	plan2, err := Parse(rendered)
-	if err != nil {
-		t.Fatalf("Parse of rendered content failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Check branches are preserved
 	entry1 := plan2.GetBranch("virtru/wgo", "feat/plan-parser")
-	if entry1 == nil {
-		t.Errorf("expected to find first branch after round-trip")
-	} else if entry1.Reason != "Add initial plan file parsing" {
-		t.Errorf("expected reason preserved after round-trip")
-	}
+	require.NotNil(t, entry1)
+	assert.Equal(t, "Add initial plan file parsing", entry1.Reason)
 
 	entry2 := plan2.GetBranch("virtru/api", "fix/auth")
-	if entry2 == nil {
-		t.Errorf("expected to find second branch after round-trip")
-	}
+	assert.NotNil(t, entry2)
 
 	// Check notes are preserved
-	if !strings.Contains(plan2.Notes, "Some manual notes") {
-		t.Errorf("expected notes preserved after round-trip, got %q", plan2.Notes)
-	}
+	assert.Contains(t, plan2.Notes, "Some manual notes")
 }
 
 func TestAddBranch(t *testing.T) {
@@ -88,13 +71,9 @@ func TestAddBranch(t *testing.T) {
 	plan.AddBranch("repo1", "feature", "Test feature", "spec/WGO-101.md")
 
 	entry := plan.GetBranch("repo1", "feature")
-	if entry == nil {
-		t.Errorf("expected to find added branch")
-	} else if entry.Reason != "Test feature" {
-		t.Errorf("expected reason 'Test feature', got %q", entry.Reason)
-	} else if entry.SpecPath != "spec/WGO-101.md" {
-		t.Errorf("expected spec path preserved, got %q", entry.SpecPath)
-	}
+	require.NotNil(t, entry)
+	assert.Equal(t, "Test feature", entry.Reason)
+	assert.Equal(t, "spec/WGO-101.md", entry.SpecPath)
 }
 
 func TestRemoveBranch(t *testing.T) {
@@ -107,9 +86,7 @@ func TestRemoveBranch(t *testing.T) {
 	plan.RemoveBranch("repo1", "feature")
 
 	entry := plan.GetBranch("repo1", "feature")
-	if entry != nil {
-		t.Errorf("expected branch to be removed")
-	}
+	assert.Nil(t, entry)
 }
 
 func TestEmptyPlan(t *testing.T) {
@@ -121,18 +98,12 @@ func TestEmptyPlan(t *testing.T) {
 `
 
 	plan, err := Parse(content)
-	if err != nil {
-		t.Fatalf("Parse failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(plan.ActiveBranches) != 0 {
-		t.Errorf("expected empty active branches")
-	}
+	assert.Empty(t, plan.ActiveBranches)
 
 	rendered := plan.Render()
-	if !strings.Contains(rendered, "# Plan") {
-		t.Errorf("expected rendered plan to contain header")
-	}
+	assert.Contains(t, rendered, "# Plan")
 }
 
 func TestParseMultipleBranches(t *testing.T) {
@@ -148,25 +119,12 @@ func TestParseMultipleBranches(t *testing.T) {
 `
 
 	plan, err := Parse(content)
-	if err != nil {
-		t.Fatalf("Parse failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(plan.ActiveBranches) != 3 {
-		t.Errorf("expected 3 branches, got %d", len(plan.ActiveBranches))
-	}
-
-	if plan.GetBranch("repo1", "branch1") == nil {
-		t.Errorf("expected to find repo1:branch1")
-	}
-
-	if plan.GetBranch("repo2", "branch2") == nil {
-		t.Errorf("expected to find repo2:branch2")
-	}
-
-	if plan.GetBranch("repo1", "branch3") == nil {
-		t.Errorf("expected to find repo1:branch3")
-	}
+	assert.Len(t, plan.ActiveBranches, 3)
+	assert.NotNil(t, plan.GetBranch("repo1", "branch1"))
+	assert.NotNil(t, plan.GetBranch("repo2", "branch2"))
+	assert.NotNil(t, plan.GetBranch("repo1", "branch3"))
 }
 
 func TestRenderPreservesStructure(t *testing.T) {
@@ -180,25 +138,11 @@ func TestRenderPreservesStructure(t *testing.T) {
 
 	rendered := plan.Render()
 
-	if !strings.Contains(rendered, "# Plan") {
-		t.Errorf("expected plan header in rendered output")
-	}
-
-	if !strings.Contains(rendered, "## Active Branches") {
-		t.Errorf("expected Active Branches section in rendered output")
-	}
-
-	if !strings.Contains(rendered, "repo:branch") {
-		t.Errorf("expected branch in rendered output")
-	}
-
-	if !strings.Contains(rendered, "## Notes") {
-		t.Errorf("expected Notes section in rendered output")
-	}
-
-	if !strings.Contains(rendered, "Test notes") {
-		t.Errorf("expected notes content in rendered output")
-	}
+	assert.Contains(t, rendered, "# Plan")
+	assert.Contains(t, rendered, "## Active Branches")
+	assert.Contains(t, rendered, "repo:branch")
+	assert.Contains(t, rendered, "## Notes")
+	assert.Contains(t, rendered, "Test notes")
 }
 
 func TestParseBranchWithSpecPath(t *testing.T) {
@@ -212,20 +156,12 @@ func TestParseBranchWithSpecPath(t *testing.T) {
 `
 
 	plan, err := Parse(content)
-	if err != nil {
-		t.Fatalf("Parse failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	entry := plan.GetBranch("virtru/wgo", "WGO-101-spec-scaffold")
-	if entry == nil {
-		t.Fatalf("expected branch entry")
-	}
-	if entry.SpecPath != "spec/WGO-101.md" {
-		t.Fatalf("expected spec path, got %q", entry.SpecPath)
-	}
-	if entry.Reason != "WGO-101: scaffold specs" {
-		t.Fatalf("expected reason without spec suffix, got %q", entry.Reason)
-	}
+	require.NotNil(t, entry)
+	assert.Equal(t, "spec/WGO-101.md", entry.SpecPath)
+	assert.Equal(t, "WGO-101: scaffold specs", entry.Reason)
 }
 
 func TestAddBranchPreservesExistingSpecPath(t *testing.T) {
@@ -244,10 +180,6 @@ func TestAddBranchPreservesExistingSpecPath(t *testing.T) {
 	plan.AddBranch("repo1", "feature", "updated")
 
 	entry := plan.GetBranch("repo1", "feature")
-	if entry == nil {
-		t.Fatalf("expected branch entry")
-	}
-	if entry.SpecPath != "spec/WGO-101.md" {
-		t.Fatalf("expected spec path to survive update, got %q", entry.SpecPath)
-	}
+	require.NotNil(t, entry)
+	assert.Equal(t, "spec/WGO-101.md", entry.SpecPath)
 }

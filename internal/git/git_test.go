@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupGitRepo initializes a git repository in the given directory.
@@ -571,23 +574,13 @@ func TestAddAndCommit(t *testing.T) {
 	addCommit(t, tmpDir, "initial")
 
 	specPath := filepath.Join(tmpDir, "spec", "WGO-101.md")
-	if err := os.MkdirAll(filepath.Dir(specPath), 0o755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	if err := os.WriteFile(specPath, []byte("spec body"), 0o644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(specPath), 0o755))
+	require.NoError(t, os.WriteFile(specPath, []byte("spec body"), 0o644))
 
 	client := New(tmpDir)
-	if err := client.AddAndCommit(tmpDir, "spec/WGO-101.md", "spec: scaffold for WGO-101"); err != nil {
-		t.Fatalf("AddAndCommit failed: %v", err)
-	}
+	require.NoError(t, client.AddAndCommit(tmpDir, "spec/WGO-101.md", "spec: scaffold for WGO-101"))
 
 	commit, err := client.LastCommit(tmpDir)
-	if err != nil {
-		t.Fatalf("LastCommit failed: %v", err)
-	}
-	if commit.Message != "spec: scaffold for WGO-101" {
-		t.Fatalf("expected commit message, got %q", commit.Message)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "spec: scaffold for WGO-101", commit.Message)
 }

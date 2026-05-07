@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRenderTemplateAndParse(t *testing.T) {
@@ -19,71 +22,35 @@ func TestRenderTemplateAndParse(t *testing.T) {
 		Branches:    []string{"virtru/wgo:WGO-101-spec-scaffold"},
 		Now:         now,
 	})
-	if err != nil {
-		t.Fatalf("RenderTemplate failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	specFile, err := ParseBytes(data)
-	if err != nil {
-		t.Fatalf("ParseBytes failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if specFile.Frontmatter.Ticket != "WGO-101" {
-		t.Fatalf("expected ticket WGO-101, got %q", specFile.Frontmatter.Ticket)
-	}
-
-	if specFile.Frontmatter.Title != "Spec scaffold and plan integration" {
-		t.Fatalf("expected title preserved, got %q", specFile.Frontmatter.Title)
-	}
-
-	if specFile.Frontmatter.Status != StatusDraft {
-		t.Fatalf("expected draft status, got %q", specFile.Frontmatter.Status)
-	}
-
-	if got := specFile.Frontmatter.Created.Format(time.DateOnly); got != "2026-05-06" {
-		t.Fatalf("expected created date 2026-05-06, got %s", got)
-	}
-
-	if summary := specFile.Sections["Summary"]; summary != "Add spec scaffolding to wgo add." {
-		t.Fatalf("expected summary section parsed, got %q", summary)
-	}
+	assert.Equal(t, "WGO-101", specFile.Frontmatter.Ticket)
+	assert.Equal(t, "Spec scaffold and plan integration", specFile.Frontmatter.Title)
+	assert.Equal(t, StatusDraft, specFile.Frontmatter.Status)
+	assert.Equal(t, "2026-05-06", specFile.Frontmatter.Created.Format(time.DateOnly))
+	assert.Equal(t, "Add spec scaffolding to wgo add.", specFile.Sections["Summary"])
 }
 
 func TestFindByTicketAndBranch(t *testing.T) {
 	repoRoot := t.TempDir()
 	specDir := filepath.Join(repoRoot, "spec")
-	if err := os.MkdirAll(specDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(specDir, 0o755))
 
 	specPath := filepath.Join(specDir, "WGO-101.md")
-	if err := os.WriteFile(specPath, []byte("---\nticket: WGO-101\nstatus: draft\nauthors: []\nbranches: []\nprs: []\ncreated: 2026-05-06\nupdated: 2026-05-06\n---\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
+	require.NoError(t, os.WriteFile(specPath, []byte("---\nticket: WGO-101\nstatus: draft\nauthors: []\nbranches: []\nprs: []\ncreated: 2026-05-06\nupdated: 2026-05-06\n---\n"), 0o644))
 
 	foundByTicket, err := FindByTicket(repoRoot, "WGO-101")
-	if err != nil {
-		t.Fatalf("FindByTicket failed: %v", err)
-	}
-	if foundByTicket != specPath {
-		t.Fatalf("expected %q, got %q", specPath, foundByTicket)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, specPath, foundByTicket)
 
 	foundByBranch, err := FindByBranch(repoRoot, "WGO-101-spec-scaffold")
-	if err != nil {
-		t.Fatalf("FindByBranch failed: %v", err)
-	}
-	if foundByBranch != specPath {
-		t.Fatalf("expected %q, got %q", specPath, foundByBranch)
-	}
-
-	if ticket := ParseTicketFromBranch("WGO-101-spec-scaffold"); ticket != "WGO-101" {
-		t.Fatalf("expected WGO-101, got %q", ticket)
-	}
-
-	if ticket := ParseTicketFromBranch("feature/spec-scaffold"); ticket != "" {
-		t.Fatalf("expected empty ticket, got %q", ticket)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, specPath, foundByBranch)
+	assert.Equal(t, "WGO-101", ParseTicketFromBranch("WGO-101-spec-scaffold"))
+	assert.Empty(t, ParseTicketFromBranch("feature/spec-scaffold"))
 }
 
 func TestUpdateFrontmatterPreservesBody(t *testing.T) {
@@ -107,55 +74,30 @@ estimate: 1d
 ## Summary
 This body must stay byte-for-byte identical.
 `)
-	if err := os.WriteFile(path, original, 0o644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, original, 0o644))
 
 	originalFrontmatter, originalBody, err := splitFrontmatter(original)
-	if err != nil {
-		t.Fatalf("splitFrontmatter failed: %v", err)
-	}
-	if len(originalFrontmatter) == 0 {
-		t.Fatalf("expected original frontmatter bytes")
-	}
+	require.NoError(t, err)
+	assert.NotEmpty(t, originalFrontmatter)
 
-	if err := UpdateFrontmatter(path, func(fm *Frontmatter) error {
+	err = UpdateFrontmatter(path, func(fm *Frontmatter) error {
 		fm.Status = StatusInProgress
 		fm.Title = "New title"
 		fm.Updated = time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)
 		return nil
-	}); err != nil {
-		t.Fatalf("UpdateFrontmatter failed: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	updated, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	_, updatedBody, err := splitFrontmatter(updated)
-	if err != nil {
-		t.Fatalf("splitFrontmatter(updated) failed: %v", err)
-	}
-
-	if !bytes.Equal(originalBody, updatedBody) {
-		t.Fatalf("expected body to be preserved byte-for-byte")
-	}
-
-	if !bytes.Contains(updated, []byte("estimate: 1d")) {
-		t.Fatalf("expected unknown frontmatter fields to survive update")
-	}
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(originalBody, updatedBody))
+	assert.True(t, bytes.Contains(updated, []byte("estimate: 1d")))
 
 	parsed, err := Parse(path)
-	if err != nil {
-		t.Fatalf("Parse failed: %v", err)
-	}
-
-	if parsed.Frontmatter.Status != StatusInProgress {
-		t.Fatalf("expected updated status, got %q", parsed.Frontmatter.Status)
-	}
-
-	if parsed.Frontmatter.Title != "New title" {
-		t.Fatalf("expected updated title, got %q", parsed.Frontmatter.Title)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, StatusInProgress, parsed.Frontmatter.Status)
+	assert.Equal(t, "New title", parsed.Frontmatter.Title)
 }
