@@ -610,6 +610,29 @@ go vet ./...
 go mod tidy
 ```
 
+### Local CI Hooks
+
+If you are on Git 2.54 or newer, you can opt into repo-local CI hooks backed by
+tracked scripts in this repo:
+
+```bash
+# Install into worktree-local git config (default)
+./scripts/setup-local-hooks.sh install
+
+# Or install into shared repo-local config
+./scripts/setup-local-hooks.sh install --local
+
+# Inspect configured hooks
+./scripts/setup-local-hooks.sh status
+
+# Remove them again
+./scripts/setup-local-hooks.sh uninstall
+```
+
+The scripts live in `scripts/hooks/` and are checked in. The Git hook
+configuration is stored in your local repository metadata, so it is not checked
+in or shared via commits.
+
 ### Project Structure Details
 
 #### internal/git/
