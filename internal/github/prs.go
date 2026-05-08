@@ -1,6 +1,7 @@
 package github
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -454,6 +455,67 @@ func (c *CLIClient) ListMyReviewsToday(myLogin string, since time.Time) ([]Revie
 		})
 	}
 	return result, nil
+}
+
+// ListPRsByAuthor returns open PRs authored by the given GitHub handle.
+func (c *CLIClient) ListPRsByAuthor(author string) ([]ExtendedPRInfo, error) {
+	if !c.Available() {
+		return nil, nil
+	}
+	items, err := searchPRsRaw("--author", author, "--state", "open")
+	if err != nil {
+		return nil, err
+	}
+	result := make([]ExtendedPRInfo, len(items))
+	for i, item := range items {
+		result[i] = item.toExtended()
+	}
+	return result, nil
+}
+
+// ListPRsReviewRequestedFor returns open PRs where the given GitHub handle has
+// a pending review request.
+func (c *CLIClient) ListPRsReviewRequestedFor(reviewer string) ([]ExtendedPRInfo, error) {
+	if !c.Available() {
+		return nil, nil
+	}
+	items, err := searchPRsRaw("--review-requested", reviewer, "--state", "open")
+	if err != nil {
+		return nil, err
+	}
+	result := make([]ExtendedPRInfo, len(items))
+	for i, item := range items {
+		result[i] = item.toExtended()
+	}
+	return result, nil
+}
+
+// GetSpecFrontmatterForBranch fetches a raw spec file from a remote branch via
+// the GitHub Contents API and returns the YAML frontmatter block (between ---
+// delimiters). Returns ("", nil) when the file does not exist on that branch.
+func (c *CLIClient) GetSpecFrontmatterForBranch(slug, branch, specPath string) (string, error) {
+	if !c.Available() {
+		return "", nil
+	}
+	endpoint := fmt.Sprintf("repos/%s/contents/%s?ref=%s", slug, specPath, branch)
+	cmd := exec.Command("gh", "api", endpoint, "--jq", ".content")
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// 404 = file not found on branch, not an error
+		if strings.Contains(stderr.String(), "404") || strings.Contains(stdout.String(), "Not Found") {
+			return "", nil
+		}
+		return "", fmt.Errorf("gh api %s: %s", endpoint, strings.TrimSpace(stderr.String()))
+	}
+	// GitHub API returns base64-encoded content with embedded newlines; strip them before decoding.
+	encoded := strings.ReplaceAll(strings.TrimSpace(stdout.String()), "\n", "")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", nil
+	}
+	return string(decoded), nil
 }
 
 // EnrichWithChecks fetches CI check status for all PRs in parallel.

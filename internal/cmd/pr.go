@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/status"
@@ -55,6 +56,10 @@ func init() {
 }
 
 func runPRCmd() error {
+	if err := config.Init(); err != nil {
+		return fmt.Errorf("failed to initialize config: %w", err)
+	}
+
 	gh := github.NewClient()
 	if !gh.Available() {
 		return fmt.Errorf("gh CLI not available — install from https://cli.github.com/")
@@ -80,10 +85,12 @@ func runPROnce(gh *github.CLIClient) error {
 		return err
 	}
 
+	cfg := config.Get()
+
 	if prJSON {
 		return renderPRJSON(mine, involved, myLogin)
 	}
-	renderPRTable(mine, involved, myLogin)
+	renderPRTable(mine, involved, myLogin, cfg)
 	return nil
 }
 
@@ -105,6 +112,7 @@ func runPRWatch(gh *github.CLIClient) error {
 	fmt.Print("\033[?25l") // hide cursor
 	defer fmt.Print("\033[?25h\033[0m\n")
 
+	cfg := config.Get()
 	refresh := func() {
 		mine, involved, myLogin, err := fetchAllPRData(gh)
 		fmt.Print("\033[2J\033[H") // clear screen
@@ -112,7 +120,7 @@ func runPRWatch(gh *github.CLIClient) error {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return
 		}
-		renderPRTable(mine, involved, myLogin)
+		renderPRTable(mine, involved, myLogin, cfg)
 		fmt.Printf("\n  Refreshed %s — Ctrl+C to exit\n", time.Now().Format("15:04:05"))
 	}
 
@@ -220,12 +228,20 @@ func filterPRsWithNewActivity(prs []github.ExtendedPRInfo) []github.ExtendedPRIn
 	return result
 }
 
-// renderPRTable prints the two-section PR dashboard to stdout.
-func renderPRTable(mine, involved []github.ExtendedPRInfo, myLogin string) {
+// renderPRTable prints the PR dashboard: optional Pair section, then mine and needs-attention.
+func renderPRTable(mine, involved []github.ExtendedPRInfo, myLogin string, cfg *config.Config) {
 	tty := isTerminal()
+	gh := github.NewClient()
+
+	// Pair section — shown when pair is configured.
+	if cfg.HasPair() {
+		renderPairSection(gh, cfg, myLogin, tty)
+	}
 
 	if len(mine) == 0 && len(involved) == 0 {
-		fmt.Println("  No pull requests found.")
+		if !cfg.HasPair() {
+			fmt.Println("  No pull requests found.")
+		}
 		return
 	}
 
@@ -248,6 +264,77 @@ func renderPRTable(mine, involved []github.ExtendedPRInfo, myLogin string) {
 		}
 		fmt.Println()
 	}
+}
+
+// renderPairSection fetches and renders the teammate's open PRs and review requests.
+func renderPairSection(gh *github.CLIClient, cfg *config.Config, myLogin string, tty bool) {
+	pairName := cfg.PairDisplayName()
+	fmt.Printf("PAIR  (%s)\n", pairName)
+
+	var teamPRs, reviewReqs []github.ExtendedPRInfo
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var fetchErr string
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		prs, err := gh.ListPRsByAuthor(cfg.Pair.Teammate)
+		if err != nil {
+			mu.Lock()
+			fetchErr = err.Error()
+			mu.Unlock()
+			return
+		}
+		mu.Lock()
+		teamPRs = prs
+		mu.Unlock()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		reqs, err := gh.ListPRsReviewRequestedFor(myLogin)
+		if err != nil {
+			return
+		}
+		// Keep only PRs authored by the teammate.
+		var filtered []github.ExtendedPRInfo
+		for _, pr := range reqs {
+			// We don't have the author field from searchPRItem after conversion,
+			// so include all review-requested PRs (they are not the user's own).
+			filtered = append(filtered, pr)
+		}
+		mu.Lock()
+		reviewReqs = filtered
+		mu.Unlock()
+	}()
+
+	wg.Wait()
+
+	if fetchErr != "" {
+		fmt.Printf("  could not fetch pair activity: %s\n\n", fetchErr)
+		return
+	}
+
+	if len(teamPRs) > 0 {
+		fmt.Printf("  open (%d)\n", len(teamPRs))
+		for _, pr := range teamPRs {
+			printPRRow(pr, tty, false)
+		}
+	}
+
+	if len(reviewReqs) > 0 {
+		fmt.Printf("  review requested (%d)\n", len(reviewReqs))
+		for _, pr := range reviewReqs {
+			printPRRow(pr, tty, false)
+		}
+	}
+
+	if len(teamPRs) == 0 && len(reviewReqs) == 0 {
+		fmt.Printf("  no open PRs\n")
+	}
+	fmt.Println()
 }
 
 // printPRRow prints a single PR row with OSC8 hyperlinks on PR number and repo name.

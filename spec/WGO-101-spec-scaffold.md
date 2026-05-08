@@ -2,7 +2,7 @@
 ticket: WGO-101
 title: Spec scaffold and plan integration
 status: draft
-authors: [dmihalcik, sujan]
+authors: [dmihalcik-virtru, sujankota]
 branches: []
 prs: []
 created: 2026-05-06

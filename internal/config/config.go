@@ -19,6 +19,29 @@ type Config struct {
 	UI        UIConfig        `mapstructure:"ui"`
 	Status    StatusConfig    `mapstructure:"status"`
 	Hooks     HooksConfig     `mapstructure:"hooks"`
+	Pair      PairConfig      `mapstructure:"pair"`
+}
+
+// PairConfig holds configuration for a single pairing teammate.
+// teammate should be the teammate's GitHub handle; it is used both for
+// gh API calls and for matching spec frontmatter authors:.
+type PairConfig struct {
+	Teammate      string `mapstructure:"teammate"`
+	TeammateJira  string `mapstructure:"teammate_jira"`
+	DisplayName   string `mapstructure:"display_name"`
+	TeammateEmail string `mapstructure:"teammate_email"`
+}
+
+// HasPair reports whether a teammate is configured.
+func (c *Config) HasPair() bool { return c.Pair.Teammate != "" }
+
+// PairDisplayName returns the display name for the teammate, falling back to
+// the GitHub handle if display_name is not set.
+func (c *Config) PairDisplayName() string {
+	if c.Pair.DisplayName != "" {
+		return c.Pair.DisplayName
+	}
+	return c.Pair.Teammate
 }
 
 // HooksConfig contains git hooks configuration.
@@ -170,6 +193,14 @@ auto_plan = true
 
 # Branches to exclude from auto-plan (glob patterns)
 exclude_branches = ["main", "master", "develop", "release/*"]
+
+# [pair]
+# GitHub handle of your pairing teammate (enables pair features in today, pr, team)
+# Use GitHub handles here — spec frontmatter authors: should match these values.
+# teammate = "sujankota"
+# display_name = "Sujan"
+# teammate_jira = "sujan.kotakar"       # optional, defaults to teammate
+# teammate_email = "sujan@example.com"  # optional, for git-author filtering in today --pair
 `, filepath.Join(home, "Documents", "GitHub"))
 
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +19,7 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
+	specpkg "github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 )
 
@@ -23,6 +27,8 @@ var (
 	todayYesterday bool
 	todaySyncPlan  bool
 	todaySince     string
+	todayPair      bool
+	todayJSON      bool
 )
 
 // todayCmd represents the `wgo today` command.
@@ -53,6 +59,8 @@ func init() {
 	todayCmd.Flags().BoolVar(&todayYesterday, "yesterday", false, "Show yesterday's activity instead")
 	todayCmd.Flags().BoolVar(&todaySyncPlan, "plan", false, "Sync discovered branches into the plan file")
 	todayCmd.Flags().StringVar(&todaySince, "since", "", "Time window (e.g. today, yesterday, 2h, 3d)")
+	todayCmd.Flags().BoolVar(&todayPair, "pair", false, "Show both your activity and your pair's activity")
+	todayCmd.Flags().BoolVar(&todayJSON, "json", false, "Output as JSON (pair mode only)")
 }
 
 // todayData holds all the collected data for the daily review.
@@ -82,6 +90,13 @@ func showToday() error {
 		return fmt.Errorf("failed to initialize config: %w", err)
 	}
 	cfg := config.Get()
+
+	if todayPair {
+		if !cfg.HasPair() {
+			return fmt.Errorf("pair not configured: set [pair] teammate in ~/.wgo/config.toml")
+		}
+		return showTodayPair(cfg)
+	}
 
 	now := time.Now()
 	var since time.Time
@@ -568,6 +583,304 @@ func syncPlanBranches(data *todayData) {
 		fmt.Println("PLAN SYNC  plan is up to date")
 		fmt.Println()
 	}
+}
+
+// collectTodayDataForAuthor collects the same dataset as showToday but for an
+// explicit author identifier (GitHub handle for gh calls, email/name for git).
+func collectTodayDataForAuthor(repoPaths []string, since time.Time, author, ghAuthor string, gh *github.CLIClient) *todayData {
+	now := time.Now()
+	data := &todayData{since: since, now: now}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rc, err := contrib.CollectCommitsWithFiles(repoPaths, since, author)
+		if err == nil {
+			data.repoCommits = rc
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		data.branches = collectActiveBranches(repoPaths)
+	}()
+
+	if gh.Available() && ghAuthor != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			data.ghLogin = ghAuthor
+
+			var ghWg sync.WaitGroup
+
+			ghWg.Add(1)
+			go func() {
+				defer ghWg.Done()
+				commented, err := gh.ListMyCommentedPRs(ghAuthor, since)
+				if err == nil {
+					mu.Lock()
+					data.commented = commented
+					mu.Unlock()
+				}
+			}()
+
+			ghWg.Add(1)
+			go func() {
+				defer ghWg.Done()
+				reviews, err := gh.ListMyReviewsToday(ghAuthor, since)
+				if err == nil {
+					mu.Lock()
+					data.reviews = reviews
+					mu.Unlock()
+				}
+			}()
+
+			ghWg.Add(1)
+			go func() {
+				defer ghWg.Done()
+				prs, err := gh.ListPRsByAuthor(ghAuthor)
+				if err == nil {
+					var attn []github.ExtendedPRInfo
+					for _, pr := range prs {
+						attn = append(attn, pr)
+					}
+					mu.Lock()
+					data.needsAttn = attn
+					mu.Unlock()
+				}
+			}()
+
+			ghWg.Wait()
+		}()
+	}
+
+	wg.Wait()
+	return data
+}
+
+// togetherBranch is a branch where both pair members appear in spec authors.
+type togetherBranch struct {
+	RepoName string
+	Branch   string
+	SpecPath string
+	Ticket   string
+	Status   string
+}
+
+// collectTogetherBranches scans plan active branches for specs co-authored by both members.
+func collectTogetherBranches(p *plan.Plan, repoPaths []string, myAuthor, pairAuthor string) []togetherBranch {
+	if p == nil {
+		return nil
+	}
+
+	// Build a map from repo display name to local path for spec file lookups.
+	repoPathMap := map[string]string{}
+	for _, rp := range repoPaths {
+		name := repoDisplayName(rp)
+		repoPathMap[name] = rp
+	}
+
+	var result []togetherBranch
+	for _, entry := range p.ActiveBranches {
+		if entry.SpecPath == "" {
+			continue
+		}
+		repoPath, ok := repoPathMap[entry.Repo]
+		if !ok {
+			continue
+		}
+		fullPath := filepath.Join(repoPath, entry.SpecPath)
+		sf, err := specpkg.Parse(fullPath)
+		if err != nil {
+			continue
+		}
+		authors := sf.Frontmatter.Authors
+		if containsAuthorSlice(authors, myAuthor) && containsAuthorSlice(authors, pairAuthor) {
+			result = append(result, togetherBranch{
+				RepoName: entry.Repo,
+				Branch:   entry.Branch,
+				SpecPath: entry.SpecPath,
+				Ticket:   sf.Frontmatter.Ticket,
+				Status:   string(sf.Frontmatter.Status),
+			})
+		}
+	}
+	return result
+}
+
+func containsAuthorSlice(authors []string, author string) bool {
+	for _, a := range authors {
+		if strings.EqualFold(a, author) {
+			return true
+		}
+	}
+	return false
+}
+
+// showTodayPair renders the pair daily review: two stacked sections + Together.
+func showTodayPair(cfg *config.Config) error {
+	now := time.Now()
+	var since time.Time
+	switch {
+	case todaySince != "":
+		var err error
+		since, err = parsePRSince(todaySince)
+		if err != nil {
+			return fmt.Errorf("invalid --since value: %w", err)
+		}
+	case todayYesterday:
+		y, m, d := now.AddDate(0, 0, -1).Date()
+		since = time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+	default:
+		y, m, d := now.Date()
+		since = time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+	}
+
+	d := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	repos, err := d.DiscoverAll()
+	if err != nil {
+		return fmt.Errorf("failed to discover repositories: %w", err)
+	}
+	repoPaths := make([]string, len(repos))
+	for i, r := range repos {
+		repoPaths[i] = r.Path
+	}
+
+	gh := github.NewClient()
+
+	// Determine git author identifier for teammate commits.
+	pairGitAuthor := cfg.Pair.TeammateEmail
+	if pairGitAuthor == "" {
+		pairGitAuthor = cfg.Pair.Teammate
+	}
+
+	// Collect mine and pair in parallel.
+	var myData, pairData *todayData
+	var planData *plan.Plan
+	var planStore *store.FileStore
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		myData = collectTodayDataForAuthor(repoPaths, since, cfg.Author, cfg.Author, gh)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pairData = collectTodayDataForAuthor(repoPaths, since, pairGitAuthor, cfg.Pair.Teammate, gh)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s, err := store.New()
+		if err != nil {
+			return
+		}
+		planStore = s
+		content, err := s.LoadPlan()
+		if err != nil {
+			return
+		}
+		p, err := plan.Parse(content)
+		if err != nil {
+			return
+		}
+		planData = p
+	}()
+
+	wg.Wait()
+
+	together := collectTogetherBranches(planData, repoPaths, cfg.Author, cfg.Pair.Teammate)
+
+	if todayJSON {
+		return renderTodayPairJSON(myData, pairData, together, cfg)
+	}
+
+	isTTY := isTerminal()
+	myName := cfg.Author
+	if myName == "" {
+		myName = "me"
+	}
+	pairName := cfg.PairDisplayName()
+
+	fmt.Printf("Pair Daily Review — %s\n\n", now.Format("Monday, Jan 2 2006"))
+	fmt.Printf("## %s\n\n", myName)
+	renderToday(myData, isTTY)
+	fmt.Printf("## %s\n\n", pairName)
+	renderToday(pairData, isTTY)
+
+	if len(together) > 0 {
+		fmt.Printf("## Together\n\n")
+		for _, b := range together {
+			ticket := b.Ticket
+			if ticket == "" {
+				ticket = b.Branch
+			}
+			fmt.Printf("  %s:%s  %s  %s\n", b.RepoName, b.Branch, ticket, b.Status)
+		}
+		fmt.Println()
+	}
+
+	if todaySyncPlan && planData != nil && planStore != nil {
+		syncPlanBranches(&todayData{plan: planData, store: planStore, branches: myData.branches})
+	}
+
+	return nil
+}
+
+type todayPairJSON struct {
+	Date     string           `json:"date"`
+	Mine     *todayDataJSON   `json:"mine"`
+	Pair     *todayDataJSON   `json:"pair"`
+	Together []togetherBranch `json:"together"`
+}
+
+type todayDataJSON struct {
+	Author   string `json:"author"`
+	Commits  int    `json:"commits"`
+	Reviews  int    `json:"reviews"`
+	Comments int    `json:"comments"`
+	PRs      int    `json:"prs"`
+}
+
+func renderTodayPairJSON(myData, pairData *todayData, together []togetherBranch, cfg *config.Config) error {
+	countCommits := func(d *todayData) int {
+		n := 0
+		for _, rc := range d.repoCommits {
+			n += len(rc.Commits)
+		}
+		return n
+	}
+	out := todayPairJSON{
+		Date: time.Now().Format("2006-01-02"),
+		Mine: &todayDataJSON{
+			Author:   cfg.Author,
+			Commits:  countCommits(myData),
+			Reviews:  len(myData.reviews),
+			Comments: len(myData.commented),
+			PRs:      len(myData.needsAttn),
+		},
+		Pair: &todayDataJSON{
+			Author:   cfg.Pair.Teammate,
+			Commits:  countCommits(pairData),
+			Reviews:  len(pairData.reviews),
+			Comments: len(pairData.commented),
+			PRs:      len(pairData.needsAttn),
+		},
+		Together: together,
+	}
+	if out.Together == nil {
+		out.Together = []togetherBranch{}
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
 }
 
 func reviewStateIcon(state string) string {

@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/store"
@@ -60,7 +62,73 @@ func showPlan() error {
 	}
 
 	fmt.Print(content)
+
+	// When pair is configured, dynamically append the "Active With" section.
+	if err := config.Init(); err == nil {
+		cfg := config.Get()
+		if cfg.HasPair() {
+			p, err := plan.Parse(content)
+			if err == nil {
+				printActiveWithSection(p, cfg)
+			}
+		}
+	}
+
 	return nil
+}
+
+// printActiveWithSection computes and prints the "Active With" section by scanning
+// spec frontmatter for branches co-authored by both pair members.
+func printActiveWithSection(p *plan.Plan, cfg *config.Config) {
+	// Build a repo-name→local-path map from discovered repos.
+	repoPathMap := buildRepoPathMap(cfg)
+
+	activeWith := p.FindActiveWithBranches(cfg.Author, cfg.Pair.Teammate, func(repo string) string {
+		return repoPathMap[repo]
+	})
+
+	if len(activeWith) == 0 {
+		return
+	}
+
+	fmt.Printf("\n## Active With %s\n\n", cfg.PairDisplayName())
+	for _, entry := range activeWith {
+		line := fmt.Sprintf("- **%s:%s** — %s", entry.Repo, entry.Branch, entry.Reason)
+		if entry.SpecPath != "" {
+			line += " 📄 " + entry.SpecPath
+		}
+		fmt.Println(line)
+	}
+}
+
+// buildRepoPathMap returns a map of repo display name → local filesystem path.
+func buildRepoPathMap(cfg *config.Config) map[string]string {
+	m := map[string]string{}
+	for _, baseDir := range cfg.Discovery.BaseDirs {
+		entries, err := os.ReadDir(baseDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			ownerPath := baseDir + "/" + e.Name()
+			subs, err := os.ReadDir(ownerPath)
+			if err != nil {
+				continue
+			}
+			for _, sub := range subs {
+				if sub.IsDir() {
+					repoPath := ownerPath + "/" + sub.Name()
+					// Use same naming logic as repoDisplayName.
+					name := strings.TrimSuffix(e.Name()+"/"+sub.Name(), ".git")
+					m[name] = repoPath
+				}
+			}
+		}
+	}
+	return m
 }
 
 func addAnnotation(reason string) error {

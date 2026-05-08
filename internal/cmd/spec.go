@@ -391,7 +391,15 @@ func runSpecLs() error {
 			if specLsStatus != "" && string(sf.Frontmatter.Status) != specLsStatus {
 				continue
 			}
-			if !specLsTeam {
+			if specLsPair {
+				if !cfg.HasPair() {
+					return fmt.Errorf("pair not configured: set [pair] teammate in ~/.wgo/config.toml")
+				}
+				if !containsAuthor(sf.Frontmatter.Authors, cfg.Author) ||
+					!containsAuthor(sf.Frontmatter.Authors, cfg.Pair.Teammate) {
+					continue
+				}
+			} else if !specLsTeam {
 				if cfg.Author != "" && !containsAuthor(sf.Frontmatter.Authors, cfg.Author) {
 					continue
 				}
