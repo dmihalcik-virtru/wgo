@@ -4,12 +4,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/hooks"
 	"github.com/virtru/wgo/internal/store"
+)
+
+var (
+	eventBranch  string
+	eventStaged  string
+	eventMsgFile string
 )
 
 var eventCmd = &cobra.Command{
@@ -34,13 +41,17 @@ var eventCmd = &cobra.Command{
 		var eventCfg *hooks.EventConfig
 		if cfg != nil {
 			eventCfg = &hooks.EventConfig{
-				AutoPlan:        cfg.Hooks.AutoPlan,
-				ExcludeBranches: cfg.Hooks.ExcludeBranches,
+				AutoPlan:             cfg.Hooks.AutoPlan,
+				ExcludeBranches:      cfg.Hooks.ExcludeBranches,
+				SpecRequired:         cfg.Hooks.SpecRequired,
+				SpecRequiredMinLines: cfg.Hooks.SpecRequiredMinLines,
 			}
 		} else {
 			eventCfg = &hooks.EventConfig{
-				AutoPlan:        true,
-				ExcludeBranches: []string{"main", "master", "develop", "release/*"},
+				AutoPlan:             true,
+				ExcludeBranches:      []string{"main", "master", "develop", "release/*"},
+				SpecRequired:         false,
+				SpecRequiredMinLines: 5,
 			}
 		}
 
@@ -64,6 +75,34 @@ var eventCmd = &cobra.Command{
 		processor := hooks.NewEventProcessor(s, gitClient, eventCfg)
 
 		switch hookName {
+		case "pre-commit":
+			branch := eventBranch
+			if branch == "" && len(hookArgs) > 0 {
+				branch = hookArgs[0]
+			}
+			var stagedFiles []string
+			if eventStaged != "" {
+				for _, f := range strings.Split(eventStaged, ",") {
+					if f = strings.TrimSpace(f); f != "" {
+						stagedFiles = append(stagedFiles, f)
+					}
+				}
+			}
+			ctx := hooks.PreCommitContext{
+				RepoRoot:    cwd,
+				Branch:      branch,
+				StagedFiles: stagedFiles,
+				MsgFile:     eventMsgFile,
+			}
+			decision, err := processor.HandlePreCommit(ctx)
+			if err != nil {
+				return err
+			}
+			if !decision.Allow {
+				fmt.Fprint(os.Stderr, decision.Reason)
+				os.Exit(1)
+			}
+			return nil
 		case "post-checkout":
 			if len(hookArgs) < 3 {
 				return fmt.Errorf("post-checkout requires 3 args: prev-ref new-ref branch-flag")
@@ -90,5 +129,8 @@ var eventCmd = &cobra.Command{
 }
 
 func init() {
+	eventCmd.Flags().StringVar(&eventBranch, "branch", "", "current branch name")
+	eventCmd.Flags().StringVar(&eventStaged, "staged", "", "comma-separated list of staged files")
+	eventCmd.Flags().StringVar(&eventMsgFile, "msg-file", "", "path to .git/COMMIT_EDITMSG")
 	rootCmd.AddCommand(eventCmd)
 }

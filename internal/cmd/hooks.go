@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/hooks"
 )
 
@@ -111,6 +112,11 @@ var hooksStatusCmd = &cobra.Command{
 
 		if status.PreviousPath != "" {
 			fmt.Printf("  Previous hooksPath: %s\n", status.PreviousPath)
+		}
+
+		_ = config.Init()
+		if cfg := config.Get(); cfg != nil {
+			fmt.Printf("  spec_required: %v\n", cfg.Hooks.SpecRequired)
 		}
 
 		return nil
