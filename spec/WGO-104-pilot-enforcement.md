@@ -2,7 +2,7 @@
 ticket: WGO-104
 title: Pre-commit spec enforcement and pilot summary generator
 status: draft
-authors: [dmihalcik, sujan]
+authors: [dmihalcik-virtru, sujankota]
 branches: []
 prs: []
 created: 2026-05-06

@@ -2,7 +2,7 @@
 ticket: WGO-103
 title: Pair awareness across status, today, pr, and plan
 status: draft
-authors: [dmihalcik, sujan]
+authors: [dmihalcik-virtru, sujankota]
 branches: []
 prs: []
 created: 2026-05-06

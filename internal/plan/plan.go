@@ -3,6 +3,7 @@ package plan
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -154,6 +155,13 @@ func (p *Plan) parseActiveBranchLine(line string) {
 
 // Render renders the plan back to a string.
 func (p *Plan) Render() string {
+	return p.RenderWithPair("", nil)
+}
+
+// RenderWithPair renders the plan including an "Active With" section when both
+// myAuthor and pairAuthor are non-empty and joint branches exist.
+// The activeWith map should be pre-computed by the caller via FindActiveWithBranches.
+func (p *Plan) RenderWithPair(pairDisplayName string, activeWith map[string]BranchEntry) string {
 	var buf strings.Builder
 
 	buf.WriteString("# Plan\n\n")
@@ -179,6 +187,21 @@ func (p *Plan) Render() string {
 			line += " 📄 " + entry.SpecPath
 		}
 		buf.WriteString(line + "\n")
+	}
+
+	// Write "Active With" section when pair branches exist.
+	if len(activeWith) > 0 && pairDisplayName != "" {
+		fmt.Fprintf(&buf, "\n## Active With %s\n\n", pairDisplayName)
+		for key, entry := range activeWith {
+			if key == "" {
+				continue
+			}
+			line := fmt.Sprintf("- **%s:%s** — %s", entry.Repo, entry.Branch, entry.Reason)
+			if entry.SpecPath != "" {
+				line += " 📄 " + entry.SpecPath
+			}
+			buf.WriteString(line + "\n")
+		}
 	}
 
 	// Write efforts if any
@@ -208,6 +231,79 @@ func (p *Plan) Render() string {
 	}
 
 	return buf.String()
+}
+
+// FindActiveWithBranches returns branches from ActiveBranches whose spec frontmatter
+// lists both myAuthor and pairAuthor in the authors field. specRootFinder maps
+// repo display names to their local filesystem paths.
+func (p *Plan) FindActiveWithBranches(myAuthor, pairAuthor string, specRootFinder func(repo string) string) map[string]BranchEntry {
+	result := make(map[string]BranchEntry)
+	if myAuthor == "" || pairAuthor == "" {
+		return result
+	}
+	for key, entry := range p.ActiveBranches {
+		if entry.SpecPath == "" {
+			continue
+		}
+		repoRoot := specRootFinder(entry.Repo)
+		if repoRoot == "" {
+			continue
+		}
+		fullPath := repoRoot + "/" + entry.SpecPath
+		authors := readSpecAuthors(fullPath)
+		if containsAuthorPlan(authors, myAuthor) && containsAuthorPlan(authors, pairAuthor) {
+			result[key] = entry
+		}
+	}
+	return result
+}
+
+// readSpecAuthors reads the authors list from a spec file's YAML frontmatter.
+// Returns nil on any error (file missing, parse error, etc.).
+func readSpecAuthors(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	// Extract frontmatter between first pair of --- delimiters.
+	content := string(data)
+	if !strings.HasPrefix(content, "---") {
+		return nil
+	}
+	rest := content[3:]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return nil
+	}
+	fm := rest[:end]
+	// Parse authors: line from YAML using a minimal approach to avoid the yaml dependency.
+	for _, line := range strings.Split(fm, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "authors:") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(line, "authors:"))
+		// Expect YAML flow sequence: [a, b, c]
+		val = strings.Trim(val, "[]")
+		var authors []string
+		for _, a := range strings.Split(val, ",") {
+			a = strings.TrimSpace(a)
+			if a != "" {
+				authors = append(authors, a)
+			}
+		}
+		return authors
+	}
+	return nil
+}
+
+func containsAuthorPlan(authors []string, author string) bool {
+	for _, a := range authors {
+		if strings.EqualFold(a, author) {
+			return true
+		}
+	}
+	return false
 }
 
 // AddBranch adds or updates a branch entry.

@@ -2,7 +2,7 @@
 ticket: WGO-102
 title: wgo spec command family and drift detection
 status: draft
-authors: [dmihalcik, sujan]
+authors: [dmihalcik-virtru, sujankota]
 branches: []
 prs: []
 created: 2026-05-06
