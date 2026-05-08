@@ -19,8 +19,8 @@ type ExtendedPRInfo struct {
 	UpdatedAt      time.Time
 	RepoOwner      string
 	RepoName       string
-	CheckPassing   int  // number of passing checks
-	CheckTotal     int  // total checks; -1 = not yet fetched
+	CheckPassing   int       // number of passing checks
+	CheckTotal     int       // total checks; -1 = not yet fetched
 	MyLastActivity time.Time // zero if I have no activity on this PR
 	HasNewActivity bool      // true when UpdatedAt > MyLastActivity (and MyLastActivity non-zero)
 }
@@ -346,8 +346,8 @@ func (c *CLIClient) ListMyCommentedPRs(myLogin string, since time.Time) ([]Comme
 		Data struct {
 			Search struct {
 				Nodes []struct {
-					Number     int       `json:"number"`
-					Title      string    `json:"title"`
+					Number     int    `json:"number"`
+					Title      string `json:"title"`
 					Repository struct {
 						NameWithOwner string `json:"nameWithOwner"`
 					} `json:"repository"`
@@ -420,8 +420,8 @@ func (c *CLIClient) ListMyReviewsToday(myLogin string, since time.Time) ([]Revie
 					PullRequestReviewContributions struct {
 						Nodes []struct {
 							PullRequestReview struct {
-								State     string    `json:"state"`
-								CreatedAt time.Time `json:"createdAt"`
+								State       string    `json:"state"`
+								CreatedAt   time.Time `json:"createdAt"`
 								PullRequest struct {
 									Number     int    `json:"number"`
 									Title      string `json:"title"`

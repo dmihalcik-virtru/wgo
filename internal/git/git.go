@@ -165,7 +165,7 @@ func (c *CLIClient) AheadBehind(repoPath, branch string) (ahead int, behind int,
 	}
 
 	fmt.Sscanf(strings.TrimSpace(aheadOutput), "%d", &behind) // ahead is commits in tracking not in branch
-	fmt.Sscanf(strings.TrimSpace(behindOutput), "%d", &ahead)  // behind is commits in branch not in tracking
+	fmt.Sscanf(strings.TrimSpace(behindOutput), "%d", &ahead) // behind is commits in branch not in tracking
 
 	return ahead, behind, nil
 }

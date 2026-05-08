@@ -317,4 +317,3 @@ func (c *Candidate) DisplayPath() string {
 	}
 	return c.Branch
 }
-

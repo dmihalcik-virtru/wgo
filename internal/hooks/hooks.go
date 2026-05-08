@@ -85,10 +85,11 @@ func (m *Manager) Uninstall() error {
 	previousPath := strings.TrimSpace(string(prevData))
 
 	// Restore or unset core.hooksPath
+	var configErr error
 	if previousPath != "" {
 		cmd := exec.Command("git", "config", "--global", "core.hooksPath", previousPath)
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to restore core.hooksPath: %w", err)
+			configErr = fmt.Errorf("failed to restore core.hooksPath: %w", err)
 		}
 	} else {
 		cmd := exec.Command("git", "config", "--global", "--unset", "core.hooksPath")
@@ -97,7 +98,7 @@ func (m *Manager) Uninstall() error {
 			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 5 {
 				// key didn't exist, that's fine
 			} else {
-				return fmt.Errorf("failed to unset core.hooksPath: %w", err)
+				configErr = fmt.Errorf("failed to unset core.hooksPath: %w", err)
 			}
 		}
 	}
@@ -107,7 +108,7 @@ func (m *Manager) Uninstall() error {
 		return fmt.Errorf("failed to remove hooks directory: %w", err)
 	}
 
-	return nil
+	return configErr
 }
 
 // Status returns the current hook installation state.
