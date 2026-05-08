@@ -111,6 +111,12 @@ pkg/
   models/             # Shared data models
 ```
 
+## Spec-Driven Development
+
+When working on a branch whose name contains a ticket ID (e.g. `WGO-112-wgo-join` → ticket `WGO-112`), **read `spec/WGO-112.md` first** before writing any code. The spec is the authoritative source of requirements, acceptance criteria, and what is explicitly out of scope. If the spec file exists, treat its Acceptance Criteria as the definition of done.
+
+To find the spec: `spec/<TICKET>.md` relative to the repo root. The ticket ID is the uppercase `[A-Z]+-\d+` prefix of the branch name.
+
 ## Key Design Constraints
 
 - **Read-heavy, write-light** — most operations query state; `go-git` is sufficient (no merge support needed)
