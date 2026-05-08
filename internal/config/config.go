@@ -46,9 +46,11 @@ func (c *Config) PairDisplayName() string {
 
 // HooksConfig contains git hooks configuration.
 type HooksConfig struct {
-	Enabled         bool     `mapstructure:"enabled"`
-	AutoPlan        bool     `mapstructure:"auto_plan"`
-	ExcludeBranches []string `mapstructure:"exclude_branches"`
+	Enabled               bool     `mapstructure:"enabled"`
+	AutoPlan              bool     `mapstructure:"auto_plan"`
+	ExcludeBranches       []string `mapstructure:"exclude_branches"`
+	SpecRequired          bool     `mapstructure:"spec_required"`
+	SpecRequiredMinLines  int      `mapstructure:"spec_required_min_lines"`
 }
 
 // StatusConfig contains status dashboard configuration.
@@ -152,6 +154,8 @@ func setDefaults() {
 	viper.SetDefault("hooks.enabled", true)
 	viper.SetDefault("hooks.auto_plan", true)
 	viper.SetDefault("hooks.exclude_branches", []string{"main", "master", "develop", "release/*"})
+	viper.SetDefault("hooks.spec_required", false)
+	viper.SetDefault("hooks.spec_required_min_lines", 5)
 }
 
 // createDefaultConfig creates a default config file.
@@ -193,6 +197,10 @@ auto_plan = true
 
 # Branches to exclude from auto-plan (glob patterns)
 exclude_branches = ["main", "master", "develop", "release/*"]
+
+# Block commits on branches without a spec reference (opt-in)
+spec_required = false
+spec_required_min_lines = 5   # commits touching <= N lines bypass the check
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)

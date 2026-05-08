@@ -12,6 +12,222 @@ import (
 	"github.com/virtru/wgo/internal/store"
 )
 
+// newPreCommitProcessor returns an EventProcessor with spec_required=true for pre-commit tests.
+func newPreCommitProcessor(t *testing.T, repoPath string) (*EventProcessor, *store.FileStore) {
+	t.Helper()
+	s := newTestStore(t)
+	g := git.New(repoPath)
+	cfg := &EventConfig{
+		SpecRequired:         true,
+		SpecRequiredMinLines: 5,
+		ExcludeBranches:      []string{"main", "master"},
+	}
+	return NewEventProcessor(s, g, cfg), s
+}
+
+func TestHandlePreCommit_SpecRequiredFalse_Allows(t *testing.T) {
+	repoPath := initTestRepo(t)
+	s := newTestStore(t)
+	g := git.New(repoPath)
+	cfg := &EventConfig{SpecRequired: false}
+	p := NewEventProcessor(s, g, cfg)
+
+	d, err := p.HandlePreCommit(PreCommitContext{RepoRoot: repoPath, Branch: "WGO-1-feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Allow {
+		t.Errorf("expected Allow=true when spec_required=false, got reason: %s", d.Reason)
+	}
+}
+
+func TestHandlePreCommit_DetachedHEAD_Allows(t *testing.T) {
+	repoPath := initTestRepo(t)
+	p, _ := newPreCommitProcessor(t, repoPath)
+
+	d, err := p.HandlePreCommit(PreCommitContext{RepoRoot: repoPath, Branch: "HEAD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Allow {
+		t.Errorf("expected Allow=true for detached HEAD, got: %s", d.Reason)
+	}
+}
+
+func TestHandlePreCommit_ExcludedBranch_Allows(t *testing.T) {
+	repoPath := initTestRepo(t)
+	p, _ := newPreCommitProcessor(t, repoPath)
+
+	d, err := p.HandlePreCommit(PreCommitContext{RepoRoot: repoPath, Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Allow {
+		t.Errorf("expected Allow=true for excluded branch, got: %s", d.Reason)
+	}
+}
+
+func TestHandlePreCommit_SpecOnlyDiff_Allows(t *testing.T) {
+	repoPath := initTestRepo(t)
+	p, _ := newPreCommitProcessor(t, repoPath)
+
+	d, err := p.HandlePreCommit(PreCommitContext{
+		RepoRoot:    repoPath,
+		Branch:      "WGO-1-feature",
+		StagedFiles: []string{"spec/WGO-1.md", "spec/WGO-2.md"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Allow {
+		t.Errorf("expected Allow=true for spec-only diff, got: %s", d.Reason)
+	}
+}
+
+func TestHandlePreCommit_NoSpecInMessage_Allows(t *testing.T) {
+	repoPath := initTestRepo(t)
+	p, _ := newPreCommitProcessor(t, repoPath)
+
+	msgFile := filepath.Join(t.TempDir(), "COMMIT_EDITMSG")
+	if err := os.WriteFile(msgFile, []byte("fix something [no-spec]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := p.HandlePreCommit(PreCommitContext{
+		RepoRoot:    repoPath,
+		Branch:      "WGO-1-feature",
+		StagedFiles: []string{"main.go"},
+		MsgFile:     msgFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Allow {
+		t.Errorf("expected Allow=true for [no-spec] in message, got: %s", d.Reason)
+	}
+}
+
+func TestHandlePreCommit_SpecRefInMessage_Allows(t *testing.T) {
+	repoPath := initTestRepo(t)
+	p, _ := newPreCommitProcessor(t, repoPath)
+
+	msgFile := filepath.Join(t.TempDir(), "COMMIT_EDITMSG")
+	if err := os.WriteFile(msgFile, []byte("feat: add thing\n\nSpec: spec/WGO-1.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := p.HandlePreCommit(PreCommitContext{
+		RepoRoot:    repoPath,
+		Branch:      "WGO-1-feature",
+		StagedFiles: []string{"main.go"},
+		MsgFile:     msgFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Allow {
+		t.Errorf("expected Allow=true for Spec: reference in message, got: %s", d.Reason)
+	}
+}
+
+func TestHandlePreCommit_SpecFileOnDisk_Allows(t *testing.T) {
+	repoPath := initTestRepo(t)
+	p, _ := newPreCommitProcessor(t, repoPath)
+
+	// Create spec file on disk
+	specDir := filepath.Join(repoPath, "spec")
+	if err := os.MkdirAll(specDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(specDir, "WGO-42.md"), []byte("# spec"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := p.HandlePreCommit(PreCommitContext{
+		RepoRoot:    repoPath,
+		Branch:      "WGO-42-my-feature",
+		StagedFiles: []string{"main.go"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Allow {
+		t.Errorf("expected Allow=true when spec file exists on disk, got: %s", d.Reason)
+	}
+}
+
+func TestHandlePreCommit_NoSpec_Blocks(t *testing.T) {
+	repoPath := initTestRepo(t)
+	p, _ := newPreCommitProcessor(t, repoPath)
+
+	// Stage a file with > 5 lines so the min-lines escape hatch doesn't trigger
+	content := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\n"
+	if err := os.WriteFile(filepath.Join(repoPath, "main.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "add", "main.go")
+	cmd.Dir = repoPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add failed: %v\n%s", err, out)
+	}
+
+	d, err := p.HandlePreCommit(PreCommitContext{
+		RepoRoot:    repoPath,
+		Branch:      "WGO-999-no-spec-branch",
+		StagedFiles: []string{"main.go"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Allow {
+		t.Errorf("expected Allow=false when no spec and no escape, got reason: %s", d.Reason)
+	}
+	if !strings.Contains(d.Reason, "commit blocked") {
+		t.Errorf("expected remediation message, got: %s", d.Reason)
+	}
+	if !strings.Contains(d.Reason, "[no-spec]") {
+		t.Errorf("expected escape hatch hint in message, got: %s", d.Reason)
+	}
+}
+
+func TestHandlePreCommit_AnnotationSpecPath_Allows(t *testing.T) {
+	repoPath := initTestRepo(t)
+	s := newTestStore(t)
+	g := git.New(repoPath)
+	cfg := &EventConfig{
+		SpecRequired:         true,
+		SpecRequiredMinLines: 5,
+		ExcludeBranches:      []string{"main"},
+	}
+	p := NewEventProcessor(s, g, cfg)
+
+	// Create spec file and record it in annotation
+	specDir := filepath.Join(repoPath, "spec")
+	if err := os.MkdirAll(specDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	specPath := filepath.Join(specDir, "WGO-55.md")
+	if err := os.WriteFile(specPath, []byte("# spec"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state, _ := s.LoadState()
+	state.SetSpec(repoPath, "WGO-55-feat", specPath, "active")
+	_ = s.SaveState(state)
+
+	d, err := p.HandlePreCommit(PreCommitContext{
+		RepoRoot:    repoPath,
+		Branch:      "WGO-55-feat",
+		StagedFiles: []string{"main.go", "a.go", "b.go", "c.go", "d.go", "e.go"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Allow {
+		t.Errorf("expected Allow=true when annotation has SpecPath, got: %s", d.Reason)
+	}
+}
+
 // newTestStore creates a FileStore in a temp directory.
 func newTestStore(t *testing.T) *store.FileStore {
 	t.Helper()

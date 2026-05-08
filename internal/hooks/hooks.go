@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-var hookNames = []string{"post-checkout", "post-commit", "post-merge", "post-rewrite"}
+var hookNames = []string{"pre-commit", "post-checkout", "post-commit", "post-merge", "post-rewrite"}
 
 // HookStatus describes the current hook installation state.
 type HookStatus struct {
@@ -58,7 +58,12 @@ func (m *Manager) Install() error {
 
 	// Generate hook scripts
 	for _, hookName := range hookNames {
-		script := generateHookScript(hookName, previousPath)
+		var script string
+		if hookName == "pre-commit" {
+			script = generatePreCommitScript(previousPath)
+		} else {
+			script = generateHookScript(hookName, previousPath)
+		}
 		hookPath := filepath.Join(m.hooksDir, hookName)
 		if err := os.WriteFile(hookPath, []byte(script), 0o755); err != nil {
 			return fmt.Errorf("failed to write %s hook: %w", hookName, err)
@@ -146,6 +151,35 @@ func getGlobalHooksPath() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// generatePreCommitScript creates the pre-commit hook script.
+// Unlike other hooks, the pre-commit hook propagates exit codes to block commits.
+func generatePreCommitScript(previousPath string) string {
+	return fmt.Sprintf(`#!/bin/sh
+# wgo hook: pre-commit
+# Managed by wgo - do not edit manually
+
+# Enforce spec-first policy (exit code propagates to block commit if needed)
+if command -v wgo >/dev/null 2>&1; then
+    wgo _event pre-commit \
+      --branch "$(git rev-parse --abbrev-ref HEAD)" \
+      --staged "$(git diff --cached --name-only | tr '\n' ',')" \
+      --msg-file "$(git rev-parse --git-dir)/COMMIT_EDITMSG" || exit $?
+fi
+
+# Chain to previous core.hooksPath hook
+_prev="%s/pre-commit"
+if [ -n "%s" ] && [ -x "$_prev" ]; then
+    "$_prev" "$@"
+fi
+
+# Chain to per-repo hook
+_repo="$(git rev-parse --git-dir 2>/dev/null)/hooks/pre-commit"
+if [ -x "$_repo" ]; then
+    "$_repo" "$@"
+fi
+`, previousPath, previousPath)
 }
 
 // generateHookScript creates the shell script content for a hook.

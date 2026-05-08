@@ -152,7 +152,7 @@ func TestManager_Uninstall_RemovesHooksDir(t *testing.T) {
 }
 
 func TestHookNames(t *testing.T) {
-	expected := []string{"post-checkout", "post-commit", "post-merge", "post-rewrite"}
+	expected := []string{"pre-commit", "post-checkout", "post-commit", "post-merge", "post-rewrite"}
 	if len(hookNames) != len(expected) {
 		t.Fatalf("expected %d hook names, got %d", len(expected), len(hookNames))
 	}
