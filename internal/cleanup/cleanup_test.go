@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/virtru/wgo/internal/github"
 )
 
@@ -18,21 +20,16 @@ func TestCandidateKindString(t *testing.T) {
 		{KindRepo, "repo"},
 	}
 	for _, tt := range tests {
-		if got := tt.kind.String(); got != tt.want {
-			t.Errorf("CandidateKind(%d).String() = %q, want %q", tt.kind, got, tt.want)
-		}
+		assert.Equal(t, tt.want, tt.kind.String(), "CandidateKind(%d).String()", tt.kind)
 	}
 }
 
 func TestDisplayPath(t *testing.T) {
 	c := Candidate{Kind: KindLocalBranch, RepoPath: "/repos/foo", Branch: "feat"}
-	if got := c.DisplayPath(); got != "/repos/foo [feat]" {
-		t.Errorf("DisplayPath() = %q", got)
-	}
+	assert.Equal(t, "/repos/foo [feat]", c.DisplayPath())
+
 	c2 := Candidate{Kind: KindWorktree, Path: "/worktrees/foo", RepoPath: "/repos/foo"}
-	if got := c2.DisplayPath(); got != "/worktrees/foo" {
-		t.Errorf("DisplayPath() = %q", got)
-	}
+	assert.Equal(t, "/worktrees/foo", c2.DisplayPath())
 }
 
 func TestFilterKind(t *testing.T) {
@@ -43,9 +40,7 @@ func TestFilterKind(t *testing.T) {
 		{Kind: KindWorktree},
 	}
 	got := FilterKind(cs, KindWorktree)
-	if len(got) != 2 {
-		t.Errorf("expected 2 worktree candidates, got %d", len(got))
-	}
+	assert.Len(t, got, 2, "expected 2 worktree candidates")
 }
 
 func TestFilterKinds(t *testing.T) {
@@ -55,9 +50,7 @@ func TestFilterKinds(t *testing.T) {
 		{Kind: KindRemoteBranch},
 	}
 	got := FilterKinds(cs, KindWorktree, KindLocalBranch)
-	if len(got) != 2 {
-		t.Errorf("expected 2, got %d", len(got))
-	}
+	assert.Len(t, got, 2)
 }
 
 func TestSenescenceReason(t *testing.T) {
@@ -68,14 +61,10 @@ func TestSenescenceReason(t *testing.T) {
 		MergedAt: &merged,
 	}
 	reason := SenescenceReason(pr)
-	if reason == "" {
-		t.Errorf("expected non-empty reason for merged PR")
-	}
+	assert.NotEmpty(t, reason, "expected non-empty reason for merged PR")
 
 	pr2 := (*github.PRInfo)(nil)
-	if SenescenceReason(pr2) != "" {
-		t.Errorf("expected empty reason for nil PR")
-	}
+	assert.Empty(t, SenescenceReason(pr2), "expected empty reason for nil PR")
 }
 
 func TestGroupByRepo(t *testing.T) {
@@ -85,29 +74,17 @@ func TestGroupByRepo(t *testing.T) {
 		{Kind: KindLocalBranch, RepoPath: "/repos/b", Branch: "b1"},
 	}
 	groups := GroupByRepo(cs)
-	if len(groups["/repos/a"]) != 2 {
-		t.Errorf("expected 2 for /repos/a, got %d", len(groups["/repos/a"]))
-	}
-	if len(groups["/repos/b"]) != 1 {
-		t.Errorf("expected 1 for /repos/b, got %d", len(groups["/repos/b"]))
-	}
+	require.Len(t, groups["/repos/a"], 2)
+	require.Len(t, groups["/repos/b"], 1)
 }
 
 func TestPRInfoMethods(t *testing.T) {
 	now := time.Now()
 	merged := &github.PRInfo{State: "merged", MergedAt: &now}
-	if !merged.IsMerged() {
-		t.Error("expected IsMerged true")
-	}
-	if merged.IsClosed() {
-		t.Error("expected IsClosed false for merged PR")
-	}
+	assert.True(t, merged.IsMerged(), "expected IsMerged true")
+	assert.False(t, merged.IsClosed(), "expected IsClosed false for merged PR")
 
 	closed := &github.PRInfo{State: "closed"}
-	if closed.IsMerged() {
-		t.Error("expected IsMerged false for closed PR")
-	}
-	if !closed.IsClosed() {
-		t.Error("expected IsClosed true")
-	}
+	assert.False(t, closed.IsMerged(), "expected IsMerged false for closed PR")
+	assert.True(t, closed.IsClosed(), "expected IsClosed true")
 }

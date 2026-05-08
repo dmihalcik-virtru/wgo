@@ -2,6 +2,9 @@ package github
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseGitHubURL(t *testing.T) {
@@ -70,69 +73,28 @@ func TestParseGitHubURL(t *testing.T) {
 			wantType:  URLTypePR,
 			wantIdent: "1",
 		},
-		{
-			name:    "not GitHub",
-			url:     "https://gitlab.com/virtru/wgo",
-			wantErr: true,
-		},
-		{
-			name:    "missing repo",
-			url:     "https://github.com/virtru",
-			wantErr: true,
-		},
-		{
-			name:    "invalid PR number",
-			url:     "https://github.com/virtru/wgo/pull/abc",
-			wantErr: true,
-		},
-		{
-			name:    "invalid issue number",
-			url:     "https://github.com/virtru/wgo/issues/abc",
-			wantErr: true,
-		},
-		{
-			name:    "unsupported URL type",
-			url:     "https://github.com/virtru/wgo/actions",
-			wantErr: true,
-		},
-		{
-			name:    "PR URL missing number",
-			url:     "https://github.com/virtru/wgo/pull",
-			wantErr: true,
-		},
-		{
-			name:    "tree URL missing branch",
-			url:     "https://github.com/virtru/wgo/tree",
-			wantErr: true,
-		},
-		{
-			name:    "issues URL missing number",
-			url:     "https://github.com/virtru/wgo/issues",
-			wantErr: true,
-		},
+		{name: "not GitHub", url: "https://gitlab.com/virtru/wgo", wantErr: true},
+		{name: "missing repo", url: "https://github.com/virtru", wantErr: true},
+		{name: "invalid PR number", url: "https://github.com/virtru/wgo/pull/abc", wantErr: true},
+		{name: "invalid issue number", url: "https://github.com/virtru/wgo/issues/abc", wantErr: true},
+		{name: "unsupported URL type", url: "https://github.com/virtru/wgo/actions", wantErr: true},
+		{name: "PR URL missing number", url: "https://github.com/virtru/wgo/pull", wantErr: true},
+		{name: "tree URL missing branch", url: "https://github.com/virtru/wgo/tree", wantErr: true},
+		{name: "issues URL missing number", url: "https://github.com/virtru/wgo/issues", wantErr: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := ParseGitHubURL(tt.url)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("ParseGitHubURL() error = %v, wantErr = %v", err, tt.wantErr)
-			}
 			if tt.wantErr {
+				assert.Error(t, err, "ParseGitHubURL() expected error")
 				return
 			}
-			if got.Owner != tt.wantOwner {
-				t.Errorf("Owner = %q, want %q", got.Owner, tt.wantOwner)
-			}
-			if got.Repo != tt.wantRepo {
-				t.Errorf("Repo = %q, want %q", got.Repo, tt.wantRepo)
-			}
-			if got.Type != tt.wantType {
-				t.Errorf("Type = %d, want %d", got.Type, tt.wantType)
-			}
-			if got.Identifier != tt.wantIdent {
-				t.Errorf("Identifier = %q, want %q", got.Identifier, tt.wantIdent)
-			}
+			require.NoError(t, err, "ParseGitHubURL() unexpected error")
+			assert.Equal(t, tt.wantOwner, got.Owner)
+			assert.Equal(t, tt.wantRepo, got.Repo)
+			assert.Equal(t, tt.wantType, got.Type)
+			assert.Equal(t, tt.wantIdent, got.Identifier)
 		})
 	}
 }
@@ -156,9 +118,7 @@ func TestSanitizeBranch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			got := SanitizeBranch(tt.input)
-			if got != tt.want {
-				t.Errorf("SanitizeBranch(%q) = %q, want %q", tt.input, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "SanitizeBranch(%q)", tt.input)
 		})
 	}
 }
@@ -178,17 +138,12 @@ func TestIssueBranchName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.title, func(t *testing.T) {
 			got := IssueBranchName(tt.number, tt.title)
-			if got != tt.want {
-				t.Errorf("IssueBranchName(%d, %q) = %q, want %q", tt.number, tt.title, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "IssueBranchName(%d, %q)", tt.number, tt.title)
 		})
 	}
 }
 
 func TestRepoCloneURL(t *testing.T) {
 	got := RepoCloneURL("virtru", "wgo")
-	want := "https://github.com/virtru/wgo.git"
-	if got != want {
-		t.Errorf("RepoCloneURL() = %q, want %q", got, want)
-	}
+	assert.Equal(t, "https://github.com/virtru/wgo.git", got)
 }

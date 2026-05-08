@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const testFrontmatter = `---
@@ -22,13 +25,9 @@ updated: 2026-05-01T00:00:00Z
 func writeSpec(t *testing.T, dir, ticket, content string) string {
 	t.Helper()
 	specDir := filepath.Join(dir, "spec")
-	if err := os.MkdirAll(specDir, 0o755); err != nil {
-		t.Fatalf("mkdir spec: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(specDir, 0o755), "mkdir spec")
 	p := filepath.Join(specDir, ticket+".md")
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-		t.Fatalf("write spec: %v", err)
-	}
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644), "write spec")
 	return p
 }
 
@@ -36,29 +35,17 @@ func TestDetectForBranch_Untracked(t *testing.T) {
 	dir := t.TempDir()
 	// No spec file; branch has a ticket prefix.
 	reports, err := DetectForBranch(dir, "WGO-201-some-feature")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(reports) != 1 {
-		t.Fatalf("expected 1 report, got %d", len(reports))
-	}
-	if reports[0].Kind != DriftUntracked {
-		t.Errorf("expected DriftUntracked, got %s", reports[0].Kind)
-	}
-	if reports[0].Branch != "WGO-201-some-feature" {
-		t.Errorf("unexpected branch: %s", reports[0].Branch)
-	}
+	require.NoError(t, err)
+	require.Len(t, reports, 1)
+	assert.Equal(t, DriftUntracked, reports[0].Kind)
+	assert.Equal(t, "WGO-201-some-feature", reports[0].Branch)
 }
 
 func TestDetectForBranch_NoTicket(t *testing.T) {
 	dir := t.TempDir()
 	reports, err := DetectForBranch(dir, "main")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(reports) != 0 {
-		t.Errorf("expected 0 reports for non-ticket branch, got %d", len(reports))
-	}
+	require.NoError(t, err)
+	assert.Empty(t, reports, "expected 0 reports for non-ticket branch")
 }
 
 func TestDetectForBranch_ValidSpec(t *testing.T) {
@@ -66,14 +53,10 @@ func TestDetectForBranch_ValidSpec(t *testing.T) {
 	writeSpec(t, dir, "WGO-201", testFrontmatter)
 	// Not a real git repo, so commit counting will fail gracefully — no stale report.
 	reports, err := DetectForBranch(dir, "WGO-201-some-feature")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	// No stale report (git command fails gracefully in tmpdir) and not untracked.
 	for _, r := range reports {
-		if r.Kind == DriftUntracked {
-			t.Errorf("should not be untracked when spec exists")
-		}
+		assert.NotEqual(t, DriftUntracked, r.Kind, "should not be untracked when spec exists")
 	}
 }
 
@@ -83,15 +66,9 @@ func TestDetectOrphaned(t *testing.T) {
 
 	// No live branches that reference WGO-201.
 	reports, err := detectOrphaned(dir, []string{"main", "feature-branch"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(reports) != 1 {
-		t.Fatalf("expected 1 orphaned report, got %d", len(reports))
-	}
-	if reports[0].Kind != DriftOrphaned {
-		t.Errorf("expected DriftOrphaned, got %s", reports[0].Kind)
-	}
+	require.NoError(t, err)
+	require.Len(t, reports, 1)
+	assert.Equal(t, DriftOrphaned, reports[0].Kind)
 }
 
 func TestDetectOrphaned_LiveBranch(t *testing.T) {
@@ -100,12 +77,8 @@ func TestDetectOrphaned_LiveBranch(t *testing.T) {
 
 	// WGO-201-feature starts with the ticket prefix — should not be orphaned.
 	reports, err := detectOrphaned(dir, []string{"main", "WGO-201-feature"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(reports) != 0 {
-		t.Errorf("expected 0 orphaned reports when live branch exists, got %d", len(reports))
-	}
+	require.NoError(t, err)
+	assert.Empty(t, reports, "expected 0 orphaned reports when live branch exists")
 }
 
 func TestDetectOrphaned_Terminal(t *testing.T) {
@@ -124,12 +97,8 @@ updated: 2026-05-01T00:00:00Z
 	writeSpec(t, dir, "WGO-202", shipped)
 	// Shipped spec should not appear as orphaned.
 	reports, err := detectOrphaned(dir, []string{"main"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(reports) != 0 {
-		t.Errorf("terminal spec should not be orphaned, got %d reports", len(reports))
-	}
+	require.NoError(t, err)
+	assert.Empty(t, reports, "terminal spec should not be orphaned")
 }
 
 func TestIsHexStr(t *testing.T) {
@@ -145,8 +114,6 @@ func TestIsHexStr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := isHexStr(tt.s, tt.n)
-		if got != tt.want {
-			t.Errorf("isHexStr(%q, %d) = %v, want %v", tt.s, tt.n, got, tt.want)
-		}
+		assert.Equal(t, tt.want, got, "isHexStr(%q, %d)", tt.s, tt.n)
 	}
 }

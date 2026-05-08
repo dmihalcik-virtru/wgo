@@ -1,6 +1,10 @@
 package cmd
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
 
 func TestIsJiraTicket(t *testing.T) {
 	tests := []struct {
@@ -20,9 +24,7 @@ func TestIsJiraTicket(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := isJiraTicket(tt.input)
-		if got != tt.want {
-			t.Errorf("isJiraTicket(%q) = %v, want %v", tt.input, got, tt.want)
-		}
+		assert.Equal(t, tt.want, got, "isJiraTicket(%q)", tt.input)
 	}
 }
 
@@ -42,11 +44,9 @@ func TestSlugTicketBranch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := slugTicketBranch(tt.ticket, tt.desc)
-		if got != tt.want {
-			t.Errorf("slugTicketBranch(%q, %q) = %q, want %q", tt.ticket, tt.desc, got, tt.want)
-		}
-		if len(got) > 0 && got[len(got)-1] == '-' {
-			t.Errorf("slugTicketBranch(%q, %q) = %q ends in dash", tt.ticket, tt.desc, got)
+		assert.Equal(t, tt.want, got, "slugTicketBranch(%q, %q)", tt.ticket, tt.desc)
+		if len(got) > 0 {
+			assert.NotEqual(t, byte('-'), got[len(got)-1], "slugTicketBranch(%q, %q) = %q ends in dash", tt.ticket, tt.desc, got)
 		}
 	}
 }
@@ -69,8 +69,6 @@ func TestTruncateSlug(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := truncateSlug(tt.input, tt.maxLen)
-		if got != tt.want {
-			t.Errorf("truncateSlug(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
-		}
+		assert.Equal(t, tt.want, got, "truncateSlug(%q, %d)", tt.input, tt.maxLen)
 	}
 }

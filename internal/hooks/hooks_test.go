@@ -3,45 +3,33 @@ package hooks
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGenerateHookScript(t *testing.T) {
 	script := generateHookScript("post-checkout", "/old/hooks")
 
-	if !strings.Contains(script, "#!/bin/sh") {
-		t.Error("script missing shebang")
-	}
-	if !strings.Contains(script, "wgo _event post-checkout") {
-		t.Error("script missing wgo _event call")
-	}
-	if !strings.Contains(script, "/old/hooks/post-checkout") {
-		t.Error("script missing previous hooks path chain")
-	}
-	if !strings.Contains(script, "per-repo hook") {
-		t.Error("script missing per-repo hook chain")
-	}
+	assert.Contains(t, script, "#!/bin/sh")
+	assert.Contains(t, script, "wgo _event post-checkout")
+	assert.Contains(t, script, "/old/hooks/post-checkout")
+	assert.Contains(t, script, "per-repo hook")
 }
 
 func TestGenerateHookScript_NoPreviousPath(t *testing.T) {
 	script := generateHookScript("post-commit", "")
 
-	if !strings.Contains(script, "wgo _event post-commit") {
-		t.Error("script missing wgo _event call")
-	}
+	assert.Contains(t, script, "wgo _event post-commit")
 	// With empty previous path, the chain check should have empty string
-	if !strings.Contains(script, `if [ -n "" ]`) {
-		t.Error("script should have empty previous path check")
-	}
+	assert.Contains(t, script, `if [ -n "" ]`)
 }
 
 func TestManager_Install_CreatesHookScripts(t *testing.T) {
 	dir := t.TempDir()
 	wgoDir := filepath.Join(dir, ".wgo")
-	if err := os.MkdirAll(wgoDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(wgoDir, 0o755))
 
 	m := &Manager{
 		wgoDir:   wgoDir,
@@ -51,52 +39,35 @@ func TestManager_Install_CreatesHookScripts(t *testing.T) {
 
 	// We can't actually set global git config in tests, so test the script generation part.
 	// Create hooks dir and scripts manually (testing the generation logic).
-	if err := os.MkdirAll(m.hooksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(m.hooksDir, 0o755))
 
 	for _, hookName := range hookNames {
 		script := generateHookScript(hookName, "")
 		hookPath := filepath.Join(m.hooksDir, hookName)
-		if err := os.WriteFile(hookPath, []byte(script), 0o755); err != nil {
-			t.Fatalf("failed to write %s: %v", hookName, err)
-		}
+		require.NoError(t, os.WriteFile(hookPath, []byte(script), 0o755), "failed to write %s", hookName)
 	}
 
 	// Verify all hook scripts were created
 	for _, hookName := range hookNames {
 		hookPath := filepath.Join(m.hooksDir, hookName)
 		info, err := os.Stat(hookPath)
-		if err != nil {
-			t.Errorf("hook %s not created: %v", hookName, err)
-			continue
-		}
-		if info.Mode()&0o111 == 0 {
-			t.Errorf("hook %s not executable", hookName)
-		}
+		require.NoError(t, err, "hook %s not created", hookName)
+		assert.NotEqual(t, 0, info.Mode()&0o111, "hook %s not executable", hookName)
 	}
 
 	// Verify .previous_hooks_path was created
 	prevFile := filepath.Join(m.hooksDir, ".previous_hooks_path")
-	if err := os.WriteFile(prevFile, []byte(""), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(prevFile, []byte(""), 0o644))
 	data, err := os.ReadFile(prevFile)
-	if err != nil {
-		t.Fatalf("previous_hooks_path not created: %v", err)
-	}
-	if string(data) != "" {
-		t.Errorf("previous_hooks_path should be empty, got %q", string(data))
-	}
+	require.NoError(t, err, "previous_hooks_path not created")
+	assert.Equal(t, "", string(data))
 }
 
 func TestManager_Status(t *testing.T) {
 	dir := t.TempDir()
 	wgoDir := filepath.Join(dir, ".wgo")
 	hooksDir := filepath.Join(wgoDir, "hooks")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(hooksDir, 0o755))
 
 	m := &Manager{
 		wgoDir:   wgoDir,
@@ -107,34 +78,23 @@ func TestManager_Status(t *testing.T) {
 	// Write some hook scripts
 	for _, name := range []string{"post-checkout", "post-commit"} {
 		hookPath := filepath.Join(hooksDir, name)
-		if err := os.WriteFile(hookPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(hookPath, []byte("#!/bin/sh\n"), 0o755))
 	}
 
 	status, err := m.Status()
-	if err != nil {
-		t.Fatalf("Status() failed: %v", err)
-	}
-
-	if len(status.ActiveHooks) != 2 {
-		t.Errorf("expected 2 active hooks, got %d", len(status.ActiveHooks))
-	}
+	require.NoError(t, err, "Status() failed")
+	assert.Len(t, status.ActiveHooks, 2)
 }
 
 func TestManager_Uninstall_RemovesHooksDir(t *testing.T) {
 	dir := t.TempDir()
 	wgoDir := filepath.Join(dir, ".wgo")
 	hooksDir := filepath.Join(wgoDir, "hooks")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(hooksDir, 0o755))
 
 	// Write previous hooks path (empty = no previous)
 	prevFile := filepath.Join(hooksDir, ".previous_hooks_path")
-	if err := os.WriteFile(prevFile, []byte(""), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(prevFile, []byte(""), 0o644))
 
 	m := &Manager{
 		wgoDir:   wgoDir,
@@ -146,19 +106,14 @@ func TestManager_Uninstall_RemovesHooksDir(t *testing.T) {
 	// but the directory removal should still work. We test the directory removal part.
 	_ = m.Uninstall()
 
-	if _, err := os.Stat(hooksDir); !os.IsNotExist(err) {
-		t.Error("hooks directory should be removed after uninstall")
-	}
+	_, err := os.Stat(hooksDir)
+	assert.True(t, os.IsNotExist(err), "hooks directory should be removed after uninstall")
 }
 
 func TestHookNames(t *testing.T) {
 	expected := []string{"pre-commit", "post-checkout", "post-commit", "post-merge", "post-rewrite"}
-	if len(hookNames) != len(expected) {
-		t.Fatalf("expected %d hook names, got %d", len(expected), len(hookNames))
-	}
+	require.Len(t, hookNames, len(expected))
 	for i, name := range expected {
-		if hookNames[i] != name {
-			t.Errorf("hookNames[%d] = %q, want %q", i, hookNames[i], name)
-		}
+		assert.Equal(t, name, hookNames[i], "hookNames[%d]", i)
 	}
 }

@@ -4,17 +4,15 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFileStoreNew(t *testing.T) {
 	s, err := New()
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	if s == nil {
-		t.Errorf("expected non-nil store")
-	}
+	require.NoError(t, err, "New failed")
+	assert.NotNil(t, s)
 }
 
 func TestFileStoreEnsureDir(t *testing.T) {
@@ -26,18 +24,13 @@ func TestFileStoreEnsureDir(t *testing.T) {
 	defer os.Setenv("HOME", oldHome)
 
 	s, err := New()
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
+	require.NoError(t, err, "New failed")
 
-	if err := s.EnsureDir(); err != nil {
-		t.Fatalf("EnsureDir failed: %v", err)
-	}
+	require.NoError(t, s.EnsureDir(), "EnsureDir failed")
 
 	storeDir := filepath.Join(tmpDir, ".wgo")
-	if _, err := os.Stat(storeDir); err != nil {
-		t.Errorf("expected store directory to exist")
-	}
+	_, err = os.Stat(storeDir)
+	require.NoError(t, err, "expected store directory to exist")
 }
 
 func TestSaveLoadState(t *testing.T) {
@@ -47,40 +40,25 @@ func TestSaveLoadState(t *testing.T) {
 	defer os.Setenv("HOME", oldHome)
 
 	s, err := New()
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	if err := s.EnsureDir(); err != nil {
-		t.Fatalf("EnsureDir failed: %v", err)
-	}
+	require.NoError(t, err, "New failed")
+	require.NoError(t, s.EnsureDir(), "EnsureDir failed")
 
 	state := NewState()
 	state.AddAnnotation("/path/to/repo", "feature", "Test feature")
 	state.AddRepo("/path/to/repo", "https://github.com/test/repo.git")
 
-	if err := s.SaveState(state); err != nil {
-		t.Fatalf("SaveState failed: %v", err)
-	}
+	require.NoError(t, s.SaveState(state), "SaveState failed")
 
 	loaded, err := s.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
+	require.NoError(t, err, "LoadState failed")
 
 	ann := loaded.GetAnnotation("/path/to/repo", "feature")
-	if ann == nil {
-		t.Errorf("expected to find annotation")
-	} else if ann.Purpose != "Test feature" {
-		t.Errorf("expected purpose 'Test feature', got %q", ann.Purpose)
-	}
+	require.NotNil(t, ann, "expected to find annotation")
+	assert.Equal(t, "Test feature", ann.Purpose)
 
 	repo := loaded.GetRepo("/path/to/repo")
-	if repo == nil {
-		t.Errorf("expected to find repo")
-	} else if repo.RemoteURL != "https://github.com/test/repo.git" {
-		t.Errorf("expected URL 'https://github.com/test/repo.git', got %q", repo.RemoteURL)
-	}
+	require.NotNil(t, repo, "expected to find repo")
+	assert.Equal(t, "https://github.com/test/repo.git", repo.RemoteURL)
 }
 
 func TestSaveLoadPlan(t *testing.T) {
@@ -90,13 +68,8 @@ func TestSaveLoadPlan(t *testing.T) {
 	defer os.Setenv("HOME", oldHome)
 
 	s, err := New()
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	if err := s.EnsureDir(); err != nil {
-		t.Fatalf("EnsureDir failed: %v", err)
-	}
+	require.NoError(t, err, "New failed")
+	require.NoError(t, s.EnsureDir(), "EnsureDir failed")
 
 	planContent := `# Plan
 
@@ -109,18 +82,11 @@ func TestSaveLoadPlan(t *testing.T) {
 Test notes
 `
 
-	if err := s.SavePlan(planContent); err != nil {
-		t.Fatalf("SavePlan failed: %v", err)
-	}
+	require.NoError(t, s.SavePlan(planContent), "SavePlan failed")
 
 	loaded, err := s.LoadPlan()
-	if err != nil {
-		t.Fatalf("LoadPlan failed: %v", err)
-	}
-
-	if loaded != planContent {
-		t.Errorf("expected loaded plan to match saved plan")
-	}
+	require.NoError(t, err, "LoadPlan failed")
+	assert.Equal(t, planContent, loaded)
 }
 
 func TestLoadNonexistentState(t *testing.T) {
@@ -130,23 +96,14 @@ func TestLoadNonexistentState(t *testing.T) {
 	defer os.Setenv("HOME", oldHome)
 
 	s, err := New()
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
+	require.NoError(t, err, "New failed")
 
 	// Should return empty state if file doesn't exist
 	state, err := s.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
+	require.NoError(t, err, "LoadState failed")
 
-	if state == nil {
-		t.Errorf("expected non-nil state")
-	}
-
-	if len(state.Repos) != 0 {
-		t.Errorf("expected empty repos map")
-	}
+	require.NotNil(t, state)
+	assert.Empty(t, state.Repos)
 }
 
 func TestCreatePlanSymlink(t *testing.T) {
@@ -156,30 +113,15 @@ func TestCreatePlanSymlink(t *testing.T) {
 	defer os.Setenv("HOME", oldHome)
 
 	s, err := New()
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	if err := s.EnsureDir(); err != nil {
-		t.Fatalf("EnsureDir failed: %v", err)
-	}
+	require.NoError(t, err, "New failed")
+	require.NoError(t, s.EnsureDir(), "EnsureDir failed")
 
 	// Create a plan file
-	if err := s.SavePlan("# Plan\n"); err != nil {
-		t.Fatalf("SavePlan failed: %v", err)
-	}
-
-	if err := s.CreatePlanSymlink(); err != nil {
-		t.Fatalf("CreatePlanSymlink failed: %v", err)
-	}
+	require.NoError(t, s.SavePlan("# Plan\n"), "SavePlan failed")
+	require.NoError(t, s.CreatePlanSymlink(), "CreatePlanSymlink failed")
 
 	symlinkPath := s.GetPlanSymlinkPath()
 	info, err := os.Lstat(symlinkPath)
-	if err != nil {
-		t.Fatalf("failed to stat symlink: %v", err)
-	}
-
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Errorf("expected symlink, got regular file")
-	}
+	require.NoError(t, err, "failed to stat symlink")
+	assert.NotEqual(t, os.FileMode(0), info.Mode()&os.ModeSymlink, "expected symlink, got regular file")
 }

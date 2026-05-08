@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/virtru/wgo/models"
 )
 
@@ -34,9 +36,7 @@ func TestFilterActivities(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
 			result := FilterActivities(activities, tt.filter, time.Time{})
-			if len(result) != tt.want {
-				t.Errorf("filter %q: got %d results, want %d", tt.filter, len(result), tt.want)
-			}
+			assert.Len(t, result, tt.want, "filter %q", tt.filter)
 		})
 	}
 }
@@ -62,10 +62,6 @@ func TestFilterActivities_Since(t *testing.T) {
 	since := now.Add(-1 * time.Hour)
 	result := FilterActivities(activities, "", since)
 
-	if len(result) != 1 {
-		t.Fatalf("expected 1 result with since filter, got %d", len(result))
-	}
-	if result[0].Name != "recent" {
-		t.Errorf("expected 'recent' repo, got %q", result[0].Name)
-	}
+	require.Len(t, result, 1)
+	assert.Equal(t, "recent", result[0].Name)
 }

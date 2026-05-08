@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupGitRepo initializes a git repository in the given directory.
@@ -23,9 +26,7 @@ func setupGitRepo(t *testing.T, dir string) {
 	for _, args := range commands {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = dir
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("failed to initialize git repo: %v", err)
-		}
+		require.NoError(t, cmd.Run(), "failed to initialize git repo")
 	}
 }
 
@@ -34,9 +35,7 @@ func addCommit(t *testing.T, dir, message string) {
 	t.Helper()
 
 	filePath := filepath.Join(dir, "test.txt")
-	if err := os.WriteFile(filePath, []byte(message), 0o644); err != nil {
-		t.Fatalf("failed to write test file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filePath, []byte(message), 0o644), "failed to write test file")
 
 	commands := [][]string{
 		{"git", "add", "."},
@@ -46,9 +45,7 @@ func addCommit(t *testing.T, dir, message string) {
 	for _, args := range commands {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = dir
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("failed to add commit: %v", err)
-		}
+		require.NoError(t, cmd.Run(), "failed to add commit")
 	}
 }
 
@@ -58,9 +55,7 @@ func createBranch(t *testing.T, dir, branchName string) {
 
 	cmd := exec.Command("git", "checkout", "-b", branchName)
 	cmd.Dir = dir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to create branch: %v", err)
-	}
+	require.NoError(t, cmd.Run(), "failed to create branch")
 }
 
 func TestIsRepo(t *testing.T) {
@@ -70,24 +65,14 @@ func TestIsRepo(t *testing.T) {
 	client := New(tmpDir)
 
 	isRepo, err := client.IsRepo(tmpDir)
-	if err != nil {
-		t.Fatalf("IsRepo failed: %v", err)
-	}
-
-	if !isRepo {
-		t.Errorf("expected IsRepo to return true for git directory")
-	}
+	require.NoError(t, err, "IsRepo failed")
+	assert.True(t, isRepo, "expected IsRepo to return true for git directory")
 
 	// Test non-repo directory
 	nonRepoDir := t.TempDir()
 	isRepo, err = client.IsRepo(nonRepoDir)
-	if err != nil {
-		t.Fatalf("IsRepo failed: %v", err)
-	}
-
-	if isRepo {
-		t.Errorf("expected IsRepo to return false for non-git directory")
-	}
+	require.NoError(t, err, "IsRepo failed")
+	assert.False(t, isRepo, "expected IsRepo to return false for non-git directory")
 }
 
 func TestCurrentBranch(t *testing.T) {
@@ -98,13 +83,8 @@ func TestCurrentBranch(t *testing.T) {
 	client := New(tmpDir)
 
 	branch, err := client.CurrentBranch(tmpDir)
-	if err != nil {
-		t.Fatalf("CurrentBranch failed: %v", err)
-	}
-
-	if branch != "master" && branch != "main" {
-		t.Errorf("expected branch to be 'master' or 'main', got %q", branch)
-	}
+	require.NoError(t, err, "CurrentBranch failed")
+	assert.True(t, branch == "master" || branch == "main", "expected branch to be 'master' or 'main', got %q", branch)
 }
 
 func TestStatus(t *testing.T) {
@@ -116,33 +96,19 @@ func TestStatus(t *testing.T) {
 
 	// Create untracked file
 	testFile := filepath.Join(tmpDir, "untracked.txt")
-	if err := os.WriteFile(testFile, []byte("untracked"), 0o644); err != nil {
-		t.Fatalf("failed to create untracked file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(testFile, []byte("untracked"), 0o644), "failed to create untracked file")
 
 	status, err := client.Status(tmpDir)
-	if err != nil {
-		t.Fatalf("Status failed: %v", err)
-	}
-
-	if status.Untracked != 1 {
-		t.Errorf("expected 1 untracked file, got %d", status.Untracked)
-	}
+	require.NoError(t, err, "Status failed")
+	assert.Equal(t, 1, status.Untracked, "expected 1 untracked file")
 
 	// Modify tracked file
 	existingFile := filepath.Join(tmpDir, "test.txt")
-	if err := os.WriteFile(existingFile, []byte("modified"), 0o644); err != nil {
-		t.Fatalf("failed to modify file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(existingFile, []byte("modified"), 0o644), "failed to modify file")
 
 	status, err = client.Status(tmpDir)
-	if err != nil {
-		t.Fatalf("Status failed: %v", err)
-	}
-
-	if status.Modified != 1 {
-		t.Errorf("expected 1 modified file, got %d", status.Modified)
-	}
+	require.NoError(t, err, "Status failed")
+	assert.Equal(t, 1, status.Modified, "expected 1 modified file")
 }
 
 func TestLastCommit(t *testing.T) {
@@ -153,46 +119,26 @@ func TestLastCommit(t *testing.T) {
 	client := New(tmpDir)
 
 	commit, err := client.LastCommit(tmpDir)
-	if err != nil {
-		t.Fatalf("LastCommit failed: %v", err)
-	}
+	require.NoError(t, err, "LastCommit failed")
 
-	if commit.Hash == "" {
-		t.Errorf("expected non-empty commit hash")
-	}
-
-	if commit.Message != "test commit message" {
-		t.Errorf("expected message 'test commit message', got %q", commit.Message)
-	}
-
-	if commit.Author != "Test User" {
-		t.Errorf("expected author 'Test User', got %q", commit.Author)
-	}
-
-	if commit.Date.IsZero() {
-		t.Errorf("expected non-zero commit date")
-	}
+	assert.NotEmpty(t, commit.Hash, "expected non-empty commit hash")
+	assert.Equal(t, "test commit message", commit.Message)
+	assert.Equal(t, "Test User", commit.Author)
+	assert.False(t, commit.Date.IsZero(), "expected non-zero commit date")
 }
 
 func TestRepoName(t *testing.T) {
 	tmpDir := t.TempDir()
 	repoDir := filepath.Join(tmpDir, "myrepo")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
-		t.Fatalf("failed to create repo dir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(repoDir, 0o755), "failed to create repo dir")
 
 	setupGitRepo(t, repoDir)
 
 	client := New(repoDir)
 
 	name, err := client.RepoName(repoDir)
-	if err != nil {
-		t.Fatalf("RepoName failed: %v", err)
-	}
-
-	if name != "myrepo" {
-		t.Errorf("expected repo name 'myrepo', got %q", name)
-	}
+	require.NoError(t, err, "RepoName failed")
+	assert.Equal(t, "myrepo", name)
 }
 
 func TestRemoteURL(t *testing.T) {
@@ -202,21 +148,15 @@ func TestRemoteURL(t *testing.T) {
 	// Add a remote
 	cmd := exec.Command("git", "remote", "add", "origin", "https://github.com/test/repo.git")
 	cmd.Dir = tmpDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to add remote: %v", err)
-	}
+	require.NoError(t, cmd.Run(), "failed to add remote")
 
 	client := New(tmpDir)
 
 	url, err := client.RemoteURL(tmpDir)
-	if err != nil {
-		t.Fatalf("RemoteURL failed: %v", err)
-	}
+	require.NoError(t, err, "RemoteURL failed")
 
 	// URL should contain the repo reference (git may normalize it)
-	if !strings.Contains(url, "test/repo") && !strings.Contains(url, "test") {
-		t.Errorf("expected URL to contain test/repo, got %q", url)
-	}
+	assert.True(t, strings.Contains(url, "test/repo") || strings.Contains(url, "test"), "expected URL to contain test/repo, got %q", url)
 }
 
 func TestAheadBehind(t *testing.T) {
@@ -246,39 +186,25 @@ func isZeroError(err error) bool {
 func TestNewFromCwd(t *testing.T) {
 	tmpDir := t.TempDir()
 	originalCwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("failed to get cwd: %v", err)
-	}
+	require.NoError(t, err, "failed to get cwd")
 	defer func() {
 		if err := os.Chdir(originalCwd); err != nil {
 			t.Logf("failed to restore cwd: %v", err)
 		}
 	}()
 
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("failed to change directory: %v", err)
-	}
+	require.NoError(t, os.Chdir(tmpDir), "failed to change directory")
 
 	setupGitRepo(t, tmpDir)
 	addCommit(t, tmpDir, "test")
 
 	client, err := NewFromCwd()
-	if err != nil {
-		t.Fatalf("NewFromCwd failed: %v", err)
-	}
-
-	if client == nil {
-		t.Errorf("expected non-nil client")
-	}
+	require.NoError(t, err, "NewFromCwd failed")
+	require.NotNil(t, client, "expected non-nil client")
 
 	branch, err := client.CurrentBranch(tmpDir)
-	if err != nil {
-		t.Fatalf("CurrentBranch failed: %v", err)
-	}
-
-	if branch == "" {
-		t.Errorf("expected non-empty branch name")
-	}
+	require.NoError(t, err, "CurrentBranch failed")
+	assert.NotEmpty(t, branch, "expected non-empty branch name")
 }
 
 func TestRecentCommitCount(t *testing.T) {
@@ -293,24 +219,14 @@ func TestRecentCommitCount(t *testing.T) {
 	// All commits should be within the last minute
 	since := time.Now().Add(-time.Minute)
 	count, err := client.RecentCommitCount(tmpDir, since)
-	if err != nil {
-		t.Fatalf("RecentCommitCount failed: %v", err)
-	}
-
-	if count != 3 {
-		t.Errorf("expected 3 recent commits, got %d", count)
-	}
+	require.NoError(t, err, "RecentCommitCount failed")
+	assert.Equal(t, 3, count, "expected 3 recent commits")
 
 	// No commits from the future
 	future := time.Now().Add(time.Hour)
 	count, err = client.RecentCommitCount(tmpDir, future)
-	if err != nil {
-		t.Fatalf("RecentCommitCount failed: %v", err)
-	}
-
-	if count != 0 {
-		t.Errorf("expected 0 recent commits from future, got %d", count)
-	}
+	require.NoError(t, err, "RecentCommitCount failed")
+	assert.Equal(t, 0, count, "expected 0 recent commits from future")
 }
 
 func TestDiffStat(t *testing.T) {
@@ -322,39 +238,23 @@ func TestDiffStat(t *testing.T) {
 
 	// Clean repo should have no diff
 	stat, err := client.DiffStat(tmpDir)
-	if err != nil {
-		t.Fatalf("DiffStat failed: %v", err)
-	}
-
-	if stat.FilesChanged != 0 {
-		t.Errorf("expected 0 files changed in clean repo, got %d", stat.FilesChanged)
-	}
+	require.NoError(t, err, "DiffStat failed")
+	assert.Equal(t, 0, stat.FilesChanged, "expected 0 files changed in clean repo")
 
 	// Modify a tracked file
 	testFile := filepath.Join(tmpDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("line1\nline2\nline3\n"), 0o644); err != nil {
-		t.Fatalf("failed to write file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(testFile, []byte("line1\nline2\nline3\n"), 0o644), "failed to write file")
 
 	stat, err = client.DiffStat(tmpDir)
-	if err != nil {
-		t.Fatalf("DiffStat failed: %v", err)
-	}
-
-	if stat.FilesChanged != 1 {
-		t.Errorf("expected 1 file changed, got %d", stat.FilesChanged)
-	}
-	if stat.Insertions == 0 {
-		t.Errorf("expected some insertions, got 0")
-	}
+	require.NoError(t, err, "DiffStat failed")
+	assert.Equal(t, 1, stat.FilesChanged, "expected 1 file changed")
+	assert.Greater(t, stat.Insertions, 0, "expected some insertions")
 }
 
 func TestListWorktrees(t *testing.T) {
 	tmpDir := t.TempDir()
 	mainDir := filepath.Join(tmpDir, "main-repo")
-	if err := os.MkdirAll(mainDir, 0o755); err != nil {
-		t.Fatalf("failed to create main dir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(mainDir, 0o755), "failed to create main dir")
 
 	setupGitRepo(t, mainDir)
 	addCommit(t, mainDir, "initial commit")
@@ -363,42 +263,26 @@ func TestListWorktrees(t *testing.T) {
 	wtDir := filepath.Join(tmpDir, "wt-feat")
 	cmd := exec.Command("git", "worktree", "add", "-b", "feat/test", wtDir)
 	cmd.Dir = mainDir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("failed to add worktree: %v\n%s", err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "failed to add worktree: %s", out)
 
 	client := New(mainDir)
 	worktrees, err := client.ListWorktrees(mainDir)
-	if err != nil {
-		t.Fatalf("ListWorktrees failed: %v", err)
-	}
-
-	if len(worktrees) != 2 {
-		t.Fatalf("expected 2 worktrees, got %d", len(worktrees))
-	}
+	require.NoError(t, err, "ListWorktrees failed")
+	require.Len(t, worktrees, 2)
 
 	// Resolve symlinks for comparison (macOS /var -> /private/var)
 	resolvedMainDir, _ := filepath.EvalSymlinks(mainDir)
 	resolvedWtDir, _ := filepath.EvalSymlinks(wtDir)
 
 	// First should be main
-	if !worktrees[0].IsMain {
-		t.Errorf("expected first worktree to be main")
-	}
-	if worktrees[0].Path != resolvedMainDir {
-		t.Errorf("expected main path %q, got %q", resolvedMainDir, worktrees[0].Path)
-	}
+	assert.True(t, worktrees[0].IsMain, "expected first worktree to be main")
+	assert.Equal(t, resolvedMainDir, worktrees[0].Path)
 
 	// Second should be the added worktree
-	if worktrees[1].IsMain {
-		t.Errorf("expected second worktree to not be main")
-	}
-	if worktrees[1].Path != resolvedWtDir {
-		t.Errorf("expected worktree path %q, got %q", resolvedWtDir, worktrees[1].Path)
-	}
-	if worktrees[1].Branch != "feat/test" {
-		t.Errorf("expected branch 'feat/test', got %q", worktrees[1].Branch)
-	}
+	assert.False(t, worktrees[1].IsMain, "expected second worktree to not be main")
+	assert.Equal(t, resolvedWtDir, worktrees[1].Path)
+	assert.Equal(t, "feat/test", worktrees[1].Branch)
 }
 
 func TestListWorktrees_SingleRepo(t *testing.T) {
@@ -408,17 +292,9 @@ func TestListWorktrees_SingleRepo(t *testing.T) {
 
 	client := New(tmpDir)
 	worktrees, err := client.ListWorktrees(tmpDir)
-	if err != nil {
-		t.Fatalf("ListWorktrees failed: %v", err)
-	}
-
-	if len(worktrees) != 1 {
-		t.Fatalf("expected 1 worktree for single repo, got %d", len(worktrees))
-	}
-
-	if !worktrees[0].IsMain {
-		t.Errorf("expected the only worktree to be main")
-	}
+	require.NoError(t, err, "ListWorktrees failed")
+	require.Len(t, worktrees, 1, "expected 1 worktree for single repo")
+	assert.True(t, worktrees[0].IsMain, "expected the only worktree to be main")
 }
 
 func TestLastCommitDate(t *testing.T) {
@@ -428,9 +304,7 @@ func TestLastCommitDate(t *testing.T) {
 
 	client := New(tmpDir)
 	commit, err := client.LastCommit(tmpDir)
-	if err != nil {
-		t.Fatalf("LastCommit failed: %v", err)
-	}
+	require.NoError(t, err, "LastCommit failed")
 
 	// Verify the date is recent (within the last minute)
 	now := time.Now()
@@ -448,29 +322,22 @@ func TestListLocalBranches(t *testing.T) {
 	// Create an extra branch
 	cmd := exec.Command("git", "checkout", "-b", "feature-x")
 	cmd.Dir = tmpDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to create branch: %v", err)
-	}
+	require.NoError(t, cmd.Run(), "failed to create branch")
 	// Switch back to main/master
 	exec.Command("git", "-C", tmpDir, "checkout", "-").Run()
 
 	client := New(tmpDir)
 	branches, err := client.ListLocalBranches(tmpDir)
-	if err != nil {
-		t.Fatalf("ListLocalBranches failed: %v", err)
-	}
-	if len(branches) < 2 {
-		t.Fatalf("expected at least 2 branches, got %d: %v", len(branches), branches)
-	}
+	require.NoError(t, err, "ListLocalBranches failed")
+	require.GreaterOrEqual(t, len(branches), 2, "expected at least 2 branches, got %v", branches)
+
 	found := false
 	for _, b := range branches {
 		if b == "feature-x" {
 			found = true
 		}
 	}
-	if !found {
-		t.Errorf("expected feature-x in branches: %v", branches)
-	}
+	assert.True(t, found, "expected feature-x in branches: %v", branches)
 }
 
 func TestIsBranchMerged(t *testing.T) {
@@ -494,20 +361,12 @@ func TestIsBranchMerged(t *testing.T) {
 	exec.Command("git", "-C", tmpDir, "checkout", defaultBranch).Run()
 
 	merged, err := client.IsBranchMerged(tmpDir, "to-merge", defaultBranch)
-	if err != nil {
-		t.Fatalf("IsBranchMerged failed: %v", err)
-	}
-	if !merged {
-		t.Errorf("expected to-merge to be merged into %s", defaultBranch)
-	}
+	require.NoError(t, err, "IsBranchMerged failed")
+	assert.True(t, merged, "expected to-merge to be merged into %s", defaultBranch)
 
 	unmerged, err := client.IsBranchMerged(tmpDir, "not-merged", defaultBranch)
-	if err != nil {
-		t.Fatalf("IsBranchMerged failed: %v", err)
-	}
-	if unmerged {
-		t.Errorf("expected not-merged to NOT be merged into %s", defaultBranch)
-	}
+	require.NoError(t, err, "IsBranchMerged failed")
+	assert.False(t, unmerged, "expected not-merged to NOT be merged into %s", defaultBranch)
 }
 
 func TestDeleteBranch(t *testing.T) {
@@ -524,15 +383,11 @@ func TestDeleteBranch(t *testing.T) {
 	exec.Command("git", "-C", tmpDir, "checkout", defaultBranch).Run()
 	exec.Command("git", "-C", tmpDir, "merge", "--no-ff", "-m", "merge", "deletable").Run()
 
-	if err := client.DeleteBranch(tmpDir, "deletable", false); err != nil {
-		t.Fatalf("DeleteBranch failed: %v", err)
-	}
+	require.NoError(t, client.DeleteBranch(tmpDir, "deletable", false), "DeleteBranch failed")
 
 	branches, _ := client.ListLocalBranches(tmpDir)
 	for _, b := range branches {
-		if b == "deletable" {
-			t.Errorf("expected deletable branch to be deleted")
-		}
+		assert.NotEqual(t, "deletable", b, "expected deletable branch to be deleted")
 	}
 }
 
@@ -544,23 +399,12 @@ func TestRemoveWorktree(t *testing.T) {
 
 	client := New(tmpDir)
 
-	if err := client.WorktreeAdd(tmpDir, wtDir, "wt-branch", true, ""); err != nil {
-		t.Fatalf("WorktreeAdd failed: %v", err)
-	}
+	require.NoError(t, client.WorktreeAdd(tmpDir, wtDir, "wt-branch", true, ""), "WorktreeAdd failed")
 
 	wts, err := client.ListWorktrees(tmpDir)
-	if err != nil {
-		t.Fatalf("ListWorktrees failed: %v", err)
-	}
-	if len(wts) < 2 {
-		t.Fatalf("expected at least 2 worktrees, got %d", len(wts))
-	}
+	require.NoError(t, err, "ListWorktrees failed")
+	require.GreaterOrEqual(t, len(wts), 2, "expected at least 2 worktrees")
 
-	if err := client.RemoveWorktree(tmpDir, wtDir, false); err != nil {
-		t.Fatalf("RemoveWorktree failed: %v", err)
-	}
-
-	if err := client.PruneWorktrees(tmpDir); err != nil {
-		t.Fatalf("PruneWorktrees failed: %v", err)
-	}
+	require.NoError(t, client.RemoveWorktree(tmpDir, wtDir, false), "RemoveWorktree failed")
+	require.NoError(t, client.PruneWorktrees(tmpDir), "PruneWorktrees failed")
 }

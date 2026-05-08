@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/store"
@@ -33,12 +35,8 @@ func TestHandlePreCommit_SpecRequiredFalse_Allows(t *testing.T) {
 	p := NewEventProcessor(s, g, cfg)
 
 	d, err := p.HandlePreCommit(PreCommitContext{RepoRoot: repoPath, Branch: "WGO-1-feature"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d.Allow {
-		t.Errorf("expected Allow=true when spec_required=false, got reason: %s", d.Reason)
-	}
+	require.NoError(t, err)
+	assert.True(t, d.Allow, "expected Allow=true when spec_required=false, got reason: %s", d.Reason)
 }
 
 func TestHandlePreCommit_DetachedHEAD_Allows(t *testing.T) {
@@ -46,12 +44,8 @@ func TestHandlePreCommit_DetachedHEAD_Allows(t *testing.T) {
 	p, _ := newPreCommitProcessor(t, repoPath)
 
 	d, err := p.HandlePreCommit(PreCommitContext{RepoRoot: repoPath, Branch: "HEAD"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d.Allow {
-		t.Errorf("expected Allow=true for detached HEAD, got: %s", d.Reason)
-	}
+	require.NoError(t, err)
+	assert.True(t, d.Allow, "expected Allow=true for detached HEAD, got: %s", d.Reason)
 }
 
 func TestHandlePreCommit_ExcludedBranch_Allows(t *testing.T) {
@@ -59,12 +53,8 @@ func TestHandlePreCommit_ExcludedBranch_Allows(t *testing.T) {
 	p, _ := newPreCommitProcessor(t, repoPath)
 
 	d, err := p.HandlePreCommit(PreCommitContext{RepoRoot: repoPath, Branch: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d.Allow {
-		t.Errorf("expected Allow=true for excluded branch, got: %s", d.Reason)
-	}
+	require.NoError(t, err)
+	assert.True(t, d.Allow, "expected Allow=true for excluded branch, got: %s", d.Reason)
 }
 
 func TestHandlePreCommit_SpecOnlyDiff_Allows(t *testing.T) {
@@ -76,12 +66,8 @@ func TestHandlePreCommit_SpecOnlyDiff_Allows(t *testing.T) {
 		Branch:      "WGO-1-feature",
 		StagedFiles: []string{"spec/WGO-1.md", "spec/WGO-2.md"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d.Allow {
-		t.Errorf("expected Allow=true for spec-only diff, got: %s", d.Reason)
-	}
+	require.NoError(t, err)
+	assert.True(t, d.Allow, "expected Allow=true for spec-only diff, got: %s", d.Reason)
 }
 
 func TestHandlePreCommit_NoSpecInMessage_Allows(t *testing.T) {
@@ -89,9 +75,7 @@ func TestHandlePreCommit_NoSpecInMessage_Allows(t *testing.T) {
 	p, _ := newPreCommitProcessor(t, repoPath)
 
 	msgFile := filepath.Join(t.TempDir(), "COMMIT_EDITMSG")
-	if err := os.WriteFile(msgFile, []byte("fix something [no-spec]"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(msgFile, []byte("fix something [no-spec]"), 0o644))
 
 	d, err := p.HandlePreCommit(PreCommitContext{
 		RepoRoot:    repoPath,
@@ -99,12 +83,8 @@ func TestHandlePreCommit_NoSpecInMessage_Allows(t *testing.T) {
 		StagedFiles: []string{"main.go"},
 		MsgFile:     msgFile,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d.Allow {
-		t.Errorf("expected Allow=true for [no-spec] in message, got: %s", d.Reason)
-	}
+	require.NoError(t, err)
+	assert.True(t, d.Allow, "expected Allow=true for [no-spec] in message, got: %s", d.Reason)
 }
 
 func TestHandlePreCommit_SpecRefInMessage_Allows(t *testing.T) {
@@ -112,9 +92,7 @@ func TestHandlePreCommit_SpecRefInMessage_Allows(t *testing.T) {
 	p, _ := newPreCommitProcessor(t, repoPath)
 
 	msgFile := filepath.Join(t.TempDir(), "COMMIT_EDITMSG")
-	if err := os.WriteFile(msgFile, []byte("feat: add thing\n\nSpec: spec/WGO-1.md\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(msgFile, []byte("feat: add thing\n\nSpec: spec/WGO-1.md\n"), 0o644))
 
 	d, err := p.HandlePreCommit(PreCommitContext{
 		RepoRoot:    repoPath,
@@ -122,12 +100,8 @@ func TestHandlePreCommit_SpecRefInMessage_Allows(t *testing.T) {
 		StagedFiles: []string{"main.go"},
 		MsgFile:     msgFile,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d.Allow {
-		t.Errorf("expected Allow=true for Spec: reference in message, got: %s", d.Reason)
-	}
+	require.NoError(t, err)
+	assert.True(t, d.Allow, "expected Allow=true for Spec: reference in message, got: %s", d.Reason)
 }
 
 func TestHandlePreCommit_SpecFileOnDisk_Allows(t *testing.T) {
@@ -136,24 +110,16 @@ func TestHandlePreCommit_SpecFileOnDisk_Allows(t *testing.T) {
 
 	// Create spec file on disk
 	specDir := filepath.Join(repoPath, "spec")
-	if err := os.MkdirAll(specDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(specDir, "WGO-42.md"), []byte("# spec"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(specDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(specDir, "WGO-42.md"), []byte("# spec"), 0o644))
 
 	d, err := p.HandlePreCommit(PreCommitContext{
 		RepoRoot:    repoPath,
 		Branch:      "WGO-42-my-feature",
 		StagedFiles: []string{"main.go"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d.Allow {
-		t.Errorf("expected Allow=true when spec file exists on disk, got: %s", d.Reason)
-	}
+	require.NoError(t, err)
+	assert.True(t, d.Allow, "expected Allow=true when spec file exists on disk, got: %s", d.Reason)
 }
 
 func TestHandlePreCommit_NoSpec_Blocks(t *testing.T) {
@@ -162,32 +128,21 @@ func TestHandlePreCommit_NoSpec_Blocks(t *testing.T) {
 
 	// Stage a file with > 5 lines so the min-lines escape hatch doesn't trigger
 	content := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\n"
-	if err := os.WriteFile(filepath.Join(repoPath, "main.go"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "main.go"), []byte(content), 0o644))
 	cmd := exec.Command("git", "add", "main.go")
 	cmd.Dir = repoPath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git add failed: %v\n%s", err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git add failed: %s", out)
 
 	d, err := p.HandlePreCommit(PreCommitContext{
 		RepoRoot:    repoPath,
 		Branch:      "WGO-999-no-spec-branch",
 		StagedFiles: []string{"main.go"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Allow {
-		t.Errorf("expected Allow=false when no spec and no escape, got reason: %s", d.Reason)
-	}
-	if !strings.Contains(d.Reason, "commit blocked") {
-		t.Errorf("expected remediation message, got: %s", d.Reason)
-	}
-	if !strings.Contains(d.Reason, "[no-spec]") {
-		t.Errorf("expected escape hatch hint in message, got: %s", d.Reason)
-	}
+	require.NoError(t, err)
+	assert.False(t, d.Allow, "expected Allow=false when no spec and no escape, got reason: %s", d.Reason)
+	assert.Contains(t, d.Reason, "commit blocked")
+	assert.Contains(t, d.Reason, "[no-spec]")
 }
 
 func TestHandlePreCommit_AnnotationSpecPath_Allows(t *testing.T) {
@@ -203,13 +158,9 @@ func TestHandlePreCommit_AnnotationSpecPath_Allows(t *testing.T) {
 
 	// Create spec file and record it in annotation
 	specDir := filepath.Join(repoPath, "spec")
-	if err := os.MkdirAll(specDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(specDir, 0o755))
 	specPath := filepath.Join(specDir, "WGO-55.md")
-	if err := os.WriteFile(specPath, []byte("# spec"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(specPath, []byte("# spec"), 0o644))
 
 	state, _ := s.LoadState()
 	state.SetSpec(repoPath, "WGO-55-feat", specPath, "active")
@@ -220,12 +171,8 @@ func TestHandlePreCommit_AnnotationSpecPath_Allows(t *testing.T) {
 		Branch:      "WGO-55-feat",
 		StagedFiles: []string{"main.go", "a.go", "b.go", "c.go", "d.go", "e.go"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d.Allow {
-		t.Errorf("expected Allow=true when annotation has SpecPath, got: %s", d.Reason)
-	}
+	require.NoError(t, err)
+	assert.True(t, d.Allow, "expected Allow=true when annotation has SpecPath, got: %s", d.Reason)
 }
 
 // newTestStore creates a FileStore in a temp directory.
@@ -236,9 +183,7 @@ func newTestStore(t *testing.T) *store.FileStore {
 	// We need to create a FileStore pointing at our temp dir.
 	// Since store.New() hardcodes ~/.wgo, we'll construct one manually
 	// by using a helper approach: create state dir and files.
-	if err := os.MkdirAll(wgoDir, 0o755); err != nil {
-		t.Fatalf("failed to create test wgo dir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(wgoDir, 0o755), "failed to create test wgo dir")
 	return store.NewWithDir(wgoDir)
 }
 
@@ -257,9 +202,8 @@ func initTestRepo(t *testing.T) string {
 	for _, args := range cmds {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("command %v failed: %v\n%s", args, err, out)
-		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "command %v failed: %s", args, out)
 	}
 	return dir
 }
@@ -271,9 +215,8 @@ func TestHandlePostCheckout_BranchCheckout_AddsToplan(t *testing.T) {
 	// Create a branch
 	cmd := exec.Command("git", "checkout", "-b", "feat/test-branch")
 	cmd.Dir = repoPath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("checkout failed: %v\n%s", err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "checkout failed: %s", out)
 
 	gitClient := git.New(repoPath)
 	cfg := &EventConfig{
@@ -282,30 +225,18 @@ func TestHandlePostCheckout_BranchCheckout_AddsToplan(t *testing.T) {
 	}
 
 	processor := NewEventProcessor(s, gitClient, cfg)
-	if err := processor.HandlePostCheckout(repoPath, "abc123", "def456", "1"); err != nil {
-		t.Fatalf("HandlePostCheckout failed: %v", err)
-	}
+	require.NoError(t, processor.HandlePostCheckout(repoPath, "abc123", "def456", "1"), "HandlePostCheckout failed")
 
 	// Verify state was updated
 	state, err := s.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
-	if _, ok := state.Repos[repoPath]; !ok {
-		t.Error("repo not added to state")
-	}
+	require.NoError(t, err, "LoadState failed")
+	assert.Contains(t, state.Repos, repoPath, "repo not added to state")
 
 	// Verify plan was updated
 	content, err := s.LoadPlan()
-	if err != nil {
-		t.Fatalf("LoadPlan failed: %v", err)
-	}
-	if !strings.Contains(content, "feat/test-branch") {
-		t.Errorf("branch not added to plan, got:\n%s", content)
-	}
-	if !strings.Contains(content, "(auto-tracked)") {
-		t.Errorf("expected auto-tracked reason, got:\n%s", content)
-	}
+	require.NoError(t, err, "LoadPlan failed")
+	assert.Contains(t, content, "feat/test-branch", "branch not added to plan")
+	assert.Contains(t, content, "(auto-tracked)")
 }
 
 func TestHandlePostCheckout_ExcludedBranch_NotAddedToPlan(t *testing.T) {
@@ -320,19 +251,13 @@ func TestHandlePostCheckout_ExcludedBranch_NotAddedToPlan(t *testing.T) {
 
 	processor := NewEventProcessor(s, gitClient, cfg)
 	// Simulate checkout of main (excluded)
-	if err := processor.HandlePostCheckout(repoPath, "abc123", "def456", "1"); err != nil {
-		t.Fatalf("HandlePostCheckout failed: %v", err)
-	}
+	require.NoError(t, processor.HandlePostCheckout(repoPath, "abc123", "def456", "1"), "HandlePostCheckout failed")
 
 	content, err := s.LoadPlan()
-	if err != nil {
-		t.Fatalf("LoadPlan failed: %v", err)
-	}
+	require.NoError(t, err, "LoadPlan failed")
 
 	p, _ := plan.Parse(content)
-	if len(p.ActiveBranches) > 0 {
-		t.Errorf("excluded branch should not be in plan, got %d branches", len(p.ActiveBranches))
-	}
+	assert.Empty(t, p.ActiveBranches, "excluded branch should not be in plan")
 }
 
 func TestHandlePostCheckout_FileCheckout_NoAutoAdd(t *testing.T) {
@@ -342,9 +267,8 @@ func TestHandlePostCheckout_FileCheckout_NoAutoAdd(t *testing.T) {
 	// Create a branch that would normally be added
 	cmd := exec.Command("git", "checkout", "-b", "feat/should-not-add")
 	cmd.Dir = repoPath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("checkout failed: %v\n%s", err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "checkout failed: %s", out)
 
 	gitClient := git.New(repoPath)
 	cfg := &EventConfig{
@@ -354,19 +278,13 @@ func TestHandlePostCheckout_FileCheckout_NoAutoAdd(t *testing.T) {
 
 	processor := NewEventProcessor(s, gitClient, cfg)
 	// branchFlag "0" = file checkout, should not add to plan
-	if err := processor.HandlePostCheckout(repoPath, "abc", "def", "0"); err != nil {
-		t.Fatalf("HandlePostCheckout failed: %v", err)
-	}
+	require.NoError(t, processor.HandlePostCheckout(repoPath, "abc", "def", "0"), "HandlePostCheckout failed")
 
 	content, err := s.LoadPlan()
-	if err != nil {
-		t.Fatalf("LoadPlan failed: %v", err)
-	}
+	require.NoError(t, err, "LoadPlan failed")
 
 	p, _ := plan.Parse(content)
-	if len(p.ActiveBranches) > 0 {
-		t.Errorf("file checkout should not add branches to plan, got %d", len(p.ActiveBranches))
-	}
+	assert.Empty(t, p.ActiveBranches, "file checkout should not add branches to plan")
 }
 
 func TestHandlePostCheckout_AutoPlanDisabled(t *testing.T) {
@@ -375,9 +293,8 @@ func TestHandlePostCheckout_AutoPlanDisabled(t *testing.T) {
 
 	cmd := exec.Command("git", "checkout", "-b", "feat/no-auto")
 	cmd.Dir = repoPath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("checkout failed: %v\n%s", err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "checkout failed: %s", out)
 
 	gitClient := git.New(repoPath)
 	cfg := &EventConfig{
@@ -386,19 +303,13 @@ func TestHandlePostCheckout_AutoPlanDisabled(t *testing.T) {
 	}
 
 	processor := NewEventProcessor(s, gitClient, cfg)
-	if err := processor.HandlePostCheckout(repoPath, "abc", "def", "1"); err != nil {
-		t.Fatalf("HandlePostCheckout failed: %v", err)
-	}
+	require.NoError(t, processor.HandlePostCheckout(repoPath, "abc", "def", "1"), "HandlePostCheckout failed")
 
 	content, err := s.LoadPlan()
-	if err != nil {
-		t.Fatalf("LoadPlan failed: %v", err)
-	}
+	require.NoError(t, err, "LoadPlan failed")
 
 	p, _ := plan.Parse(content)
-	if len(p.ActiveBranches) > 0 {
-		t.Errorf("auto_plan=false should not add branches, got %d", len(p.ActiveBranches))
-	}
+	assert.Empty(t, p.ActiveBranches, "auto_plan=false should not add branches")
 }
 
 func TestHandlePostCommit_UpdatesLastSeen(t *testing.T) {
@@ -409,17 +320,11 @@ func TestHandlePostCommit_UpdatesLastSeen(t *testing.T) {
 	cfg := &EventConfig{AutoPlan: true}
 
 	processor := NewEventProcessor(s, gitClient, cfg)
-	if err := processor.HandlePostCommit(repoPath); err != nil {
-		t.Fatalf("HandlePostCommit failed: %v", err)
-	}
+	require.NoError(t, processor.HandlePostCommit(repoPath), "HandlePostCommit failed")
 
 	state, err := s.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
-	if _, ok := state.Repos[repoPath]; !ok {
-		t.Error("repo not added to state after post-commit")
-	}
+	require.NoError(t, err, "LoadState failed")
+	assert.Contains(t, state.Repos, repoPath, "repo not added to state after post-commit")
 }
 
 func TestHandlePostMerge_UpdatesLastSeen(t *testing.T) {
@@ -430,17 +335,11 @@ func TestHandlePostMerge_UpdatesLastSeen(t *testing.T) {
 	cfg := &EventConfig{AutoPlan: true}
 
 	processor := NewEventProcessor(s, gitClient, cfg)
-	if err := processor.HandlePostMerge(repoPath, "0"); err != nil {
-		t.Fatalf("HandlePostMerge failed: %v", err)
-	}
+	require.NoError(t, processor.HandlePostMerge(repoPath, "0"), "HandlePostMerge failed")
 
 	state, err := s.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
-	if _, ok := state.Repos[repoPath]; !ok {
-		t.Error("repo not added to state after post-merge")
-	}
+	require.NoError(t, err, "LoadState failed")
+	assert.Contains(t, state.Repos, repoPath, "repo not added to state after post-merge")
 }
 
 func TestHandlePostRewrite_UpdatesLastSeen(t *testing.T) {
@@ -451,17 +350,11 @@ func TestHandlePostRewrite_UpdatesLastSeen(t *testing.T) {
 	cfg := &EventConfig{AutoPlan: true}
 
 	processor := NewEventProcessor(s, gitClient, cfg)
-	if err := processor.HandlePostRewrite(repoPath, "rebase"); err != nil {
-		t.Fatalf("HandlePostRewrite failed: %v", err)
-	}
+	require.NoError(t, processor.HandlePostRewrite(repoPath, "rebase"), "HandlePostRewrite failed")
 
 	state, err := s.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
-	if _, ok := state.Repos[repoPath]; !ok {
-		t.Error("repo not added to state after post-rewrite")
-	}
+	require.NoError(t, err, "LoadState failed")
+	assert.Contains(t, state.Repos, repoPath, "repo not added to state after post-rewrite")
 }
 
 func TestShouldExclude(t *testing.T) {
@@ -483,9 +376,7 @@ func TestShouldExclude(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.branch, func(t *testing.T) {
 			got := shouldExclude(tt.branch, patterns)
-			if got != tt.want {
-				t.Errorf("shouldExclude(%q) = %v, want %v", tt.branch, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "shouldExclude(%q)", tt.branch)
 		})
 	}
 }
@@ -496,9 +387,8 @@ func TestHandlePostCheckout_DuplicateBranch_NotDuplicated(t *testing.T) {
 
 	cmd := exec.Command("git", "checkout", "-b", "feat/dup-test")
 	cmd.Dir = repoPath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("checkout failed: %v\n%s", err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "checkout failed: %s", out)
 
 	gitClient := git.New(repoPath)
 	cfg := &EventConfig{
@@ -509,23 +399,15 @@ func TestHandlePostCheckout_DuplicateBranch_NotDuplicated(t *testing.T) {
 	processor := NewEventProcessor(s, gitClient, cfg)
 
 	// First checkout
-	if err := processor.HandlePostCheckout(repoPath, "a", "b", "1"); err != nil {
-		t.Fatalf("first HandlePostCheckout failed: %v", err)
-	}
+	require.NoError(t, processor.HandlePostCheckout(repoPath, "a", "b", "1"), "first HandlePostCheckout failed")
 
 	// Second checkout of same branch
-	if err := processor.HandlePostCheckout(repoPath, "a", "b", "1"); err != nil {
-		t.Fatalf("second HandlePostCheckout failed: %v", err)
-	}
+	require.NoError(t, processor.HandlePostCheckout(repoPath, "a", "b", "1"), "second HandlePostCheckout failed")
 
 	content, err := s.LoadPlan()
-	if err != nil {
-		t.Fatalf("LoadPlan failed: %v", err)
-	}
+	require.NoError(t, err, "LoadPlan failed")
 
 	// Count occurrences of the branch
 	count := strings.Count(content, "feat/dup-test")
-	if count != 1 {
-		t.Errorf("branch appears %d times, want 1:\n%s", count, content)
-	}
+	assert.Equal(t, 1, count, "branch appears %d times, want 1:\n%s", count, content)
 }
