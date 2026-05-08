@@ -193,7 +193,73 @@ func showContext() (bool, error) {
 		}
 	}
 
+	showSiblings(client, cwd)
+
 	return dirty, nil
+}
+
+// showSiblings prints a "Workspace siblings:" section when the parent directory
+// of the current worktree contains 2+ git repos (i.e. at least one sibling).
+func showSiblings(client *git.CLIClient, cwd string) {
+	wtPath, err := client.RootDir(cwd)
+	if err != nil {
+		return
+	}
+	parentDir := filepath.Dir(wtPath)
+
+	entries, err := os.ReadDir(parentDir)
+	if err != nil {
+		return
+	}
+
+	const maxDisplay = 10
+
+	type sibling struct {
+		name   string
+		branch string
+		status string
+	}
+
+	var siblings []sibling
+	overflow := 0
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join(parentDir, e.Name())
+		if p == wtPath {
+			continue
+		}
+		isRepo, _ := client.IsRepo(p)
+		if !isRepo {
+			continue
+		}
+		if len(siblings) >= maxDisplay {
+			overflow++
+			continue
+		}
+		branch, _ := client.CurrentBranch(p)
+		st, _ := client.Status(p)
+		statusStr := "clean"
+		if isDirty(st) {
+			statusStr = formatStatus(st)
+		}
+		siblings = append(siblings, sibling{e.Name(), branch, statusStr})
+	}
+
+	if len(siblings) == 0 {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Workspace siblings:")
+	for _, s := range siblings {
+		fmt.Printf("  %-12s %s   %s\n", s.name+"/", s.branch, s.status)
+	}
+	if overflow > 0 {
+		fmt.Printf("  (…and %d more)\n", overflow)
+	}
 }
 
 func isDirty(status models.GitStatus) bool {
