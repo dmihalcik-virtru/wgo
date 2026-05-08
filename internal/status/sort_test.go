@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/virtru/wgo/models"
 )
 
@@ -17,12 +19,8 @@ func TestSortActivities_ByActivity(t *testing.T) {
 
 	SortActivities(activities, "activity")
 
-	if activities[0].Name != "newest" {
-		t.Errorf("expected newest first, got %q", activities[0].Name)
-	}
-	if activities[2].Name != "old" {
-		t.Errorf("expected old last, got %q", activities[2].Name)
-	}
+	assert.Equal(t, "newest", activities[0].Name, "expected newest first")
+	assert.Equal(t, "old", activities[2].Name, "expected old last")
 }
 
 func TestSortActivities_ByName(t *testing.T) {
@@ -34,12 +32,8 @@ func TestSortActivities_ByName(t *testing.T) {
 
 	SortActivities(activities, "name")
 
-	if activities[0].Name != "alpha" {
-		t.Errorf("expected alpha first, got %q", activities[0].Name)
-	}
-	if activities[2].Name != "charlie" {
-		t.Errorf("expected charlie last, got %q", activities[2].Name)
-	}
+	assert.Equal(t, "alpha", activities[0].Name, "expected alpha first")
+	assert.Equal(t, "charlie", activities[2].Name, "expected charlie last")
 }
 
 func TestSortActivities_ByStatus(t *testing.T) {
@@ -54,9 +48,7 @@ func TestSortActivities_ByStatus(t *testing.T) {
 
 	expected := []string{"conflict", "staged", "modified", "clean"}
 	for i, name := range expected {
-		if activities[i].Name != name {
-			t.Errorf("position %d: expected %q, got %q", i, name, activities[i].Name)
-		}
+		assert.Equal(t, name, activities[i].Name, "position %d", i)
 	}
 }
 
@@ -69,9 +61,7 @@ func TestSortActivities_ByChanges(t *testing.T) {
 
 	SortActivities(activities, "changes")
 
-	if activities[0].Name != "many" {
-		t.Errorf("expected 'many' first (most changes), got %q", activities[0].Name)
-	}
+	assert.Equal(t, "many", activities[0].Name, "expected 'many' first (most changes)")
 }
 
 func TestGroupWorktrees(t *testing.T) {
@@ -86,14 +76,10 @@ func TestGroupWorktrees(t *testing.T) {
 	result := GroupWorktrees(activities)
 
 	expected := []string{"repo-a", "wt-a1", "wt-a2", "repo-b", "wt-b1"}
-	if len(result) != len(expected) {
-		t.Fatalf("expected %d results, got %d", len(expected), len(result))
-	}
+	require.Len(t, result, len(expected))
 
 	for i, name := range expected {
-		if result[i].Name != name {
-			t.Errorf("position %d: expected %q, got %q", i, name, result[i].Name)
-		}
+		assert.Equal(t, name, result[i].Name, "position %d", i)
 	}
 }
 
@@ -105,17 +91,9 @@ func TestGroupWorktrees_OrphanWorktrees(t *testing.T) {
 
 	result := GroupWorktrees(activities)
 
-	if len(result) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(result))
-	}
-
-	// Main repo first, then orphan at the end
-	if result[0].Name != "repo-a" {
-		t.Errorf("expected repo-a first, got %q", result[0].Name)
-	}
-	if result[1].Name != "orphan-wt" {
-		t.Errorf("expected orphan-wt second, got %q", result[1].Name)
-	}
+	require.Len(t, result, 2)
+	assert.Equal(t, "repo-a", result[0].Name, "expected repo-a first")
+	assert.Equal(t, "orphan-wt", result[1].Name, "expected orphan-wt second")
 }
 
 func TestGroupWorktrees_NoWorktrees(t *testing.T) {
@@ -126,12 +104,9 @@ func TestGroupWorktrees_NoWorktrees(t *testing.T) {
 
 	result := GroupWorktrees(activities)
 
-	if len(result) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(result))
-	}
-	if result[0].Name != "repo-a" || result[1].Name != "repo-b" {
-		t.Error("expected order preserved when no worktrees")
-	}
+	require.Len(t, result, 2)
+	assert.Equal(t, "repo-a", result[0].Name)
+	assert.Equal(t, "repo-b", result[1].Name)
 }
 
 func TestSortActivities_ByLines(t *testing.T) {
@@ -143,7 +118,5 @@ func TestSortActivities_ByLines(t *testing.T) {
 
 	SortActivities(activities, "lines")
 
-	if activities[0].Name != "big" {
-		t.Errorf("expected 'big' first (most lines), got %q", activities[0].Name)
-	}
+	assert.Equal(t, "big", activities[0].Name, "expected 'big' first (most lines)")
 }

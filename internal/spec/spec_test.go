@@ -3,9 +3,11 @@ package spec
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseBytes(t *testing.T) {
@@ -55,15 +57,9 @@ Some content`,
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sf, err := ParseBytes([]byte(tt.data))
-			if err != nil {
-				t.Fatalf("ParseBytes failed: %v", err)
-			}
-			if sf.Frontmatter.Ticket != tt.want.ticket {
-				t.Errorf("ticket: got %q, want %q", sf.Frontmatter.Ticket, tt.want.ticket)
-			}
-			if sf.Frontmatter.Status != tt.want.status {
-				t.Errorf("status: got %q, want %q", sf.Frontmatter.Status, tt.want.status)
-			}
+			require.NoError(t, err, "ParseBytes failed")
+			assert.Equal(t, tt.want.ticket, sf.Frontmatter.Ticket)
+			assert.Equal(t, tt.want.status, sf.Frontmatter.Status)
 		})
 	}
 }
@@ -85,35 +81,23 @@ updated: 2026-05-06
 
 This is the body.`
 
-	if err := os.WriteFile(specPath, []byte(original), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(specPath, []byte(original), 0o644), "write file")
 
-	if err := UpdateFrontmatter(specPath, func(fm *Frontmatter) error {
+	err := UpdateFrontmatter(specPath, func(fm *Frontmatter) error {
 		fm.Status = StatusInProgress
 		fm.Updated = time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)
 		return nil
-	}); err != nil {
-		t.Fatalf("UpdateFrontmatter: %v", err)
-	}
+	})
+	require.NoError(t, err, "UpdateFrontmatter")
 
 	updated, err := os.ReadFile(specPath)
-	if err != nil {
-		t.Fatalf("read updated file: %v", err)
-	}
+	require.NoError(t, err, "read updated file")
 
 	sf, err := ParseBytes(updated)
-	if err != nil {
-		t.Fatalf("parse updated file: %v", err)
-	}
+	require.NoError(t, err, "parse updated file")
 
-	if sf.Frontmatter.Status != StatusInProgress {
-		t.Errorf("status not updated: got %q", sf.Frontmatter.Status)
-	}
-
-	if !strings.Contains(sf.Body, "Original Body") {
-		t.Errorf("body changed unexpectedly")
-	}
+	assert.Equal(t, StatusInProgress, sf.Frontmatter.Status)
+	assert.Contains(t, sf.Body, "Original Body")
 }
 
 func TestParseTicketFromBranch(t *testing.T) {
@@ -131,9 +115,7 @@ func TestParseTicketFromBranch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.branch, func(t *testing.T) {
 			got := ParseTicketFromBranch(tt.branch)
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -141,26 +123,15 @@ func TestParseTicketFromBranch(t *testing.T) {
 func TestFindByTicket(t *testing.T) {
 	tmpDir := t.TempDir()
 	specDir := filepath.Join(tmpDir, "spec")
-	if err := os.Mkdir(specDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	require.NoError(t, os.Mkdir(specDir, 0o755), "mkdir")
 
 	specFile := filepath.Join(specDir, "WGO-101.md")
-	if err := os.WriteFile(specFile, []byte("test"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	require.NoError(t, os.WriteFile(specFile, []byte("test"), 0o644), "write")
 
 	got, err := FindByTicket(tmpDir, "WGO-101")
-	if err != nil {
-		t.Fatalf("FindByTicket: %v", err)
-	}
-
-	if got != specFile {
-		t.Errorf("path mismatch: got %q, want %q", got, specFile)
-	}
+	require.NoError(t, err, "FindByTicket")
+	assert.Equal(t, specFile, got)
 
 	_, err = FindByTicket(tmpDir, "WGO-999")
-	if err == nil {
-		t.Errorf("FindByTicket should return error for non-existent ticket")
-	}
+	assert.Error(t, err, "FindByTicket should return error for non-existent ticket")
 }

@@ -5,23 +5,21 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFileLock_LockUnlock(t *testing.T) {
 	dir := t.TempDir()
 
 	lock := NewFileLock(dir)
-	if err := lock.Lock(); err != nil {
-		t.Fatalf("Lock() failed: %v", err)
-	}
-	if err := lock.Unlock(); err != nil {
-		t.Fatalf("Unlock() failed: %v", err)
-	}
+	require.NoError(t, lock.Lock(), "Lock() failed")
+	require.NoError(t, lock.Unlock(), "Unlock() failed")
 
 	// Lock file should have been created
-	if _, err := os.Stat(lock.path); err != nil {
-		t.Fatalf("lock file not created: %v", err)
-	}
+	_, err := os.Stat(lock.path)
+	require.NoError(t, err, "lock file not created")
 }
 
 func TestFileLock_UnlockWithoutLock(t *testing.T) {
@@ -29,9 +27,7 @@ func TestFileLock_UnlockWithoutLock(t *testing.T) {
 	lock := NewFileLock(dir)
 
 	// Unlock without Lock should be a no-op
-	if err := lock.Unlock(); err != nil {
-		t.Fatalf("Unlock() without Lock() failed: %v", err)
-	}
+	require.NoError(t, lock.Unlock(), "Unlock() without Lock() failed")
 }
 
 func TestFileLock_ConcurrentAccess(t *testing.T) {
@@ -70,7 +66,6 @@ func TestFileLock_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 
-	if max := atomic.LoadInt64(&maxConcurrent); max > 1 {
-		t.Errorf("lock did not provide mutual exclusion: max concurrent = %d", max)
-	}
+	max := atomic.LoadInt64(&maxConcurrent)
+	assert.LessOrEqual(t, max, int64(1), "lock did not provide mutual exclusion: max concurrent = %d", max)
 }

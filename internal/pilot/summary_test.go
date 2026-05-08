@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // initPilotTestRepo creates a git repo with spec commits and [no-spec] commits
@@ -22,9 +25,8 @@ func initPilotTestRepo(t *testing.T) (string, time.Time, time.Time) {
 		t.Helper()
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("command %v failed: %v\n%s", args, err, out)
-		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "command %v failed: %s", args, out)
 	}
 
 	run("git", "init")
@@ -33,50 +35,36 @@ func initPilotTestRepo(t *testing.T) (string, time.Time, time.Time) {
 	run("git", "config", "commit.gpgsign", "false")
 
 	// Initial commit
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644))
 	run("git", "add", "README.md")
 	run("git", "commit", "--date=2026-05-01T09:00:00", "-m", "init")
 
 	// Create spec directory and add spec files
 	specDir := filepath.Join(dir, "spec")
-	if err := os.MkdirAll(specDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(specDir, 0o755))
 
 	// Spec 1 created
-	if err := os.WriteFile(filepath.Join(specDir, "WGO-1.md"), []byte("# WGO-1\n\nspec content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(specDir, "WGO-1.md"), []byte("# WGO-1\n\nspec content"), 0o644))
 	run("git", "add", "spec/WGO-1.md")
 	run("git", "commit", "--date=2026-05-02T10:00:00", "-m", "spec: add WGO-1")
 
 	// Spec 2 created by same author
-	if err := os.WriteFile(filepath.Join(specDir, "WGO-2.md"), []byte("# WGO-2\n\nspec content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(specDir, "WGO-2.md"), []byte("# WGO-2\n\nspec content"), 0o644))
 	run("git", "add", "spec/WGO-2.md")
 	run("git", "commit", "--date=2026-05-03T11:00:00", "-m", "spec: add WGO-2")
 
 	// Update spec 1 (not a creation)
-	if err := os.WriteFile(filepath.Join(specDir, "WGO-1.md"), []byte("# WGO-1\n\nupdated content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(specDir, "WGO-1.md"), []byte("# WGO-1\n\nupdated content"), 0o644))
 	run("git", "add", "spec/WGO-1.md")
 	run("git", "commit", "--date=2026-05-04T12:00:00", "-m", "spec: update WGO-1 scope")
 
 	// Regular commit with [no-spec]
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644))
 	run("git", "add", "main.go")
 	run("git", "commit", "--date=2026-05-05T14:00:00", "-m", "fix typo [no-spec]")
 
 	// Another no-spec override
-	if err := os.WriteFile(filepath.Join(dir, "util.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "util.go"), []byte("package main\n"), 0o644))
 	run("git", "add", "util.go")
 	run("git", "commit", "--date=2026-05-06T15:00:00", "-m", "docs: update readme [no-spec]")
 
@@ -86,18 +74,10 @@ func initPilotTestRepo(t *testing.T) (string, time.Time, time.Time) {
 func TestCollect_SpecsCreated(t *testing.T) {
 	repoPath, since, until := initPilotTestRepo(t)
 
-	opts := Options{
-		Since: since,
-		Until: until,
-	}
+	opts := Options{Since: since, Until: until}
 	m, err := Collect([]string{repoPath}, "", opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if m.SpecsCreated != 2 {
-		t.Errorf("SpecsCreated = %d, want 2", m.SpecsCreated)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 2, m.SpecsCreated)
 }
 
 func TestCollect_SpecsUpdated(t *testing.T) {
@@ -105,14 +85,10 @@ func TestCollect_SpecsUpdated(t *testing.T) {
 
 	opts := Options{Since: since, Until: until}
 	m, err := Collect([]string{repoPath}, "", opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// 2 creates + 1 update = 3 total spec commits
-	if m.SpecsUpdated != 3 {
-		t.Errorf("SpecsUpdated = %d, want 3", m.SpecsUpdated)
-	}
+	assert.Equal(t, 3, m.SpecsUpdated)
 }
 
 func TestCollect_NoSpecOverrides(t *testing.T) {
@@ -120,13 +96,8 @@ func TestCollect_NoSpecOverrides(t *testing.T) {
 
 	opts := Options{Since: since, Until: until}
 	m, err := Collect([]string{repoPath}, "", opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if m.NoSpecOverrides != 2 {
-		t.Errorf("NoSpecOverrides = %d, want 2", m.NoSpecOverrides)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 2, m.NoSpecOverrides)
 }
 
 func TestCollect_SpecEditsByAuthor(t *testing.T) {
@@ -134,18 +105,12 @@ func TestCollect_SpecEditsByAuthor(t *testing.T) {
 
 	opts := Options{Since: since, Until: until}
 	m, err := Collect([]string{repoPath}, "", opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// All spec creates are by dave@example.com
 	count, ok := m.SpecEditsByAuthor["dave@example.com"]
-	if !ok {
-		t.Fatalf("expected dave@example.com in SpecEditsByAuthor, got: %v", m.SpecEditsByAuthor)
-	}
-	if count != 2 {
-		t.Errorf("SpecEditsByAuthor[dave@example.com] = %d, want 2", count)
-	}
+	require.True(t, ok, "expected dave@example.com in SpecEditsByAuthor, got: %v", m.SpecEditsByAuthor)
+	assert.Equal(t, 2, count)
 }
 
 func TestCollect_OutOfRange_NotCounted(t *testing.T) {
@@ -157,16 +122,9 @@ func TestCollect_OutOfRange_NotCounted(t *testing.T) {
 	opts := Options{Since: since, Until: until}
 
 	m, err := Collect([]string{repoPath}, "", opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if m.SpecsCreated != 0 {
-		t.Errorf("SpecsCreated = %d, want 0 for out-of-range window", m.SpecsCreated)
-	}
-	if m.NoSpecOverrides != 0 {
-		t.Errorf("NoSpecOverrides = %d, want 0 for out-of-range window", m.NoSpecOverrides)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 0, m.SpecsCreated, "expected 0 specs for out-of-range window")
+	assert.Equal(t, 0, m.NoSpecOverrides, "expected 0 overrides for out-of-range window")
 }
 
 func TestCollect_NoSpecDir_GracefulZero(t *testing.T) {
@@ -176,17 +134,14 @@ func TestCollect_NoSpecDir_GracefulZero(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("command %v failed: %v\n%s", args, err, out)
-		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "command %v failed: %s", args, out)
 	}
 	run("git", "init")
 	run("git", "config", "user.email", "test@example.com")
 	run("git", "config", "user.name", "Test")
 	run("git", "config", "commit.gpgsign", "false")
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644))
 	run("git", "add", "README.md")
 	run("git", "commit", "--date=2026-05-01T09:00:00", "-m", "init")
 
@@ -195,13 +150,9 @@ func TestCollect_NoSpecDir_GracefulZero(t *testing.T) {
 	opts := Options{Since: since, Until: until}
 
 	m, err := Collect([]string{dir}, "", opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// Should get zero, no error
-	if m.SpecsCreated != 0 {
-		t.Errorf("expected 0 specs in repo without spec/ dir, got %d", m.SpecsCreated)
-	}
+	assert.Equal(t, 0, m.SpecsCreated, "expected 0 specs in repo without spec/ dir")
 }
 
 func TestRenderMarkdown_ContainsRequiredSections(t *testing.T) {
@@ -237,9 +188,7 @@ func TestRenderMarkdown_ContainsRequiredSections(t *testing.T) {
 		"Drift events caught",
 	}
 	for _, section := range required {
-		if !strings.Contains(out, section) {
-			t.Errorf("markdown missing required section/metric: %q", section)
-		}
+		assert.True(t, strings.Contains(out, section), "markdown missing required section/metric: %q", section)
 	}
 }
 
@@ -252,12 +201,8 @@ func TestRenderJSON_ValidJSON(t *testing.T) {
 	}
 
 	data, err := RenderJSON(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `"specs_created"`) {
-		t.Errorf("JSON missing specs_created field: %s", data)
-	}
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"specs_created"`)
 }
 
 func TestWalkLogs_CountsMarkers(t *testing.T) {
@@ -271,21 +216,13 @@ func TestWalkLogs_CountsMarkers(t *testing.T) {
 - drift detected: another one
 `
 	logPath := filepath.Join(logsDir, "2026-05-05.md")
-	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
 
 	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.Local)
 	until := time.Date(2026, 5, 31, 0, 0, 0, 0, time.Local)
 
 	drift, blocks, err := walkLogs(logsDir, since, until)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if drift != 2 {
-		t.Errorf("drift = %d, want 2", drift)
-	}
-	if blocks != 1 {
-		t.Errorf("blocks = %d, want 1", blocks)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 2, drift)
+	assert.Equal(t, 1, blocks)
 }

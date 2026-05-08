@@ -3,6 +3,9 @@ package bujo
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseDateArg(t *testing.T) {
@@ -23,18 +26,11 @@ func TestParseDateArg(t *testing.T) {
 
 	for _, tc := range tests {
 		got, err := ParseDateArg(tc.arg, now)
-		if err != nil {
-			t.Errorf("ParseDateArg(%q): unexpected error: %v", tc.arg, err)
-			continue
-		}
-		if !got.Equal(tc.want) {
-			t.Errorf("ParseDateArg(%q): got %v, want %v", tc.arg, got, tc.want)
-		}
+		require.NoError(t, err, "ParseDateArg(%q)", tc.arg)
+		assert.True(t, got.Equal(tc.want), "ParseDateArg(%q): got %v, want %v", tc.arg, got, tc.want)
 	}
 
 	// Error case
 	_, err := ParseDateArg("invalid", now)
-	if err == nil {
-		t.Error("expected error for 'invalid'")
-	}
+	assert.Error(t, err, "expected error for 'invalid'")
 }

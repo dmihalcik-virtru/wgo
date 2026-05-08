@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/models"
@@ -100,9 +102,7 @@ func TestCollector_DetermineState(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := c.determineState(tt.status, tt.activity)
-			if got != tt.want {
-				t.Errorf("determineState() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -126,17 +126,11 @@ func TestCollector_CollectAll(t *testing.T) {
 
 	results := c.CollectAll(context.Background(), repos)
 
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
+	require.Len(t, results, 2)
 
 	for _, r := range results {
-		if r.Branch != "main" {
-			t.Errorf("expected branch 'main', got %q", r.Branch)
-		}
-		if r.State != models.StateModified {
-			t.Errorf("expected state 'modified', got %q", r.State)
-		}
+		assert.Equal(t, "main", r.Branch)
+		assert.Equal(t, models.StateModified, r.State)
 	}
 }
 
@@ -162,30 +156,20 @@ func TestCollector_WorktreeExpansion(t *testing.T) {
 
 	results := c.CollectAll(context.Background(), repos)
 
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results (main + worktree), got %d", len(results))
-	}
+	require.Len(t, results, 2, "expected 2 results (main + worktree)")
 
 	// Find the worktree entry
 	var foundWorktree bool
 	for _, r := range results {
 		if r.IsWorktree {
 			foundWorktree = true
-			if r.MainRepoName != "myrepo" {
-				t.Errorf("expected main repo name 'myrepo', got %q", r.MainRepoName)
-			}
-			if r.MainRepoPath != "/tmp/myrepo" {
-				t.Errorf("expected main repo path '/tmp/myrepo', got %q", r.MainRepoPath)
-			}
-			if r.Name != "myrepo-feat" {
-				t.Errorf("expected worktree name 'myrepo-feat', got %q", r.Name)
-			}
+			assert.Equal(t, "myrepo", r.MainRepoName)
+			assert.Equal(t, "/tmp/myrepo", r.MainRepoPath)
+			assert.Equal(t, "myrepo-feat", r.Name)
 		}
 	}
 
-	if !foundWorktree {
-		t.Error("expected to find a worktree entry in results")
-	}
+	assert.True(t, foundWorktree, "expected to find a worktree entry in results")
 }
 
 func TestCollector_WorktreeDedup(t *testing.T) {
@@ -213,9 +197,7 @@ func TestCollector_WorktreeDedup(t *testing.T) {
 	results := c.CollectAll(context.Background(), repos)
 
 	// Should still get exactly 2 results (no duplicate for the worktree)
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results (deduped), got %d", len(results))
-	}
+	assert.Len(t, results, 2, "expected 2 results (deduped)")
 }
 
 func TestCollector_WithSince(t *testing.T) {
@@ -233,11 +215,6 @@ func TestCollector_WithSince(t *testing.T) {
 	}
 
 	results := c.CollectAll(context.Background(), repos)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-
-	if results[0].RecentCommits != 5 {
-		t.Errorf("expected 5 recent commits, got %d", results[0].RecentCommits)
-	}
+	require.Len(t, results, 1)
+	assert.Equal(t, 5, results[0].RecentCommits)
 }

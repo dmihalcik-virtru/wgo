@@ -2,6 +2,9 @@ package bujo
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseTask(t *testing.T) {
@@ -26,20 +29,12 @@ func TestParseTask(t *testing.T) {
 		t.Run(tc.line, func(t *testing.T) {
 			task := ParseTask(tc.line)
 			if tc.line == "" {
-				if task != nil {
-					t.Errorf("expected nil for empty line, got %v", task)
-				}
+				assert.Nil(t, task, "expected nil for empty line")
 				return
 			}
-			if task == nil {
-				t.Fatal("expected task, got nil")
-			}
-			if task.Bullet != tc.bullet {
-				t.Errorf("bullet: got %q want %q", task.Bullet, tc.bullet)
-			}
-			if task.Text != tc.text {
-				t.Errorf("text: got %q want %q", task.Text, tc.text)
-			}
+			require.NotNil(t, task, "expected task, got nil")
+			assert.Equal(t, tc.bullet, task.Bullet, "bullet mismatch")
+			assert.Equal(t, tc.text, task.Text, "text mismatch")
 		})
 	}
 }
@@ -48,42 +43,29 @@ func TestParseRefs(t *testing.T) {
 	line := "Fix stuff #auth-service:oauth-branch #auth-service#42 !payments-api#99"
 	refs := ParseRefs(line)
 
-	if len(refs) != 3 {
-		t.Fatalf("expected 3 refs, got %d: %v", len(refs), refs)
-	}
+	require.Len(t, refs, 3)
 
 	// branch ref
-	if refs[0].Repo != "auth-service" || refs[0].Branch != "oauth-branch" {
-		t.Errorf("unexpected branch ref: %+v", refs[0])
-	}
+	assert.Equal(t, "auth-service", refs[0].Repo)
+	assert.Equal(t, "oauth-branch", refs[0].Branch)
 	// PR ref
-	if refs[1].Repo != "auth-service" || refs[1].PR != 42 {
-		t.Errorf("unexpected PR ref: %+v", refs[1])
-	}
+	assert.Equal(t, "auth-service", refs[1].Repo)
+	assert.Equal(t, 42, refs[1].PR)
 	// issue ref
-	if refs[2].Repo != "payments-api" || refs[2].Issue != 99 {
-		t.Errorf("unexpected issue ref: %+v", refs[2])
-	}
+	assert.Equal(t, "payments-api", refs[2].Repo)
+	assert.Equal(t, 99, refs[2].Issue)
 }
 
 func TestTaskRender(t *testing.T) {
 	task := &Task{Bullet: BulletOpen, Text: "Do something", Raw: "○ Do something"}
-	if got := task.Render(); got != "○ Do something" {
-		t.Errorf("got %q", got)
-	}
+	assert.Equal(t, "○ Do something", task.Render())
 
 	note := &Task{Bullet: BulletNote, Text: "raw line", Raw: "raw line"}
-	if got := note.Render(); got != "raw line" {
-		t.Errorf("got %q", got)
-	}
+	assert.Equal(t, "raw line", note.Render())
 }
 
 func TestMatchesPattern(t *testing.T) {
 	task := &Task{Text: "Review the Auth PR"}
-	if !task.MatchesPattern("auth") {
-		t.Error("expected match for 'auth'")
-	}
-	if task.MatchesPattern("payments") {
-		t.Error("unexpected match for 'payments'")
-	}
+	assert.True(t, task.MatchesPattern("auth"), "expected match for 'auth'")
+	assert.False(t, task.MatchesPattern("payments"), "unexpected match for 'payments'")
 }

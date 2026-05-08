@@ -3,6 +3,9 @@ package status
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseSince(t *testing.T) {
@@ -88,16 +91,12 @@ func TestParseSince(t *testing.T) {
 		t.Run(tt.desc, func(t *testing.T) {
 			result, err := ParseSince(tt.input)
 			if tt.wantErr {
-				if err == nil {
-					t.Errorf("ParseSince(%q) expected error, got %v", tt.input, result)
-				}
+				assert.Error(t, err, "ParseSince(%q) expected error", tt.input)
 				return
 			}
-			if err != nil {
-				t.Fatalf("ParseSince(%q) unexpected error: %v", tt.input, err)
-			}
-			if tt.check != nil && !tt.check(result) {
-				t.Errorf("ParseSince(%q) = %v, check failed", tt.input, result)
+			require.NoError(t, err, "ParseSince(%q)", tt.input)
+			if tt.check != nil {
+				assert.True(t, tt.check(result), "ParseSince(%q) = %v, check failed", tt.input, result)
 			}
 		})
 	}
