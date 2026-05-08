@@ -57,8 +57,8 @@ func init() {
 
 // todayData holds all the collected data for the daily review.
 type todayData struct {
-	since     time.Time
-	now       time.Time
+	since       time.Time
+	now         time.Time
 	repoCommits []contrib.RepoCommits
 	commented   []github.CommentedPR
 	reviews     []github.ReviewSubmission
@@ -282,9 +282,9 @@ func renderToday(data *todayData, isTTY bool) {
 	if len(data.repoCommits) > 0 {
 		// Collect unique files per repo
 		type repoFiles struct {
-			name      string
-			ghURL     string
-			files     []string
+			name  string
+			ghURL string
+			files []string
 		}
 		var rfs []repoFiles
 		for _, rc := range data.repoCommits {

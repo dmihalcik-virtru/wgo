@@ -58,10 +58,10 @@ func (t *Task) IsDone() bool {
 //   - https://github.com/org/repo/pull/42
 //   - https://github.com/org/repo/issues/7
 var (
-	refBranch  = regexp.MustCompile(`#([A-Za-z0-9_.-]+):([A-Za-z0-9_./:-]+)`)
-	refPR      = regexp.MustCompile(`#([A-Za-z0-9_.-]+)[#/](\d+)`)
-	refIssue   = regexp.MustCompile(`!([A-Za-z0-9_.-]+)[#/](\d+)`)
-	refURLPR   = regexp.MustCompile(`https://github\.com/[^/]+/([^/]+)/pull/(\d+)`)
+	refBranch   = regexp.MustCompile(`#([A-Za-z0-9_.-]+):([A-Za-z0-9_./:-]+)`)
+	refPR       = regexp.MustCompile(`#([A-Za-z0-9_.-]+)[#/](\d+)`)
+	refIssue    = regexp.MustCompile(`!([A-Za-z0-9_.-]+)[#/](\d+)`)
+	refURLPR    = regexp.MustCompile(`https://github\.com/[^/]+/([^/]+)/pull/(\d+)`)
 	refURLIssue = regexp.MustCompile(`https://github\.com/[^/]+/([^/]+)/issues/(\d+)`)
 )
 
@@ -121,7 +121,7 @@ var bulletPrefixes = []struct {
 	{"✗ ", BulletCancelled},
 	{"→ ", BulletMigrated},
 	{"! ", BulletPriority},
-	{"x ", BulletDone}, // alternate done
+	{"x ", BulletDone},      // alternate done
 	{"~ ", BulletCancelled}, // alternate cancelled
 }
 

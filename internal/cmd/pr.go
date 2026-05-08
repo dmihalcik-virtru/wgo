@@ -144,8 +144,8 @@ func fetchAllPRData(gh *github.CLIClient) (mine, involved []github.ExtendedPRInf
 		}
 	}
 
-	showMine := !prReview   // show MY PULL REQUESTS unless --review only
-	showReview := !prMine   // show NEEDS ATTENTION unless --mine only
+	showMine := !prReview // show MY PULL REQUESTS unless --review only
+	showReview := !prMine // show NEEDS ATTENTION unless --mine only
 
 	var fetchErr error
 	var wg sync.WaitGroup
@@ -308,10 +308,10 @@ func renderPRJSON(mine, involved []github.ExtendedPRInfo, currentUser string) er
 		return out
 	}
 	out := map[string]interface{}{
-		"user":             currentUser,
-		"my_prs":           toJSON(mine),
-		"needs_attention":  toJSON(involved),
-		"generated_at":     time.Now().Format(time.RFC3339),
+		"user":            currentUser,
+		"my_prs":          toJSON(mine),
+		"needs_attention": toJSON(involved),
+		"generated_at":    time.Now().Format(time.RFC3339),
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")

@@ -24,7 +24,7 @@ type Store interface {
 
 // FileStore implements Store using the filesystem.
 type FileStore struct {
-	baseDir  string // ~/.wgo
+	baseDir   string // ~/.wgo
 	stateFile string // ~/.wgo/state.json
 	planFile  string // ~/.wgo/plan.md
 }
@@ -233,7 +233,6 @@ func (fs *FileStore) SaveDailyLog(dl *bujo.DailyLog) error {
 	}
 	return nil
 }
-
 
 func defaultPlan() string {
 	return `# Plan

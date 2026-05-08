@@ -9,9 +9,9 @@ import (
 
 // DiscoveredRepo represents a discovered repository.
 type DiscoveredRepo struct {
-	Path       string
-	Name       string
-	IsWorktree bool
+	Path         string
+	Name         string
+	IsWorktree   bool
 	MainRepoPath string // For worktrees, points to main repo
 }
 

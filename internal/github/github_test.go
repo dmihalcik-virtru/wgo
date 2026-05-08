@@ -6,13 +6,13 @@ import (
 
 func TestParseGitHubURL(t *testing.T) {
 	tests := []struct {
-		name       string
-		url        string
-		wantOwner  string
-		wantRepo   string
-		wantType   URLType
-		wantIdent  string
-		wantErr    bool
+		name      string
+		url       string
+		wantOwner string
+		wantRepo  string
+		wantType  URLType
+		wantIdent string
+		wantErr   bool
 	}{
 		{
 			name:      "PR URL",

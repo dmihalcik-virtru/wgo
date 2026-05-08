@@ -25,10 +25,10 @@ type CommitInfo struct {
 
 // BranchInfo contains information about a branch.
 type BranchInfo struct {
-	Name        string    `json:"name"`         // Branch name
-	IsCurrent   bool      `json:"is_current"`   // Whether this is the current branch
-	LastCommit  CommitInfo `json:"last_commit"` // Information about the last commit
-	RemoteName  string    `json:"remote_name"`  // Remote branch name if tracking
+	Name       string     `json:"name"`        // Branch name
+	IsCurrent  bool       `json:"is_current"`  // Whether this is the current branch
+	LastCommit CommitInfo `json:"last_commit"` // Information about the last commit
+	RemoteName string     `json:"remote_name"` // Remote branch name if tracking
 }
 
 // RepoState represents the high-level state of a repository.
