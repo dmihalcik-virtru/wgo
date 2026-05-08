@@ -7,11 +7,11 @@ import (
 
 // State represents the persistent state for wgo.
 type State struct {
-	Version        int                     `json:"version"`
-	Repos          map[string]RepoInfo     `json:"repos"`
-	Annotations    map[string]Annotation   `json:"annotations"`
-	Efforts        map[string]Effort       `json:"efforts"`
-	AgentSessions  map[string]AgentSession `json:"agent_sessions"`
+	Version       int                     `json:"version"`
+	Repos         map[string]RepoInfo     `json:"repos"`
+	Annotations   map[string]Annotation   `json:"annotations"`
+	Efforts       map[string]Effort       `json:"efforts"`
+	AgentSessions map[string]AgentSession `json:"agent_sessions"`
 }
 
 // RepoInfo contains information about a tracked repository.
@@ -38,7 +38,7 @@ type Effort struct {
 
 // AgentSession represents an active AI agent session.
 type AgentSession struct {
-	Tool         string    `json:"tool"`        // e.g., "claude", "codex", "cursor"
+	Tool         string    `json:"tool"` // e.g., "claude", "codex", "cursor"
 	WorktreePath string    `json:"worktree_path"`
 	Branch       string    `json:"branch"`
 	StartTime    time.Time `json:"start_time"`

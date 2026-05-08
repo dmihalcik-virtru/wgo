@@ -50,7 +50,7 @@ type WorktreeConfig struct {
 
 // UIConfig contains UI-related configuration.
 type UIConfig struct {
-	Icons    bool `mapstructure:"icons"`
+	Icons     bool `mapstructure:"icons"`
 	TildeHome bool `mapstructure:"tilde_home"`
 }
 
