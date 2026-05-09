@@ -67,6 +67,8 @@ func (s *State) AddAnnotation(repoPath, branch, purpose string) {
 	if exists {
 		s.Annotations[key] = Annotation{
 			Purpose:   purpose,
+			SpecPath:  existing.SpecPath,
+			SpecState: existing.SpecState,
 			CreatedAt: existing.CreatedAt,
 			UpdatedAt: now,
 		}
