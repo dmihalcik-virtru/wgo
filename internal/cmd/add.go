@@ -26,6 +26,25 @@ var (
 	addSpecRepo string
 )
 
+type repoSpec struct {
+	owner string
+	repo  string
+}
+
+func (r repoSpec) String() string { return r.owner + "/" + r.repo }
+
+func parseRepoSpecs(repos []string) ([]repoSpec, error) {
+	specs := make([]repoSpec, 0, len(repos))
+	for _, r := range repos {
+		parts := strings.SplitN(r, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid repo %q: expected owner/repo", r)
+		}
+		specs = append(specs, repoSpec{owner: parts[0], repo: parts[1]})
+	}
+	return specs, nil
+}
+
 var addCmd = &cobra.Command{
 	Use:   "add [TICKET] <task description> [-r owner/repo]...",
 	Short: "Add a task to the plan, optionally creating worktrees",
@@ -136,14 +155,9 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 	}
 
 	// Validate and split owner/repo entries.
-	type repoSpec struct{ owner, repo string }
-	specs := make([]repoSpec, 0, len(repos))
-	for _, r := range repos {
-		parts := strings.SplitN(r, "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("invalid repo %q: expected owner/repo", r)
-		}
-		specs = append(specs, repoSpec{parts[0], parts[1]})
+	specs, err := parseRepoSpecs(repos)
+	if err != nil {
+		return err
 	}
 
 	// Validate --spec-repo if provided (fail-fast before any worktree creation)
