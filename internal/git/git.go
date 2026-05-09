@@ -519,6 +519,11 @@ func (c *CLIClient) RunInPathWithContext(ctx context.Context, path string, args 
 	return stdout.String(), nil
 }
 
+// RootDir returns the repository root directory.
+func (c *CLIClient) RootDir(repoPath string) (string, error) {
+	return c.getRootDir(repoPath)
+}
+
 // getRootDir returns the repository root directory.
 func (c *CLIClient) getRootDir(repoPath string) (string, error) {
 	output, err := c.runInPath(repoPath, "rev-parse", "--show-toplevel")
