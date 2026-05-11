@@ -25,9 +25,11 @@ var specJiraFocusCmd = &cobra.Command{
 	},
 }
 
+var specJiraSyncPush bool
+
 var specJiraSyncCmd = &cobra.Command{
 	Use:   "sync [TICKET]",
-	Short: "Update spec frontmatter (title, status, jira_priority) from Jira",
+	Short: "Update spec frontmatter (title, status, jira_priority) from Jira; --push writes back",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSpecJiraSync(args)
@@ -58,6 +60,8 @@ func init() {
 	specJiraCmd.AddCommand(specJiraSyncCmd)
 	specJiraCmd.AddCommand(specJiraPullCmd)
 	specJiraCmd.AddCommand(specJiraUsersCmd)
+
+	specJiraSyncCmd.Flags().BoolVar(&specJiraSyncPush, "push", false, "Also write spec title and summary back to Jira; transition ticket if status is terminal")
 }
 
 // --- focus ---
@@ -175,7 +179,64 @@ func runSpecJiraSync(args []string) error {
 
 	fmt.Printf("synced %s: title=%q status=%s priority=%s\n",
 		ticket, newTitle, newStatus, newPriority)
+
+	if specJiraSyncPush {
+		if err := pushSpecToJira(specPath, ticket, string(newTitle), string(newStatus)); err != nil {
+			return fmt.Errorf("push to Jira: %w", err)
+		}
+	}
 	return nil
+}
+
+// pushSpecToJira writes the spec title and ## Summary section body back to Jira,
+// and transitions the ticket if the spec status is terminal.
+func pushSpecToJira(specPath, ticket, title, status string) error {
+	sf, err := spec.Parse(specPath)
+	if err != nil {
+		return fmt.Errorf("parse spec: %w", err)
+	}
+
+	summaryBody := extractSection(sf.Body, "## Summary")
+
+	if err := jira.UpdateIssue(ticket, title, summaryBody); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "pushed title and summary to Jira: %s\n", ticket)
+
+	if jiraStatus := jira.MapSpecStatus(status); jiraStatus != "" && isTerminalSpecStatus(status) {
+		if err := jira.TransitionIssue(ticket, jiraStatus); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not transition %s to %q: %v\n", ticket, jiraStatus, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "transitioned %s → %s\n", ticket, jiraStatus)
+		}
+	}
+	return nil
+}
+
+// extractSection returns the text body of the first matching ## heading section,
+// stopping at the next ## heading or EOF. Returns "" if the section is not found.
+func extractSection(body, heading string) string {
+	marker := "\n" + heading
+	idx := strings.Index(body, marker)
+	if idx < 0 {
+		// Also try at the very start of body.
+		if strings.HasPrefix(strings.TrimSpace(body), heading) {
+			body = strings.TrimSpace(body)
+			idx = 0
+			marker = heading
+		} else {
+			return ""
+		}
+	}
+	after := body[idx+len(marker):]
+	if next := strings.Index(after, "\n## "); next >= 0 {
+		after = after[:next]
+	}
+	return strings.TrimSpace(after)
+}
+
+func isTerminalSpecStatus(status string) bool {
+	return status == "shipped" || status == "abandoned"
 }
 
 // --- pull ---

@@ -24,9 +24,11 @@ type Config struct {
 }
 
 // JiraConfig holds optional Jira integration settings.
-// acli handles authentication; these fields are informational only.
+// acli handles authentication; these fields are informational only except where noted.
 type JiraConfig struct {
-	Project string `mapstructure:"project"` // default project key, e.g. "WGO"
+	Project        string `mapstructure:"project"`         // informational project key
+	DefaultProject string `mapstructure:"default_project"` // used by: wgo add --jira
+	DefaultType    string `mapstructure:"default_type"`    // used by: wgo add --jira (e.g. "Task")
 }
 
 // PairConfig holds configuration for a single pairing teammate.
@@ -218,8 +220,9 @@ spec_required_min_lines = 5   # commits touching <= N lines bypass the check
 # teammate_email = "sujan@example.com"  # optional, for git-author filtering in today --pair
 
 # [jira]
-# Default Jira project key (informational; acli handles auth via acli jira auth login)
-# project = "WGO"
+# project         = "WGO"    # informational project key
+# default_project = "WGO"    # project key used by: wgo add --jira
+# default_type    = "Task"   # issue type used by: wgo add --jira
 `, filepath.Join(home, "Documents", "GitHub"))
 
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

@@ -19,14 +19,20 @@ type Issue struct {
 
 // IssueFields holds the fields subset we care about.
 type IssueFields struct {
-	Summary  string `json:"summary"`
-	Status   struct {
+	Summary     string          `json:"summary"`
+	Description json.RawMessage `json:"description"`
+	Status      struct {
 		Name string `json:"name"`
 	} `json:"status"`
 	Priority struct {
 		Name string `json:"name"`
 	} `json:"priority"`
 	Assignee *User `json:"assignee"`
+}
+
+// DescriptionText extracts plain text from the description (ADF or plain string).
+func (f *IssueFields) DescriptionText() string {
+	return extractText(f.Description)
 }
 
 // Comment is a single Jira comment.
@@ -53,10 +59,10 @@ func CheckAuth() error {
 	return nil
 }
 
-// GetIssue fetches summary, status, priority, and assignee for the given ticket.
+// GetIssue fetches summary, description, status, priority, and assignee for the given ticket.
 func GetIssue(ticket string) (*Issue, error) {
 	out, err := run("workitem", "view", ticket, "--json",
-		"--fields", "summary,status,priority,assignee")
+		"--fields", "summary,description,status,priority,assignee")
 	if err != nil {
 		return nil, fmt.Errorf("get issue %s: %w\n%s", ticket, err, out)
 	}
@@ -86,6 +92,87 @@ func GetWatchers(ticket string) ([]User, error) {
 		return nil, fmt.Errorf("list watchers %s: %w\n%s", ticket, err, out)
 	}
 	return parseWatchers(out)
+}
+
+// CreateIssue creates a new Jira work item and returns the new ticket key (e.g. "WGO-123").
+func CreateIssue(project, summary, issueType, description string) (string, error) {
+	args := []string{
+		"workitem", "create",
+		"--project", project,
+		"--summary", summary,
+		"--type", issueType,
+		"--json",
+	}
+	if description != "" {
+		args = append(args, "--description", description)
+	}
+	out, err := run(args...)
+	if err != nil {
+		return "", fmt.Errorf("create issue in %s: %w\n%s", project, err, out)
+	}
+	var result struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		return "", fmt.Errorf("parse create response: %w", err)
+	}
+	if result.Key == "" {
+		return "", fmt.Errorf("create returned no ticket key; response: %s", out)
+	}
+	return result.Key, nil
+}
+
+// UpdateIssue pushes a new summary and description to an existing Jira ticket.
+func UpdateIssue(ticket, summary, description string) error {
+	args := []string{
+		"workitem", "edit",
+		"--key", ticket,
+		"--yes",
+	}
+	if summary != "" {
+		args = append(args, "--summary", summary)
+	}
+	if description != "" {
+		// Truncate at 32 KB to stay within Jira ADF limits.
+		if len(description) > 32*1024 {
+			description = description[:32*1024]
+		}
+		args = append(args, "--description", description)
+	}
+	out, err := run(args...)
+	if err != nil {
+		return fmt.Errorf("update issue %s: %w\n%s", ticket, err, out)
+	}
+	return nil
+}
+
+// TransitionIssue moves a Jira ticket to the given status name (e.g. "Done").
+func TransitionIssue(ticket, jiraStatus string) error {
+	out, err := run("workitem", "transition",
+		"--key", ticket,
+		"--status", jiraStatus,
+		"--yes")
+	if err != nil {
+		return fmt.Errorf("transition %s to %q: %w\n%s", ticket, jiraStatus, err, out)
+	}
+	return nil
+}
+
+// MapSpecStatus maps a wgo spec status to the corresponding Jira status name.
+// Returns "" for statuses that should not trigger a Jira transition.
+func MapSpecStatus(specStatus string) string {
+	switch specStatus {
+	case "shipped":
+		return "Done"
+	case "abandoned":
+		return "Won't Do"
+	case "in_progress":
+		return "In Progress"
+	case "draft":
+		return "To Do"
+	default:
+		return ""
+	}
 }
 
 // run executes `acli jira <args>` and returns stdout. Stderr is included in

@@ -14,16 +14,20 @@ import (
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/git"
 	gh "github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jira"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 )
 
 var (
-	addPriority bool
-	addRepos    []string
-	addNoSpec   bool
-	addSpecRepo string
+	addPriority    bool
+	addRepos       []string
+	addNoSpec      bool
+	addSpecRepo    string
+	addJira        bool
+	addJiraProject string
+	addJiraType    string
 )
 
 type repoSpec struct {
@@ -69,6 +73,12 @@ Plain task (no ticket):
   wgo add -p ship v2 release`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if addJira {
+			if len(args) >= 1 && isJiraTicket(args[0]) {
+				return fmt.Errorf("--jira creates a new ticket; pass a description, not an existing ticket key")
+			}
+			return runAddWithJiraCreate(joinArgs(args), addRepos, addPriority)
+		}
 		if len(args) >= 1 && isJiraTicket(args[0]) {
 			ticket := args[0]
 			desc := joinArgs(args[1:])
@@ -84,6 +94,9 @@ func init() {
 	addCmd.Flags().StringArrayVarP(&addRepos, "repo", "r", nil, "owner/repo to create worktree for (repeatable)")
 	addCmd.Flags().BoolVar(&addNoSpec, "no-spec", false, "Skip spec scaffold commit")
 	addCmd.Flags().StringVar(&addSpecRepo, "spec-repo", "", "owner/repo to write spec into (default: first -r repo)")
+	addCmd.Flags().BoolVar(&addJira, "jira", false, "Create a new Jira work item first, then proceed with the ticket")
+	addCmd.Flags().StringVar(&addJiraProject, "jira-project", "", "Jira project key for new ticket (default: jira.default_project in config)")
+	addCmd.Flags().StringVar(&addJiraType, "jira-type", "", "Jira issue type for new ticket (default: jira.default_type in config, e.g. \"Task\")")
 }
 
 func joinArgs(args []string) string {
@@ -240,10 +253,15 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 			branches[i] = sp.owner + "/" + sp.repo + ":" + branchName
 		}
 		if _, statErr := os.Stat(specAbs); os.IsNotExist(statErr) {
+			specTitle, specDesc, specPriority := fetchJiraEnrichment(ticket, desc)
+			if specTitle != desc || specDesc != desc {
+				fmt.Fprintf(os.Stderr, "enriched spec from Jira: %s\n", ticket)
+			}
+
 			data, err := spec.RenderTemplate(spec.TemplateData{
 				Ticket:      ticket,
-				Title:       desc,
-				Description: desc,
+				Title:       specTitle,
+				Description: specDesc,
 				Authors:     []string{cfg.Author},
 				Branches:    branches,
 				Now:         time.Now(),
@@ -256,6 +274,12 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 			}
 			if err := os.WriteFile(specAbs, data, 0o644); err != nil {
 				return fmt.Errorf("write spec: %w", err)
+			}
+			if specPriority != "" {
+				_ = spec.UpdateFrontmatter(specAbs, func(fm *spec.Frontmatter) error {
+					fm.JiraPriority = specPriority
+					return nil
+				})
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "spec already exists: %s (skipping)\n", specRel)
@@ -320,6 +344,57 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 	fmt.Fprintf(os.Stderr, "Added task: %s %s\n", string(bullet), taskText)
 	fmt.Println(sharedRoot)
 	return nil
+}
+
+// runAddWithJiraCreate creates a new Jira work item then proceeds with the
+// full wgo add TICKET workflow using the returned ticket key.
+func runAddWithJiraCreate(desc string, repos []string, priority bool) error {
+	if err := config.Init(); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	cfg := config.Get()
+
+	project := addJiraProject
+	if project == "" {
+		project = cfg.Jira.DefaultProject
+	}
+	if project == "" {
+		return fmt.Errorf("Jira project key required: pass --jira-project or set jira.default_project in ~/.wgo/config.toml")
+	}
+
+	issueType := addJiraType
+	if issueType == "" {
+		issueType = cfg.Jira.DefaultType
+	}
+	if issueType == "" {
+		return fmt.Errorf("Jira issue type required: pass --jira-type or set jira.default_type in ~/.wgo/config.toml")
+	}
+
+	ticket, err := jira.CreateIssue(project, desc, issueType, "")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "created Jira ticket: %s\n", ticket)
+	return addWithWorktree(ticket, desc, repos, priority)
+}
+
+// fetchJiraEnrichment silently tries to fetch spec enrichment data from Jira.
+// Returns (fallback, fallback, "") on any error so the caller always gets usable values.
+func fetchJiraEnrichment(ticket, fallback string) (title, description, priority string) {
+	issue, err := jira.GetIssue(ticket)
+	if err != nil {
+		return fallback, fallback, ""
+	}
+	title = issue.Fields.Summary
+	if title == "" {
+		title = fallback
+	}
+	description = issue.Fields.DescriptionText()
+	if description == "" {
+		description = fallback
+	}
+	priority = issue.Fields.Priority.Name
+	return
 }
 
 // detectCurrentRepo returns "owner/repo" for the git repo containing the cwd.
