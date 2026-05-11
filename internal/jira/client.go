@@ -17,14 +17,22 @@ type Issue struct {
 	Fields IssueFields `json:"fields"`
 }
 
+// IssueStatus captures the status name and its standardized category key.
+// The category key ("new", "indeterminate", "done") is consistent across all
+// Jira projects and instances; the status name is project-specific.
+type IssueStatus struct {
+	Name           string `json:"name"`
+	StatusCategory struct {
+		Key string `json:"key"`
+	} `json:"statusCategory"`
+}
+
 // IssueFields holds the fields subset we care about.
 type IssueFields struct {
 	Summary     string          `json:"summary"`
 	Description json.RawMessage `json:"description"`
-	Status      struct {
-		Name string `json:"name"`
-	} `json:"status"`
-	Priority struct {
+	Status      IssueStatus     `json:"status"`
+	Priority    struct {
 		Name string `json:"name"`
 	} `json:"priority"`
 	Assignee *User `json:"assignee"`
@@ -158,14 +166,14 @@ func TransitionIssue(ticket, jiraStatus string) error {
 	return nil
 }
 
-// MapSpecStatus maps a wgo spec status to the corresponding Jira status name.
-// Returns "" for statuses that should not trigger a Jira transition.
+// MapSpecStatus maps a wgo spec status to the Jira status name used for transitions.
+// Only terminal states are mapped; "abandoned" is intentionally omitted because
+// there is no standardized "won't do" status in Jira — it varies by project.
+// Returns "" when no transition should be attempted.
 func MapSpecStatus(specStatus string) string {
 	switch specStatus {
 	case "shipped":
 		return "Done"
-	case "abandoned":
-		return "Won't Do"
 	case "in_progress":
 		return "In Progress"
 	case "draft":
@@ -300,17 +308,27 @@ func parseJiraTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unrecognized time format: %q", s)
 }
 
-// MapJiraStatus maps a Jira status name to a wgo spec status string.
-// Returns "" if the Jira status does not map to a known lifecycle state.
-func MapJiraStatus(jiraStatus string) string {
-	lower := strings.ToLower(jiraStatus)
+// MapJiraStatus maps a Jira status to a wgo spec lifecycle state.
+// It uses the statusCategory.key first — that value is standardized across all
+// Jira instances ("new" / "indeterminate" / "done") — and falls back to
+// substring-matching the status name only when the category key is absent.
+// Returns "" if no mapping can be determined.
+func MapJiraStatus(s IssueStatus) string {
+	switch s.StatusCategory.Key {
+	case "done":
+		return "shipped"
+	case "indeterminate":
+		return "in_progress"
+	case "new":
+		return "draft"
+	}
+	// Category key missing: fall back to name-based heuristics.
+	lower := strings.ToLower(s.Name)
 	switch {
-	case containsAny(lower, "done", "closed", "resolved"):
+	case containsAny(lower, "done", "closed", "resolved", "released"):
 		return "shipped"
 	case containsAny(lower, "in progress", "in review"):
 		return "in_progress"
-	case containsAny(lower, "won't do", "wont do", "won't fix", "wont fix", "abandoned"):
-		return "abandoned"
 	case containsAny(lower, "to do", "open", "backlog"):
 		return "draft"
 	default:

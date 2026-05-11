@@ -165,7 +165,7 @@ func runSpecJiraSync(args []string) error {
 		if newPriority != "" {
 			fm.JiraPriority = newPriority
 		}
-		if mapped := jira.MapJiraStatus(issue.Fields.Status.Name); mapped != "" {
+		if mapped := jira.MapJiraStatus(issue.Fields.Status); mapped != "" {
 			newStatus = spec.Status(mapped)
 			fm.Status = newStatus
 		} else {
