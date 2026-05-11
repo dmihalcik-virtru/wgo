@@ -294,7 +294,11 @@ func (c *CLIClient) DeleteRemoteBranch(repoPath, branch string) error {
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gh api DELETE branch: %s", stderr.String())
+		errMsg := stderr.String()
+		if strings.Contains(errMsg, "Reference does not exist") {
+			return nil // already deleted, treat as success
+		}
+		return fmt.Errorf("gh api DELETE branch: %s", errMsg)
 	}
 	return nil
 }

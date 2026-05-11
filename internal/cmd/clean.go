@@ -244,7 +244,22 @@ func executeRemoval(c Candidate, gitClient git.Client, ghClient github.Client, _
 		return nil
 
 	case cleanup.KindLocalBranch:
-		return gitClient.DeleteBranch(c.RepoPath, c.Branch, cleanForce)
+		force := cleanForce
+		if !force && c.PRInfo != nil && c.PRInfo.IsMerged() {
+			defaultBranch, _ := gitClient.DefaultBranch(c.RepoPath)
+			if defaultBranch == "" {
+				defaultBranch = "main"
+			}
+			hasExtra, err := gitClient.HasLocalOnlyCommits(c.RepoPath, c.Branch, "origin/"+defaultBranch)
+			switch {
+			case err == nil && !hasExtra:
+				force = true // all commits are on remote, safe to force-delete
+			case err == nil && hasExtra:
+				return fmt.Errorf("branch has local-only commits not in origin/%s; use --force to delete anyway", defaultBranch)
+			}
+			// err != nil: origin/<default> not fetched locally; fall through with force=false
+		}
+		return gitClient.DeleteBranch(c.RepoPath, c.Branch, force)
 
 	case cleanup.KindRemoteBranch:
 		if ghClient == nil || !ghClient.Available() {

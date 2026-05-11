@@ -43,6 +43,7 @@ type Client interface {
 	BranchExists(repoPath, branch string) (bool, error)
 	RemoveWorktree(repoPath, wtPath string, force bool) error
 	DeleteBranch(repoPath, branch string, force bool) error
+	HasLocalOnlyCommits(repoPath, branch, base string) (bool, error)
 	PruneWorktrees(repoPath string) error
 	ListLocalBranches(repoPath string) ([]string, error)
 	IsBranchMerged(repoPath, branch, base string) (bool, error)
@@ -431,7 +432,20 @@ func (c *CLIClient) DeleteBranch(repoPath, branch string, force bool) error {
 		flag = "-D"
 	}
 	_, err := c.runInPath(repoPath, "branch", flag, branch)
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		return nil // already deleted
+	}
 	return err
+}
+
+// HasLocalOnlyCommits reports whether branch has commits not reachable from base.
+// base is typically a remote tracking ref like "origin/main".
+func (c *CLIClient) HasLocalOnlyCommits(repoPath, branch, base string) (bool, error) {
+	output, err := c.runInPath(repoPath, "rev-list", "--count", base+".."+branch)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(output) != "0", nil
 }
 
 // PruneWorktrees runs git worktree prune to clean up stale worktree references.
