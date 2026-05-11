@@ -23,12 +23,55 @@ type Config struct {
 	Jira      JiraConfig      `mapstructure:"jira"`
 }
 
+// JiraProjectRule maps a repo glob and/or CWD path substring to a Jira project.
+// A rule matches when its repo glob matches owner/repo OR its path substring
+// appears in the current working directory (either condition is sufficient).
+type JiraProjectRule struct {
+	Repo    string `mapstructure:"repo"`    // filepath.Match glob vs "owner/repo"
+	Path    string `mapstructure:"path"`    // strings.Contains vs CWD
+	Project string `mapstructure:"project"`
+	Type    string `mapstructure:"type"` // optional issue-type override
+}
+
 // JiraConfig holds optional Jira integration settings.
 // acli handles authentication; these fields are informational only except where noted.
 type JiraConfig struct {
-	Project        string `mapstructure:"project"`         // informational project key
-	DefaultProject string `mapstructure:"default_project"` // used by: wgo add --jira
-	DefaultType    string `mapstructure:"default_type"`    // used by: wgo add --jira (e.g. "Task")
+	Project        string            `mapstructure:"project"`         // informational project key
+	DefaultProject string            `mapstructure:"default_project"` // used by: wgo add --jira
+	DefaultType    string            `mapstructure:"default_type"`    // used by: wgo add --jira (e.g. "Task")
+	ProjectRules   []JiraProjectRule `mapstructure:"project_rules"`   // ordered; first match wins
+}
+
+// ResolveProject returns the Jira project key and issue type for the given repo
+// and working directory. Rules are evaluated in declaration order; a rule matches
+// when its repo glob matches ownerRepo OR its path substring appears in cwd.
+// Falls back to DefaultProject / DefaultType when no rule matches.
+func (c *JiraConfig) ResolveProject(ownerRepo, cwd string) (project, issueType string) {
+	for _, rule := range c.ProjectRules {
+		if rule.Project == "" {
+			continue
+		}
+		repoMatch := rule.Repo != "" && globMatch(rule.Repo, ownerRepo)
+		pathMatch := rule.Path != "" && strings.Contains(cwd, rule.Path)
+		if repoMatch || pathMatch {
+			t := rule.Type
+			if t == "" {
+				t = c.DefaultType
+			}
+			return rule.Project, t
+		}
+	}
+	return c.DefaultProject, c.DefaultType
+}
+
+// globMatch wraps filepath.Match, treating pattern errors as non-matches with a warning.
+func globMatch(pattern, s string) bool {
+	matched, err := filepath.Match(pattern, s)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: jira project_rule has invalid repo pattern %q: %v\n", pattern, err)
+		return false
+	}
+	return matched
 }
 
 // PairConfig holds configuration for a single pairing teammate.
@@ -221,8 +264,19 @@ spec_required_min_lines = 5   # commits touching <= N lines bypass the check
 
 # [jira]
 # project         = "WGO"    # informational project key
-# default_project = "WGO"    # project key used by: wgo add --jira
-# default_type    = "Task"   # issue type used by: wgo add --jira
+# default_project = "WGO"    # fallback project used by: wgo add --jira
+# default_type    = "Task"   # fallback issue type used by: wgo add --jira
+#
+# Per-repo/path rules — first match wins; either field is sufficient
+# [[jira.project_rules]]
+# repo    = "myorg/*"          # filepath.Match glob against "owner/repo"
+# project = "PROJ"
+# type    = "Story"            # optional; overrides default_type
+#
+# [[jira.project_rules]]
+# repo    = "myorg/monorepo"   # repo OR path — either triggers the rule
+# path    = "packages/billing" # substring of current working directory
+# project = "BILL"
 `, filepath.Join(home, "Documents", "GitHub"))
 
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

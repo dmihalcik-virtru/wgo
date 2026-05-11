@@ -354,17 +354,29 @@ func runAddWithJiraCreate(desc string, repos []string, priority bool) error {
 	}
 	cfg := config.Get()
 
-	project := addJiraProject
-	if project == "" {
-		project = cfg.Jira.DefaultProject
+	// Resolve ownerRepo for rule matching: prefer first -r flag, fall back to cwd repo.
+	ownerRepo := ""
+	if len(repos) > 0 {
+		ownerRepo = repos[0]
+	} else {
+		gitClient := git.New("")
+		if r, err := detectCurrentRepo(gitClient); err == nil {
+			ownerRepo = r
+		}
 	}
-	if project == "" {
-		return fmt.Errorf("Jira project key required: pass --jira-project or set jira.default_project in ~/.wgo/config.toml")
+	cwd, _ := os.Getwd()
+	project, issueType := cfg.Jira.ResolveProject(ownerRepo, cwd)
+
+	// Explicit flags take priority over resolved values.
+	if addJiraProject != "" {
+		project = addJiraProject
+	}
+	if addJiraType != "" {
+		issueType = addJiraType
 	}
 
-	issueType := addJiraType
-	if issueType == "" {
-		issueType = cfg.Jira.DefaultType
+	if project == "" {
+		return fmt.Errorf("Jira project key required: pass --jira-project, set jira.default_project, or add a matching [[jira.project_rules]] entry in ~/.wgo/config.toml")
 	}
 	if issueType == "" {
 		return fmt.Errorf("Jira issue type required: pass --jira-type or set jira.default_type in ~/.wgo/config.toml")
