@@ -20,6 +20,13 @@ type Config struct {
 	Status    StatusConfig    `mapstructure:"status"`
 	Hooks     HooksConfig     `mapstructure:"hooks"`
 	Pair      PairConfig      `mapstructure:"pair"`
+	Jira      JiraConfig      `mapstructure:"jira"`
+}
+
+// JiraConfig holds optional Jira integration settings.
+// acli handles authentication; these fields are informational only.
+type JiraConfig struct {
+	Project string `mapstructure:"project"` // default project key, e.g. "WGO"
 }
 
 // PairConfig holds configuration for a single pairing teammate.
@@ -209,6 +216,10 @@ spec_required_min_lines = 5   # commits touching <= N lines bypass the check
 # display_name = "Sujan"
 # teammate_jira = "sujan.kotakar"       # optional, defaults to teammate
 # teammate_email = "sujan@example.com"  # optional, for git-author filtering in today --pair
+
+# [jira]
+# Default Jira project key (informational; acli handles auth via acli jira auth login)
+# project = "WGO"
 `, filepath.Join(home, "Documents", "GitHub"))
 
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

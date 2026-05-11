@@ -27,8 +27,9 @@ type Frontmatter struct {
 	PRs       []string  `yaml:"prs"`
 	Created   time.Time `yaml:"created"`
 	Updated   time.Time `yaml:"updated"`
-	Phase     int       `yaml:"phase,omitempty"`
-	DependsOn []string  `yaml:"depends_on,omitempty"`
+	Phase        int      `yaml:"phase,omitempty"`
+	DependsOn    []string `yaml:"depends_on,omitempty"`
+	JiraPriority string   `yaml:"jira_priority,omitempty"`
 }
 
 type SpecFile struct {
