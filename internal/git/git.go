@@ -44,6 +44,8 @@ type Client interface {
 	RemoveWorktree(repoPath, wtPath string, force bool) error
 	DeleteBranch(repoPath, branch string, force bool) error
 	HasLocalOnlyCommits(repoPath, branch, base string) (bool, error)
+	IsAncestor(repoPath, commit, ref string) (bool, error)
+	UpstreamRef(repoPath, branch string) (string, error)
 	PruneWorktrees(repoPath string) error
 	ListLocalBranches(repoPath string) ([]string, error)
 	IsBranchMerged(repoPath, branch, base string) (bool, error)
@@ -446,6 +448,30 @@ func (c *CLIClient) HasLocalOnlyCommits(repoPath, branch, base string) (bool, er
 		return false, err
 	}
 	return strings.TrimSpace(output) != "0", nil
+}
+
+// IsAncestor reports whether commit is an ancestor of (or equal to) ref.
+func (c *CLIClient) IsAncestor(repoPath, commit, ref string) (bool, error) {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", commit, ref)
+	cmd.Dir = repoPath
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git merge-base --is-ancestor: %w", err)
+}
+
+// UpstreamRef returns the remote-tracking ref for branch (e.g., "origin/feat/foo").
+// Returns an empty string without error when no upstream is configured.
+func (c *CLIClient) UpstreamRef(repoPath, branch string) (string, error) {
+	output, err := c.runInPath(repoPath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", branch+"@{upstream}")
+	if err != nil {
+		return "", nil // no upstream configured
+	}
+	return strings.TrimSpace(output), nil
 }
 
 // PruneWorktrees runs git worktree prune to clean up stale worktree references.

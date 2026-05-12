@@ -188,15 +188,22 @@ func RepoCloneURL(owner, repo string) string {
 	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
 }
 
+// PRMergeCommit holds the OID of the commit that landed the PR on the target branch.
+type PRMergeCommit struct {
+	OID string `json:"oid"`
+}
+
 // PRInfo contains information about a pull request.
 type PRInfo struct {
-	Number   int        `json:"number"`
-	State    string     `json:"state"`
-	Branch   string     `json:"headRefName"`
-	MergedAt *time.Time `json:"mergedAt"`
-	ClosedAt *time.Time `json:"closedAt"`
-	URL      string     `json:"url"`
-	Title    string     `json:"title"`
+	Number      int            `json:"number"`
+	State       string         `json:"state"`
+	Branch      string         `json:"headRefName"`
+	HeadSHA     string         `json:"headRefOid"`
+	MergeCommit *PRMergeCommit `json:"mergeCommit"`
+	MergedAt    *time.Time     `json:"mergedAt"`
+	ClosedAt    *time.Time     `json:"closedAt"`
+	URL         string         `json:"url"`
+	Title       string         `json:"title"`
 }
 
 // IsMerged reports whether the PR was merged.
@@ -240,7 +247,7 @@ func (c *CLIClient) GetPRStatus(repoPath, branch string) (*PRInfo, error) {
 	}
 
 	cmd := exec.Command("gh", "pr", "view", branch,
-		"--json", "number,state,headRefName,mergedAt,closedAt,url,title")
+		"--json", "number,state,headRefName,headRefOid,mergeCommit,mergedAt,closedAt,url,title")
 	cmd.Dir = repoPath
 
 	var stdout, stderr strings.Builder
@@ -312,7 +319,7 @@ func (c *CLIClient) ListPRsForBranch(repoPath, branch string) ([]PRInfo, error) 
 	cmd := exec.Command("gh", "pr", "list",
 		"--head", branch,
 		"--state", "all",
-		"--json", "number,state,headRefName,mergedAt,closedAt,url,title",
+		"--json", "number,state,headRefName,headRefOid,mergeCommit,mergedAt,closedAt,url,title",
 		"--limit", "5")
 	cmd.Dir = repoPath
 

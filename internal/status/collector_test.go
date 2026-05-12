@@ -43,6 +43,8 @@ func (m *mockGitClient) BranchExists(string, string) (bool, error)              
 func (m *mockGitClient) RemoveWorktree(string, string, bool) error              { return nil }
 func (m *mockGitClient) DeleteBranch(string, string, bool) error                  { return nil }
 func (m *mockGitClient) HasLocalOnlyCommits(string, string, string) (bool, error) { return false, nil }
+func (m *mockGitClient) IsAncestor(string, string, string) (bool, error)          { return false, nil }
+func (m *mockGitClient) UpstreamRef(string, string) (string, error)               { return "", nil }
 func (m *mockGitClient) PruneWorktrees(string) error                              { return nil }
 func (m *mockGitClient) ListLocalBranches(string) ([]string, error)             { return nil, nil }
 func (m *mockGitClient) IsBranchMerged(string, string, string) (bool, error)    { return false, nil }

@@ -391,6 +391,84 @@ func TestDeleteBranch(t *testing.T) {
 	}
 }
 
+func TestIsAncestor(t *testing.T) {
+	// Set up a bare "remote" and a clone of it.
+	bareDir := t.TempDir()
+	cloneDir := t.TempDir()
+
+	setupGitRepo(t, bareDir)
+	addCommit(t, bareDir, "initial")
+
+	// Convert to bare repo.
+	require.NoError(t, exec.Command("git", "-C", bareDir, "config", "core.bare", "true").Run())
+
+	// Clone from the bare repo.
+	require.NoError(t, exec.Command("git", "clone", bareDir, cloneDir).Run())
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "config", "user.email", "test@example.com").Run())
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "config", "user.name", "Test User").Run())
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "config", "commit.gpgsign", "false").Run())
+
+	client := New(cloneDir)
+
+	// Get the initial commit SHA.
+	initialSHA, err := client.runInPath(cloneDir, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	initialSHA = strings.TrimSpace(initialSHA)
+
+	// Add a new commit on main.
+	addCommit(t, cloneDir, "second commit")
+	secondSHA, err := client.runInPath(cloneDir, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	secondSHA = strings.TrimSpace(secondSHA)
+
+	// initial is an ancestor of HEAD.
+	isAnc, err := client.IsAncestor(cloneDir, initialSHA, "HEAD")
+	require.NoError(t, err)
+	assert.True(t, isAnc, "initial commit should be an ancestor of HEAD")
+
+	// HEAD is not an ancestor of its own parent.
+	isAnc, err = client.IsAncestor(cloneDir, secondSHA, initialSHA)
+	require.NoError(t, err)
+	assert.False(t, isAnc, "second commit should not be an ancestor of first commit")
+
+	// A commit is an ancestor of itself.
+	isAnc, err = client.IsAncestor(cloneDir, initialSHA, initialSHA)
+	require.NoError(t, err)
+	assert.True(t, isAnc, "commit should be an ancestor of itself")
+}
+
+func TestUpstreamRef(t *testing.T) {
+	// Set up a bare "remote" and a clone.
+	bareDir := t.TempDir()
+	cloneDir := t.TempDir()
+
+	setupGitRepo(t, bareDir)
+	addCommit(t, bareDir, "initial")
+	require.NoError(t, exec.Command("git", "-C", bareDir, "config", "core.bare", "true").Run())
+	require.NoError(t, exec.Command("git", "clone", bareDir, cloneDir).Run())
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "config", "user.email", "test@example.com").Run())
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "config", "user.name", "Test User").Run())
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "config", "commit.gpgsign", "false").Run())
+
+	client := New(cloneDir)
+
+	// Default branch after clone has an upstream.
+	defaultBranch, err := client.DefaultBranch(cloneDir)
+	require.NoError(t, err)
+	if defaultBranch == "" {
+		defaultBranch = "master" // git init default before rename
+	}
+	upstream, err := client.UpstreamRef(cloneDir, defaultBranch)
+	require.NoError(t, err)
+	assert.Equal(t, "origin/"+defaultBranch, upstream, "cloned branch should track origin")
+
+	// Local-only branch has no upstream.
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "checkout", "-b", "local-only").Run())
+	upstream, err = client.UpstreamRef(cloneDir, "local-only")
+	require.NoError(t, err)
+	assert.Equal(t, "", upstream, "local-only branch should have no upstream")
+}
+
 func TestRemoveWorktree(t *testing.T) {
 	tmpDir := t.TempDir()
 	wtDir := t.TempDir()

@@ -250,14 +250,60 @@ func executeRemoval(c Candidate, gitClient git.Client, ghClient github.Client, _
 			if defaultBranch == "" {
 				defaultBranch = "main"
 			}
-			hasExtra, err := gitClient.HasLocalOnlyCommits(c.RepoPath, c.Branch, "origin/"+defaultBranch)
-			switch {
-			case err == nil && !hasExtra:
-				force = true // all commits are on remote, safe to force-delete
-			case err == nil && hasExtra:
-				return fmt.Errorf("branch has local-only commits not in origin/%s; use --force to delete anyway", defaultBranch)
+			target := "origin/" + defaultBranch
+
+			// Check 1: local tip is reachable from target (standard merge).
+			if hasExtra, err := gitClient.HasLocalOnlyCommits(c.RepoPath, c.Branch, target); err == nil && !hasExtra {
+				force = true
 			}
-			// err != nil: origin/<default> not fetched locally; fall through with force=false
+
+			// Check 2: PR merge commit is an ancestor of target (squash/rebase merge).
+			if !force && c.PRInfo.MergeCommit != nil && c.PRInfo.MergeCommit.OID != "" {
+				sha := c.PRInfo.MergeCommit.OID
+				isAnc, ancErr := gitClient.IsAncestor(c.RepoPath, sha, target)
+				if ancErr != nil {
+					if fetchErr := gitClient.Fetch(c.RepoPath); fetchErr == nil {
+						isAnc, _ = gitClient.IsAncestor(c.RepoPath, sha, target)
+					}
+				}
+				if isAnc {
+					force = true
+				}
+			}
+
+			// Check 3: local tip has no commits beyond the pushed PR head.
+			if !force && c.PRInfo.HeadSHA != "" {
+				if hasExtra, err := gitClient.HasLocalOnlyCommits(c.RepoPath, c.Branch, c.PRInfo.HeadSHA); err == nil && !hasExtra {
+					force = true
+				}
+			}
+
+			// Check 4: local tip has no commits beyond the upstream tracking ref.
+			if !force {
+				if upstream, _ := gitClient.UpstreamRef(c.RepoPath, c.Branch); upstream != "" {
+					if hasExtra, err := gitClient.HasLocalOnlyCommits(c.RepoPath, c.Branch, upstream); err == nil && !hasExtra {
+						force = true
+					}
+				}
+			}
+
+			if !force {
+				var reasons []string
+				reasons = append(reasons, fmt.Sprintf("not reachable from %s", target))
+				if c.PRInfo.MergeCommit != nil && c.PRInfo.MergeCommit.OID != "" {
+					reasons = append(reasons, fmt.Sprintf("PR merge commit (%s) not found locally or not in %s", c.PRInfo.MergeCommit.OID[:7], target))
+				}
+				if c.PRInfo.HeadSHA != "" {
+					reasons = append(reasons, fmt.Sprintf("local commits exist beyond pushed PR head (%s)", c.PRInfo.HeadSHA[:7]))
+				}
+				upstream, _ := gitClient.UpstreamRef(c.RepoPath, c.Branch)
+				if upstream == "" {
+					reasons = append(reasons, "no upstream branch configured")
+				} else {
+					reasons = append(reasons, fmt.Sprintf("local commits exist beyond upstream (%s)", upstream))
+				}
+				return fmt.Errorf("cannot verify branch is safe to delete:\n- %s\nuse --force to delete anyway", strings.Join(reasons, "\n- "))
+			}
 		}
 		return gitClient.DeleteBranch(c.RepoPath, c.Branch, force)
 
