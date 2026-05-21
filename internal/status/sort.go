@@ -48,6 +48,14 @@ func SortActivities(activities []models.RepoActivity, sortBy string) {
 			}
 			return compareActivity(a, b)
 		})
+	case "engagement":
+		slices.SortFunc(activities, func(a, b models.RepoActivity) int {
+			if a.EngagementLevel != b.EngagementLevel {
+				// Higher engagement first (higher enum = more engaged)
+				return int(b.EngagementLevel) - int(a.EngagementLevel)
+			}
+			return compareActivity(a, b)
+		})
 	default: // "activity" — most recent first
 		slices.SortFunc(activities, compareActivity)
 	}

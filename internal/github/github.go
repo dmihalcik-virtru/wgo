@@ -204,6 +204,7 @@ type PRInfo struct {
 	ClosedAt    *time.Time     `json:"closedAt"`
 	URL         string         `json:"url"`
 	Title       string         `json:"title"`
+	Author      string         `json:"author"`
 }
 
 // IsMerged reports whether the PR was merged.
@@ -247,7 +248,7 @@ func (c *CLIClient) GetPRStatus(repoPath, branch string) (*PRInfo, error) {
 	}
 
 	cmd := exec.Command("gh", "pr", "view", branch,
-		"--json", "number,state,headRefName,headRefOid,mergeCommit,mergedAt,closedAt,url,title")
+		"--json", "number,state,headRefName,headRefOid,mergeCommit,mergedAt,closedAt,url,title,author")
 	cmd.Dir = repoPath
 
 	var stdout, stderr strings.Builder
@@ -264,11 +265,37 @@ func (c *CLIClient) GetPRStatus(repoPath, branch string) (*PRInfo, error) {
 		return nil, nil // graceful degradation
 	}
 
-	var pr PRInfo
-	if err := json.Unmarshal([]byte(stdout.String()), &pr); err != nil {
+	var prData struct {
+		Number      int            `json:"number"`
+		State       string         `json:"state"`
+		Branch      string         `json:"headRefName"`
+		HeadSHA     string         `json:"headRefOid"`
+		MergeCommit *PRMergeCommit `json:"mergeCommit"`
+		MergedAt    *time.Time     `json:"mergedAt"`
+		ClosedAt    *time.Time     `json:"closedAt"`
+		URL         string         `json:"url"`
+		Title       string         `json:"title"`
+		Author      struct {
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+
+	if err := json.Unmarshal([]byte(stdout.String()), &prData); err != nil {
 		return nil, fmt.Errorf("failed to parse pr info: %w", err)
 	}
-	return &pr, nil
+
+	return &PRInfo{
+		Number:      prData.Number,
+		State:       prData.State,
+		Branch:      prData.Branch,
+		HeadSHA:     prData.HeadSHA,
+		MergeCommit: prData.MergeCommit,
+		MergedAt:    prData.MergedAt,
+		ClosedAt:    prData.ClosedAt,
+		URL:         prData.URL,
+		Title:       prData.Title,
+		Author:      prData.Author.Login,
+	}, nil
 }
 
 // ClosePR closes a pull request.
@@ -319,7 +346,7 @@ func (c *CLIClient) ListPRsForBranch(repoPath, branch string) ([]PRInfo, error) 
 	cmd := exec.Command("gh", "pr", "list",
 		"--head", branch,
 		"--state", "all",
-		"--json", "number,state,headRefName,headRefOid,mergeCommit,mergedAt,closedAt,url,title",
+		"--json", "number,state,headRefName,headRefOid,mergeCommit,mergedAt,closedAt,url,title,author",
 		"--limit", "5")
 	cmd.Dir = repoPath
 
@@ -331,9 +358,39 @@ func (c *CLIClient) ListPRsForBranch(repoPath, branch string) ([]PRInfo, error) 
 		return nil, nil // graceful degradation
 	}
 
-	var prs []PRInfo
-	if err := json.Unmarshal([]byte(stdout.String()), &prs); err != nil {
+	var prData []struct {
+		Number      int            `json:"number"`
+		State       string         `json:"state"`
+		Branch      string         `json:"headRefName"`
+		HeadSHA     string         `json:"headRefOid"`
+		MergeCommit *PRMergeCommit `json:"mergeCommit"`
+		MergedAt    *time.Time     `json:"mergedAt"`
+		ClosedAt    *time.Time     `json:"closedAt"`
+		URL         string         `json:"url"`
+		Title       string         `json:"title"`
+		Author      struct {
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+
+	if err := json.Unmarshal([]byte(stdout.String()), &prData); err != nil {
 		return nil, nil
+	}
+
+	prs := make([]PRInfo, len(prData))
+	for i, pd := range prData {
+		prs[i] = PRInfo{
+			Number:      pd.Number,
+			State:       pd.State,
+			Branch:      pd.Branch,
+			HeadSHA:     pd.HeadSHA,
+			MergeCommit: pd.MergeCommit,
+			MergedAt:    pd.MergedAt,
+			ClosedAt:    pd.ClosedAt,
+			URL:         pd.URL,
+			Title:       pd.Title,
+			Author:      pd.Author.Login,
+		}
 	}
 	return prs, nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/spec"
@@ -20,11 +21,14 @@ import (
 // Collector gathers status information from repositories in parallel.
 type Collector struct {
 	gitClient      git.Client
+	ghClient       *github.CLIClient
+	currentUser    string // cached current GitHub user login
 	plan           *plan.Plan
 	state          *store.State
 	since          time.Time
 	staleThreshold time.Duration
 	repoTimeout    time.Duration
+	userMu         sync.Mutex // protects currentUser access
 }
 
 // CollectorOption configures a Collector.
@@ -49,6 +53,7 @@ func WithRepoTimeout(d time.Duration) CollectorOption {
 func NewCollector(gitClient git.Client, p *plan.Plan, state *store.State, opts ...CollectorOption) *Collector {
 	c := &Collector{
 		gitClient:      gitClient,
+		ghClient:       github.NewClient(),
 		plan:           p,
 		state:          state,
 		staleThreshold: 14 * 24 * time.Hour,
@@ -249,6 +254,13 @@ func (c *Collector) collectOne(ctx context.Context, repo discovery.DiscoveredRep
 	// Spec glyph
 	activity.SpecGlyph = specGlyph(repo.Path, branch, c.state)
 
+	// Detect default branch
+	defaultBranch := c.getDefaultBranch(repo.Path)
+	activity.IsDefaultBranch = (branch == defaultBranch)
+
+	// Classify engagement level (after gathering PR info)
+	activity.EngagementLevel = c.classifyEngagementLevel(&activity)
+
 	// Check context cancellation
 	if ctx.Err() != nil {
 		return activity
@@ -272,6 +284,81 @@ func (c *Collector) determineState(status models.GitStatus, lastActivity time.Ti
 		return models.StateStale
 	}
 	return models.StateClean
+}
+
+// getCurrentUser retrieves and caches the current GitHub user login.
+func (c *Collector) getCurrentUser() string {
+	c.userMu.Lock()
+	defer c.userMu.Unlock()
+
+	if c.currentUser != "" {
+		return c.currentUser
+	}
+
+	if c.ghClient == nil || !c.ghClient.Available() {
+		return ""
+	}
+
+	user, err := c.ghClient.CurrentUser()
+	if err != nil {
+		return ""
+	}
+
+	c.currentUser = user
+	return c.currentUser
+}
+
+// getDefaultBranch retrieves the default branch for a repo.
+func (c *Collector) getDefaultBranch(repoPath string) string {
+	branch, err := c.gitClient.DefaultBranch(repoPath)
+	if err != nil {
+		return ""
+	}
+	return branch
+}
+
+// classifyEngagementLevel determines engagement level based on repo state.
+// It also populates PR information in the activity struct.
+func (c *Collector) classifyEngagementLevel(activity *models.RepoActivity) models.EngagementLevel {
+	// If uncommitted changes, always active (unpushed)
+	if activity.State != models.StateClean && activity.State != models.StateStale {
+		return models.EngagementActiveUnpushed
+	}
+
+	// If commits ahead of remote, active (unpushed)
+	if activity.Status.Ahead > 0 {
+		return models.EngagementActiveUnpushed
+	}
+
+	// Try to get PR info if gh is available
+	if c.ghClient != nil && c.ghClient.Available() {
+		prInfo, err := c.ghClient.GetPRStatus(activity.Path, activity.Branch)
+		if err == nil && prInfo != nil {
+			// Populate PR fields
+			activity.PRNumber = prInfo.Number
+			activity.PRAuthor = prInfo.Author
+			activity.PRURL = prInfo.URL
+
+			// Check if PR is open
+			if strings.EqualFold(prInfo.State, "open") {
+				// Check if it's authored by the current user
+				currentUser := c.getCurrentUser()
+				if currentUser != "" && strings.EqualFold(prInfo.Author, currentUser) {
+					return models.EngagementActivePR
+				}
+				// PR authored by someone else
+				return models.EngagementReviewing
+			}
+		}
+	}
+
+	// On default branch with no commits ahead = observer
+	if activity.IsDefaultBranch && activity.Status.Ahead == 0 {
+		return models.EngagementObserver
+	}
+
+	// Default to observer for anything else
+	return models.EngagementObserver
 }
 
 // determineLastActivity finds the most recent activity time for a repo.
