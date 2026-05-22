@@ -300,7 +300,12 @@ func resolveBranch(parsed *gh.ParsedURL) (string, error) {
 
 	case gh.URLTypeBranch:
 		if parsed.Identifier == "" {
-			return "main", nil // default branch placeholder
+			logTo("no branch specified, querying GitHub for default branch...")
+			branch, err := gh.RepoDefaultBranch(parsed.Owner, parsed.Repo)
+			if err != nil {
+				return "", fmt.Errorf("could not determine default branch: %w", err)
+			}
+			return branch, nil
 		}
 		return parsed.Identifier, nil
 

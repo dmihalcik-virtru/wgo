@@ -188,6 +188,22 @@ func RepoCloneURL(owner, repo string) string {
 	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
 }
 
+// RepoDefaultBranch returns the default branch of a GitHub repo via the gh CLI.
+func RepoDefaultBranch(owner, repo string) (string, error) {
+	out, err := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/%s", owner, repo),
+		"-q", ".default_branch",
+	).Output()
+	if err != nil {
+		return "", fmt.Errorf("gh api failed: %w (is gh installed and authenticated?)", err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return "", fmt.Errorf("empty default_branch from GitHub API for %s/%s", owner, repo)
+	}
+	return branch, nil
+}
+
 // PRMergeCommit holds the OID of the commit that landed the PR on the target branch.
 type PRMergeCommit struct {
 	OID string `json:"oid"`
