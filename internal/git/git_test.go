@@ -469,6 +469,156 @@ func TestUpstreamRef(t *testing.T) {
 	assert.Equal(t, "", upstream, "local-only branch should have no upstream")
 }
 
+// setupRepoWithRemote creates a bare "remote" plus a clone configured for it.
+// Returns (bareDir, cloneDir).
+func setupRepoWithRemote(t *testing.T) (string, string) {
+	t.Helper()
+	bareDir := t.TempDir()
+	cloneDir := t.TempDir()
+
+	setupGitRepo(t, bareDir)
+	addCommit(t, bareDir, "initial")
+	require.NoError(t, exec.Command("git", "-C", bareDir, "config", "core.bare", "true").Run())
+
+	require.NoError(t, exec.Command("git", "clone", bareDir, cloneDir).Run())
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "config", "user.email", "test@example.com").Run())
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "config", "user.name", "Test User").Run())
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "config", "commit.gpgsign", "false").Run())
+	return bareDir, cloneDir
+}
+
+func TestIsClean(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial")
+
+	client := New(tmpDir)
+
+	clean, dirty, err := client.IsClean(tmpDir)
+	require.NoError(t, err)
+	assert.True(t, clean)
+	assert.Empty(t, dirty)
+
+	// Add an untracked file and an unstaged modification.
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("modified"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "new.txt"), []byte("hello"), 0o644))
+
+	clean, dirty, err = client.IsClean(tmpDir)
+	require.NoError(t, err)
+	assert.False(t, clean)
+	assert.Len(t, dirty, 2, "expected one modified + one untracked entry, got %v", dirty)
+}
+
+func TestRebase(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial on main")
+	client := New(tmpDir)
+	defaultBranch, _ := client.CurrentBranch(tmpDir)
+
+	// Create feature branch off the initial commit, add a commit.
+	require.NoError(t, exec.Command("git", "-C", tmpDir, "checkout", "-b", "feature").Run())
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "feature.txt"), []byte("feat"), 0o644))
+	require.NoError(t, exec.Command("git", "-C", tmpDir, "add", ".").Run())
+	require.NoError(t, exec.Command("git", "-C", tmpDir, "commit", "-m", "feature commit").Run())
+
+	// Move main forward.
+	require.NoError(t, exec.Command("git", "-C", tmpDir, "checkout", defaultBranch).Run())
+	addCommit(t, tmpDir, "second on main")
+
+	// Rebase feature onto the new main tip.
+	require.NoError(t, exec.Command("git", "-C", tmpDir, "checkout", "feature").Run())
+	require.NoError(t, client.Rebase(tmpDir, defaultBranch))
+
+	// feature.txt must still exist; HEAD must descend from the new main tip.
+	mainTip, err := client.ResolveRef(tmpDir, defaultBranch)
+	require.NoError(t, err)
+	isAnc, err := client.IsAncestor(tmpDir, mainTip, "HEAD")
+	require.NoError(t, err)
+	assert.True(t, isAnc, "feature should be rebased on top of new main")
+}
+
+func TestMergeNoFF(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial")
+	client := New(tmpDir)
+	defaultBranch, _ := client.CurrentBranch(tmpDir)
+
+	// Create a branch with one commit ahead of default.
+	require.NoError(t, exec.Command("git", "-C", tmpDir, "checkout", "-b", "topic").Run())
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "topic.txt"), []byte("t"), 0o644))
+	require.NoError(t, exec.Command("git", "-C", tmpDir, "add", ".").Run())
+	require.NoError(t, exec.Command("git", "-C", tmpDir, "commit", "-m", "topic commit").Run())
+
+	// Back to default and merge --no-ff. The merge commit must have two parents.
+	require.NoError(t, exec.Command("git", "-C", tmpDir, "checkout", defaultBranch).Run())
+	require.NoError(t, client.Merge(tmpDir, "topic", true))
+
+	parents, err := client.runInPath(tmpDir, "rev-list", "--parents", "-n", "1", "HEAD")
+	require.NoError(t, err)
+	fields := strings.Fields(strings.TrimSpace(parents))
+	assert.Equal(t, 3, len(fields), "merge commit + 2 parents = 3 fields, got %v", fields)
+}
+
+func TestResolveRef(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	addCommit(t, tmpDir, "initial")
+	client := New(tmpDir)
+
+	headOID, err := client.ResolveRef(tmpDir, "HEAD")
+	require.NoError(t, err)
+	assert.Len(t, headOID, 40, "expected 40-char SHA, got %q", headOID)
+
+	_, err = client.ResolveRef(tmpDir, "definitely-not-a-ref")
+	assert.Error(t, err)
+}
+
+func TestPushForceWithLease(t *testing.T) {
+	_, cloneDir := setupRepoWithRemote(t)
+	client := New(cloneDir)
+	defaultBranch, err := client.CurrentBranch(cloneDir)
+	require.NoError(t, err)
+
+	// Capture the *current* remote OID — this is the lease.
+	upstream, err := client.UpstreamRef(cloneDir, defaultBranch)
+	require.NoError(t, err)
+	require.NotEmpty(t, upstream)
+	expected, err := client.ResolveRef(cloneDir, upstream)
+	require.NoError(t, err)
+
+	// Rewrite local history so a normal push would be rejected.
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "commit", "--amend", "-m", "amended").Run())
+
+	// Force-with-lease using the captured OID should succeed.
+	require.NoError(t, client.PushForceWithLease(cloneDir, []ForceLeaseRef{
+		{Branch: defaultBranch, ExpectedOID: expected},
+	}))
+
+	// Rewrite again and try a lease with a stale (old) OID — git should reject.
+	require.NoError(t, exec.Command("git", "-C", cloneDir, "commit", "--amend", "-m", "amended again").Run())
+	err = client.PushForceWithLease(cloneDir, []ForceLeaseRef{
+		{Branch: defaultBranch, ExpectedOID: "0000000000000000000000000000000000000000"},
+	})
+	assert.Error(t, err, "stale lease must be rejected")
+}
+
+func TestPushForceWithLeaseEmptyIsNoOp(t *testing.T) {
+	_, cloneDir := setupRepoWithRemote(t)
+	client := New(cloneDir)
+	assert.NoError(t, client.PushForceWithLease(cloneDir, nil))
+	assert.NoError(t, client.PushForceWithLease(cloneDir, []ForceLeaseRef{}))
+}
+
+func TestPushForceWithLeaseRejectsEmptyBranch(t *testing.T) {
+	_, cloneDir := setupRepoWithRemote(t)
+	client := New(cloneDir)
+	err := client.PushForceWithLease(cloneDir, []ForceLeaseRef{{Branch: ""}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty branch")
+}
+
 func TestRemoveWorktree(t *testing.T) {
 	tmpDir := t.TempDir()
 	wtDir := t.TempDir()

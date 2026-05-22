@@ -240,6 +240,12 @@ type Client interface {
 	ClosePR(repoPath string, prNumber int) error
 	DeleteRemoteBranch(repoPath, branch string) error
 	Available() bool
+	// GetPRBody fetches the current markdown body of a pull request.
+	GetPRBody(repoPath string, prNumber int) (string, error)
+	// UpdatePRBody overwrites the PR's body with the given markdown.
+	UpdatePRBody(repoPath string, prNumber int, body string) error
+	// UpdatePRBase retargets the PR's base branch (e.g. when a parent has merged).
+	UpdatePRBase(repoPath string, prNumber int, baseBranch string) error
 }
 
 // CLIClient is a GitHub Client implementation using the gh CLI.
@@ -349,6 +355,61 @@ func (c *CLIClient) DeleteRemoteBranch(repoPath, branch string) error {
 			return nil // already deleted, treat as success
 		}
 		return fmt.Errorf("gh api DELETE branch: %s", errMsg)
+	}
+	return nil
+}
+
+// GetPRBody fetches the current markdown body of a pull request.
+func (c *CLIClient) GetPRBody(repoPath string, prNumber int) (string, error) {
+	if !c.Available() {
+		return "", fmt.Errorf("gh CLI not available")
+	}
+	cmd := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", prNumber),
+		"--json", "body", "--jq", ".body")
+	cmd.Dir = repoPath
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("gh pr view #%d: %s", prNumber, strings.TrimSpace(stderr.String()))
+	}
+	// gh appends a trailing newline; preserve interior whitespace but trim that.
+	return strings.TrimRight(stdout.String(), "\n"), nil
+}
+
+// UpdatePRBody overwrites the PR's body with the given markdown. The body is
+// passed through stdin via `gh pr edit --body-file -` so it works for bodies
+// containing newlines, quotes, or shell metacharacters.
+func (c *CLIClient) UpdatePRBody(repoPath string, prNumber int, body string) error {
+	if !c.Available() {
+		return fmt.Errorf("gh CLI not available")
+	}
+	cmd := exec.Command("gh", "pr", "edit", fmt.Sprintf("%d", prNumber), "--body-file", "-")
+	cmd.Dir = repoPath
+	cmd.Stdin = strings.NewReader(body)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh pr edit #%d body: %s", prNumber, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// UpdatePRBase retargets the PR's base branch (e.g. when a parent PR has
+// merged and the child should now target origin/<default>).
+func (c *CLIClient) UpdatePRBase(repoPath string, prNumber int, baseBranch string) error {
+	if !c.Available() {
+		return fmt.Errorf("gh CLI not available")
+	}
+	if baseBranch == "" {
+		return fmt.Errorf("base branch is required")
+	}
+	cmd := exec.Command("gh", "pr", "edit", fmt.Sprintf("%d", prNumber), "--base", baseBranch)
+	cmd.Dir = repoPath
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh pr edit #%d base: %s", prNumber, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
