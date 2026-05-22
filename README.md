@@ -488,6 +488,79 @@ wgo status --sort activity    # active repos should now be at the top
 
 ---
 
+## Stacked Pull Requests
+
+When a change is too big for one PR, split it into a *stack* of small, dependent PRs and let `wgo` keep them in sync. Each PR in the stack targets the previous one as its base (instead of `main`), so reviewers can read one focused change at a time and you can land the bottom of the stack while the top is still in review.
+
+`wgo` tracks the stack as a DAG in `~/.wgo/state.json` (so it works across worktrees — one branch per worktree is the recommended layout) and mirrors the topology into each PR body as a fenced `<!-- wgo-stack -->` block. The block is the source of truth for reviewers and lets another machine rebuild local state by reading GitHub.
+
+### Quick start (new stack)
+
+```bash
+# 1. Start a stack from the current branch (becomes the root)
+wgo stack new big-feature
+
+# 2. Layer the next change on top — creates a worktree on the parent's tip,
+#    pushes, and opens a draft PR with the correct --base
+wgo stack push feat/02-plumbing --on big-feature --draft
+
+# 3. After editing the bottom layer, rebase everything downstream
+wgo stack restack big-feature
+# - rebases each child in its own worktree (topological order)
+# - one atomic `git push --atomic --force-with-lease=...` per repo
+# - refreshes the marker block in every affected PR body
+```
+
+### Adopting an existing chain
+
+If you already built a stack with plain `git` + `gh`, hand it over to `wgo`:
+
+```bash
+wgo stack adopt big-feature \
+  feat/01-refactor \
+  feat/02-plumbing \
+  feat/03-ui
+# adopted 3 branch(es) into stack "big-feature"
+#   feat/01-refactor ← root
+#   feat/02-plumbing ↳ on feat/01-refactor
+#   feat/03-ui       ↳ on feat/02-plumbing
+```
+
+Branches are linked in the order given (linear adoption only — DAG with merge nodes is supported by `restack` but adoption from PR-graph heuristics is future work).
+
+### Keeping the stack in sync
+
+Once a parent PR merges, run `wgo stack sync` (no rebasing — just GitHub housekeeping):
+
+```bash
+wgo stack sync
+# - retargets each child whose parent has merged: `gh pr edit --base <new-base>`
+# - removes the merged parent from the child's recorded Parents
+# - refreshes the marker block in every PR body so reviewers see the new topology
+```
+
+After conflicts during `wgo stack restack`, the affected worktree is left in the rebase/merge state and a checkpoint is written to `~/.wgo/cache/restack-<id>.json`. Resolve the conflict by hand, then:
+
+```bash
+wgo stack restack --continue
+```
+
+### Configuration
+
+Stack commands need nothing beyond what `wgo` already requires:
+- `worktree.worktrees_dir` in `~/.wgo/config.toml` — where new worktrees from `wgo stack push` land. See [Configuration](#configuration).
+- `gh` on `PATH` and authenticated, for `--draft` PR creation, `stack sync`, and marker-block updates. Without `gh`, the local rebase + force-with-lease path still works.
+
+### Current view
+
+```bash
+wgo stack status                    # the DAG for the current branch's stack
+wgo .                                # adds a "stack: a → **b** → c" line when applicable
+wgo stack rm <branch>                # refuses if it has unmerged children
+```
+
+---
+
 ## Commands Reference
 
 | Command | Description |
@@ -520,6 +593,15 @@ wgo status --sort activity    # active repos should now be at the top
 | `wgo clean --repos` | Remove unused fork checkouts |
 | `wgo clean --remote` | Close draft/stale PRs on GitHub |
 | `wgo track [path]` | Register a repository for tracking |
+| `wgo to <url> --on <branch>` | New worktree based on `<branch>` instead of `origin/<default>` (records stack parent) |
+| `wgo stack new <name>` | Register the current branch as a stack root |
+| `wgo stack push <branch> --on <parent>` | Create a worktree/branch on top of a parent and (with `--draft`) open the PR |
+| `wgo stack restack [<branch>]` | Rebase every descendant of `<branch>` across worktrees and push atomically |
+| `wgo stack restack --continue` | Resume after resolving a rebase/merge conflict |
+| `wgo stack sync` | Retarget child PR bases when parents merge and refresh marker blocks |
+| `wgo stack status [<id>]` | Print the stack DAG with PR numbers and parents |
+| `wgo stack adopt <name> <root> [<child>...]` | Register an existing chain of branches as a managed stack |
+| `wgo stack rm <branch>` | Remove a branch from its stack (refuses if it has unmerged children) |
 | `wgo hooks install` | Install global git hooks for passive monitoring |
 | `wgo --version` | Show version information |
 | `wgo --help` | Show help |
