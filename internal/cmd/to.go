@@ -16,7 +16,10 @@ import (
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/git"
 	gh "github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/store"
 )
+
+var toOnParent string
 
 var toCmd = &cobra.Command{
 	Use:   "to <github-url|owner/repo[@branch]>",
@@ -42,6 +45,8 @@ Output goes to stdout so you can use it with cd:
 
 func init() {
 	rootCmd.AddCommand(toCmd)
+	toCmd.Flags().StringVar(&toOnParent, "on", "",
+		"For new branches: base the new worktree on this in-flight branch (records it as the stack parent). Ignored when the target branch already exists.")
 }
 
 // log prints to stderr so stdout stays clean for cd $(...).
@@ -497,14 +502,28 @@ func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Confi
 
 	switch parsed.Type {
 	case gh.URLTypeIssue:
-		// New branch off default branch
-		defaultBranch, err := gitClient.DefaultBranch(repoPath)
-		if err != nil {
-			defaultBranch = "main"
+		// New branch off default branch, or off --on parent if provided.
+		startPoint := ""
+		if toOnParent != "" {
+			exists, _ := gitClient.BranchExists(repoPath, toOnParent)
+			if !exists {
+				return "", fmt.Errorf("--on parent %q not found locally or on origin", toOnParent)
+			}
+			startPoint = toOnParent
+			logTo("creating worktree with new branch %s on top of %s...", branch, toOnParent)
+		} else {
+			defaultBranch, err := gitClient.DefaultBranch(repoPath)
+			if err != nil {
+				defaultBranch = "main"
+			}
+			startPoint = "origin/" + defaultBranch
+			logTo("creating worktree with new branch %s from %s...", branch, startPoint)
 		}
-		logTo("creating worktree with new branch %s from origin/%s...", branch, defaultBranch)
-		if err := gitClient.WorktreeAdd(repoPath, wtPath, branch, true, "origin/"+defaultBranch); err != nil {
+		if err := gitClient.WorktreeAdd(repoPath, wtPath, branch, true, startPoint); err != nil {
 			return "", fmt.Errorf("worktree add failed: %w", err)
+		}
+		if toOnParent != "" {
+			recordStackParent(repoPath, wtPath, branch, toOnParent)
 		}
 
 	case gh.URLTypePR, gh.URLTypeBranch:
@@ -532,4 +551,33 @@ func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Confi
 	}
 
 	return wtPath, nil
+}
+
+// recordStackParent persists a parent link in state.json so the new worktree
+// participates in restack/sync. If the parent already belongs to a stack, the
+// child inherits the same StackID; otherwise no stack is created (the user can
+// run `wgo stack new` later to formalize it).
+func recordStackParent(repoPath, wtPath, branch, parentBranch string) {
+	s, err := store.New()
+	if err != nil {
+		logTo("warning: --on: could not open store: %v", err)
+		return
+	}
+	state, err := s.LoadState()
+	if err != nil {
+		logTo("warning: --on: could not load state: %v", err)
+		return
+	}
+	parentKey := store.AnnotationKey(repoPath, parentBranch)
+	if state.GetAnnotation(repoPath, branch) == nil {
+		state.AddAnnotation(wtPath, branch, "")
+		state.AddRepo(wtPath, "")
+	}
+	state.SetParents(wtPath, branch, []string{parentKey})
+	if ann := state.GetAnnotation(repoPath, parentBranch); ann != nil && ann.StackID != "" {
+		state.SetStackID(wtPath, branch, ann.StackID)
+	}
+	if err := s.SaveState(state); err != nil {
+		logTo("warning: --on: could not save state: %v", err)
+	}
 }

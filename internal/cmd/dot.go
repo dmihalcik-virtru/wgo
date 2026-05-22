@@ -14,6 +14,7 @@ import (
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/spec"
+	"github.com/virtru/wgo/internal/stack"
 	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
 )
@@ -176,6 +177,9 @@ func showContext() (bool, error) {
 				}
 			}
 		}
+		if state, err := s.LoadState(); err == nil {
+			showStackLine(state, cwd, branch)
+		}
 	}
 
 	// Show spec line for ticket branches
@@ -196,6 +200,45 @@ func showContext() (bool, error) {
 	showSiblings(client, cwd)
 
 	return dirty, nil
+}
+
+// showStackLine prints a one-line indicator like "stack: a → **b** → c"
+// when the current branch belongs to a managed stack. Silent no-op otherwise.
+func showStackLine(state *store.State, repoPath, branch string) {
+	ann := state.GetAnnotation(repoPath, branch)
+	if ann == nil || ann.StackID == "" {
+		return
+	}
+	graph, err := stack.Build(state, ann.StackID)
+	if err != nil {
+		return
+	}
+	order, err := graph.TopoSort()
+	if err != nil {
+		return
+	}
+	selfKey := store.AnnotationKey(repoPath, branch)
+	parts := make([]string, 0, len(order))
+	for _, key := range order {
+		_, b, _ := splitAnnotationKey(key)
+		if key == selfKey {
+			parts = append(parts, "**"+b+"**")
+		} else {
+			parts = append(parts, b)
+		}
+	}
+	if len(parts) <= 1 {
+		return // not interesting to show a one-node "stack"
+	}
+	fmt.Printf("stack:  %s\n", strings.Join(parts, " → "))
+}
+
+func splitAnnotationKey(key string) (string, string, error) {
+	i := strings.LastIndex(key, ":")
+	if i < 0 {
+		return "", "", fmt.Errorf("bad key %q", key)
+	}
+	return key[:i], key[i+1:], nil
 }
 
 // showSiblings prints a "Workspace siblings:" section when the parent directory

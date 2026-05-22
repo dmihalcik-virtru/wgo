@@ -26,6 +26,10 @@ type BranchEntry struct {
 	Branch    string
 	Reason    string
 	SpecPath  string
+	// Parents is the optional list of parent branch labels rendered after
+	// the reason as "↳ on <parent>[, <parent>...]". Parsed tolerantly from
+	// the plan file; the source of truth is state.json.
+	Parents   []string
 	CreatedAt time.Time
 }
 
@@ -144,13 +148,37 @@ func (p *Plan) parseActiveBranchLine(line string) {
 	branch := matches[2]
 	reason := matches[3]
 
+	reason, parents := splitParentSuffix(reason)
+
 	key := repo + ":" + branch
 	p.ActiveBranches[key] = BranchEntry{
 		Repo:     repo,
 		Branch:   branch,
 		Reason:   reason,
 		SpecPath: specPath,
+		Parents:  parents,
 	}
+}
+
+// splitParentSuffix peels off a trailing "↳ on parent1, parent2" marker from
+// the reason text and returns (cleanedReason, parents). Returns (reason, nil)
+// when no marker is present, so the function is safe to call unconditionally.
+func splitParentSuffix(reason string) (string, []string) {
+	idx := strings.Index(reason, " ↳ on ")
+	if idx < 0 {
+		return reason, nil
+	}
+	tail := strings.TrimSpace(reason[idx+len(" ↳ on "):])
+	if tail == "" {
+		return strings.TrimSpace(reason[:idx]), nil
+	}
+	var parents []string
+	for _, p := range strings.Split(tail, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			parents = append(parents, p)
+		}
+	}
+	return strings.TrimSpace(reason[:idx]), parents
 }
 
 // Render renders the plan back to a string.
@@ -183,6 +211,9 @@ func (p *Plan) RenderWithPair(pairDisplayName string, activeWith map[string]Bran
 			continue
 		}
 		line := fmt.Sprintf("- **%s:%s** — %s", entry.Repo, entry.Branch, entry.Reason)
+		if len(entry.Parents) > 0 {
+			line += " ↳ on " + strings.Join(entry.Parents, ", ")
+		}
 		if entry.SpecPath != "" {
 			line += " 📄 " + entry.SpecPath
 		}

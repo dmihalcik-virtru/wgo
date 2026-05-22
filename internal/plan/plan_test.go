@@ -195,3 +195,46 @@ func TestSpecPathRoundTrip(t *testing.T) {
 	require.NotNil(t, entry2)
 	assert.Equal(t, "spec/WGO-101.md", entry2.SpecPath, "spec path not preserved in round-trip")
 }
+
+func TestParentSuffixRoundTrip(t *testing.T) {
+	p := &Plan{ActiveBranches: map[string]BranchEntry{}}
+	p.ActiveBranches["wgo:b"] = BranchEntry{
+		Repo:    "wgo",
+		Branch:  "b",
+		Reason:  "child of a",
+		Parents: []string{"a"},
+	}
+	p.ActiveBranches["wgo:c"] = BranchEntry{
+		Repo:    "wgo",
+		Branch:  "c",
+		Reason:  "merge of a and b",
+		Parents: []string{"a", "b"},
+	}
+
+	rendered := p.Render()
+	assert.Contains(t, rendered, "child of a ↳ on a")
+	assert.Contains(t, rendered, "merge of a and b ↳ on a, b")
+
+	p2, err := Parse(rendered)
+	require.NoError(t, err)
+
+	entry := p2.GetBranch("wgo", "b")
+	require.NotNil(t, entry)
+	assert.Equal(t, "child of a", entry.Reason, "parent suffix must be stripped from reason on parse")
+	assert.Equal(t, []string{"a"}, entry.Parents)
+
+	merge := p2.GetBranch("wgo", "c")
+	require.NotNil(t, merge)
+	assert.Equal(t, []string{"a", "b"}, merge.Parents)
+}
+
+func TestParentSuffixWithSpecPath(t *testing.T) {
+	content := "# Plan\n\n## Active Branches\n\n- **wgo:b** — child of a ↳ on a 📄 spec/x.md\n\n## Notes\n"
+	p, err := Parse(content)
+	require.NoError(t, err)
+	entry := p.GetBranch("wgo", "b")
+	require.NotNil(t, entry)
+	assert.Equal(t, "child of a", entry.Reason)
+	assert.Equal(t, []string{"a"}, entry.Parents)
+	assert.Equal(t, "spec/x.md", entry.SpecPath, "spec path must coexist with parent suffix")
+}

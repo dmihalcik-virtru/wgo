@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/store"
 )
 
 func TestCandidateKindString(t *testing.T) {
@@ -87,4 +88,42 @@ func TestPRInfoMethods(t *testing.T) {
 	closed := &github.PRInfo{State: "closed"}
 	assert.False(t, closed.IsMerged(), "expected IsMerged false for closed PR")
 	assert.True(t, closed.IsClosed(), "expected IsClosed true")
+}
+
+func TestFilterStackParentsBlocksParentsWithChildren(t *testing.T) {
+	state := store.NewState()
+	state.AddAnnotation("/repo", "parent", "")
+	state.AddAnnotation("/repo", "child", "")
+	state.SetParents("/repo", "child", []string{store.AnnotationKey("/repo", "parent")})
+
+	candidates := []Candidate{
+		{Kind: KindLocalBranch, RepoPath: "/repo", Branch: "parent"},
+		{Kind: KindLocalBranch, RepoPath: "/repo", Branch: "leaf"},
+	}
+
+	safe, blocked := FilterStackParents(candidates, state)
+	require.Len(t, safe, 1)
+	assert.Equal(t, "leaf", safe[0].Branch, "leaf has no children, must remain a candidate")
+	require.Len(t, blocked, 1)
+	assert.Equal(t, "parent", blocked[0].Candidate.Branch)
+	assert.Equal(t, []string{"/repo:child"}, blocked[0].Children)
+}
+
+func TestFilterStackParentsNilStateIsPassthrough(t *testing.T) {
+	candidates := []Candidate{{Kind: KindLocalBranch, RepoPath: "/r", Branch: "b"}}
+	safe, blocked := FilterStackParents(candidates, nil)
+	assert.Equal(t, candidates, safe)
+	assert.Empty(t, blocked)
+}
+
+func TestFilterStackParentsIgnoresCandidatesWithoutBranch(t *testing.T) {
+	state := store.NewState()
+	state.AddAnnotation("/repo", "x", "")
+	state.SetParents("/repo", "x", []string{store.AnnotationKey("/repo", "missing-branch")})
+
+	// A candidate with no Branch (e.g. KindRepo) should never be filtered.
+	candidates := []Candidate{{Kind: KindRepo, RepoPath: "/repo"}}
+	safe, blocked := FilterStackParents(candidates, state)
+	assert.Len(t, safe, 1)
+	assert.Empty(t, blocked)
 }
