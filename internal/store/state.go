@@ -24,9 +24,9 @@ type RepoInfo struct {
 
 // Annotation contains information about why a branch exists.
 type Annotation struct {
-	Purpose   string `json:"purpose"`
-	SpecPath  string `json:"spec_path,omitempty"`
-	SpecState string `json:"spec_state,omitempty"`
+	Purpose   string    `json:"purpose"`
+	SpecPath  string    `json:"spec_path,omitempty"`
+	SpecState string    `json:"spec_state,omitempty"`
 	// Parents lists the keys ("repo:branch") of branches this one stacks on
 	// top of. Empty == based on the repo's default branch. Multiple entries
 	// describe a merge node in the stack DAG.
@@ -170,15 +170,12 @@ func (s *State) UntrackRepo(path string) {
 
 // SetParents records the parent keys for a branch annotation. An empty slice
 // (or nil) clears the parents, marking this branch as a stack root. The
-// annotation is created if it doesn't already exist. Duplicate parent keys
-// are dropped (order preserved) so callers that pass accidental repeats —
-// e.g. `wgo stack push --on foo --on foo` — don't trigger false cycle
-// detection or skewed indegree counts in graph operations.
+// annotation is created if it doesn't already exist.
 func (s *State) SetParents(repoPath, branch string, parents []string) {
 	key := AnnotationKey(repoPath, branch)
 	now := time.Now()
 	ann := s.Annotations[key]
-	ann.Parents = dedupStrings(parents)
+	ann.Parents = append([]string(nil), parents...) // copy to avoid aliasing
 	ann.UpdatedAt = now
 	if ann.CreatedAt.IsZero() {
 		ann.CreatedAt = now
@@ -200,12 +197,8 @@ func (s *State) SetStackID(repoPath, branch, stackID string) {
 	s.Annotations[key] = ann
 }
 
-// AddStack creates or updates a stack record. On updates, fields the caller
-// leaves at their zero value are preserved from the existing record, so a
-// partial update like `AddStack(Stack{ID: id, Name: "renamed"})` does not
-// silently clobber RootRef or other metadata. To explicitly clear a field,
-// use the dedicated setter (or for now, replace the whole record by reading
-// the existing one first).
+// AddStack creates or updates a stack record. CreatedAt is preserved across
+// updates; UpdatedAt is refreshed every call.
 func (s *State) AddStack(stack Stack) {
 	if s.Stacks == nil {
 		s.Stacks = make(map[string]Stack)
@@ -213,12 +206,6 @@ func (s *State) AddStack(stack Stack) {
 	now := time.Now()
 	if existing, ok := s.Stacks[stack.ID]; ok {
 		stack.CreatedAt = existing.CreatedAt
-		if stack.Name == "" {
-			stack.Name = existing.Name
-		}
-		if stack.RootRef == "" {
-			stack.RootRef = existing.RootRef
-		}
 	} else if stack.CreatedAt.IsZero() {
 		stack.CreatedAt = now
 	}
@@ -265,22 +252,4 @@ func (s *State) AnnotationsInStack(stackID string) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// dedupStrings returns a copy of in with duplicate entries removed, preserving
-// the first occurrence of each value.
-func dedupStrings(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	return out
 }

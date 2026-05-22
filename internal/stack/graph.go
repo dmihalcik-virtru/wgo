@@ -48,11 +48,7 @@ func Build(state *store.State, stackID string) (*Graph, error) {
 
 	for _, key := range state.AnnotationsInStack(stackID) {
 		ann := state.Annotations[key]
-		// Dedup defensively. SetParents drops duplicates on write, but state
-		// produced by an older wgo or hand-edited state.json could still have
-		// repeats — and a duplicated parent would push the child's indegree
-		// above its in-edge count and trigger a false ErrCycle in TopoSort.
-		parents := dedupParents(ann.Parents)
+		parents := append([]string(nil), ann.Parents...)
 		g.Parents[key] = parents
 		for _, p := range parents {
 			// Only register reverse edges between in-stack nodes. External
@@ -272,20 +268,3 @@ func findCycle(g *Graph) []string {
 	return nil
 }
 
-// dedupParents preserves first-occurrence order. Tiny helper; not worth
-// pulling another package import just to share with store.dedupStrings.
-func dedupParents(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	return out
-}

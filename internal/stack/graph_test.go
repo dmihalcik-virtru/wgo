@@ -185,28 +185,3 @@ func TestExternalParentIsRootOfSubgraph(t *testing.T) {
 	assert.Equal(t, []string{"/repo:b"}, g.Roots(),
 		"a parent outside the stack still makes the node a stack-root")
 }
-
-func TestBuildDedupesDuplicateParents(t *testing.T) {
-	// State written by an older wgo (or hand-edited state.json) might have
-	// duplicate parent entries. Build must dedup so TopoSort doesn't fail
-	// with ErrCycle from inflated indegree counts.
-	s := store.NewState()
-	s.AddStack(store.Stack{ID: "s1"})
-	s.AddAnnotation("/repo", "a", "")
-	s.AddAnnotation("/repo", "b", "")
-	s.SetStackID("/repo", "a", "s1")
-	s.SetStackID("/repo", "b", "s1")
-	// Bypass SetParents' dedup to simulate dirty state on disk.
-	ann := s.Annotations["/repo:b"]
-	ann.Parents = []string{"/repo:a", "/repo:a", "/repo:a"}
-	s.Annotations["/repo:b"] = ann
-
-	g, err := Build(s, "s1")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"/repo:a"}, g.Parents["/repo:b"],
-		"duplicate parents must be normalized at Build time")
-
-	order, err := g.TopoSort()
-	require.NoError(t, err, "duplicate parents must not produce a false cycle")
-	assert.Equal(t, []string{"/repo:a", "/repo:b"}, order)
-}
