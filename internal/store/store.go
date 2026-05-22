@@ -95,6 +95,9 @@ func (fs *FileStore) LoadState() (*State, error) {
 	if state.AgentSessions == nil {
 		state.AgentSessions = make(map[string]AgentSession)
 	}
+	if state.Stacks == nil {
+		state.Stacks = make(map[string]Stack)
+	}
 
 	return &state, nil
 }

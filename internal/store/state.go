@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"strings"
 	"time"
 )
@@ -12,6 +13,7 @@ type State struct {
 	Annotations   map[string]Annotation   `json:"annotations"`
 	Efforts       map[string]Effort       `json:"efforts"`
 	AgentSessions map[string]AgentSession `json:"agent_sessions"`
+	Stacks        map[string]Stack        `json:"stacks,omitempty"`
 }
 
 // RepoInfo contains information about a tracked repository.
@@ -25,6 +27,26 @@ type Annotation struct {
 	Purpose   string    `json:"purpose"`
 	SpecPath  string    `json:"spec_path,omitempty"`
 	SpecState string    `json:"spec_state,omitempty"`
+	// Parents lists the keys ("repo:branch") of branches this one stacks on
+	// top of. Empty == based on the repo's default branch. Multiple entries
+	// describe a merge node in the stack DAG.
+	Parents []string `json:"parents,omitempty"`
+	// StackID groups this branch into a named stack (see State.Stacks). Empty
+	// means the branch is not part of a managed stack.
+	StackID   string    `json:"stack_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Stack is a named collection of branches that form a DAG via Annotation.Parents.
+// The graph itself is implicit — derived by walking parents. Stack only carries
+// presentation/identity metadata.
+type Stack struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// RootRef is the ref that root nodes (those with no Parents) rebase onto,
+	// e.g. "origin/main". Defaults to the repo's default branch at creation time.
+	RootRef   string    `json:"root_ref,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -55,12 +77,19 @@ func NewState() *State {
 		Annotations:   make(map[string]Annotation),
 		Efforts:       make(map[string]Effort),
 		AgentSessions: make(map[string]AgentSession),
+		Stacks:        make(map[string]Stack),
 	}
 }
 
-// AddAnnotation adds or updates an annotation for a branch.
+// AnnotationKey is the canonical "repoPath:branch" key used throughout state.
+func AnnotationKey(repoPath, branch string) string {
+	return repoPath + ":" + branch
+}
+
+// AddAnnotation adds or updates an annotation for a branch. Pre-existing
+// spec metadata, parent links, and stack membership are preserved.
 func (s *State) AddAnnotation(repoPath, branch, purpose string) {
-	key := repoPath + ":" + branch
+	key := AnnotationKey(repoPath, branch)
 	now := time.Now()
 
 	existing, exists := s.Annotations[key]
@@ -69,6 +98,8 @@ func (s *State) AddAnnotation(repoPath, branch, purpose string) {
 			Purpose:   purpose,
 			SpecPath:  existing.SpecPath,
 			SpecState: existing.SpecState,
+			Parents:   existing.Parents,
+			StackID:   existing.StackID,
 			CreatedAt: existing.CreatedAt,
 			UpdatedAt: now,
 		}
@@ -135,4 +166,90 @@ func (s *State) UntrackRepo(path string) {
 			delete(s.Annotations, key)
 		}
 	}
+}
+
+// SetParents records the parent keys for a branch annotation. An empty slice
+// (or nil) clears the parents, marking this branch as a stack root. The
+// annotation is created if it doesn't already exist.
+func (s *State) SetParents(repoPath, branch string, parents []string) {
+	key := AnnotationKey(repoPath, branch)
+	now := time.Now()
+	ann := s.Annotations[key]
+	ann.Parents = append([]string(nil), parents...) // copy to avoid aliasing
+	ann.UpdatedAt = now
+	if ann.CreatedAt.IsZero() {
+		ann.CreatedAt = now
+	}
+	s.Annotations[key] = ann
+}
+
+// SetStackID assigns the branch to a stack. An empty stackID removes the
+// branch from its stack but keeps the annotation otherwise intact.
+func (s *State) SetStackID(repoPath, branch, stackID string) {
+	key := AnnotationKey(repoPath, branch)
+	now := time.Now()
+	ann := s.Annotations[key]
+	ann.StackID = stackID
+	ann.UpdatedAt = now
+	if ann.CreatedAt.IsZero() {
+		ann.CreatedAt = now
+	}
+	s.Annotations[key] = ann
+}
+
+// AddStack creates or updates a stack record. CreatedAt is preserved across
+// updates; UpdatedAt is refreshed every call.
+func (s *State) AddStack(stack Stack) {
+	if s.Stacks == nil {
+		s.Stacks = make(map[string]Stack)
+	}
+	now := time.Now()
+	if existing, ok := s.Stacks[stack.ID]; ok {
+		stack.CreatedAt = existing.CreatedAt
+	} else if stack.CreatedAt.IsZero() {
+		stack.CreatedAt = now
+	}
+	stack.UpdatedAt = now
+	s.Stacks[stack.ID] = stack
+}
+
+// GetStack returns the stack with the given ID, or nil if absent.
+func (s *State) GetStack(id string) *Stack {
+	if s.Stacks == nil {
+		return nil
+	}
+	if st, ok := s.Stacks[id]; ok {
+		return &st
+	}
+	return nil
+}
+
+// RemoveStack deletes the stack record and clears StackID from every
+// annotation that referenced it. Parents links are left intact so the
+// DAG remains queryable; callers that want to fully unstack should clear
+// Parents separately.
+func (s *State) RemoveStack(id string) {
+	delete(s.Stacks, id)
+	for key, ann := range s.Annotations {
+		if ann.StackID == id {
+			ann.StackID = ""
+			s.Annotations[key] = ann
+		}
+	}
+}
+
+// AnnotationsInStack returns all annotation keys whose StackID matches.
+// The returned slice is sorted lexicographically for deterministic iteration.
+func (s *State) AnnotationsInStack(stackID string) []string {
+	if stackID == "" {
+		return nil
+	}
+	var keys []string
+	for key, ann := range s.Annotations {
+		if ann.StackID == stackID {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
