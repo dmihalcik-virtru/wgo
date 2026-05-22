@@ -30,7 +30,7 @@ and is mirrored into each PR body as a <!-- wgo-stack:<id> --> block.`,
 
 func init() {
 	rootCmd.AddCommand(stackCmd)
-	stackCmd.AddCommand(stackNewCmd, stackPushCmd, stackRestackCmd, stackSyncCmd, stackStatusCmd, stackRmCmd)
+	stackCmd.AddCommand(stackNewCmd, stackPushCmd, stackRestackCmd, stackSyncCmd, stackStatusCmd, stackRmCmd, stackAdoptCmd)
 }
 
 // ---- stack new -----------------------------------------------------------
@@ -521,6 +521,87 @@ func runStackRm(branch string) error {
 	state.SetStackID(repoPath, branch, "")
 	state.SetParents(repoPath, branch, nil)
 	return s.SaveState(state)
+}
+
+// ---- stack adopt ---------------------------------------------------------
+
+var stackAdoptCmd = &cobra.Command{
+	Use:   "adopt <stack-name> <root-branch> [<child-branch>...]",
+	Short: "Register an existing chain of branches as a stack",
+	Long: `Adopt an existing branch chain into wgo's state as a managed stack.
+
+Branches are given in topological order: the first is the root (rebases onto
+origin/<default>), and each subsequent branch records the previous one as its
+parent. Use this when you built a stack with plain git/gh and now want
+wgo stack restack/sync to manage it.
+
+Example:
+  wgo stack adopt big-feature feat/01-refactor feat/02-plumbing feat/03-ui`,
+	Args:         cobra.MinimumNArgs(2),
+	SilenceUsage: true,
+	RunE: func(_ *cobra.Command, args []string) error {
+		return runStackAdopt(args[0], args[1:])
+	},
+}
+
+func runStackAdopt(stackName string, branches []string) error {
+	repoPath, _, err := currentRepoAndBranch()
+	if err != nil {
+		return err
+	}
+	s, state, err := loadStateForStack()
+	if err != nil {
+		return err
+	}
+
+	g := git.New("")
+	for _, branch := range branches {
+		exists, err := g.BranchExists(repoPath, branch)
+		if err != nil {
+			return fmt.Errorf("check %s: %w", branch, err)
+		}
+		if !exists {
+			return fmt.Errorf("branch %q not found locally or on origin", branch)
+		}
+	}
+
+	// Reuse stack with same name if it exists (idempotent re-runs).
+	id := ""
+	for sid, st := range state.Stacks {
+		if st.Name == stackName {
+			id = sid
+			break
+		}
+	}
+	if id == "" {
+		id = newStackID()
+	}
+	state.AddStack(store.Stack{ID: id, Name: stackName, RootRef: defaultBranchRef(repoPath)})
+
+	for i, branch := range branches {
+		if state.GetAnnotation(repoPath, branch) == nil {
+			state.AddAnnotation(repoPath, branch, "")
+		}
+		state.SetStackID(repoPath, branch, id)
+		if i == 0 {
+			state.SetParents(repoPath, branch, nil) // root
+		} else {
+			state.SetParents(repoPath, branch, []string{store.AnnotationKey(repoPath, branches[i-1])})
+		}
+	}
+
+	if err := s.SaveState(state); err != nil {
+		return err
+	}
+	fmt.Printf("adopted %d branch(es) into stack %q (%s)\n", len(branches), stackName, id)
+	for i, branch := range branches {
+		if i == 0 {
+			fmt.Printf("  %s ← root\n", branch)
+		} else {
+			fmt.Printf("  %s ↳ on %s\n", branch, branches[i-1])
+		}
+	}
+	return nil
 }
 
 // ---- shared helpers ------------------------------------------------------

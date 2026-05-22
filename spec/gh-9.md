@@ -97,6 +97,7 @@ The graph is implicit — derived by walking `Annotation.Parents`. No separate e
 - `wgo stack sync` — fetch, detect merged parents, retarget child PR bases, refresh marker blocks. No rebasing.
 - `wgo stack status [<id>]` — render the DAG with PR state, CI status, ahead/behind vs parent. Reuse engagement-sort and `gh` integration from `internal/cmd/status.go` and `internal/cmd/pr.go`.
 - `wgo stack rm <branch>` — refuse if it has unmerged children; otherwise unregister.
+- `wgo stack adopt <stack-name> <root-branch> [<child>...]` — register an existing chain of branches as a managed stack. Each branch takes the previous one in the list as its parent (linear adoption only).
 
 ### 5. Integration with existing commands
 
@@ -194,7 +195,7 @@ Deleted on successful completion. Loaded by `wgo stack restack --continue`.
 ## Out of Scope
 
 - Cross-repo stacks (parents in a different repo). Track via `Effort` for now.
-- Importing existing pre-stacked PRs that weren't created by `wgo stack push`. A follow-up `wgo stack adopt <pr-number>` can heuristically infer parents from PR bases.
+- PR-based heuristic adoption (`wgo stack adopt <pr-number>` walking GitHub bases). A simpler explicit form — `wgo stack adopt <stack-name> <root-branch> [<child>...]` taking branches in topological order — IS implemented so existing chains built with plain git/gh can be brought under management. The PR-walking variant remains future work.
 - Stack-aware merge-queue interaction (merging an intermediate PR atomically with its descendants). GitHub MQ doesn't support this primitive yet.
 - Squash-merge fixup (rewriting child branches' parents to the squash commit on default). The `sync` retarget-to-default path covers this; preserving authorship of squashed-away commits is not attempted.
 - A TUI for stack visualization. `wgo stack status` is text-only for this spec.
@@ -217,4 +218,5 @@ Deleted on successful completion. Loaded by `wgo stack restack --continue`.
 - [ ] `wgo plan` shows parent relationships inline in the active-branches section without breaking the existing parser.
 - [ ] Cycle prevention: `wgo stack push --on X` that would create a cycle exits non-zero with a clear error and writes no state.
 - [ ] Unit tests cover topological sort (linear, fan-out, merge-node), cycle detection, affected-descendants, marker parse/render roundtrip including malformed blocks.
+- [ ] `wgo stack adopt <name> <root> [<child>...]` registers an existing linear chain (idempotent on re-run, refuses if any named branch is missing locally and on origin).
 - [ ] End-to-end test against a throwaway repo exercises: linear 3-branch stack restack, merge-node restack, parent-merge sync with base retarget, clean safety with unmerged children, conflict-resume happy path.
