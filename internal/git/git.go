@@ -597,15 +597,16 @@ func (c *CLIClient) PushForceWithLease(repoPath string, refs []ForceLeaseRef) er
 		if r.Branch == "" {
 			return fmt.Errorf("force-lease ref has empty branch name")
 		}
+		refName := "refs/heads/" + r.Branch
 		if r.ExpectedOID != "" {
-			args = append(args, "--force-with-lease="+r.Branch+":"+r.ExpectedOID)
+			args = append(args, "--force-with-lease="+refName+":"+r.ExpectedOID)
 		} else {
-			args = append(args, "--force-with-lease="+r.Branch)
+			args = append(args, "--force-with-lease="+refName)
 		}
 	}
 	args = append(args, "origin")
 	for _, r := range refs {
-		args = append(args, r.Branch)
+		args = append(args, "refs/heads/"+r.Branch)
 	}
 	_, err := c.runInPath(repoPath, args...)
 	return err
