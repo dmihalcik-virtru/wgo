@@ -17,8 +17,8 @@ import (
 var joinNoPush bool
 
 var joinCmd = &cobra.Command{
-	Use:          "join <owner/repo>",
-	Short:        "Add a repo to the current multi-repo workspace on the same branch",
+	Use:   "join <owner/repo>",
+	Short: "Add a repo to the current multi-repo workspace on the same branch",
 	Long: `Detects the current worktree's branch and shared root, creates a sibling
 worktree for the new repo on the same branch, and updates plan.md and state.json.
 

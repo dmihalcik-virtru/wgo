@@ -113,9 +113,14 @@ pkg/
 
 ## Spec-Driven Development
 
-When working on a branch whose name contains a ticket ID (e.g. `WGO-112-wgo-join` → ticket `WGO-112`), **read `spec/WGO-112.md` first** before writing any code. The spec is the authoritative source of requirements, acceptance criteria, and what is explicitly out of scope. If the spec file exists, treat its Acceptance Criteria as the definition of done.
+When working on a branch whose name contains a ticket ID, **read the corresponding spec file first** before writing any code. The spec is the authoritative source of requirements, acceptance criteria, and what is explicitly out of scope. If the spec file exists, treat its Acceptance Criteria as the definition of done.
 
-To find the spec: `spec/<TICKET>.md` relative to the repo root. The ticket ID is the uppercase `[A-Z]+-\d+` prefix of the branch name.
+Two ticket prefixes are recognized:
+
+- **Jira** — `[A-Z]+-\d+` prefix (e.g. `WGO-112-wgo-join` → `spec/WGO-112.md`).
+- **GitHub Issues** — `gh-\d+` prefix (e.g. `gh-9-stacked-prs` → `spec/gh-9.md`).
+
+The ticket ID is the prefix of the branch name; the spec lives at `spec/<TICKET>.md` relative to the repo root.
 
 ## Key Design Constraints
 

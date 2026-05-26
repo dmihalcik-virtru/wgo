@@ -24,10 +24,10 @@ type Options struct {
 
 // Metrics holds all aggregated pilot data.
 type Metrics struct {
-	Since    time.Time
-	Until    time.Time
-	Team     []string
-	Period   string
+	Since  time.Time
+	Until  time.Time
+	Team   []string
+	Period string
 
 	SpecsCreated      int
 	SpecsUpdated      int
@@ -36,9 +36,9 @@ type Metrics struct {
 	PreCommitBlocks   int
 	NoSpecOverrides   int
 
-	SpecEditsByAuthor  map[string]int // handle → count of spec commits
-	SpecCycleTimes     []time.Duration
-	ReviewIterations   []int
+	SpecEditsByAuthor map[string]int // handle → count of spec commits
+	SpecCycleTimes    []time.Duration
+	ReviewIterations  []int
 
 	Warnings []string
 }
@@ -430,18 +430,18 @@ func RenderJSON(m *Metrics) ([]byte, error) {
 		Warnings          []string       `json:"warnings,omitempty"`
 	}
 	out := jsonOut{
-		Period:           m.Period,
-		Team:             m.Team,
-		SpecsCreated:     m.SpecsCreated,
-		SpecsUpdated:     m.SpecsUpdated,
-		PRsMerged:        m.PRsMerged,
-		MedianCycleTime:  formatDuration(m.MedianCycleTime()),
-		MedianReviewIter: m.MedianReviewIter(),
+		Period:            m.Period,
+		Team:              m.Team,
+		SpecsCreated:      m.SpecsCreated,
+		SpecsUpdated:      m.SpecsUpdated,
+		PRsMerged:         m.PRsMerged,
+		MedianCycleTime:   formatDuration(m.MedianCycleTime()),
+		MedianReviewIter:  m.MedianReviewIter(),
 		DriftEventsCaught: m.DriftEventsCaught,
-		PreCommitBlocks:  m.PreCommitBlocks,
-		NoSpecOverrides:  m.NoSpecOverrides,
-		SpecsByAuthor:    m.SpecEditsByAuthor,
-		Warnings:         m.Warnings,
+		PreCommitBlocks:   m.PreCommitBlocks,
+		NoSpecOverrides:   m.NoSpecOverrides,
+		SpecsByAuthor:     m.SpecEditsByAuthor,
+		Warnings:          m.Warnings,
 	}
 	return json.MarshalIndent(out, "", "  ")
 }

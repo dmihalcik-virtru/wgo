@@ -16,9 +16,9 @@ import (
 
 // EventConfig controls event processing behavior.
 type EventConfig struct {
-	AutoPlan            bool
-	ExcludeBranches     []string
-	SpecRequired        bool
+	AutoPlan             bool
+	ExcludeBranches      []string
+	SpecRequired         bool
 	SpecRequiredMinLines int
 }
 
