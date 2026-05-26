@@ -16,15 +16,15 @@ import (
 // fakeGit records every call so tests can assert on the sequence and supply
 // canned responses for things like ListWorktrees and ResolveRef.
 type fakeGit struct {
-	worktrees   map[string][]git.WorktreeInfo // repoPath -> worktrees
-	refs        map[string]string             // repoPath+":"+ref -> OID
-	dirty       map[string][]string           // worktreePath -> porcelain entries
-	rebaseFail  map[string]error              // worktreePath -> error to return
-	mergeFail   map[string]error
-	pushFail    map[string]error
-	calls       []string
-	pushedRefs  map[string][]git.ForceLeaseRef
-	fetchCalls  []string
+	worktrees  map[string][]git.WorktreeInfo // repoPath -> worktrees
+	refs       map[string]string             // repoPath+":"+ref -> OID
+	dirty      map[string][]string           // worktreePath -> porcelain entries
+	rebaseFail map[string]error              // worktreePath -> error to return
+	mergeFail  map[string]error
+	pushFail   map[string]error
+	calls      []string
+	pushedRefs map[string][]git.ForceLeaseRef
+	fetchCalls []string
 }
 
 func newFakeGit() *fakeGit {
@@ -81,11 +81,11 @@ func (f *fakeGit) PushForceWithLease(repoPath string, refs []git.ForceLeaseRef) 
 }
 
 type fakeGitHub struct {
-	available     bool
-	prsByBranch   map[string]*github.PRInfo // "repoPath:branch" -> PR
-	bodies        map[int]string
-	baseUpdates   map[int]string
-	bodyUpdates   map[int]string
+	available   bool
+	prsByBranch map[string]*github.PRInfo // "repoPath:branch" -> PR
+	bodies      map[int]string
+	baseUpdates map[int]string
+	bodyUpdates map[int]string
 }
 
 func newFakeGitHub() *fakeGitHub {

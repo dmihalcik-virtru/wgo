@@ -118,9 +118,9 @@ type Result struct {
 
 // ConflictReport surfaces enough info for the user to resolve a conflict.
 type ConflictReport struct {
-	Node          string   // annotation key
+	Node          string // annotation key
 	WorktreePath  string
-	Operation     string   // "rebase" or "merge"
+	Operation     string // "rebase" or "merge"
 	OntoOrRef     string
 	Err           error
 	DirtyPaths    []string // porcelain output, if available
