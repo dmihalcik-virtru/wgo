@@ -141,8 +141,23 @@ func (m Marker) Data() MarkerData {
 }
 
 // ParseNodes extracts the MarkerData sidecar from a PR body. Returns
-// (nil, nil) when no well-formed sidecar is present, so callers can
-// distinguish "no marker" from "malformed marker".
+// (nil, nil) when no sidecar is present, so callers can distinguish
+// "no marker" from "malformed marker".
+//
+// When a marker block exists but its JSON cannot be parsed, returns
+// ErrMalformedMarkerData wrapped with the parse details. Callers that
+// want the spec's "treat malformed as absent and rebuild" behavior
+// should check errors.Is(err, ErrMalformedMarkerData) and continue:
+//
+//	data, err := ParseNodes(body)
+//	if err != nil {
+//	    if errors.Is(err, ErrMalformedMarkerData) {
+//	        fmt.Fprintf(os.Stderr, "warning: PR has malformed stack marker, will rebuild: %v\n", err)
+//	        data = nil // treat as absent
+//	    } else {
+//	        return err
+//	    }
+//	}
 func ParseNodes(body string) (*MarkerData, error) {
 	match := markerDataPattern.FindStringSubmatch(body)
 	if match == nil {
