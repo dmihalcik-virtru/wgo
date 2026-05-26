@@ -27,8 +27,8 @@ type Config struct {
 // A rule matches when its repo glob matches owner/repo OR its path substring
 // appears in the current working directory (either condition is sufficient).
 type JiraProjectRule struct {
-	Repo    string `mapstructure:"repo"`    // filepath.Match glob vs "owner/repo"
-	Path    string `mapstructure:"path"`    // strings.Contains vs CWD
+	Repo    string `mapstructure:"repo"` // filepath.Match glob vs "owner/repo"
+	Path    string `mapstructure:"path"` // strings.Contains vs CWD
 	Project string `mapstructure:"project"`
 	Type    string `mapstructure:"type"` // optional issue-type override
 }
@@ -98,11 +98,11 @@ func (c *Config) PairDisplayName() string {
 
 // HooksConfig contains git hooks configuration.
 type HooksConfig struct {
-	Enabled               bool     `mapstructure:"enabled"`
-	AutoPlan              bool     `mapstructure:"auto_plan"`
-	ExcludeBranches       []string `mapstructure:"exclude_branches"`
-	SpecRequired          bool     `mapstructure:"spec_required"`
-	SpecRequiredMinLines  int      `mapstructure:"spec_required_min_lines"`
+	Enabled              bool     `mapstructure:"enabled"`
+	AutoPlan             bool     `mapstructure:"auto_plan"`
+	ExcludeBranches      []string `mapstructure:"exclude_branches"`
+	SpecRequired         bool     `mapstructure:"spec_required"`
+	SpecRequiredMinLines int      `mapstructure:"spec_required_min_lines"`
 }
 
 // StatusConfig contains status dashboard configuration.

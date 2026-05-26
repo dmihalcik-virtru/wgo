@@ -275,9 +275,9 @@ func extractText(raw json.RawMessage) string {
 }
 
 type adfNode struct {
-	Type    string     `json:"type"`
-	Text    string     `json:"text"`
-	Content []adfNode  `json:"content"`
+	Type    string    `json:"type"`
+	Text    string    `json:"text"`
+	Content []adfNode `json:"content"`
 }
 
 func collectText(n *adfNode, sb *strings.Builder) {

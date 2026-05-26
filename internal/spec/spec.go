@@ -19,17 +19,17 @@ const (
 )
 
 type Frontmatter struct {
-	Ticket    string    `yaml:"ticket"`
-	Title     string    `yaml:"title,omitempty"`
-	Status    Status    `yaml:"status"`
-	Authors   []string  `yaml:"authors"`
-	Branches  []string  `yaml:"branches"`
-	PRs       []string  `yaml:"prs"`
-	Created   time.Time `yaml:"created"`
-	Updated   time.Time `yaml:"updated"`
-	Phase        int      `yaml:"phase,omitempty"`
-	DependsOn    []string `yaml:"depends_on,omitempty"`
-	JiraPriority string   `yaml:"jira_priority,omitempty"`
+	Ticket       string    `yaml:"ticket"`
+	Title        string    `yaml:"title,omitempty"`
+	Status       Status    `yaml:"status"`
+	Authors      []string  `yaml:"authors"`
+	Branches     []string  `yaml:"branches"`
+	PRs          []string  `yaml:"prs"`
+	Created      time.Time `yaml:"created"`
+	Updated      time.Time `yaml:"updated"`
+	Phase        int       `yaml:"phase,omitempty"`
+	DependsOn    []string  `yaml:"depends_on,omitempty"`
+	JiraPriority string    `yaml:"jira_priority,omitempty"`
 }
 
 type SpecFile struct {
