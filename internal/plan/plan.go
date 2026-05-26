@@ -22,10 +22,10 @@ type Plan struct {
 
 // BranchEntry represents an entry in the Active Branches section.
 type BranchEntry struct {
-	Repo      string
-	Branch    string
-	Reason    string
-	SpecPath  string
+	Repo     string
+	Branch   string
+	Reason   string
+	SpecPath string
 	// Parents is the optional list of parent branch labels rendered after
 	// the reason as "↳ on <parent>[, <parent>...]". Parsed tolerantly from
 	// the plan file; the source of truth is state.json.
