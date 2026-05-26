@@ -23,6 +23,14 @@ type WorktreeInfo struct {
 	IsBare     bool
 }
 
+// ForceLeaseRef pairs a branch name with the remote OID the caller expects
+// to be overwriting. Used with `git push --force-with-lease=<branch>:<oid>`
+// to make stack restacks safe under concurrent pushes.
+type ForceLeaseRef struct {
+	Branch      string
+	ExpectedOID string
+}
+
 // Client is the interface for Git operations.
 type Client interface {
 	IsRepo(path string) (bool, error)
@@ -51,6 +59,25 @@ type Client interface {
 	IsBranchMerged(repoPath, branch, base string) (bool, error)
 	Push(repoPath, branch string) error
 	AddAndCommit(wtPath, filePath, message string) error
+	// IsClean reports whether the working tree has no uncommitted changes.
+	// On false, the second return is the list of porcelain entries for
+	// diagnostic display.
+	IsClean(worktreePath string) (bool, []string, error)
+	// Rebase runs `git rebase <ontoRef>` in the given worktree. A failure
+	// (typically conflicts) leaves the worktree in the rebase state for the
+	// caller to resolve or abort.
+	Rebase(worktreePath, ontoRef string) error
+	// Merge runs `git merge [--no-ff] <ref>` in the given worktree. With
+	// noFF=true a merge commit is always recorded, preserving DAG topology
+	// for multi-parent stack nodes.
+	Merge(worktreePath, ref string, noFF bool) error
+	// ResolveRef returns the full OID for a ref or revision. Used to capture
+	// expected-old OIDs before a restack rewrites local history.
+	ResolveRef(repoPath, ref string) (string, error)
+	// PushForceWithLease runs a single atomic
+	// `git push --atomic --force-with-lease=<branch>:<expected> origin <branch> ...`
+	// covering every ref in refs. Returns an error if any lease check fails.
+	PushForceWithLease(repoPath string, refs []ForceLeaseRef) error
 }
 
 // CLIClient is a Git client implementation using the git CLI.
@@ -514,6 +541,75 @@ func (c *CLIClient) IsBranchMerged(repoPath, branch, base string) (bool, error) 
 		}
 	}
 	return false, nil
+}
+
+// IsClean reports whether the worktree has no uncommitted changes. On
+// false, the second return is the raw `git status --porcelain` lines so
+// callers can display them.
+func (c *CLIClient) IsClean(worktreePath string) (bool, []string, error) {
+	output, err := c.runInPath(worktreePath, "status", "--porcelain")
+	if err != nil {
+		return false, nil, fmt.Errorf("failed to read worktree status: %w", err)
+	}
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return true, nil, nil
+	}
+	return false, strings.Split(trimmed, "\n"), nil
+}
+
+// Rebase runs `git rebase <ontoRef>` in the given worktree.
+func (c *CLIClient) Rebase(worktreePath, ontoRef string) error {
+	_, err := c.runInPath(worktreePath, "rebase", ontoRef)
+	return err
+}
+
+// Merge runs `git merge [--no-ff] <ref>` in the given worktree.
+func (c *CLIClient) Merge(worktreePath, ref string, noFF bool) error {
+	args := []string{"merge"}
+	if noFF {
+		args = append(args, "--no-ff")
+	}
+	args = append(args, ref)
+	_, err := c.runInPath(worktreePath, args...)
+	return err
+}
+
+// ResolveRef returns the full OID for a ref or revision.
+func (c *CLIClient) ResolveRef(repoPath, ref string) (string, error) {
+	out, err := c.runInPath(repoPath, "rev-parse", "--verify", ref)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// PushForceWithLease performs one atomic push covering every ref in refs.
+// Each ref is sent with --force-with-lease=<branch>:<expectedOID>; an empty
+// ExpectedOID falls back to the looser `--force-with-lease=<branch>` form
+// (lease against the local tracking ref).
+func (c *CLIClient) PushForceWithLease(repoPath string, refs []ForceLeaseRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	args := []string{"push", "--atomic"}
+	for _, r := range refs {
+		if r.Branch == "" {
+			return fmt.Errorf("force-lease ref has empty branch name")
+		}
+		refName := "refs/heads/" + r.Branch
+		if r.ExpectedOID != "" {
+			args = append(args, "--force-with-lease="+refName+":"+r.ExpectedOID)
+		} else {
+			args = append(args, "--force-with-lease="+refName)
+		}
+	}
+	args = append(args, "origin")
+	for _, r := range refs {
+		args = append(args, "refs/heads/"+r.Branch)
+	}
+	_, err := c.runInPath(repoPath, args...)
+	return err
 }
 
 // parseDiffNumstat parses git diff --numstat output and adds to stat.

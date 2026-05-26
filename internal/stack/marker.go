@@ -141,10 +141,8 @@ func (m Marker) Data() MarkerData {
 }
 
 // ParseNodes extracts the MarkerData sidecar from a PR body. Returns
-// (nil, nil) when no sidecar is present. If a sidecar is present but its
-// JSON is malformed, returns an error wrapping ErrMalformedMarkerData so
-// command handlers can treat that case as "marker absent, rebuild it"
-// while still distinguishing it from other failures.
+// (nil, nil) when no well-formed sidecar is present, so callers can
+// distinguish "no marker" from "malformed marker".
 func ParseNodes(body string) (*MarkerData, error) {
 	match := markerDataPattern.FindStringSubmatch(body)
 	if match == nil {

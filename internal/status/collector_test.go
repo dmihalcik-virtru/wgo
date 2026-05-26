@@ -50,6 +50,11 @@ func (m *mockGitClient) ListLocalBranches(string) ([]string, error)             
 func (m *mockGitClient) IsBranchMerged(string, string, string) (bool, error)      { return false, nil }
 func (m *mockGitClient) Push(string, string) error                                { return nil }
 func (m *mockGitClient) AddAndCommit(string, string, string) error                { return nil }
+func (m *mockGitClient) IsClean(string) (bool, []string, error)                   { return true, nil, nil }
+func (m *mockGitClient) Rebase(string, string) error                              { return nil }
+func (m *mockGitClient) Merge(string, string, bool) error                         { return nil }
+func (m *mockGitClient) ResolveRef(string, string) (string, error)                { return "", nil }
+func (m *mockGitClient) PushForceWithLease(string, []git.ForceLeaseRef) error     { return nil }
 func (m *mockGitClient) ListWorktrees(repoPath string) ([]git.WorktreeInfo, error) {
 	if m.worktrees != nil {
 		if wts, ok := m.worktrees[repoPath]; ok {
