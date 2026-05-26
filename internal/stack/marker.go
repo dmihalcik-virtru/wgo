@@ -2,11 +2,18 @@ package stack
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 )
+
+// ErrMalformedMarkerData reports that a marker block was present but its
+// machine-readable sidecar could not be parsed. Callers that want the
+// spec's "treat malformed as absent and rebuild" behavior should handle
+// this with errors.Is(err, ErrMalformedMarkerData) and continue.
+var ErrMalformedMarkerData = errors.New("stack: malformed marker data")
 
 // MarkerData is the machine-parseable topology embedded in each PR-body
 // marker block. The spec requires that the block be sufficient for another
@@ -143,7 +150,7 @@ func ParseNodes(body string) (*MarkerData, error) {
 	}
 	var data MarkerData
 	if err := json.Unmarshal([]byte(strings.TrimSpace(match[1])), &data); err != nil {
-		return nil, fmt.Errorf("parse wgo-stack-data: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrMalformedMarkerData, err)
 	}
 	return &data, nil
 }
