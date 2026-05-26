@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -169,6 +170,21 @@ func TestParseNodesMalformedJSON(t *testing.T) {
 	body := "<!-- wgo-stack-data:{this is not json -->"
 	_, err := ParseNodes(body)
 	require.Error(t, err, "malformed sidecar must surface a parse error")
+	assert.ErrorIs(t, err, ErrMalformedMarkerData,
+		"callers need a sentinel so they can treat malformed marker data as rebuildable")
+}
+
+func TestParseNodesMalformedJSONCanBeTreatedAsAbsent(t *testing.T) {
+	body := "<!-- wgo-stack-data:{this is not json -->"
+
+	data, err := ParseNodes(body)
+	if errors.Is(err, ErrMalformedMarkerData) {
+		data = nil
+		err = nil
+	}
+
+	require.NoError(t, err, "command handlers should be able to downgrade malformed marker data")
+	assert.Nil(t, data, "tolerant callers treat malformed sidecars as absent and rebuild them")
 }
 
 func TestRenderRoundTripsThroughParseNodes(t *testing.T) {
