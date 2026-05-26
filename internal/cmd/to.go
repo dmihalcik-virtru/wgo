@@ -526,7 +526,11 @@ func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Confi
 			return "", fmt.Errorf("worktree add failed: %w", err)
 		}
 		if toOnParent != "" {
-			recordStackParent(repoPath, branch, toOnParent)
+			if err := recordStackParent(repoPath, branch, toOnParent); err != nil {
+				logTo("error: %v", err)
+				logTo("worktree created but stack parent not recorded")
+				logTo("you can manually run: wgo stack new")
+			}
 		}
 
 	case gh.URLTypePR, gh.URLTypeBranch:
@@ -560,21 +564,18 @@ func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Confi
 // participates in restack/sync. If the parent already belongs to a stack, the
 // child inherits the same StackID; otherwise no stack is created (the user can
 // run `wgo stack new` later to formalize it).
-func recordStackParent(repoPath, branch, parentBranch string) {
+func recordStackParent(repoPath, branch, parentBranch string) error {
 	s, err := store.New()
 	if err != nil {
-		logTo("warning: --on: could not open store: %v", err)
-		return
+		return fmt.Errorf("--on: could not open store: %w", err)
 	}
 	state, err := s.LoadState()
 	if err != nil {
-		logTo("warning: --on: could not load state: %v", err)
-		return
+		return fmt.Errorf("--on: could not load state: %w", err)
 	}
 	mainRepoPath, err := canonicalRepoPath(repoPath)
 	if err != nil {
-		logTo("warning: --on: could not resolve canonical repo path: %v", err)
-		return
+		return fmt.Errorf("--on: could not resolve canonical repo path: %w", err)
 	}
 	parentKey := store.AnnotationKey(mainRepoPath, parentBranch)
 	if state.GetAnnotation(mainRepoPath, branch) == nil {
@@ -585,6 +586,7 @@ func recordStackParent(repoPath, branch, parentBranch string) {
 		state.SetStackID(mainRepoPath, branch, ann.StackID)
 	}
 	if err := s.SaveState(state); err != nil {
-		logTo("warning: --on: could not save state: %v", err)
+		return fmt.Errorf("--on: could not save state: %w", err)
 	}
+	return nil
 }

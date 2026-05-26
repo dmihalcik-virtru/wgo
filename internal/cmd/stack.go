@@ -327,7 +327,7 @@ var stackSyncCmd = &cobra.Command{
 }
 
 func runStackSync() error {
-	_, state, err := loadStateForStack()
+	s, state, err := loadStateForStack()
 	if err != nil {
 		return err
 	}
@@ -353,24 +353,35 @@ func runStackSync() error {
 	// Strip "origin/" so the gh API accepts a branch name.
 	defaultBase = strings.TrimPrefix(defaultBase, "origin/")
 
+	var errors []string
 	for node := range graph.Parents {
 		nodeRepo, nodeBranch, err := keyParts(node)
 		if err != nil {
+			errors = append(errors, fmt.Sprintf("node %s: malformed key: %v", node, err))
 			continue
 		}
 		pr, err := ghClient.GetPRStatus(nodeRepo, nodeBranch)
-		if err != nil || pr == nil {
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: failed to get PR status: %v", nodeBranch, err))
 			continue
 		}
-		// Check each parent: if its PR has merged, drop it from Parents and (if it was the head parent) retarget the base.
+		if pr == nil {
+			continue // No PR for this branch - expected case
+		}
+		// Check each parent: if its PR has merged, drop it from Parents and retarget the base if needed.
 		var remaining []string
 		retarget := false
 		for _, pk := range graph.Parents[node] {
 			pRepo, pBranch, err := keyParts(pk)
 			if err != nil {
+				errors = append(errors, fmt.Sprintf("parent %s: malformed key: %v", pk, err))
 				continue
 			}
-			ppr, _ := ghClient.GetPRStatus(pRepo, pBranch)
+			ppr, err := ghClient.GetPRStatus(pRepo, pBranch)
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("parent %s: failed to get PR status: %v", pBranch, err))
+				continue
+			}
 			if ppr != nil && ppr.IsMerged() {
 				retarget = true
 				continue
@@ -378,21 +389,50 @@ func runStackSync() error {
 			remaining = append(remaining, pk)
 		}
 		if retarget {
+			// Capture original first parent (current PR base)
+			originalBase := ""
+			if len(graph.Parents[node]) > 0 {
+				_, originalBase, _ = keyParts(graph.Parents[node][0])
+			}
+
+			// Update state with pruned parents
 			state.SetParents(nodeRepo, nodeBranch, remaining)
+
+			// Determine new base
+			var newBase string
 			if len(remaining) == 0 {
-				if err := ghClient.UpdatePRBase(nodeRepo, pr.Number, defaultBase); err != nil {
-					fmt.Fprintf(os.Stderr, "retarget #%d: %v\n", pr.Number, err)
+				// All parents merged → retarget to default branch
+				newBase = defaultBase
+			} else {
+				// Some parents merged → use first remaining parent as new base
+				_, newBase, _ = keyParts(remaining[0])
+			}
+
+			// Retarget only if base actually changed
+			if newBase != originalBase {
+				if err := ghClient.UpdatePRBase(nodeRepo, pr.Number, newBase); err != nil {
+					fmt.Fprintf(os.Stderr, "retarget PR #%d to %s: %v\n", pr.Number, newBase, err)
 				}
 			}
 		}
 	}
+
+	// Report any errors encountered during sync
+	if len(errors) > 0 {
+		for _, e := range errors {
+			fmt.Fprintf(os.Stderr, "warning: sync: %s\n", e)
+		}
+	}
+
 	// Rebuild the graph after pruning merged parents, then refresh marker blocks.
-	graph, _ = stack.Build(state, ann.StackID)
+	graph, err = stack.Build(state, ann.StackID)
+	if err != nil {
+		return fmt.Errorf("rebuild graph after pruning parents: %w", err)
+	}
 	if err := refreshMarkers(ghClient, graph); err != nil {
 		return err
 	}
 
-	s, _ := store.New()
 	return s.SaveState(state)
 }
 
