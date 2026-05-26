@@ -132,3 +132,72 @@ func TestRenderEmptyNodes(t *testing.T) {
 	require.Contains(t, out, "_no members_")
 	assert.Contains(t, out, "<!-- wgo-stack:empty -->")
 }
+
+func TestRenderEmbedsMachineParseableData(t *testing.T) {
+	// The spec promises another machine can rebuild local state by reading
+	// GitHub. That means the marker block must carry the topology in a
+	// machine-parseable form, not just human-readable labels.
+	out := linearStackMarker().Render()
+	assert.Contains(t, out, "<!-- wgo-stack-data:")
+	assert.Contains(t, out, " -->")
+
+	data, err := ParseNodes(out)
+	require.NoError(t, err)
+	require.NotNil(t, data)
+	assert.Equal(t, "abc123", data.StackID)
+	require.Len(t, data.Nodes, 3)
+
+	assert.Equal(t, "refactor", data.Nodes[0].Branch)
+	assert.Equal(t, 12, data.Nodes[0].PRNumber)
+	assert.Empty(t, data.Nodes[0].Parents, "root has no parents in the wire format")
+
+	assert.Equal(t, "plumbing", data.Nodes[1].Branch)
+	assert.Equal(t, []string{"refactor"}, data.Nodes[1].Parents,
+		"parents are branch names, not annotation keys")
+
+	assert.Equal(t, "feature", data.Nodes[2].Branch)
+	assert.Equal(t, []string{"plumbing"}, data.Nodes[2].Parents)
+}
+
+func TestParseNodesNoSidecar(t *testing.T) {
+	data, err := ParseNodes("just a PR body, no marker at all")
+	require.NoError(t, err)
+	assert.Nil(t, data, "absent sidecar must be a clean (nil, nil), not an error")
+}
+
+func TestParseNodesMalformedJSON(t *testing.T) {
+	body := "<!-- wgo-stack-data:{this is not json -->"
+	_, err := ParseNodes(body)
+	require.Error(t, err, "malformed sidecar must surface a parse error")
+}
+
+func TestRenderRoundTripsThroughParseNodes(t *testing.T) {
+	// Render → ParseNodes → rebuild a Marker → Render again. The two
+	// renders won't match byte-for-byte (the rebuild has no Self) but
+	// the ParseNodes wire data MUST match.
+	original := linearStackMarker()
+	body := original.Render()
+
+	data, err := ParseNodes(body)
+	require.NoError(t, err)
+	require.NotNil(t, data)
+
+	// Round-trip through Data(): same wire form.
+	assert.Equal(t, original.Data(), *data)
+}
+
+func TestDataExcludesExternalParents(t *testing.T) {
+	// A node whose parent is not in the stack (e.g. an external base like
+	// origin/main) must have that parent dropped from the wire form, since
+	// a consumer can't translate non-stack keys back to anything useful.
+	m := Marker{
+		StackID: "s",
+		Nodes: []MarkerNode{
+			{Key: "/repo:a", Branch: "a", PRNumber: 1, Parents: []string{"/repo:not-in-stack"}},
+		},
+	}
+	data := m.Data()
+	require.Len(t, data.Nodes, 1)
+	assert.Empty(t, data.Nodes[0].Parents,
+		"parents not resolvable to in-stack branches must be omitted")
+}
