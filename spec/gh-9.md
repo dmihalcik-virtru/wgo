@@ -65,6 +65,8 @@ type State struct {
 
 The graph is implicit — derived by walking `Annotation.Parents`. No separate edge table.
 
+Annotation keys are scoped to the repository's canonical main checkout path, not the currently active worktree path. Worktree locations are treated as ephemeral execution locations that may be recreated under `worktree.worktrees_dir`.
+
 ### 2. New package `internal/stack/`
 
 - `graph.go` — build DAG from `state.Annotations`, topological sort, find roots/leaves, detect cycles, compute "affected descendants" when a node changes.
@@ -183,7 +185,7 @@ Deleted on successful completion. Loaded by `wgo stack restack --continue`.
 - **Dirty worktree mid-restack**: refuse and exit; print path and porcelain output. User commits/stashes manually, then re-runs.
 - **Conflicts during rebase or merge**: leave the worktree in the conflict state, write the checkpoint, and instruct the user to resolve and run `wgo stack restack --continue`.
 - **Lease failure on push**: `git push --force-with-lease` rejects when remote OID has diverged. Print the failing branch and instruct user to fetch and rerun.
-- **Missing worktree for a stack node**: lazy-create in `worktrees_dir` using the same path template `wgo to` uses.
+- **Missing worktree for a stack node**: lazy-create in `worktree.worktrees_dir` using the same path template `wgo to` / `wgo add` use.
 - **Marker block edited by hand on GitHub**: parser tolerates malformed/edited blocks; `wgo stack sync` overwrites with the canonical version.
 - **PR body length**: GitHub caps PR bodies at 65,536 chars. Marker block is well under 1KB even for large stacks; no truncation concern.
 - **Parent recorded but parent branch missing locally**: treat as not-discovered; warn and skip in restack walk rather than failing the whole operation.

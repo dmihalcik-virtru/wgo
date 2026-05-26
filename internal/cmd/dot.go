@@ -79,6 +79,10 @@ func showContext() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to get current branch: %w", err)
 	}
+	repoPath, err := client.MainRepoPath(cwd)
+	if err != nil {
+		return false, fmt.Errorf("failed to determine canonical repo path: %w", err)
+	}
 
 	status, err := client.Status(cwd)
 	if err != nil {
@@ -178,7 +182,7 @@ func showContext() (bool, error) {
 			}
 		}
 		if state, err := s.LoadState(); err == nil {
-			showStackLine(state, cwd, branch)
+			showStackLine(state, repoPath, branch)
 		}
 	}
 

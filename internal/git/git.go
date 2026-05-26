@@ -660,6 +660,20 @@ func (c *CLIClient) RootDir(repoPath string) (string, error) {
 	return c.getRootDir(repoPath)
 }
 
+// MainRepoPath returns the canonical main checkout path shared by all worktrees
+// in the repository. For a non-worktree repo, this is the same as RootDir.
+func (c *CLIClient) MainRepoPath(repoPath string) (string, error) {
+	worktrees, err := c.ListWorktrees(repoPath)
+	if err == nil {
+		for _, wt := range worktrees {
+			if wt.IsMain {
+				return wt.Path, nil
+			}
+		}
+	}
+	return c.getRootDir(repoPath)
+}
+
 // getRootDir returns the repository root directory.
 func (c *CLIClient) getRootDir(repoPath string) (string, error) {
 	output, err := c.runInPath(repoPath, "rev-parse", "--show-toplevel")

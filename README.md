@@ -492,7 +492,7 @@ wgo status --sort activity    # active repos should now be at the top
 
 When a change is too big for one PR, split it into a *stack* of small, dependent PRs and let `wgo` keep them in sync. Each PR in the stack targets the previous one as its base (instead of `main`), so reviewers can read one focused change at a time and you can land the bottom of the stack while the top is still in review.
 
-`wgo` tracks the stack as a DAG in `~/.wgo/state.json` (so it works across worktrees — one branch per worktree is the recommended layout) and mirrors the topology into each PR body as a fenced `<!-- wgo-stack -->` block. The block is the source of truth for reviewers and lets another machine rebuild local state by reading GitHub.
+`wgo` tracks the stack as a DAG in `~/.wgo/state.json`, keyed by the repo's canonical main checkout path rather than the current worktree path. That keeps stack membership stable even if a branch is opened from different worktrees or a worktree is later moved/recreated. The topology is also mirrored into each PR body as a fenced `<!-- wgo-stack -->` block so reviewers can see it and another machine can rebuild local state from GitHub.
 
 ### Quick start (new stack)
 
@@ -539,7 +539,7 @@ wgo stack sync
 # - refreshes the marker block in every PR body so reviewers see the new topology
 ```
 
-After conflicts during `wgo stack restack`, the affected worktree is left in the rebase/merge state and a checkpoint is written to `~/.wgo/cache/restack-<id>.json`. Resolve the conflict by hand, then:
+After conflicts during `wgo stack restack`, the affected worktree is left in the rebase/merge state and a checkpoint is written to `~/.wgo/cache/restack-<id>.json`. If a downstream branch has no worktree checked out, `wgo` recreates it under `worktree.worktrees_dir` before rebasing. Resolve conflicts by hand, then:
 
 ```bash
 wgo stack restack --continue
