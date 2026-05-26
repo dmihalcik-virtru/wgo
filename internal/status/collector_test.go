@@ -25,36 +25,36 @@ type mockGitClient struct {
 	worktrees   map[string][]git.WorktreeInfo // keyed by repo path
 }
 
-func (m *mockGitClient) IsRepo(string) (bool, error)                            { return m.isRepo, nil }
-func (m *mockGitClient) CurrentBranch(string) (string, error)                   { return m.branch, nil }
-func (m *mockGitClient) Status(string) (models.GitStatus, error)                { return m.status, nil }
-func (m *mockGitClient) AheadBehind(string, string) (int, int, error)           { return 0, 0, nil }
-func (m *mockGitClient) LastCommit(string) (models.CommitInfo, error)           { return m.commit, nil }
-func (m *mockGitClient) RepoName(string) (string, error)                        { return m.repoName, nil }
-func (m *mockGitClient) RemoteURL(string) (string, error)                       { return m.remoteURL, nil }
-func (m *mockGitClient) RecentCommitCount(string, time.Time) (int, error)       { return m.commitCount, nil }
-func (m *mockGitClient) DiffStat(string) (models.DiffStat, error)               { return m.diffStat, nil }
-func (m *mockGitClient) Clone(string, string) error                             { return nil }
-func (m *mockGitClient) WorktreeAdd(string, string, string, bool, string) error { return nil }
-func (m *mockGitClient) Fetch(string) error                                     { return nil }
-func (m *mockGitClient) FetchPRRef(string, int, string) error                   { return nil }
-func (m *mockGitClient) DefaultBranch(string) (string, error)                   { return "main", nil }
-func (m *mockGitClient) BranchExists(string, string) (bool, error)              { return false, nil }
-func (m *mockGitClient) RemoveWorktree(string, string, bool) error              { return nil }
+func (m *mockGitClient) IsRepo(string) (bool, error)                              { return m.isRepo, nil }
+func (m *mockGitClient) CurrentBranch(string) (string, error)                     { return m.branch, nil }
+func (m *mockGitClient) Status(string) (models.GitStatus, error)                  { return m.status, nil }
+func (m *mockGitClient) AheadBehind(string, string) (int, int, error)             { return 0, 0, nil }
+func (m *mockGitClient) LastCommit(string) (models.CommitInfo, error)             { return m.commit, nil }
+func (m *mockGitClient) RepoName(string) (string, error)                          { return m.repoName, nil }
+func (m *mockGitClient) RemoteURL(string) (string, error)                         { return m.remoteURL, nil }
+func (m *mockGitClient) RecentCommitCount(string, time.Time) (int, error)         { return m.commitCount, nil }
+func (m *mockGitClient) DiffStat(string) (models.DiffStat, error)                 { return m.diffStat, nil }
+func (m *mockGitClient) Clone(string, string) error                               { return nil }
+func (m *mockGitClient) WorktreeAdd(string, string, string, bool, string) error   { return nil }
+func (m *mockGitClient) Fetch(string) error                                       { return nil }
+func (m *mockGitClient) FetchPRRef(string, int, string) error                     { return nil }
+func (m *mockGitClient) DefaultBranch(string) (string, error)                     { return "main", nil }
+func (m *mockGitClient) BranchExists(string, string) (bool, error)                { return false, nil }
+func (m *mockGitClient) RemoveWorktree(string, string, bool) error                { return nil }
 func (m *mockGitClient) DeleteBranch(string, string, bool) error                  { return nil }
 func (m *mockGitClient) HasLocalOnlyCommits(string, string, string) (bool, error) { return false, nil }
 func (m *mockGitClient) IsAncestor(string, string, string) (bool, error)          { return false, nil }
 func (m *mockGitClient) UpstreamRef(string, string) (string, error)               { return "", nil }
 func (m *mockGitClient) PruneWorktrees(string) error                              { return nil }
-func (m *mockGitClient) ListLocalBranches(string) ([]string, error)             { return nil, nil }
-func (m *mockGitClient) IsBranchMerged(string, string, string) (bool, error)    { return false, nil }
-func (m *mockGitClient) Push(string, string) error                              { return nil }
-func (m *mockGitClient) AddAndCommit(string, string, string) error              { return nil }
-func (m *mockGitClient) IsClean(string) (bool, []string, error)                 { return true, nil, nil }
-func (m *mockGitClient) Rebase(string, string) error                            { return nil }
-func (m *mockGitClient) Merge(string, string, bool) error                       { return nil }
-func (m *mockGitClient) ResolveRef(string, string) (string, error)              { return "", nil }
-func (m *mockGitClient) PushForceWithLease(string, []git.ForceLeaseRef) error   { return nil }
+func (m *mockGitClient) ListLocalBranches(string) ([]string, error)               { return nil, nil }
+func (m *mockGitClient) IsBranchMerged(string, string, string) (bool, error)      { return false, nil }
+func (m *mockGitClient) Push(string, string) error                                { return nil }
+func (m *mockGitClient) AddAndCommit(string, string, string) error                { return nil }
+func (m *mockGitClient) IsClean(string) (bool, []string, error)                   { return true, nil, nil }
+func (m *mockGitClient) Rebase(string, string) error                              { return nil }
+func (m *mockGitClient) Merge(string, string, bool) error                         { return nil }
+func (m *mockGitClient) ResolveRef(string, string) (string, error)                { return "", nil }
+func (m *mockGitClient) PushForceWithLease(string, []git.ForceLeaseRef) error     { return nil }
 func (m *mockGitClient) ListWorktrees(repoPath string) ([]git.WorktreeInfo, error) {
 	if m.worktrees != nil {
 		if wts, ok := m.worktrees[repoPath]; ok {

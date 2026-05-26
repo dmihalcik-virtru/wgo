@@ -24,9 +24,9 @@ type RepoInfo struct {
 
 // Annotation contains information about why a branch exists.
 type Annotation struct {
-	Purpose   string    `json:"purpose"`
-	SpecPath  string    `json:"spec_path,omitempty"`
-	SpecState string    `json:"spec_state,omitempty"`
+	Purpose   string `json:"purpose"`
+	SpecPath  string `json:"spec_path,omitempty"`
+	SpecState string `json:"spec_state,omitempty"`
 	// Parents lists the keys ("repo:branch") of branches this one stacks on
 	// top of. Empty == based on the repo's default branch. Multiple entries
 	// describe a merge node in the stack DAG.
