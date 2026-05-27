@@ -78,6 +78,12 @@ type Client interface {
 	// `git push --atomic --force-with-lease=<branch>:<expected> origin <branch> ...`
 	// covering every ref in refs. Returns an error if any lease check fails.
 	PushForceWithLease(repoPath string, refs []ForceLeaseRef) error
+	// HasActiveRebase reports whether the worktree has an in-progress rebase.
+	// Checks for .git/rebase-merge (modern rebase) or .git/rebase-apply (older am/rebase).
+	HasActiveRebase(worktreePath string) (bool, error)
+	// RebaseContinue runs `git rebase --continue` in the given worktree to complete
+	// an in-progress rebase after conflicts have been resolved and staged.
+	RebaseContinue(worktreePath string) error
 }
 
 // CLIClient is a Git client implementation using the git CLI.
@@ -609,6 +615,39 @@ func (c *CLIClient) PushForceWithLease(repoPath string, refs []ForceLeaseRef) er
 		args = append(args, "refs/heads/"+r.Branch)
 	}
 	_, err := c.runInPath(repoPath, args...)
+	return err
+}
+
+// HasActiveRebase reports whether the worktree has an in-progress rebase.
+func (c *CLIClient) HasActiveRebase(worktreePath string) (bool, error) {
+	// Get the .git directory path
+	gitDir, err := c.runInPath(worktreePath, "rev-parse", "--git-dir")
+	if err != nil {
+		return false, fmt.Errorf("get git dir: %w", err)
+	}
+	gitDir = strings.TrimSpace(gitDir)
+
+	// Make it absolute if it's relative
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreePath, gitDir)
+	}
+
+	// Check for rebase-merge (modern interactive rebase)
+	if _, err := os.Stat(filepath.Join(gitDir, "rebase-merge")); err == nil {
+		return true, nil
+	}
+
+	// Check for rebase-apply (older am-based rebase)
+	if _, err := os.Stat(filepath.Join(gitDir, "rebase-apply")); err == nil {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// RebaseContinue runs `git rebase --continue` to complete an in-progress rebase.
+func (c *CLIClient) RebaseContinue(worktreePath string) error {
+	_, err := c.runInPath(worktreePath, "rebase", "--continue")
 	return err
 }
 

@@ -3,6 +3,7 @@ package stack
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,26 +17,30 @@ import (
 // fakeGit records every call so tests can assert on the sequence and supply
 // canned responses for things like ListWorktrees and ResolveRef.
 type fakeGit struct {
-	worktrees  map[string][]git.WorktreeInfo // repoPath -> worktrees
-	refs       map[string]string             // repoPath+":"+ref -> OID
-	dirty      map[string][]string           // worktreePath -> porcelain entries
-	rebaseFail map[string]error              // worktreePath -> error to return
-	mergeFail  map[string]error
-	pushFail   map[string]error
-	calls      []string
-	pushedRefs map[string][]git.ForceLeaseRef
-	fetchCalls []string
+	worktrees     map[string][]git.WorktreeInfo // repoPath -> worktrees
+	refs          map[string]string             // repoPath+":"+ref -> OID
+	dirty         map[string][]string           // worktreePath -> porcelain entries
+	rebaseFail    map[string]error              // worktreePath -> error to return
+	mergeFail     map[string]error
+	pushFail      map[string]error
+	calls         []string
+	pushedRefs    map[string][]git.ForceLeaseRef
+	fetchCalls    []string
+	activeRebase  map[string]bool // worktreePath -> has active rebase
+	continueCalls map[string]int  // worktreePath -> count of RebaseContinue calls
 }
 
 func newFakeGit() *fakeGit {
 	return &fakeGit{
-		worktrees:  map[string][]git.WorktreeInfo{},
-		refs:       map[string]string{},
-		dirty:      map[string][]string{},
-		rebaseFail: map[string]error{},
-		mergeFail:  map[string]error{},
-		pushFail:   map[string]error{},
-		pushedRefs: map[string][]git.ForceLeaseRef{},
+		worktrees:     map[string][]git.WorktreeInfo{},
+		refs:          map[string]string{},
+		dirty:         map[string][]string{},
+		rebaseFail:    map[string]error{},
+		mergeFail:     map[string]error{},
+		pushFail:      map[string]error{},
+		pushedRefs:    map[string][]git.ForceLeaseRef{},
+		activeRebase:  map[string]bool{},
+		continueCalls: map[string]int{},
 	}
 }
 
@@ -75,6 +80,21 @@ func (f *fakeGit) Merge(wt, ref string, noFF bool) error {
 func (f *fakeGit) PushForceWithLease(repoPath string, refs []git.ForceLeaseRef) error {
 	f.pushedRefs[repoPath] = append(f.pushedRefs[repoPath], refs...)
 	if err, ok := f.pushFail[repoPath]; ok {
+		return err
+	}
+	return nil
+}
+
+func (f *fakeGit) HasActiveRebase(wt string) (bool, error) {
+	return f.activeRebase[wt], nil
+}
+
+func (f *fakeGit) RebaseContinue(wt string) error {
+	f.continueCalls[wt]++
+	f.calls = append(f.calls, fmt.Sprintf("rebase-continue %s", wt))
+	// If rebaseFail is set for this worktree, the continue also fails
+	// (simulates unresolved conflicts still present).
+	if err, ok := f.rebaseFail[wt]; ok {
 		return err
 	}
 	return nil
@@ -354,4 +374,160 @@ func TestRestackNoDescendantsIsNoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, res.Completed)
 	assert.Empty(t, g.pushedRefs)
+}
+
+func TestRestackContinueWithActiveRebase(t *testing.T) {
+	state := stackStateLinear(t)
+	g := gitForLinearStack()
+	g.rebaseFail["/wt/b"] = errors.New("CONFLICT in foo.go")
+
+	tmp := t.TempDir()
+	// Initial restack hits conflict at b.
+	res, err := Restack(g, newFakeGitHub(), state, Options{
+		WgoBaseDir: tmp,
+		StackID:    "s1",
+		StartFrom:  "/repo:a",
+	})
+	require.NoError(t, err)
+	require.Len(t, res.RebaseConflicts, 1)
+	assert.Equal(t, "rebase", res.RebaseConflicts[0].Operation)
+
+	// User "resolves" conflict: mark worktree clean, set active rebase, clear failure.
+	delete(g.dirty, "/wt/b")
+	g.activeRebase["/wt/b"] = true
+	delete(g.rebaseFail, "/wt/b")
+
+	// Resume with --continue.
+	res2, err := Restack(g, newFakeGitHub(), state, Options{
+		WgoBaseDir: tmp,
+		StackID:    "s1",
+		Continue:   true,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, res2.RebaseConflicts)
+	assert.Equal(t, []string{"/repo:b", "/repo:c"}, res2.Completed,
+		"resume should complete b via --continue and then rebase c")
+
+	// Verify RebaseContinue was called for /wt/b.
+	assert.Equal(t, 1, g.continueCalls["/wt/b"], "should have called RebaseContinue for b")
+
+	// Checkpoint cleaned up after successful resume.
+	cp, _ := LoadCheckpoint(tmp, "s1")
+	assert.Nil(t, cp, "checkpoint cleaned up after success")
+}
+
+func TestRestackMultipleConflictsWithContinue(t *testing.T) {
+	// Build a deeper stack: a → b → c → d
+	s := store.NewState()
+	s.AddStack(store.Stack{ID: "s3", Name: "deep"})
+	for _, b := range []string{"a", "b", "c", "d"} {
+		s.AddAnnotation("/repo", b, "")
+		s.SetStackID("/repo", b, "s3")
+	}
+	s.SetParents("/repo", "b", []string{"/repo:a"})
+	s.SetParents("/repo", "c", []string{"/repo:b"})
+	s.SetParents("/repo", "d", []string{"/repo:c"})
+
+	g := newFakeGit()
+	g.worktrees["/repo"] = []git.WorktreeInfo{
+		{Path: "/wt/a", Branch: "a"},
+		{Path: "/wt/b", Branch: "b"},
+		{Path: "/wt/c", Branch: "c"},
+		{Path: "/wt/d", Branch: "d"},
+	}
+	for _, b := range []string{"a", "b", "c", "d"} {
+		g.refs["/repo:"+b] = strings.Repeat(b, 40)
+		g.refs["/repo:origin/"+b] = strings.Repeat(b+"1", 20)
+	}
+
+	// Conflict at b, then at d (c is clean).
+	g.rebaseFail["/wt/b"] = errors.New("conflict at b")
+	g.rebaseFail["/wt/d"] = errors.New("conflict at d")
+
+	tmp := t.TempDir()
+
+	// Round 1: restack from a, halts at b.
+	res1, err := Restack(g, newFakeGitHub(), s, Options{
+		WgoBaseDir: tmp,
+		StackID:    "s3",
+		StartFrom:  "/repo:a",
+	})
+	require.NoError(t, err)
+	require.Len(t, res1.RebaseConflicts, 1)
+	assert.Equal(t, "/repo:b", res1.RebaseConflicts[0].Node)
+
+	// Resolve b: mark active rebase, clear failure.
+	g.activeRebase["/wt/b"] = true
+	delete(g.rebaseFail, "/wt/b")
+
+	// Round 2: continue, b completes, c rebases cleanly, halts at d.
+	res2, err := Restack(g, newFakeGitHub(), s, Options{
+		WgoBaseDir: tmp,
+		StackID:    "s3",
+		Continue:   true,
+	})
+	require.NoError(t, err)
+	require.Len(t, res2.RebaseConflicts, 1)
+	assert.Equal(t, "/repo:d", res2.RebaseConflicts[0].Node)
+	assert.Equal(t, []string{"/repo:b", "/repo:c"}, res2.Completed,
+		"b should complete via --continue, c should rebase cleanly")
+
+	// Resolve d: mark active rebase, clear failure.
+	g.activeRebase["/wt/d"] = true
+	delete(g.rebaseFail, "/wt/d")
+
+	// Round 3: continue, d completes, restack finishes.
+	res3, err := Restack(g, newFakeGitHub(), s, Options{
+		WgoBaseDir: tmp,
+		StackID:    "s3",
+		Continue:   true,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, res3.RebaseConflicts)
+	assert.Equal(t, []string{"/repo:d"}, res3.Completed)
+
+	// Verify continue was called for both b and d.
+	assert.Equal(t, 1, g.continueCalls["/wt/b"])
+	assert.Equal(t, 1, g.continueCalls["/wt/d"])
+
+	cp, _ := LoadCheckpoint(tmp, "s3")
+	assert.Nil(t, cp, "checkpoint cleaned up after final success")
+}
+
+func TestRestackContinueFailure(t *testing.T) {
+	state := stackStateLinear(t)
+	g := gitForLinearStack()
+	g.rebaseFail["/wt/b"] = errors.New("initial CONFLICT")
+
+	tmp := t.TempDir()
+	// Initial restack hits conflict.
+	res, err := Restack(g, newFakeGitHub(), state, Options{
+		WgoBaseDir: tmp,
+		StackID:    "s1",
+		StartFrom:  "/repo:a",
+	})
+	require.NoError(t, err)
+	require.Len(t, res.RebaseConflicts, 1)
+
+	// User attempts --continue but hasn't fully resolved (rebase --continue still fails).
+	g.activeRebase["/wt/b"] = true
+	g.rebaseFail["/wt/b"] = errors.New("still has unresolved conflicts")
+
+	// Resume with --continue.
+	res2, err := Restack(g, newFakeGitHub(), state, Options{
+		WgoBaseDir: tmp,
+		StackID:    "s1",
+		Continue:   true,
+	})
+	require.NoError(t, err)
+	require.Len(t, res2.RebaseConflicts, 1)
+	assert.Equal(t, "/repo:b", res2.RebaseConflicts[0].Node)
+	assert.Equal(t, "rebase-continue", res2.RebaseConflicts[0].Operation,
+		"should report rebase-continue failure, not plain rebase")
+	assert.Contains(t, res2.RebaseConflicts[0].Err.Error(), "unresolved conflicts")
+
+	// Checkpoint persists since we halted again.
+	cp, err := LoadCheckpoint(tmp, "s1")
+	require.NoError(t, err)
+	assert.NotNil(t, cp)
 }
