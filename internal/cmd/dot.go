@@ -14,6 +14,7 @@ import (
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/spec"
+	"github.com/virtru/wgo/internal/stack"
 	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
 )
@@ -77,6 +78,10 @@ func showContext() (bool, error) {
 	branch, err := client.CurrentBranch(cwd)
 	if err != nil {
 		return false, fmt.Errorf("failed to get current branch: %w", err)
+	}
+	repoPath, err := client.MainRepoPath(cwd)
+	if err != nil {
+		return false, fmt.Errorf("failed to determine canonical repo path: %w", err)
 	}
 
 	status, err := client.Status(cwd)
@@ -176,6 +181,9 @@ func showContext() (bool, error) {
 				}
 			}
 		}
+		if state, err := s.LoadState(); err == nil {
+			showStackLine(state, repoPath, branch, gh, tty)
+		}
 	}
 
 	// Show spec line for ticket branches
@@ -196,6 +204,61 @@ func showContext() (bool, error) {
 	showSiblings(client, cwd)
 
 	return dirty, nil
+}
+
+// showStackLine prints a one-line indicator like "stack: #42 → **#43** → #44"
+// when the current branch belongs to a managed stack. Silent no-op otherwise.
+// Displays clickable PR number links when PRs exist, falls back to branch names otherwise.
+func showStackLine(state *store.State, repoPath, branch string, gh github.Client, tty bool) {
+	ann := state.GetAnnotation(repoPath, branch)
+	if ann == nil || ann.StackID == "" {
+		return
+	}
+	graph, err := stack.Build(state, ann.StackID)
+	if err != nil {
+		return
+	}
+	order, err := graph.TopoSort()
+	if err != nil {
+		return
+	}
+	selfKey := store.AnnotationKey(repoPath, branch)
+	parts := make([]string, 0, len(order))
+	for _, key := range order {
+		branchRepoPath, b, _ := splitAnnotationKey(key)
+
+		// Try to get PR info for this branch
+		pr, _ := gh.GetPRStatus(branchRepoPath, b)
+
+		var display string
+		if pr != nil {
+			// Format as #42 with clickable link
+			label := fmt.Sprintf("#%d", pr.Number)
+			display = links.Link(pr.URL, label, tty)
+		} else {
+			// No PR - fall back to branch name
+			display = b
+		}
+
+		// Bold the current branch
+		if key == selfKey {
+			display = "**" + display + "**"
+		}
+
+		parts = append(parts, display)
+	}
+	if len(parts) <= 1 {
+		return // not interesting to show a one-node "stack"
+	}
+	fmt.Printf("stack:  %s\n", strings.Join(parts, " → "))
+}
+
+func splitAnnotationKey(key string) (string, string, error) {
+	i := strings.LastIndex(key, ":")
+	if i < 0 {
+		return "", "", fmt.Errorf("bad key %q", key)
+	}
+	return key[:i], key[i+1:], nil
 }
 
 // showSiblings prints a "Workspace siblings:" section when the parent directory

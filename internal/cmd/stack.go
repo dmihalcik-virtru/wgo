@@ -49,7 +49,7 @@ var stackNewCmd = &cobra.Command{
 }
 
 func runStackNew() error {
-	repoPath, branch, err := currentRepoAndBranch()
+	co, err := currentCheckout()
 	if err != nil {
 		return err
 	}
@@ -70,18 +70,18 @@ func runStackNew() error {
 		id = newStackID()
 	}
 
-	rootRef := defaultBranchRef(repoPath)
+	rootRef := defaultBranchRef(co.RepoPath)
 	state.AddStack(store.Stack{ID: id, Name: stackNewName, RootRef: rootRef})
 
-	if state.GetAnnotation(repoPath, branch) == nil {
-		state.AddAnnotation(repoPath, branch, "")
+	if state.GetAnnotation(co.RepoPath, co.Branch) == nil {
+		state.AddAnnotation(co.RepoPath, co.Branch, "")
 	}
-	state.SetStackID(repoPath, branch, id)
+	state.SetStackID(co.RepoPath, co.Branch, id)
 
 	if err := s.SaveState(state); err != nil {
 		return err
 	}
-	fmt.Printf("stack %q (%s) rooted at %s:%s on %s\n", stackNewName, id, filepath.Base(repoPath), branch, rootRef)
+	fmt.Printf("stack %q (%s) rooted at %s:%s on %s\n", stackNewName, id, filepath.Base(co.RepoPath), co.Branch, rootRef)
 	return nil
 }
 
@@ -110,7 +110,7 @@ func init() {
 }
 
 func runStackPush(branch string) error {
-	repoPath, currentBranch, err := currentRepoAndBranch()
+	co, err := currentCheckout()
 	if err != nil {
 		return err
 	}
@@ -121,13 +121,13 @@ func runStackPush(branch string) error {
 
 	parents := stackPushParents
 	if len(parents) == 0 {
-		parents = []string{currentBranch}
+		parents = []string{co.Branch}
 	}
 
 	// Resolve current annotation to inherit stack id from any parent.
 	stackID := ""
 	for _, p := range parents {
-		if ann := state.GetAnnotation(repoPath, p); ann != nil && ann.StackID != "" {
+		if ann := state.GetAnnotation(co.RepoPath, p); ann != nil && ann.StackID != "" {
 			stackID = ann.StackID
 			break
 		}
@@ -136,10 +136,10 @@ func runStackPush(branch string) error {
 		return fmt.Errorf("no parent is part of a stack; run `wgo stack new <name>` first on one of: %s", strings.Join(parents, ", "))
 	}
 
-	childKey := store.AnnotationKey(repoPath, branch)
+	childKey := store.AnnotationKey(co.RepoPath, branch)
 	var parentKeys []string
 	for _, p := range parents {
-		parentKeys = append(parentKeys, store.AnnotationKey(repoPath, p))
+		parentKeys = append(parentKeys, store.AnnotationKey(co.RepoPath, p))
 	}
 	for _, pk := range parentKeys {
 		if stack.WouldCreateCycle(state, stackID, childKey, pk) {
@@ -148,7 +148,7 @@ func runStackPush(branch string) error {
 	}
 
 	g := git.New("")
-	wtPath, err := worktreePathFor(repoPath, branch)
+	wtPath, err := worktreePathFor(co.RepoPath, branch)
 	if err != nil {
 		return err
 	}
@@ -156,18 +156,18 @@ func runStackPush(branch string) error {
 		return fmt.Errorf("worktree already exists at %s", wtPath)
 	}
 	startPoint := parents[0]
-	if err := g.WorktreeAdd(repoPath, wtPath, branch, true, startPoint); err != nil {
+	if err := g.WorktreeAdd(co.RepoPath, wtPath, branch, true, startPoint); err != nil {
 		return fmt.Errorf("worktree add: %w", err)
 	}
 	if err := g.Push(wtPath, branch); err != nil {
 		// Roll back the worktree if push fails, so the local state stays consistent.
-		_ = g.RemoveWorktree(repoPath, wtPath, true)
+		_ = g.RemoveWorktree(co.RepoPath, wtPath, true)
 		return fmt.Errorf("push: %w", err)
 	}
 
-	state.AddAnnotation(repoPath, branch, "")
-	state.SetParents(repoPath, branch, parentKeys)
-	state.SetStackID(repoPath, branch, stackID)
+	state.AddAnnotation(co.RepoPath, branch, "")
+	state.SetParents(co.RepoPath, branch, parentKeys)
+	state.SetStackID(co.RepoPath, branch, stackID)
 	if err := s.SaveState(state); err != nil {
 		return err
 	}
@@ -222,9 +222,16 @@ func runStackRestack(startBranch string, cont bool) error {
 		return err
 	}
 
-	repoPath, currentBranch, err := currentRepoAndBranch()
+	co, checkoutErr := currentCheckout()
+	repoPath := ""
+	currentBranch := ""
+	err = checkoutErr
 	if err != nil && !cont {
 		return err
+	}
+	if co != nil {
+		repoPath = co.RepoPath
+		currentBranch = co.Branch
 	}
 
 	var stackID, startFrom string
@@ -244,6 +251,10 @@ func runStackRestack(startBranch string, cont bool) error {
 		}
 		stackID = ann.StackID
 		startFrom = store.AnnotationKey(repoPath, startBranch)
+	}
+
+	if err := ensureRestackWorktrees(state, s.BaseDir(), stackID, startFrom, cont); err != nil {
+		return err
 	}
 
 	res, err := stack.Restack(git.New(""), gh.NewClient(), state, stack.Options{
@@ -316,17 +327,17 @@ var stackSyncCmd = &cobra.Command{
 }
 
 func runStackSync() error {
-	_, state, err := loadStateForStack()
+	s, state, err := loadStateForStack()
 	if err != nil {
 		return err
 	}
-	repoPath, branch, err := currentRepoAndBranch()
+	co, err := currentCheckout()
 	if err != nil {
 		return err
 	}
-	ann := state.GetAnnotation(repoPath, branch)
+	ann := state.GetAnnotation(co.RepoPath, co.Branch)
 	if ann == nil || ann.StackID == "" {
-		return fmt.Errorf("%s is not part of a managed stack", branch)
+		return fmt.Errorf("%s is not part of a managed stack", co.Branch)
 	}
 	graph, err := stack.Build(state, ann.StackID)
 	if err != nil {
@@ -338,28 +349,39 @@ func runStackSync() error {
 	}
 
 	// Detect merged parents and retarget child PR bases to origin/<default>.
-	defaultBase := defaultBranchRef(repoPath)
+	defaultBase := defaultBranchRef(co.RepoPath)
 	// Strip "origin/" so the gh API accepts a branch name.
 	defaultBase = strings.TrimPrefix(defaultBase, "origin/")
 
+	var errors []string
 	for node := range graph.Parents {
 		nodeRepo, nodeBranch, err := keyParts(node)
 		if err != nil {
+			errors = append(errors, fmt.Sprintf("node %s: malformed key: %v", node, err))
 			continue
 		}
 		pr, err := ghClient.GetPRStatus(nodeRepo, nodeBranch)
-		if err != nil || pr == nil {
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: failed to get PR status: %v", nodeBranch, err))
 			continue
 		}
-		// Check each parent: if its PR has merged, drop it from Parents and (if it was the head parent) retarget the base.
+		if pr == nil {
+			continue // No PR for this branch - expected case
+		}
+		// Check each parent: if its PR has merged, drop it from Parents and retarget the base if needed.
 		var remaining []string
 		retarget := false
 		for _, pk := range graph.Parents[node] {
 			pRepo, pBranch, err := keyParts(pk)
 			if err != nil {
+				errors = append(errors, fmt.Sprintf("parent %s: malformed key: %v", pk, err))
 				continue
 			}
-			ppr, _ := ghClient.GetPRStatus(pRepo, pBranch)
+			ppr, err := ghClient.GetPRStatus(pRepo, pBranch)
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("parent %s: failed to get PR status: %v", pBranch, err))
+				continue
+			}
 			if ppr != nil && ppr.IsMerged() {
 				retarget = true
 				continue
@@ -367,21 +389,50 @@ func runStackSync() error {
 			remaining = append(remaining, pk)
 		}
 		if retarget {
+			// Capture original first parent (current PR base)
+			originalBase := ""
+			if len(graph.Parents[node]) > 0 {
+				_, originalBase, _ = keyParts(graph.Parents[node][0])
+			}
+
+			// Update state with pruned parents
 			state.SetParents(nodeRepo, nodeBranch, remaining)
+
+			// Determine new base
+			var newBase string
 			if len(remaining) == 0 {
-				if err := ghClient.UpdatePRBase(nodeRepo, pr.Number, defaultBase); err != nil {
-					fmt.Fprintf(os.Stderr, "retarget #%d: %v\n", pr.Number, err)
+				// All parents merged → retarget to default branch
+				newBase = defaultBase
+			} else {
+				// Some parents merged → use first remaining parent as new base
+				_, newBase, _ = keyParts(remaining[0])
+			}
+
+			// Retarget only if base actually changed
+			if newBase != originalBase {
+				if err := ghClient.UpdatePRBase(nodeRepo, pr.Number, newBase); err != nil {
+					fmt.Fprintf(os.Stderr, "retarget PR #%d to %s: %v\n", pr.Number, newBase, err)
 				}
 			}
 		}
 	}
+
+	// Report any errors encountered during sync
+	if len(errors) > 0 {
+		for _, e := range errors {
+			fmt.Fprintf(os.Stderr, "warning: sync: %s\n", e)
+		}
+	}
+
 	// Rebuild the graph after pruning merged parents, then refresh marker blocks.
-	graph, _ = stack.Build(state, ann.StackID)
+	graph, err = stack.Build(state, ann.StackID)
+	if err != nil {
+		return fmt.Errorf("rebuild graph after pruning parents: %w", err)
+	}
 	if err := refreshMarkers(ghClient, graph); err != nil {
 		return err
 	}
 
-	s, _ := store.New()
 	return s.SaveState(state)
 }
 
@@ -445,13 +496,13 @@ func runStackStatus(stackID string) error {
 		return err
 	}
 	if stackID == "" {
-		repoPath, branch, err := currentRepoAndBranch()
+		co, err := currentCheckout()
 		if err != nil {
 			return err
 		}
-		ann := state.GetAnnotation(repoPath, branch)
+		ann := state.GetAnnotation(co.RepoPath, co.Branch)
 		if ann == nil || ann.StackID == "" {
-			return fmt.Errorf("%s is not part of a managed stack; pass a stack id explicitly", branch)
+			return fmt.Errorf("%s is not part of a managed stack; pass a stack id explicitly", co.Branch)
 		}
 		stackID = ann.StackID
 	}
@@ -498,7 +549,7 @@ var stackRmCmd = &cobra.Command{
 }
 
 func runStackRm(branch string) error {
-	repoPath, _, err := currentRepoAndBranch()
+	co, err := currentCheckout()
 	if err != nil {
 		return err
 	}
@@ -506,8 +557,8 @@ func runStackRm(branch string) error {
 	if err != nil {
 		return err
 	}
-	key := store.AnnotationKey(repoPath, branch)
-	ann := state.GetAnnotation(repoPath, branch)
+	key := store.AnnotationKey(co.RepoPath, branch)
+	ann := state.GetAnnotation(co.RepoPath, branch)
 	if ann == nil || ann.StackID == "" {
 		return fmt.Errorf("%s is not in a managed stack", branch)
 	}
@@ -518,8 +569,8 @@ func runStackRm(branch string) error {
 	if children := graph.Children[key]; len(children) > 0 {
 		return fmt.Errorf("%s has stack children %v; remove or retarget them first", branch, children)
 	}
-	state.SetStackID(repoPath, branch, "")
-	state.SetParents(repoPath, branch, nil)
+	state.SetStackID(co.RepoPath, branch, "")
+	state.SetParents(co.RepoPath, branch, nil)
 	return s.SaveState(state)
 }
 
@@ -545,7 +596,7 @@ Example:
 }
 
 func runStackAdopt(stackName string, branches []string) error {
-	repoPath, _, err := currentRepoAndBranch()
+	co, err := currentCheckout()
 	if err != nil {
 		return err
 	}
@@ -556,7 +607,7 @@ func runStackAdopt(stackName string, branches []string) error {
 
 	g := git.New("")
 	for _, branch := range branches {
-		exists, err := g.BranchExists(repoPath, branch)
+		exists, err := g.BranchExists(co.RepoPath, branch)
 		if err != nil {
 			return fmt.Errorf("check %s: %w", branch, err)
 		}
@@ -576,17 +627,17 @@ func runStackAdopt(stackName string, branches []string) error {
 	if id == "" {
 		id = newStackID()
 	}
-	state.AddStack(store.Stack{ID: id, Name: stackName, RootRef: defaultBranchRef(repoPath)})
+	state.AddStack(store.Stack{ID: id, Name: stackName, RootRef: defaultBranchRef(co.RepoPath)})
 
 	for i, branch := range branches {
-		if state.GetAnnotation(repoPath, branch) == nil {
-			state.AddAnnotation(repoPath, branch, "")
+		if state.GetAnnotation(co.RepoPath, branch) == nil {
+			state.AddAnnotation(co.RepoPath, branch, "")
 		}
-		state.SetStackID(repoPath, branch, id)
+		state.SetStackID(co.RepoPath, branch, id)
 		if i == 0 {
-			state.SetParents(repoPath, branch, nil) // root
+			state.SetParents(co.RepoPath, branch, nil) // root
 		} else {
-			state.SetParents(repoPath, branch, []string{store.AnnotationKey(repoPath, branches[i-1])})
+			state.SetParents(co.RepoPath, branch, []string{store.AnnotationKey(co.RepoPath, branches[i-1])})
 		}
 	}
 
@@ -605,20 +656,6 @@ func runStackAdopt(stackName string, branches []string) error {
 }
 
 // ---- shared helpers ------------------------------------------------------
-
-func currentRepoAndBranch() (string, string, error) {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-	if err != nil {
-		return "", "", fmt.Errorf("not in a git repository")
-	}
-	repoPath := strings.TrimSpace(string(out))
-	g := git.New("")
-	branch, err := g.CurrentBranch(repoPath)
-	if err != nil {
-		return "", "", fmt.Errorf("could not determine current branch: %w", err)
-	}
-	return repoPath, branch, nil
-}
 
 func loadStateForStack() (*store.FileStore, *store.State, error) {
 	s, err := store.New()
@@ -643,17 +680,10 @@ func defaultBranchRef(repoPath string) string {
 	return "origin/main"
 }
 
-// worktreePathFor returns the conventional worktree path for a (repo, branch).
-// Reuses the location pattern documented in spec/WGO-101 / used by `wgo to`:
-// <worktrees_dir>/<sanitized-branch>/<repo-basename>.
-// If config is unavailable, falls back to a sibling directory of the repo.
+// worktreePathFor returns the conventional worktree path for a (repo, branch)
+// using the same configured layout as `wgo to` / `wgo add`.
 func worktreePathFor(repoPath, branch string) (string, error) {
-	// Lean on the same helper used by `wgo to` / `wgo add`. Since those import
-	// internal/config directly and we want to stay loosely coupled, we replicate
-	// the simplest behavior: place new worktrees alongside the repo.
-	parent := filepath.Dir(repoPath)
-	safe := gh.SanitizeBranch(branch)
-	return filepath.Join(parent, safe), nil
+	return configuredWorktreePath(filepath.Base(repoPath), branch)
 }
 
 func newStackID() string {

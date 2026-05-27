@@ -204,3 +204,11 @@ func TestDataExcludesExternalParents(t *testing.T) {
 	assert.Empty(t, data.Nodes[0].Parents,
 		"parents not resolvable to in-stack branches must be omitted")
 }
+
+func TestRenderLinksToDocs(t *testing.T) {
+	out := linearStackMarker().Render()
+	// The trailer must link `wgo stack` to the README section so reviewers
+	// landing on a PR have a one-click path to the usage docs.
+	assert.Contains(t, out, "[`wgo stack`](https://github.com/dmihalcik-virtru/wgo#stacked-pull-requests)",
+		"marker trailer must link wgo stack to the README section")
+}

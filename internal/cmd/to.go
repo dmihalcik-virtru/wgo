@@ -16,7 +16,10 @@ import (
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/git"
 	gh "github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/store"
 )
+
+var toOnParent string
 
 var toCmd = &cobra.Command{
 	Use:   "to <github-url|owner/repo[@branch]>",
@@ -42,6 +45,8 @@ Output goes to stdout so you can use it with cd:
 
 func init() {
 	rootCmd.AddCommand(toCmd)
+	toCmd.Flags().StringVar(&toOnParent, "on", "",
+		"For new branches: base the new worktree on this in-flight branch (records it as the stack parent). Ignored when the target branch already exists.")
 }
 
 // log prints to stderr so stdout stays clean for cd $(...).
@@ -436,8 +441,12 @@ func findOrCloneRepo(gitClient *git.CLIClient, cfg *config.Config, owner, repo s
 	if err == nil {
 		for _, r := range repos {
 			if matchesRemote(gitClient, r.Path, owner, repo) {
-				logTo("using existing clone: %s", r.Path)
-				return r.Path, nil
+				mainPath := r.Path
+				if r.IsWorktree && r.MainRepoPath != "" {
+					mainPath = r.MainRepoPath
+				}
+				logTo("using existing clone: %s", mainPath)
+				return mainPath, nil
 			}
 		}
 	}
@@ -474,8 +483,7 @@ func findOrCloneRepo(gitClient *git.CLIClient, cfg *config.Config, owner, repo s
 
 // createWorktree creates a new worktree for the given branch.
 func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Config, parsed *gh.ParsedURL, branch string) (string, error) {
-	sanitized := gh.SanitizeBranch(branch)
-	wtPath := filepath.Join(cfg.Worktree.WorktreesDir, sanitized, parsed.Repo)
+	wtPath := filepath.Join(cfg.Worktree.WorktreesDir, gh.SanitizeBranch(branch), parsed.Repo)
 
 	// Check if path already exists (e.g. from a previous run)
 	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
@@ -497,14 +505,32 @@ func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Confi
 
 	switch parsed.Type {
 	case gh.URLTypeIssue:
-		// New branch off default branch
-		defaultBranch, err := gitClient.DefaultBranch(repoPath)
-		if err != nil {
-			defaultBranch = "main"
+		// New branch off default branch, or off --on parent if provided.
+		startPoint := ""
+		if toOnParent != "" {
+			exists, _ := gitClient.BranchExists(repoPath, toOnParent)
+			if !exists {
+				return "", fmt.Errorf("--on parent %q not found locally or on origin", toOnParent)
+			}
+			startPoint = toOnParent
+			logTo("creating worktree with new branch %s on top of %s...", branch, toOnParent)
+		} else {
+			defaultBranch, err := gitClient.DefaultBranch(repoPath)
+			if err != nil {
+				defaultBranch = "main"
+			}
+			startPoint = "origin/" + defaultBranch
+			logTo("creating worktree with new branch %s from %s...", branch, startPoint)
 		}
-		logTo("creating worktree with new branch %s from origin/%s...", branch, defaultBranch)
-		if err := gitClient.WorktreeAdd(repoPath, wtPath, branch, true, "origin/"+defaultBranch); err != nil {
+		if err := gitClient.WorktreeAdd(repoPath, wtPath, branch, true, startPoint); err != nil {
 			return "", fmt.Errorf("worktree add failed: %w", err)
+		}
+		if toOnParent != "" {
+			if err := recordStackParent(repoPath, branch, toOnParent); err != nil {
+				logTo("error: %v", err)
+				logTo("worktree created but stack parent not recorded")
+				logTo("you can manually run: wgo stack new")
+			}
 		}
 
 	case gh.URLTypePR, gh.URLTypeBranch:
@@ -532,4 +558,35 @@ func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Confi
 	}
 
 	return wtPath, nil
+}
+
+// recordStackParent persists a parent link in state.json so the new worktree
+// participates in restack/sync. If the parent already belongs to a stack, the
+// child inherits the same StackID; otherwise no stack is created (the user can
+// run `wgo stack new` later to formalize it).
+func recordStackParent(repoPath, branch, parentBranch string) error {
+	s, err := store.New()
+	if err != nil {
+		return fmt.Errorf("--on: could not open store: %w", err)
+	}
+	state, err := s.LoadState()
+	if err != nil {
+		return fmt.Errorf("--on: could not load state: %w", err)
+	}
+	mainRepoPath, err := canonicalRepoPath(repoPath)
+	if err != nil {
+		return fmt.Errorf("--on: could not resolve canonical repo path: %w", err)
+	}
+	parentKey := store.AnnotationKey(mainRepoPath, parentBranch)
+	if state.GetAnnotation(mainRepoPath, branch) == nil {
+		state.AddAnnotation(mainRepoPath, branch, "")
+	}
+	state.SetParents(mainRepoPath, branch, []string{parentKey})
+	if ann := state.GetAnnotation(mainRepoPath, parentBranch); ann != nil && ann.StackID != "" {
+		state.SetStackID(mainRepoPath, branch, ann.StackID)
+	}
+	if err := s.SaveState(state); err != nil {
+		return fmt.Errorf("--on: could not save state: %w", err)
+	}
+	return nil
 }

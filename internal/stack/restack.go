@@ -240,7 +240,10 @@ func Restack(g GitOps, gh GitHubOps, state *store.State, opts Options) (*Result,
 	// Refresh PR bodies and retarget bases where needed.
 	if gh != nil && gh.Available() {
 		if err := syncPRs(gh, state, graph); err != nil {
-			// PR sync failures are non-fatal: code is already pushed.
+			// PR sync failures are reported but do NOT halt execution: code is already
+			// pushed, so the rebase succeeded. Added to RebaseConflicts for visibility,
+			// but ResumeCommand/WorktreePath fields remain empty to signal this is
+			// advisory only (no checkpoint saved, no manual resolution needed).
 			res.RebaseConflicts = append(res.RebaseConflicts, ConflictReport{
 				Operation: "pr-sync",
 				Err:       err,

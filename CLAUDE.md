@@ -8,6 +8,112 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Core problem:** Developers with many branches, worktrees, and repos lose track of what they created, why, and where things are. AI coding agents make this worse by creating work across multiple contexts simultaneously.
 
+## Product Vision: What `wgo` Enables
+
+`wgo` is designed to keep developers **focused and in flow** by reducing context switching, automating tedious tasks, and surfacing exactly the information needed at the moment it's needed. It is **workflow-agnostic** — supporting but never requiring specific commit conventions, PR workflows, or development practices.
+
+### Core Product Principles
+
+1. **Minimize Context Switching**
+   - **Quick Links:** All output uses OSC8 terminal hyperlinks (via `internal/links/`) so developers can click directly from the CLI to PRs, commits, specs, issues, or repos without copying URLs or switching windows
+   - **At-a-Glance Status:** `wgo .` shows everything about the current context in one screen: branch, PR status, stack position, related spec, active tasks
+   - **Unified View:** `wgo status` and `wgo pr` aggregate information across repos/branches so you don't hunt through multiple tabs
+
+2. **Automation Without Opinion**
+   - **Passive Tracking:** Global git hooks automatically record branch creation, commits, and state changes without explicit `wgo track` commands
+   - **Auto-Discovery:** Filesystem scanning finds repos and worktrees without manual registration
+   - **Smart Defaults:** Commands infer intent from context (e.g., `wgo stack restack` knows which stack from the current branch)
+   - **Graceful Degradation:** Work without `gh`, without hooks, without tmux — each integration is optional
+
+3. **AI Agent Integration**
+   - **Claude Code First-Class Support:** Designed for workflows where Claude Code (or other AI agents) create branches, worktrees, and PRs
+   - **Agent Session Tracking:** Record which AI tool is working on which worktree/branch via `wgo agent status`
+   - **Markdown-Native:** The `.plan` file and spec files are markdown so agents can read/write them naturally
+   - **Command Consistency:** Simple, composable commands that agents can chain together (e.g., `wgo to --on parent-branch && wgo stack push child-branch --draft`)
+
+4. **Developer Productivity Over Purity**
+   - **Fast Over Perfect:** Better to show cached PR data in 50ms than wait 2s for fresh data
+   - **No Forced Workflows:** Support conventional commits and gitmoji but never require them — `wgo` works with any commit style
+   - **Escape Hatches:** Allow manual edits to `.plan`, work without GitHub integration, function without PRs
+   - **Feedback Loops:** Show CI status, PR review state, merge conflicts immediately — don't make developers check GitHub
+
+### Features `wgo` Will Support (Not Require)
+
+These are capabilities `wgo` will recognize and enhance, but users can ignore them entirely:
+
+- **Gitmoji Recognition** — `wgo .` and `wgo status` will parse and display gitmoji if present in commits, but won't complain if absent
+- **Conventional Commit Parsing** — `wgo` will extract `type(scope)` from commits for better categorization in logs/dashboards, but will display any commit format
+- **Spec-first Development** — `wgo .` will link to spec files when ticket IDs are in branch names, but won't block work without specs
+- **PR Templates** — `wgo stack push --draft` can pre-fill PR bodies with templates, but will work fine without them
+- **Commit Linking** — `wgo` will detect and hyperlink `Refs: #123` footers, but won't require them
+
+### Integration with Coding Agents
+
+`wgo` is **designed for AI-augmented development** where tools like Claude Code are first-class participants:
+
+- **Readable State:** All persistent state is human-readable (markdown plans, JSON state files, TOML config)
+- **Command Discoverability:** Commands are verb-noun (`wgo stack push`, `wgo plan add`) with consistent flags
+- **Error Messages:** Errors explain what went wrong AND suggest the command to fix it
+- **Spec-Driven:** Specs in `spec/*.md` provide structured context for agents to understand requirements before coding
+- **Observable Actions:** `wgo .` always shows what changed (new commits, updated PRs, stack reordering)
+
+## Development Practices for This Project
+
+**These rules apply to developing `wgo` itself, NOT to projects that use `wgo`.** Contributors to the `virtru/wgo` repository must follow these standards:
+
+### Required Commit Standards
+
+All commits to `virtru/wgo` **MUST** follow both Conventional Commits and Gitmoji:
+
+**Format:**
+```
+<gitmoji> <type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+**Allowed types:**
+- `feat` — New feature
+- `fix` — Bug fix
+- `docs` — Documentation changes
+- `style` — Code style changes (formatting, missing semicolons, etc.)
+- `refactor` — Code refactoring (neither fixes a bug nor adds a feature)
+- `perf` — Performance improvements
+- `test` — Adding or updating tests
+- `chore` — Build process, tooling, dependencies, or housekeeping
+- `ci` — CI/CD configuration changes
+
+**Common gitmoji (see [gitmoji.dev](https://gitmoji.dev/) for full list):**
+- ✨ `:sparkles:` — Introduce new features
+- 🐛 `:bug:` — Fix a bug
+- 📝 `:memo:` — Add or update documentation
+- 🎨 `:art:` — Improve structure/format of code
+- ⚡ `:zap:` — Improve performance
+- 🔥 `:fire:` — Remove code or files
+- ✅ `:white_check_mark:` — Add, update, or pass tests
+- ♻️ `:recycle:` — Refactor code
+- 🔧 `:wrench:` — Add or update configuration files
+
+**Examples:**
+```
+✨ feat(stack): add PR number links to wgo . output
+🐛 fix(github): handle missing PR gracefully in stack display
+📝 docs(claude): document project goals and automation philosophy
+✅ test(stack): add test coverage for PR link generation
+♻️ refactor(cmd): extract showStackLine parameters to struct
+```
+
+### Spec-Driven Development (Required for This Project)
+
+When working on a branch in `virtru/wgo` whose name contains a ticket ID, **you MUST read the corresponding spec file first** before writing any code. The spec is the authoritative source of requirements, acceptance criteria, and what is explicitly out of scope.
+
+- **Jira tickets:** `[A-Z]+-\d+` prefix (e.g., `WGO-112-wgo-join` → `spec/WGO-112.md`)
+- **GitHub Issues:** `gh-\d+` prefix (e.g., `gh-9-stacked-prs` → `spec/gh-9.md`)
+
+If the spec file exists, treat its Acceptance Criteria as the definition of done.
+
 ## Architecture Direction
 
 `wgo` draws from two reference implementations checked out as subfolders:
@@ -110,17 +216,6 @@ internal/
 pkg/
   models/             # Shared data models
 ```
-
-## Spec-Driven Development
-
-When working on a branch whose name contains a ticket ID, **read the corresponding spec file first** before writing any code. The spec is the authoritative source of requirements, acceptance criteria, and what is explicitly out of scope. If the spec file exists, treat its Acceptance Criteria as the definition of done.
-
-Two ticket prefixes are recognized:
-
-- **Jira** — `[A-Z]+-\d+` prefix (e.g. `WGO-112-wgo-join` → `spec/WGO-112.md`).
-- **GitHub Issues** — `gh-\d+` prefix (e.g. `gh-9-stacked-prs` → `spec/gh-9.md`).
-
-The ticket ID is the prefix of the branch name; the spec lives at `spec/<TICKET>.md` relative to the repo root.
 
 ## Key Design Constraints
 

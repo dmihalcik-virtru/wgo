@@ -297,6 +297,28 @@ func TestListWorktrees_SingleRepo(t *testing.T) {
 	assert.True(t, worktrees[0].IsMain, "expected the only worktree to be main")
 }
 
+func TestMainRepoPathFromWorktree(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainDir := filepath.Join(tmpDir, "main-repo")
+	require.NoError(t, os.MkdirAll(mainDir, 0o755), "failed to create main dir")
+
+	setupGitRepo(t, mainDir)
+	addCommit(t, mainDir, "initial commit")
+
+	wtDir := filepath.Join(tmpDir, "wt-feat")
+	cmd := exec.Command("git", "worktree", "add", "-b", "feat/test", wtDir)
+	cmd.Dir = mainDir
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "failed to add worktree: %s", out)
+
+	client := New("")
+	mainPath, err := client.MainRepoPath(wtDir)
+	require.NoError(t, err, "MainRepoPath failed")
+
+	resolvedMainDir, _ := filepath.EvalSymlinks(mainDir)
+	assert.Equal(t, resolvedMainDir, mainPath)
+}
+
 func TestLastCommitDate(t *testing.T) {
 	tmpDir := t.TempDir()
 	setupGitRepo(t, tmpDir)
