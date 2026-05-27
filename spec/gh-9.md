@@ -105,7 +105,7 @@ Annotation keys are scoped to the repository's canonical main checkout path, not
 
 - `internal/cmd/clean.go` + `internal/cleanup/cleanup.go` — refuse to delete parents with unmerged stack children, even if the parent's own PR is merged.
 - `internal/cmd/to.go` — `--on <branch>` flag bases new worktree on a parent and registers `Annotation.Parents`.
-- `internal/cmd/dot.go` — when current branch has `StackID`, append a one-line `stack: A → **B** → C` indicator with parent/child PR numbers.
+- `internal/cmd/dot.go` — when current branch has `StackID`, append a one-line `stack: #42 → **#43** → #44` indicator with clickable PR number links (falls back to branch names for branches without PRs).
 - `internal/plan/plan.go` — render parents inline in active-branches section (`- **repo:branch** ↳ on repo:parent — purpose`). Parser stays tolerant.
 
 ## Inputs / Outputs / Contracts
@@ -216,7 +216,7 @@ Deleted on successful completion. Loaded by `wgo stack restack --continue`.
 - [ ] PR bodies show a `<!-- wgo-stack:<id> -->` block that lists all stack members with their PR numbers and parent relationships. Editing text outside the block is preserved on `wgo stack sync`.
 - [ ] `wgo clean` refuses to delete a parent branch (local branch, worktree, or remote) while any descendant has an unmerged PR, even if the parent's own PR is merged.
 - [ ] `wgo to --on <branch>` bases the new worktree on the given branch's tip and registers `Annotation.Parents = [branch]`.
-- [ ] `wgo .` displays a `stack: A → **B** → C` line with PR numbers when the current branch belongs to a stack.
+- [ ] `wgo .` displays a `stack: #A → **#B** → #C` line with clickable PR number hyperlinks when the current branch belongs to a stack. Branches without PRs display as branch names.
 - [ ] `wgo plan` shows parent relationships inline in the active-branches section without breaking the existing parser.
 - [ ] Cycle prevention: `wgo stack push --on X` that would create a cycle exits non-zero with a clear error and writes no state.
 - [ ] Unit tests cover topological sort (linear, fan-out, merge-node), cycle detection, affected-descendants, marker parse/render roundtrip including malformed blocks.

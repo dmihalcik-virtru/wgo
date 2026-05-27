@@ -182,7 +182,7 @@ func showContext() (bool, error) {
 			}
 		}
 		if state, err := s.LoadState(); err == nil {
-			showStackLine(state, repoPath, branch)
+			showStackLine(state, repoPath, branch, gh, tty)
 		}
 	}
 
@@ -206,9 +206,10 @@ func showContext() (bool, error) {
 	return dirty, nil
 }
 
-// showStackLine prints a one-line indicator like "stack: a → **b** → c"
+// showStackLine prints a one-line indicator like "stack: #42 → **#43** → #44"
 // when the current branch belongs to a managed stack. Silent no-op otherwise.
-func showStackLine(state *store.State, repoPath, branch string) {
+// Displays clickable PR number links when PRs exist, falls back to branch names otherwise.
+func showStackLine(state *store.State, repoPath, branch string, gh github.Client, tty bool) {
 	ann := state.GetAnnotation(repoPath, branch)
 	if ann == nil || ann.StackID == "" {
 		return
@@ -224,12 +225,27 @@ func showStackLine(state *store.State, repoPath, branch string) {
 	selfKey := store.AnnotationKey(repoPath, branch)
 	parts := make([]string, 0, len(order))
 	for _, key := range order {
-		_, b, _ := splitAnnotationKey(key)
-		if key == selfKey {
-			parts = append(parts, "**"+b+"**")
+		branchRepoPath, b, _ := splitAnnotationKey(key)
+
+		// Try to get PR info for this branch
+		pr, _ := gh.GetPRStatus(branchRepoPath, b)
+
+		var display string
+		if pr != nil {
+			// Format as #42 with clickable link
+			label := fmt.Sprintf("#%d", pr.Number)
+			display = links.Link(pr.URL, label, tty)
 		} else {
-			parts = append(parts, b)
+			// No PR - fall back to branch name
+			display = b
 		}
+
+		// Bold the current branch
+		if key == selfKey {
+			display = "**" + display + "**"
+		}
+
+		parts = append(parts, display)
 	}
 	if len(parts) <= 1 {
 		return // not interesting to show a one-node "stack"
