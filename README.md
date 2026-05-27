@@ -1,8 +1,23 @@
-# wgo
+# <abbr title="what's going on">wgo</abbr>
 
-Track developer context across your computer.
-Follow branches, worktrees, PRs, and AI agent sessions across multiple repositories.
+Track development context across your computer.
+
+Follow your branches, worktrees, PRs, and AI agent sessions across multiple repositories and streams of work.
 Sync your current work in a coherent ~/.plan file.
+Sync your work with your task planners, including Jira and GitHub Issues.
+Enhance your parallel, concurrent workflows with a generalized stack of related commits (replacing rosie and graphite).
+
+Some cool features include:
+
+1. Configure a [shell alias](#shell-alias) to get `cd` to PR behavior. 
+   ```sh
+   wto https://github.com/your/repo/pull/4
+   ```
+2. Remember what you are last working on
+   ```sh
+   wgo status
+   ```
+
 
 ## Make Sense of your Chaos
 
@@ -11,6 +26,8 @@ Developers with many branches, worktrees, and repos across multiple checkouts lo
 - **What** branches they created or are following
 - **Why** those branches exist
 - **Where** things are located on their filesystem
+- **How** the different changes interact and are influenced by their spec and bug reports
+
 
 ## Features
 
@@ -855,10 +872,7 @@ go tool pprof mem.prof
 
 This project draws architectural patterns from:
 
-- **gwq** (d-kuro/gwq) — Clean worktree manager with status dashboard
-- **workset** (strantalis/workset) — Multi-repo workspace manager with PR integration
+- **[gwq](https://github.com/d-kuro/gwq)** (d-kuro/gwq) — Clean worktree manager with status dashboard
+- **[workset](https://github.com/strantalis/workset)** (strantalis/workset) — Multi-repo workspace manager with PR integration
 
-## Credits
-
-Built with inspiration from gwq and workset.
 See `CLAUDE.md` for architectural decisions and reference implementations.
