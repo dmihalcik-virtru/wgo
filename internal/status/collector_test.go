@@ -55,6 +55,8 @@ func (m *mockGitClient) Rebase(string, string) error                            
 func (m *mockGitClient) Merge(string, string, bool) error                         { return nil }
 func (m *mockGitClient) ResolveRef(string, string) (string, error)                { return "", nil }
 func (m *mockGitClient) PushForceWithLease(string, []git.ForceLeaseRef) error     { return nil }
+func (m *mockGitClient) HasActiveRebase(string) (bool, error)                     { return false, nil }
+func (m *mockGitClient) RebaseContinue(string) error                              { return nil }
 func (m *mockGitClient) ListWorktrees(repoPath string) ([]git.WorktreeInfo, error) {
 	if m.worktrees != nil {
 		if wts, ok := m.worktrees[repoPath]; ok {

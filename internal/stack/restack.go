@@ -23,6 +23,8 @@ type GitOps interface {
 	Rebase(worktreePath, ontoRef string) error
 	Merge(worktreePath, ref string, noFF bool) error
 	PushForceWithLease(repoPath string, refs []git.ForceLeaseRef) error
+	HasActiveRebase(worktreePath string) (bool, error)
+	RebaseContinue(worktreePath string) error
 }
 
 // GitHubOps is the subset of GitHub operations the restack algorithm needs.
@@ -343,20 +345,43 @@ func rebaseOne(g GitOps, state *store.State, graph *Graph, node string, opts Opt
 		return nil, nil
 	}
 
-	// Single-parent: pure rebase.
+	// Resolve first parent tip for both rebase and rebase-continue cases.
 	firstParentTip, err := resolveParentTip(g, state, opts.StackID, parents[0])
 	if err != nil {
 		return nil, fmt.Errorf("%s: resolve parent %s: %w", node, parents[0], err)
 	}
-	if err := g.Rebase(wtPath, firstParentTip); err != nil {
-		return &ConflictReport{
-			Node:          node,
-			WorktreePath:  wtPath,
-			Operation:     "rebase",
-			OntoOrRef:     parents[0],
-			Err:           err,
-			ResumeCommand: fmt.Sprintf("wgo stack restack --continue %s", opts.StackID),
-		}, nil
+
+	// Check if there's an active rebase from a previous halt. If so, complete it
+	// instead of starting a fresh rebase.
+	hasActiveRebase, err := g.HasActiveRebase(wtPath)
+	if err != nil {
+		return nil, fmt.Errorf("%s: check rebase state: %w", node, err)
+	}
+
+	if hasActiveRebase {
+		// Resume the in-progress rebase.
+		if err := g.RebaseContinue(wtPath); err != nil {
+			return &ConflictReport{
+				Node:          node,
+				WorktreePath:  wtPath,
+				Operation:     "rebase-continue",
+				OntoOrRef:     parents[0],
+				Err:           err,
+				ResumeCommand: fmt.Sprintf("wgo stack restack --continue %s", opts.StackID),
+			}, nil
+		}
+	} else {
+		// No active rebase; perform a fresh rebase.
+		if err := g.Rebase(wtPath, firstParentTip); err != nil {
+			return &ConflictReport{
+				Node:          node,
+				WorktreePath:  wtPath,
+				Operation:     "rebase",
+				OntoOrRef:     parents[0],
+				Err:           err,
+				ResumeCommand: fmt.Sprintf("wgo stack restack --continue %s", opts.StackID),
+			}, nil
+		}
 	}
 
 	// Multi-parent (merge node): merge each extra parent into the rebased branch.
