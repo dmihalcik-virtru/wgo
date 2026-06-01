@@ -30,7 +30,7 @@ and is mirrored into each PR body as a <!-- wgo-stack:<id> --> block.`,
 
 func init() {
 	rootCmd.AddCommand(stackCmd)
-	stackCmd.AddCommand(stackNewCmd, stackPushCmd, stackRestackCmd, stackSyncCmd, stackStatusCmd, stackRmCmd, stackAdoptCmd)
+	stackCmd.AddCommand(stackNewCmd, stackPushCmd, stackRestackCmd, stackSyncCmd, stackStatusCmd, stackRmCmd, stackAdoptCmd, stackAddCmd)
 }
 
 // ---- stack new -----------------------------------------------------------
