@@ -59,6 +59,9 @@ func ensureBranchWorktree(g *git.CLIClient, repoPath, branch string) error {
 		}
 	}
 
+	// Prune stale worktree administrative entries
+	_ = g.PruneWorktrees(repoPath)
+
 	exists, err := g.BranchExists(repoPath, branch)
 	if err != nil {
 		return fmt.Errorf("check branch %q: %w", branch, err)
@@ -71,6 +74,34 @@ func ensureBranchWorktree(g *git.CLIClient, repoPath, branch string) error {
 	if err != nil {
 		return err
 	}
+
+	// Handle pre-existing directory at target path
+	if info, statErr := os.Stat(wtPath); statErr == nil && info.IsDir() {
+		// Check if it's a valid worktree
+		cur, branchErr := g.CurrentBranch(wtPath)
+
+		if branchErr == nil {
+			// Valid worktree exists
+			if cur == branch {
+				// Already on correct branch - idempotent
+				return nil
+			}
+			// Worktree on wrong branch - switch it
+			if checkoutErr := g.Checkout(wtPath, branch); checkoutErr != nil {
+				return fmt.Errorf("worktree at %s is on branch %q, failed to switch to %q: %w",
+					wtPath, cur, branch, checkoutErr)
+			}
+			return nil
+		}
+
+		// Directory exists but is not a valid worktree (stale)
+		if removeErr := os.RemoveAll(wtPath); removeErr != nil {
+			return fmt.Errorf("stale directory exists at %s and cannot be removed: %w\nManual cleanup: rm -rf %s",
+				wtPath, removeErr, wtPath)
+		}
+		// Stale directory removed - proceed with creation below
+	}
+
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
 		return fmt.Errorf("create worktree dir: %w", err)
 	}
