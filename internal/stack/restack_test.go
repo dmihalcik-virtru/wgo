@@ -501,6 +501,31 @@ func TestRestackMultipleConflictsWithContinue(t *testing.T) {
 	assert.Nil(t, cp, "checkpoint cleaned up after final success")
 }
 
+func TestRestackSyncPRsSkipsMergedAndClosedPRs(t *testing.T) {
+	state := stackStateLinear(t)
+	g := gitForLinearStack()
+	gh := newFakeGitHub()
+	// PR for "a" is merged — should not have its base updated.
+	gh.prsByBranch["/repo:a"] = &github.PRInfo{Number: 10, Branch: "a", State: "merged"}
+	// PR for "b" is closed without merging — should also be skipped.
+	gh.prsByBranch["/repo:b"] = &github.PRInfo{Number: 11, Branch: "b", State: "closed"}
+	// PR for "c" is open — should be updated normally.
+	gh.prsByBranch["/repo:c"] = &github.PRInfo{Number: 12, Branch: "c", State: "open"}
+
+	tmp := t.TempDir()
+	res, err := Restack(g, gh, state, Options{
+		WgoBaseDir: tmp,
+		StackID:    "s1",
+		StartFrom:  "/repo:a",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, res.RebaseConflicts, "no pr-sync error for merged/closed PRs")
+
+	assert.NotContains(t, gh.baseUpdates, 10, "merged PR base must not be updated")
+	assert.NotContains(t, gh.baseUpdates, 11, "closed PR base must not be updated")
+	assert.Contains(t, gh.baseUpdates, 12, "open PR base should be updated")
+}
+
 func TestRestackContinueFailure(t *testing.T) {
 	state := stackStateLinear(t)
 	g := gitForLinearStack()

@@ -584,6 +584,9 @@ func syncPRs(gh GitHubOps, graph *Graph, defaultBase string) error {
 		if err != nil || pr == nil {
 			continue
 		}
+		if pr.IsMerged() || pr.IsClosed() {
+			continue
+		}
 
 		// Compute the expected PR base from the current graph.
 		expectedBase := plainDefaultBase
