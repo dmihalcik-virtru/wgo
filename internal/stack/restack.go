@@ -50,12 +50,15 @@ type Checkpoint struct {
 	// local branch OID captured before the restack run began. Used as the
 	// --onto upstream so each child only replays its own commits.
 	PreRebaseTips map[string]string `json:"pre_rebase_tips,omitempty"`
-	// MergedParents is the set of parent annotation keys whose GitHub PRs were
-	// already merged when this restack began. For these parents, the rebase
-	// target is DefaultBase rather than the parent's local branch tip.
+	// MergedParents is the set of annotation keys whose GitHub PRs were already
+	// merged when this restack began. For these, the rebase target is DefaultBase.
 	MergedParents map[string]bool `json:"merged_parents,omitempty"`
+	// ClosedNodes is the set of annotation keys whose GitHub PRs were closed
+	// without merging. These nodes are skipped from rebasing; their children
+	// rebase onto the nearest open ancestor (or DefaultBase if none found).
+	ClosedNodes map[string]bool `json:"closed_nodes,omitempty"`
 	// DefaultBase is the resolved remote default-branch ref (e.g. "origin/main")
-	// used as the rebase target for nodes whose parent has merged.
+	// used as the rebase target for nodes whose parent has merged or been closed.
 	DefaultBase string `json:"default_base,omitempty"`
 }
 
@@ -281,6 +284,44 @@ func Restack(g GitOps, gh GitHubOps, state *store.State, opts Options) (*Result,
 		res.PushedRefs = append(res.PushedRefs, refs...)
 	}
 
+	// Rewrite closed-PR parents in the graph before PR sync. A closed parent is
+	// replaced with its nearest open ancestor so syncPRs retargets child PR bases
+	// to the correct branch rather than a closed/deleted one.
+	if len(cp.ClosedNodes) > 0 {
+		for node := range graph.Parents {
+			var rewired []string
+			changed := false
+			for _, pk := range graph.Parents[node] {
+				if !cp.ClosedNodes[pk] {
+					rewired = append(rewired, pk)
+					continue
+				}
+				changed = true
+				// Walk up from the closed parent to the nearest open ancestor.
+				cur := pk
+				for {
+					ancestors := graph.Parents[cur]
+					if len(ancestors) == 0 {
+						break // no open ancestor found; omit (defaultBase used by syncPRs)
+					}
+					gp := ancestors[0]
+					if cp.MergedParents[gp] {
+						break // merged root; omit
+					}
+					if cp.ClosedNodes[gp] {
+						cur = gp
+						continue
+					}
+					rewired = append(rewired, gp)
+					break
+				}
+			}
+			if changed {
+				graph.Parents[node] = rewired
+			}
+		}
+	}
+
 	// Refresh PR bodies and retarget bases where needed.
 	if gh != nil && gh.Available() {
 		if err := syncPRs(gh, graph, cp.DefaultBase); err != nil {
@@ -322,23 +363,25 @@ func loadOrBuildCheckpoint(g GitOps, gh GitHubOps, graph *Graph, opts Options) (
 		defaultBase = "origin/main"
 	}
 
-	// Detect which parent annotation keys have already merged PRs on GitHub.
-	// This tells rebaseOne to land on defaultBase rather than the parent's local tip.
+	// Detect merged and closed PRs for every node in the stack. Merged nodes
+	// cause children to rebase onto defaultBase. Closed nodes are excluded from
+	// rebasing; their children rebase onto the nearest open ancestor.
 	mergedParents := map[string]bool{}
+	closedNodes := map[string]bool{}
 	if gh != nil && gh.Available() {
 		for node := range graph.Parents {
-			for _, pk := range graph.Parents[node] {
-				if mergedParents[pk] {
-					continue // already checked
-				}
-				pRepo, pBranch, err := keyParts(pk)
-				if err != nil {
-					continue
-				}
-				pr, err := gh.GetPRStatus(pRepo, pBranch)
-				if err == nil && pr != nil && pr.IsMerged() {
-					mergedParents[pk] = true
-				}
+			nRepo, nBranch, err := keyParts(node)
+			if err != nil {
+				continue
+			}
+			pr, err := gh.GetPRStatus(nRepo, nBranch)
+			if err != nil || pr == nil {
+				continue
+			}
+			if pr.IsMerged() {
+				mergedParents[node] = true
+			} else if pr.IsClosed() {
+				closedNodes[node] = true
 			}
 		}
 	}
@@ -348,21 +391,32 @@ func loadOrBuildCheckpoint(g GitOps, gh GitHubOps, graph *Graph, opts Options) (
 		return nil, err
 	}
 
-	// If startFrom itself has a merged parent it needs to be rebased too —
-	// AffectedDescendants excludes the root, so prepend it explicitly.
+	// If startFrom itself has a merged or closed parent it needs to be rebased
+	// too — AffectedDescendants excludes the root, so prepend it explicitly.
 	topoOrder := descendants
 	for _, pk := range graph.Parents[opts.StartFrom] {
-		if mergedParents[pk] {
+		if mergedParents[pk] || closedNodes[pk] {
 			topoOrder = append([]string{opts.StartFrom}, descendants...)
 			break
 		}
 	}
+
+	// Exclude closed-PR nodes from the rebase order — their branches shouldn't
+	// be rebased (the PR is done), and their worktrees may no longer exist.
+	var openOrder []string
+	for _, node := range topoOrder {
+		if !closedNodes[node] {
+			openOrder = append(openOrder, node)
+		}
+	}
+	topoOrder = openOrder
 
 	if len(topoOrder) == 0 {
 		return &Checkpoint{
 			StackID:       opts.StackID,
 			StartedAt:     time.Now(),
 			MergedParents: mergedParents,
+			ClosedNodes:   closedNodes,
 			DefaultBase:   defaultBase,
 		}, nil
 	}
@@ -417,6 +471,7 @@ func loadOrBuildCheckpoint(g GitOps, gh GitHubOps, graph *Graph, opts Options) (
 		Leases:        leases,
 		PreRebaseTips: preRebaseTips,
 		MergedParents: mergedParents,
+		ClosedNodes:   closedNodes,
 		DefaultBase:   defaultBase,
 	}, nil
 }
@@ -471,15 +526,27 @@ func rebaseOne(g GitOps, state *store.State, graph *Graph, node string, cp *Chec
 	// of this OID belong to this node alone and should be replayed.
 	upstream := cp.PreRebaseTips[firstParent]
 	if upstream == "" {
-		return nil, fmt.Errorf("%s: no pre-rebase tip recorded for parent %s", node, firstParent)
+		// Branch tip unavailable (e.g. deleted after PR close/merge).
+		// Fall back to defaultBase so we replay all commits not yet in main.
+		if cp.MergedParents[firstParent] || cp.ClosedNodes[firstParent] {
+			upstream = cp.DefaultBase
+		} else {
+			return nil, fmt.Errorf("%s: no pre-rebase tip recorded for parent %s", node, firstParent)
+		}
 	}
 
-	// newBase is where we want to land: origin/main for merged parents,
+	// newBase is where we want to land: defaultBase for merged/closed parents,
 	// or the parent's current local tip (already rebased earlier in this run).
 	var newBase string
-	if cp.MergedParents[firstParent] {
+	switch {
+	case cp.MergedParents[firstParent]:
 		newBase = cp.DefaultBase
-	} else {
+	case cp.ClosedNodes[firstParent]:
+		newBase, err = effectiveBase(g, firstParent, graph, cp)
+		if err != nil {
+			return nil, fmt.Errorf("%s: resolve effective base for closed parent %s: %w", node, firstParent, err)
+		}
+	default:
 		newBase, err = g.ResolveRef(pRepo, pBranch)
 		if err != nil {
 			return nil, fmt.Errorf("%s: resolve parent tip %s: %w", node, firstParent, err)
@@ -565,6 +632,38 @@ func rootRepoOf(graph *Graph) string {
 		}
 	}
 	return ""
+}
+
+// effectiveBase returns the rebase target for a node whose direct parent has a
+// closed PR. It walks up the graph, skipping merged and closed nodes, returning
+// the nearest open ancestor's branch tip. Falls back to defaultBase when no open
+// ancestor exists in the stack (all merged up to the root) or when a ref cannot
+// be resolved.
+func effectiveBase(g GitOps, closedParent string, graph *Graph, cp *Checkpoint) (string, error) {
+	cur := closedParent
+	for {
+		grandparents := graph.Parents[cur]
+		if len(grandparents) == 0 {
+			return cp.DefaultBase, nil
+		}
+		gp := grandparents[0]
+		if cp.MergedParents[gp] {
+			return cp.DefaultBase, nil
+		}
+		if cp.ClosedNodes[gp] {
+			cur = gp
+			continue
+		}
+		gpRepo, gpBranch, err := keyParts(gp)
+		if err != nil {
+			return cp.DefaultBase, nil
+		}
+		tip, err := g.ResolveRef(gpRepo, gpBranch)
+		if err != nil {
+			return cp.DefaultBase, nil
+		}
+		return tip, nil
+	}
 }
 
 // syncPRs walks every node in the stack, retargets PR bases to match the

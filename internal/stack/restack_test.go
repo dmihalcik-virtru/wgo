@@ -526,6 +526,103 @@ func TestRestackSyncPRsSkipsMergedAndClosedPRs(t *testing.T) {
 	assert.Contains(t, gh.baseUpdates, 12, "open PR base should be updated")
 }
 
+func TestRestackClosedLeafSkipped(t *testing.T) {
+	// A closed leaf node should be omitted from the rebase order without error.
+	state := stackStateLinear(t) // a → b → c
+	g := gitForLinearStack()
+	gh := newFakeGitHub()
+	gh.prsByBranch["/repo:c"] = &github.PRInfo{Number: 12, Branch: "c", State: "closed"}
+
+	tmp := t.TempDir()
+	res, err := Restack(g, gh, state, Options{
+		WgoBaseDir: tmp,
+		StackID:    "s1",
+		StartFrom:  "/repo:a",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, res.RebaseConflicts, "no conflicts expected")
+	assert.Contains(t, res.Completed, "/repo:b", "b should be rebased normally")
+	assert.NotContains(t, res.Completed, "/repo:c", "c has a closed PR and must be skipped")
+}
+
+func TestRestackChildOfClosedNodeRebasesOntoOpenAncestor(t *testing.T) {
+	// Stack: a (open) → b (closed PR, branch exists) → c (open)
+	// c must rebase onto a's tip, not b's tip or defaultBase.
+	state := stackStateLinear(t)
+	g := gitForLinearStack()
+	gh := newFakeGitHub()
+	gh.prsByBranch["/repo:b"] = &github.PRInfo{Number: 11, Branch: "b", State: "closed"}
+
+	aRef := g.refs["/repo:a"]
+
+	tmp := t.TempDir()
+	res, err := Restack(g, gh, state, Options{
+		WgoBaseDir:  tmp,
+		StackID:     "s1",
+		StartFrom:   "/repo:a",
+		DefaultBase: "origin/main",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, res.RebaseConflicts)
+	assert.NotContains(t, res.Completed, "/repo:b", "b has a closed PR and must be skipped")
+	assert.Contains(t, res.Completed, "/repo:c", "c should be rebased")
+
+	require.Len(t, g.calls, 1, "only c should be rebased")
+	assert.Contains(t, g.calls[0], "rebase-onto /wt/c")
+	assert.Contains(t, g.calls[0], aRef, "c should land on a's tip, not main or b's tip")
+}
+
+func TestRestackChildOfClosedNodeWithMergedGrandparent(t *testing.T) {
+	// Stack: a (merged) → b (closed, branch deleted) → c (open)
+	// c must rebase onto defaultBase because a (b's grandparent) is merged.
+	state := stackStateLinear(t)
+	g := gitForLinearStack()
+	// Simulate b's branch being deleted after PR close.
+	delete(g.refs, "/repo:b")
+	delete(g.refs, "/repo:origin/b")
+	gh := newFakeGitHub()
+	gh.prsByBranch["/repo:a"] = &github.PRInfo{Number: 10, Branch: "a", State: "merged"}
+	gh.prsByBranch["/repo:b"] = &github.PRInfo{Number: 11, Branch: "b", State: "closed"}
+
+	tmp := t.TempDir()
+	res, err := Restack(g, gh, state, Options{
+		WgoBaseDir:  tmp,
+		StackID:     "s1",
+		StartFrom:   "/repo:c",
+		DefaultBase: "origin/main",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, res.RebaseConflicts)
+	assert.Contains(t, res.Completed, "/repo:c")
+
+	require.Len(t, g.calls, 1)
+	assert.Contains(t, g.calls[0], "rebase-onto /wt/c")
+	assert.Contains(t, g.calls[0], "origin/main", "c should land on defaultBase (a is merged)")
+}
+
+func TestRestackSyncPRsUsesOpenAncestorWhenParentClosed(t *testing.T) {
+	// Stack: a (open PR #10) → b (closed PR #11) → c (open PR #12)
+	// After restack, c's PR base should be retargeted to "a" (not "b", which is closed).
+	state := stackStateLinear(t)
+	g := gitForLinearStack()
+	gh := newFakeGitHub()
+	gh.prsByBranch["/repo:a"] = &github.PRInfo{Number: 10, Branch: "a", State: "open"}
+	gh.prsByBranch["/repo:b"] = &github.PRInfo{Number: 11, Branch: "b", State: "closed"}
+	gh.prsByBranch["/repo:c"] = &github.PRInfo{Number: 12, Branch: "c", State: "open"}
+
+	tmp := t.TempDir()
+	_, err := Restack(g, gh, state, Options{
+		WgoBaseDir:  tmp,
+		StackID:     "s1",
+		StartFrom:   "/repo:a",
+		DefaultBase: "origin/main",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "a", gh.baseUpdates[12], "c's PR base should be updated to a (not b)")
+	assert.NotContains(t, gh.baseUpdates, 11, "b's PR base must not be updated (it's closed)")
+}
+
 func TestRestackContinueFailure(t *testing.T) {
 	state := stackStateLinear(t)
 	g := gitForLinearStack()
