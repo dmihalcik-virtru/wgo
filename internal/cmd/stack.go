@@ -258,13 +258,20 @@ func runStackRestack(startBranch string, cont bool) error {
 	}
 
 	res, err := stack.Restack(git.New(""), gh.NewClient(), state, stack.Options{
-		WgoBaseDir: s.BaseDir(),
-		StackID:    stackID,
-		StartFrom:  startFrom,
-		Continue:   cont,
+		WgoBaseDir:  s.BaseDir(),
+		StackID:     stackID,
+		StartFrom:   startFrom,
+		Continue:    cont,
+		DefaultBase: defaultBranchRef(repoPath),
 	})
 	if err != nil {
 		return err
+	}
+
+	// Persist any parent-pruning mutations Restack made to state (merged parents
+	// dropped from annotations after successful --onto rebase).
+	if saveErr := s.SaveState(state); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: state save failed: %v\n", saveErr)
 	}
 
 	for _, node := range res.Completed {

@@ -70,6 +70,13 @@ func (f *fakeGit) Rebase(wt, onto string) error {
 	}
 	return nil
 }
+func (f *fakeGit) RebaseOnto(wt, newBase, upstream string) error {
+	f.calls = append(f.calls, fmt.Sprintf("rebase-onto %s %s %s", wt, newBase, upstream))
+	if err, ok := f.rebaseFail[wt]; ok {
+		return err
+	}
+	return nil
+}
 func (f *fakeGit) Merge(wt, ref string, noFF bool) error {
 	f.calls = append(f.calls, fmt.Sprintf("merge %s %s noff=%v", wt, ref, noFF))
 	if err, ok := f.mergeFail[wt]; ok {
@@ -243,7 +250,7 @@ func TestRestackConflictWritesCheckpointAndResumes(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, res.RebaseConflicts, 1)
-	assert.Equal(t, "rebase", res.RebaseConflicts[0].Operation)
+	assert.Equal(t, "rebase-onto", res.RebaseConflicts[0].Operation)
 	assert.Contains(t, res.RebaseConflicts[0].Err.Error(), "CONFLICT")
 
 	// User "resolves" — clear the canned failure — and resumes.
@@ -294,9 +301,9 @@ func TestRestackMergeNode(t *testing.T) {
 	assert.Equal(t, []string{"/repo:c"}, res.Completed,
 		"changing a should affect c (b is independent of a)")
 
-	// Must have done one rebase onto a, then one merge --no-ff of b's tip.
+	// Must have done one rebase-onto a, then one merge --no-ff of b's tip.
 	require.Len(t, g.calls, 2)
-	assert.Contains(t, g.calls[0], "rebase /wt/c")
+	assert.Contains(t, g.calls[0], "rebase-onto /wt/c")
 	assert.Contains(t, g.calls[1], "merge /wt/c")
 	assert.Contains(t, g.calls[1], "noff=true")
 }
@@ -390,7 +397,7 @@ func TestRestackContinueWithActiveRebase(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, res.RebaseConflicts, 1)
-	assert.Equal(t, "rebase", res.RebaseConflicts[0].Operation)
+	assert.Equal(t, "rebase-onto", res.RebaseConflicts[0].Operation)
 
 	// User "resolves" conflict: mark worktree clean, set active rebase, clear failure.
 	delete(g.dirty, "/wt/b")
