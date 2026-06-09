@@ -570,6 +570,13 @@ func (c *CLIClient) Rebase(worktreePath, ontoRef string) error {
 	return err
 }
 
+// RebaseOnto runs `git rebase --onto <newBase> <upstream>` in the given worktree.
+// Only commits on HEAD that are not on upstream are replayed onto newBase.
+func (c *CLIClient) RebaseOnto(worktreePath, newBase, upstream string) error {
+	_, err := c.runInPath(worktreePath, "rebase", "--onto", newBase, upstream)
+	return err
+}
+
 // Merge runs `git merge [--no-ff] <ref>` in the given worktree.
 func (c *CLIClient) Merge(worktreePath, ref string, noFF bool) error {
 	args := []string{"merge"}
