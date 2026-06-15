@@ -81,8 +81,18 @@ func (fs *FileStore) LoadState() (*State, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to parse state file: %w", err)
 	}
+	if state.Version > 0 && state.Version < StateVersion {
+		return nil, fmt.Errorf(
+			"state file %s is at schema version %d; wgo expects version %d. "+
+				"This file was produced by the pre-jj wgo and is no longer migratable. "+
+				"Delete it and let wgo start fresh: rm %s",
+			fs.stateFile, state.Version, StateVersion, fs.stateFile,
+		)
+	}
+	if state.Version == 0 {
+		state.Version = StateVersion
+	}
 
-	// Ensure maps are initialized
 	if state.Repos == nil {
 		state.Repos = make(map[string]RepoInfo)
 	}
@@ -94,9 +104,6 @@ func (fs *FileStore) LoadState() (*State, error) {
 	}
 	if state.AgentSessions == nil {
 		state.AgentSessions = make(map[string]AgentSession)
-	}
-	if state.Stacks == nil {
-		state.Stacks = make(map[string]Stack)
 	}
 
 	return &state, nil

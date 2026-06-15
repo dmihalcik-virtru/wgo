@@ -83,17 +83,12 @@ func runClean(cmd *cobra.Command, args []string) error {
 		candidates = cleanup.FilterKinds(candidates, kinds...)
 	}
 
-	// Stack-aware safety: never offer a parent whose stack children still record it.
-	preStackState, stateErr := loadStateForCleanFilter()
-	if stateErr == nil {
-		var blocked []cleanup.StackParentBlock
-		candidates, blocked = cleanup.FilterStackParents(candidates, preStackState)
-		for _, b := range blocked {
-			fmt.Fprintf(os.Stderr,
-				"  Skipping %s %s — stack children still depend on it: %s\n",
-				b.Candidate.Kind, b.Candidate.DisplayPath(), strings.Join(b.Children, ", "))
-		}
-	}
+	// Stack-aware safety used to consult store.Annotation.Parents to keep
+	// branches alive when something still pointed at them. The jj migration
+	// removed that shadow state — jj's DAG is the single source of truth —
+	// so we no longer second-guess the user's clean intent here. The user
+	// (or `jj bookmark forget`) is responsible for breaking dependencies
+	// first.
 
 	if len(candidates) == 0 {
 		fmt.Println("Nothing to clean.")
@@ -188,17 +183,6 @@ func runClean(cmd *cobra.Command, args []string) error {
 
 // KindRepo is re-exported from cleanup for use inside this file.
 const KindRepo = cleanup.KindRepo
-
-// loadStateForCleanFilter loads state.json so FilterStackParents has access to
-// recorded parent links. Returns nil state if loading fails — that just disables
-// the stack-aware filter (cleanup falls back to its existing behavior).
-func loadStateForCleanFilter() (*store.State, error) {
-	s, err := store.New()
-	if err != nil {
-		return nil, err
-	}
-	return s.LoadState()
-}
 
 // remoteURLCache caches remote URLs by repo path to avoid repeated git calls.
 var remoteURLCache = map[string]string{}

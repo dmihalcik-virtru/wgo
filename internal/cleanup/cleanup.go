@@ -9,7 +9,6 @@ import (
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/github"
-	"github.com/virtru/wgo/internal/store"
 )
 
 // CandidateKind identifies what type of item is a cleanup candidate.
@@ -271,50 +270,6 @@ func formatAge(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dw ago", int(d.Hours()/(24*7)))
 	}
-}
-
-// StackParentBlock describes why a candidate was held back by FilterStackParents:
-// the candidate is a parent of one or more in-stack children that are not yet
-// retargeted (`wgo stack sync` removes a parent link once its PR has merged).
-type StackParentBlock struct {
-	Candidate Candidate
-	Children  []string // annotation keys ("repoPath:branch") that still record this candidate as a parent
-}
-
-// FilterStackParents partitions candidates into (safe, blocked). A candidate is
-// blocked when its (repoPath, branch) appears in some other annotation's Parents
-// list. The blocked candidates are returned separately so callers can surface
-// the reason; they are NOT included in `safe`.
-//
-// The rule is intentionally simple: the existence of a child link is treated as
-// "still needed". `wgo stack sync` is responsible for removing parent links once
-// the parent has merged, so anything still linked here is by definition unsafe
-// to delete without breaking a child's record of its base.
-func FilterStackParents(candidates []Candidate, state *store.State) (safe []Candidate, blocked []StackParentBlock) {
-	if state == nil {
-		return candidates, nil
-	}
-	// Index: parent key -> list of child keys that record it.
-	childrenOf := map[string][]string{}
-	for childKey, ann := range state.Annotations {
-		for _, parentKey := range ann.Parents {
-			childrenOf[parentKey] = append(childrenOf[parentKey], childKey)
-		}
-	}
-
-	for _, c := range candidates {
-		if c.Branch == "" || c.RepoPath == "" {
-			safe = append(safe, c)
-			continue
-		}
-		key := store.AnnotationKey(c.RepoPath, c.Branch)
-		if children, ok := childrenOf[key]; ok && len(children) > 0 {
-			blocked = append(blocked, StackParentBlock{Candidate: c, Children: children})
-			continue
-		}
-		safe = append(safe, c)
-	}
-	return safe, blocked
 }
 
 // GroupByRepo groups candidates by their repo path.

@@ -16,7 +16,6 @@ import (
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/git"
 	gh "github.com/virtru/wgo/internal/github"
-	"github.com/virtru/wgo/internal/store"
 )
 
 var toOnParent string
@@ -560,33 +559,13 @@ func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Confi
 	return wtPath, nil
 }
 
-// recordStackParent persists a parent link in state.json so the new worktree
-// participates in restack/sync. If the parent already belongs to a stack, the
-// child inherits the same StackID; otherwise no stack is created (the user can
-// run `wgo stack new` later to formalize it).
-func recordStackParent(repoPath, branch, parentBranch string) error {
-	s, err := store.New()
-	if err != nil {
-		return fmt.Errorf("--on: could not open store: %w", err)
-	}
-	state, err := s.LoadState()
-	if err != nil {
-		return fmt.Errorf("--on: could not load state: %w", err)
-	}
-	mainRepoPath, err := canonicalRepoPath(repoPath)
-	if err != nil {
-		return fmt.Errorf("--on: could not resolve canonical repo path: %w", err)
-	}
-	parentKey := store.AnnotationKey(mainRepoPath, parentBranch)
-	if state.GetAnnotation(mainRepoPath, branch) == nil {
-		state.AddAnnotation(mainRepoPath, branch, "")
-	}
-	state.SetParents(mainRepoPath, branch, []string{parentKey})
-	if ann := state.GetAnnotation(mainRepoPath, parentBranch); ann != nil && ann.StackID != "" {
-		state.SetStackID(mainRepoPath, branch, ann.StackID)
-	}
-	if err := s.SaveState(state); err != nil {
-		return fmt.Errorf("--on: could not save state: %w", err)
-	}
+// recordStackParent used to persist a parent link in state.json so the new
+// worktree participated in restack/sync. After the jj migration this is
+// expressed in the jj DAG directly — `jj workspace add -r <parent-bookmark>`
+// produces a child commit whose parent is the parent bookmark's tip — so
+// the wgo annotation no longer carries Parents/StackID. This function is
+// now a no-op kept to preserve --on's call site; the parent linkage lives
+// in jj.
+func recordStackParent(_, _, _ string) error {
 	return nil
 }

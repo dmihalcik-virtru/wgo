@@ -34,118 +34,31 @@ func TestAddAnnotationPreservesSpecMetadata(t *testing.T) {
 	assert.Equal(t, "draft", ann.SpecState, "SetSpec metadata should survive AddAnnotation")
 }
 
-func TestAddAnnotationPreservesStackMetadata(t *testing.T) {
+func TestRemoveAnnotation(t *testing.T) {
 	s := NewState()
-	s.AddAnnotation("/repo", "child", "child branch")
-	s.SetParents("/repo", "child", []string{"/repo:parent"})
-	s.SetStackID("/repo", "child", "stack-1")
+	s.AddAnnotation("/repo", "foo", "purpose")
+	require.NotNil(t, s.GetAnnotation("/repo", "foo"))
 
-	s.AddAnnotation("/repo", "child", "updated child branch")
-
-	ann := s.GetAnnotation("/repo", "child")
-	require.NotNil(t, ann)
-	assert.Equal(t, "updated child branch", ann.Purpose)
-	assert.Equal(t, []string{"/repo:parent"}, ann.Parents)
-	assert.Equal(t, "stack-1", ann.StackID)
+	s.RemoveAnnotation("/repo", "foo")
+	assert.Nil(t, s.GetAnnotation("/repo", "foo"))
 }
 
-func TestSetParentsCopiesInput(t *testing.T) {
+func TestUntrackRepoRemovesAnnotations(t *testing.T) {
 	s := NewState()
-	parents := []string{"/repo:a", "/repo:b"}
-	s.SetParents("/repo", "child", parents)
+	s.AddRepo("/repo", "git@example.com:org/repo.git")
+	s.AddAnnotation("/repo", "main", "")
+	s.AddAnnotation("/repo", "feature", "")
+	s.AddAnnotation("/other", "keep", "")
 
-	parents[0] = "MUTATED"
-	ann := s.GetAnnotation("/repo", "child")
-	require.NotNil(t, ann)
-	assert.Equal(t, []string{"/repo:a", "/repo:b"}, ann.Parents, "SetParents must copy the slice")
+	s.UntrackRepo("/repo")
+
+	assert.Nil(t, s.GetRepo("/repo"))
+	assert.Nil(t, s.GetAnnotation("/repo", "main"))
+	assert.Nil(t, s.GetAnnotation("/repo", "feature"))
+	assert.NotNil(t, s.GetAnnotation("/other", "keep"), "untracking one repo must not affect others")
 }
 
-func TestAddStackPreservesCreatedAt(t *testing.T) {
+func TestNewStateAtCurrentVersion(t *testing.T) {
 	s := NewState()
-	s.AddStack(Stack{ID: "s1", Name: "first", RootRef: "origin/main"})
-	created := s.GetStack("s1").CreatedAt
-
-	s.AddStack(Stack{ID: "s1", Name: "renamed", RootRef: "origin/main"})
-
-	got := s.GetStack("s1")
-	require.NotNil(t, got)
-	assert.Equal(t, "renamed", got.Name)
-	assert.Equal(t, created, got.CreatedAt, "CreatedAt must be preserved across updates")
-	assert.True(t, got.UpdatedAt.After(created) || got.UpdatedAt.Equal(created))
-}
-
-func TestRemoveStackClearsAnnotationStackID(t *testing.T) {
-	s := NewState()
-	s.AddStack(Stack{ID: "s1", Name: "first"})
-	s.AddAnnotation("/repo", "a", "")
-	s.AddAnnotation("/repo", "b", "")
-	s.SetStackID("/repo", "a", "s1")
-	s.SetStackID("/repo", "b", "s1")
-	s.SetParents("/repo", "b", []string{"/repo:a"})
-
-	s.RemoveStack("s1")
-
-	assert.Nil(t, s.GetStack("s1"))
-	assert.Equal(t, "", s.GetAnnotation("/repo", "a").StackID)
-	assert.Equal(t, "", s.GetAnnotation("/repo", "b").StackID)
-	assert.Equal(t, []string{"/repo:a"}, s.GetAnnotation("/repo", "b").Parents,
-		"Parents links survive RemoveStack so the DAG stays queryable")
-}
-
-func TestAnnotationsInStackSortedAndFiltered(t *testing.T) {
-	s := NewState()
-	for _, b := range []string{"c", "a", "b"} {
-		s.AddAnnotation("/repo", b, "")
-		s.SetStackID("/repo", b, "s1")
-	}
-	s.AddAnnotation("/repo", "other", "")
-	s.SetStackID("/repo", "other", "s2")
-
-	got := s.AnnotationsInStack("s1")
-	assert.Equal(t, []string{"/repo:a", "/repo:b", "/repo:c"}, got)
-	assert.Nil(t, s.AnnotationsInStack(""))
-}
-
-func TestAddStackPreservesNameAndRootRefOnPartialUpdate(t *testing.T) {
-	// A partial update (e.g. "rename only") must not silently clobber the
-	// existing RootRef. RootRef is core stack metadata: restack/sync use it
-	// to decide what stack roots rebase onto.
-	s := NewState()
-	s.AddStack(Stack{ID: "s1", Name: "first", RootRef: "origin/main"})
-
-	// Partial update: caller only sets Name.
-	s.AddStack(Stack{ID: "s1", Name: "renamed"})
-
-	got := s.GetStack("s1")
-	require.NotNil(t, got)
-	assert.Equal(t, "renamed", got.Name)
-	assert.Equal(t, "origin/main", got.RootRef,
-		"RootRef must be preserved when the caller leaves it zero")
-}
-
-func TestAddStackPreservesNameWhenOnlyRootRefGiven(t *testing.T) {
-	s := NewState()
-	s.AddStack(Stack{ID: "s1", Name: "first", RootRef: "origin/main"})
-
-	// Partial update: caller only sets RootRef.
-	s.AddStack(Stack{ID: "s1", RootRef: "origin/develop"})
-
-	got := s.GetStack("s1")
-	require.NotNil(t, got)
-	assert.Equal(t, "first", got.Name)
-	assert.Equal(t, "origin/develop", got.RootRef)
-}
-
-func TestSetParentsDeduplicates(t *testing.T) {
-	// Accidental duplicate from e.g. `wgo stack push --on foo --on foo`
-	// must collapse so it doesn't trigger false cycle detection in
-	// graph.TopoSort (where each duplicate inflates the indegree count
-	// but only one decrement happens per distinct child edge).
-	s := NewState()
-	s.SetParents("/repo", "child", []string{"/repo:foo", "/repo:foo", "/repo:bar", "/repo:foo"})
-
-	ann := s.GetAnnotation("/repo", "child")
-	require.NotNil(t, ann)
-	assert.Equal(t, []string{"/repo:foo", "/repo:bar"}, ann.Parents,
-		"duplicates dropped, first-occurrence order preserved")
+	assert.Equal(t, StateVersion, s.Version)
 }
