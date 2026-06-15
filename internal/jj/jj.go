@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -23,6 +24,7 @@ type Client interface {
 	WorkspaceAdd(repo, name, dest, revset string) error
 	WorkspaceForget(repo, name string) error
 	WorkspaceRoot(path string) (string, error)
+	MainWorkspaceRoot(path string) (string, error)
 	UpdateStale(workspacePath string) error
 
 	// DAG / status
@@ -31,6 +33,9 @@ type Client interface {
 	Resolve(repo, revset string) (string, error)
 	Status(workspacePath string) (Status, error)
 	IsClean(workspacePath string) (bool, []string, error)
+	AheadBehind(repo, bookmark string) (ahead, behind int, err error)
+	DiffStat(repo, revset string) (added, deleted int, err error)
+	ChangedFiles(repo, revset string) ([]string, error)
 
 	// Bookmarks
 	BookmarkList(repo string, opts BookmarkListOpts) ([]Bookmark, error)
@@ -192,6 +197,44 @@ func (c *CLIClient) UpdateStale(workspacePath string) error {
 	return err
 }
 
+// MainWorkspaceRoot returns the filesystem root of the main workspace
+// containing path. In jj, the main workspace's `.jj/repo` is a directory
+// holding the repo storage; secondary workspaces have `.jj/repo` as a file
+// containing the relative path to the main workspace's `.jj/repo`.
+//
+// path may be any directory inside a jj repo or workspace.
+func (c *CLIClient) MainWorkspaceRoot(path string) (string, error) {
+	root, err := c.WorkspaceRoot(path)
+	if err != nil {
+		return "", err
+	}
+	repoPath := filepath.Join(root, ".jj", "repo")
+	info, err := os.Stat(repoPath)
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", repoPath, err)
+	}
+	if info.IsDir() {
+		return root, nil
+	}
+	data, err := os.ReadFile(repoPath)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", repoPath, err)
+	}
+	target := strings.TrimSpace(string(data))
+	if target == "" {
+		return "", fmt.Errorf("empty .jj/repo pointer in secondary workspace %s", root)
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, ".jj", target)
+	}
+	target = filepath.Clean(target)
+	if !strings.HasSuffix(target, string(filepath.Separator)+filepath.Join(".jj", "repo")) {
+		return "", fmt.Errorf("unexpected .jj/repo target %q", target)
+	}
+	main := strings.TrimSuffix(target, string(filepath.Separator)+filepath.Join(".jj", "repo"))
+	return main, nil
+}
+
 // Log returns parsed LogEntry records for revset, ordered by jj's default
 // traversal (children before parents). When revset is empty, jj's default
 // revset (`revsets.log`) is used.
@@ -322,6 +365,148 @@ func parseStatus(out string) Status {
 		}
 	}
 	return st
+}
+
+// AheadBehind reports how many commits the local bookmark is ahead of and
+// behind its `origin` remote counterpart. Matches the git client's behaviour:
+// when either the local or remote bookmark is missing, both counts are zero
+// and err is nil (a missing remote is not a meaningful "ahead by N"
+// statement, since there is nothing to be ahead *of*).
+func (c *CLIClient) AheadBehind(repo, bookmark string) (ahead, behind int, err error) {
+	if bookmark == "" {
+		return 0, 0, fmt.Errorf("jj AheadBehind: empty bookmark name")
+	}
+	hasLocal, hasRemote, err := c.bookmarkPairExists(repo, bookmark, "origin")
+	if err != nil {
+		return 0, 0, err
+	}
+	if !hasLocal || !hasRemote {
+		return 0, 0, nil
+	}
+	ahead, err = c.countRevset(repo, fmt.Sprintf(
+		"remote_bookmarks(exact:%q, remote=exact:%q)..bookmarks(exact:%q)",
+		bookmark, "origin", bookmark,
+	))
+	if err != nil {
+		return 0, 0, err
+	}
+	behind, err = c.countRevset(repo, fmt.Sprintf(
+		"bookmarks(exact:%q)..remote_bookmarks(exact:%q, remote=exact:%q)",
+		bookmark, bookmark, "origin",
+	))
+	if err != nil {
+		return 0, 0, err
+	}
+	return ahead, behind, nil
+}
+
+// bookmarkPairExists reports whether the bookmark exists locally and on
+// the named remote. Used to short-circuit AheadBehind when there is no
+// meaningful comparison to make.
+func (c *CLIClient) bookmarkPairExists(repo, bookmark, remote string) (local, hasRemote bool, err error) {
+	all, err := c.BookmarkList(repo, BookmarkListOpts{AllRemotes: true, Names: []string{bookmark}})
+	if err != nil {
+		return false, false, err
+	}
+	for _, b := range all {
+		if b.Name != bookmark {
+			continue
+		}
+		if b.Remote == "" {
+			local = true
+		} else if b.Remote == remote {
+			hasRemote = true
+		}
+	}
+	return local, hasRemote, nil
+}
+
+// countRevset returns the number of commits matching revset. An empty
+// revset result returns 0 with no error.
+func (c *CLIClient) countRevset(repo, revset string) (int, error) {
+	out, err := c.runR(repo, "log", "--no-graph", "-T", `"x\n"`, "-r", revset)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// DiffStat returns the total number of added and deleted lines across the
+// diff between revset and its parent. revset must resolve to a single
+// commit (typical values: "@", "@-", a change id, a bookmark).
+func (c *CLIClient) DiffStat(repo, revset string) (added, deleted int, err error) {
+	if revset == "" {
+		return 0, 0, fmt.Errorf("jj DiffStat: empty revset")
+	}
+	out, err := c.runR(repo, "diff", "-r", revset, "--stat")
+	if err != nil {
+		return 0, 0, err
+	}
+	return parseDiffStatSummary(out)
+}
+
+// parseDiffStatSummary extracts insertion / deletion counts from the
+// trailing summary line of `jj diff --stat`, which is shaped like:
+//
+//	N files changed, X insertions(+), Y deletions(-)
+//
+// One side may be absent ("X insertions(+)" only, or "Y deletions(-)"
+// only). An empty diff yields (0, 0, nil).
+func parseDiffStatSummary(out string) (added, deleted int, err error) {
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.Contains(line, "insertion") && !strings.Contains(line, "deletion") {
+			continue
+		}
+		for _, part := range strings.Split(line, ",") {
+			part = strings.TrimSpace(part)
+			fields := strings.Fields(part)
+			if len(fields) < 2 {
+				continue
+			}
+			n, convErr := strconv.Atoi(fields[0])
+			if convErr != nil {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(fields[1], "insertion"):
+				added = n
+			case strings.HasPrefix(fields[1], "deletion"):
+				deleted = n
+			}
+		}
+	}
+	return added, deleted, nil
+}
+
+// ChangedFiles returns the file paths touched by the diff of revset against
+// its parent, sourced from `jj diff --name-only`. revset must resolve to a
+// single commit. An empty diff yields an empty slice with no error.
+//
+// Paths are returned relative to the repo root. We achieve this by running
+// jj from inside repo (jj diff --name-only emits paths relative to cwd).
+func (c *CLIClient) ChangedFiles(repo, revset string) ([]string, error) {
+	if revset == "" {
+		return nil, fmt.Errorf("jj ChangedFiles: empty revset")
+	}
+	out, err := c.runIn(repo, "diff", "-r", revset, "--name-only")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.TrimSpace(line)
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return files, nil
 }
 
 // BookmarkList lists bookmarks matching the filters in opts.

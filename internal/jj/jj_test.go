@@ -27,7 +27,7 @@ func TestSmokeTemplate(t *testing.T) {
 	if entries[0].ChangeID == "" || entries[0].CommitID == "" {
 		t.Fatalf("template drift: empty id field in %+v", entries[0])
 	}
-	if jj.TemplateSchemaVersion != 1 {
+	if jj.TemplateSchemaVersion != 2 {
 		t.Fatalf("TemplateSchemaVersion drifted to %d; update parser if intentional", jj.TemplateSchemaVersion)
 	}
 }
@@ -366,6 +366,128 @@ func TestGitPushNothingToPush(t *testing.T) {
 		// jj 0.42 phrases this as "Nothing changed." for some
 		// configurations; both classifications are acceptable.
 		t.Logf("ErrNothingToPush not matched directly: %v", err)
+	}
+}
+
+func TestAuthorEmailPopulated(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "with-email", map[string]string{"a.txt": "x"})
+	entries, err := c.Log(repo, "@-")
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("expected at least one entry")
+	}
+	// Any non-empty, well-formed email proves the template field was parsed.
+	// The exact value depends on the user's jj/git config and is not pinned
+	// here (env-var-based identity override happens at change creation time;
+	// jjtest's initial described change retains the global config identity).
+	if entries[0].AuthorEmail == "" || !strings.Contains(entries[0].AuthorEmail, "@") {
+		t.Fatalf("AuthorEmail = %q, want non-empty email", entries[0].AuthorEmail)
+	}
+}
+
+func TestMainWorkspaceRoot(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	// From the main workspace itself.
+	got, err := c.MainWorkspaceRoot(repo)
+	if err != nil {
+		t.Fatalf("MainWorkspaceRoot(main): %v", err)
+	}
+	wantMain, _ := filepath.EvalSymlinks(repo)
+	gotMain, _ := filepath.EvalSymlinks(got)
+	if gotMain != wantMain {
+		t.Fatalf("MainWorkspaceRoot(main) = %s, want %s", got, repo)
+	}
+	// From a secondary workspace.
+	wsPath := jjtest.NewWorkspace(t, repo, "secondary")
+	gotFromWS, err := c.MainWorkspaceRoot(wsPath)
+	if err != nil {
+		t.Fatalf("MainWorkspaceRoot(secondary): %v", err)
+	}
+	gotFromWSResolved, _ := filepath.EvalSymlinks(gotFromWS)
+	if gotFromWSResolved != wantMain {
+		t.Fatalf("MainWorkspaceRoot(secondary) = %s, want %s", gotFromWS, repo)
+	}
+}
+
+func TestAheadBehindNoRemote(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "x", map[string]string{"f.txt": "x"})
+	if err := c.BookmarkCreate(repo, "feat", "@-"); err != nil {
+		t.Fatalf("BookmarkCreate: %v", err)
+	}
+	ahead, behind, err := c.AheadBehind(repo, "feat")
+	if err != nil {
+		t.Fatalf("AheadBehind: %v", err)
+	}
+	// Without a remote, both sides count as zero.
+	if ahead != 0 || behind != 0 {
+		t.Fatalf("AheadBehind = (%d, %d), want (0, 0)", ahead, behind)
+	}
+}
+
+func TestAheadBehindWithRemote(t *testing.T) {
+	jjtest.RequireJJ(t)
+	c := jj.NewCLI()
+
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if _, err := runRaw(t, "", "git", "init", "--bare", remote); err != nil {
+		t.Fatalf("git init bare: %v", err)
+	}
+	seed := filepath.Join(t.TempDir(), "seed")
+	if err := c.GitInit(seed, jj.InitOpts{}); err != nil {
+		t.Fatalf("GitInit: %v", err)
+	}
+	if _, err := runRaw(t, seed, "jj", "git", "remote", "add", "origin", remote); err != nil {
+		t.Fatalf("remote add: %v", err)
+	}
+	// Seed one commit, bookmark it, push.
+	if err := c.Describe(seed, "first"); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if err := c.BookmarkCreate(seed, "main", "@"); err != nil {
+		t.Fatalf("BookmarkCreate main: %v", err)
+	}
+	if _, err := c.GitPush(seed, jj.PushOpts{Bookmarks: []string{"main"}, AllowNew: true}); err != nil {
+		t.Fatalf("GitPush main: %v", err)
+	}
+	// Add one more local commit on main, do not push.
+	if err := c.New(seed, "", "second"); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := c.BookmarkSet(seed, "main", "@-", false); err != nil {
+		t.Fatalf("BookmarkSet main: %v", err)
+	}
+	ahead, behind, err := c.AheadBehind(seed, "main")
+	if err != nil {
+		t.Fatalf("AheadBehind: %v", err)
+	}
+	if ahead != 1 || behind != 0 {
+		t.Fatalf("AheadBehind = (%d, %d), want (1, 0)", ahead, behind)
+	}
+}
+
+func TestDiffStatAndChangedFiles(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "first", map[string]string{
+		"a.txt": "line1\nline2\nline3\n",
+		"b.txt": "alpha\nbeta\n",
+	})
+	added, deleted, err := c.DiffStat(repo, "@-")
+	if err != nil {
+		t.Fatalf("DiffStat: %v", err)
+	}
+	if added != 5 || deleted != 0 {
+		t.Fatalf("DiffStat = (%d added, %d deleted), want (5, 0)", added, deleted)
+	}
+	files, err := c.ChangedFiles(repo, "@-")
+	if err != nil {
+		t.Fatalf("ChangedFiles: %v", err)
+	}
+	if len(files) != 2 || !contains(files, "a.txt") || !contains(files, "b.txt") {
+		t.Fatalf("ChangedFiles = %v, want [a.txt b.txt]", files)
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 // TemplateSchemaVersion is bumped whenever any template constant or its
 // matching parser changes shape. Used by SmokeCheck to fail loudly when jj
 // upstream renames a template field we depend on.
-const TemplateSchemaVersion = 1
+const TemplateSchemaVersion = 2
 
 // LogEntryTemplate renders a `jj log` record as a single line of JSON. Pair
 // with `--no-graph` and ParseLogEntries to consume.
@@ -27,6 +27,11 @@ const TemplateSchemaVersion = 1
 //	description          raw description string
 //	bookmarks            local bookmark names pointing at the change
 //	parents              parent change-ids (z-k form)
+//	author_email_local   local part of author email (jj exposes Email as
+//	                     {local, domain}; we rejoin in ParseLogEntries
+//	                     because Template-typed concatenations cannot be
+//	                     escape_json'd directly)
+//	author_email_domain  domain part of author email
 //	author_timestamp     ISO 8601 ("%+") author timestamp
 //	empty                true if the change touches no files
 //	current_working_copy true if this is the workspace's @
@@ -35,7 +40,9 @@ const LogEntryTemplate = `"{\"change_id\":" ++ change_id.short(32).escape_json()
 	`++ ",\"description\":" ++ description.escape_json() ` +
 	`++ ",\"bookmarks\":[" ++ bookmarks.map(|b| b.name().escape_json()).join(",") ` +
 	`++ "],\"parents\":[" ++ parents.map(|p| p.change_id().short(32).escape_json()).join(",") ` +
-	`++ "],\"author_timestamp\":" ++ author.timestamp().format("%+").escape_json() ` +
+	`++ "],\"author_email_local\":" ++ author.email().local().escape_json() ` +
+	`++ ",\"author_email_domain\":" ++ author.email().domain().escape_json() ` +
+	`++ ",\"author_timestamp\":" ++ author.timestamp().format("%+").escape_json() ` +
 	`++ ",\"empty\":" ++ if(empty, "true", "false") ` +
 	`++ ",\"current_working_copy\":" ++ if(current_working_copy, "true", "false") ` +
 	`++ "}\n"`
@@ -84,6 +91,8 @@ type rawLogEntry struct {
 	Description        string   `json:"description"`
 	Bookmarks          []string `json:"bookmarks"`
 	Parents            []string `json:"parents"`
+	AuthorEmailLocal   string   `json:"author_email_local"`
+	AuthorEmailDomain  string   `json:"author_email_domain"`
 	AuthorTimestamp    string   `json:"author_timestamp"`
 	Empty              bool     `json:"empty"`
 	CurrentWorkingCopy bool     `json:"current_working_copy"`
@@ -126,12 +135,17 @@ func ParseLogEntries(stdout []byte) ([]LogEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse log entry %d timestamp %q: %w", i, raw.AuthorTimestamp, err)
 		}
+		email := raw.AuthorEmailLocal
+		if raw.AuthorEmailDomain != "" {
+			email = raw.AuthorEmailLocal + "@" + raw.AuthorEmailDomain
+		}
 		out = append(out, LogEntry{
 			ChangeID:           raw.ChangeID,
 			CommitID:           raw.CommitID,
 			Description:        raw.Description,
 			Bookmarks:          raw.Bookmarks,
 			Parents:            raw.Parents,
+			AuthorEmail:        email,
 			AuthorTimestamp:    ts,
 			Empty:              raw.Empty,
 			CurrentWorkingCopy: raw.CurrentWorkingCopy,

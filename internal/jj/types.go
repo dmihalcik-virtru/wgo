@@ -55,6 +55,8 @@ type Change struct {
 	Bookmarks []string
 	// Parents are the change-ids of this change's parents.
 	Parents []string
+	// AuthorEmail is the change author's email address.
+	AuthorEmail string
 	// AuthorTimestamp is the change author timestamp parsed from `%+`.
 	AuthorTimestamp time.Time
 	// Empty indicates the change touches no files (e.g. fresh `jj new`).
