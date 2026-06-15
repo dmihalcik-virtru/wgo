@@ -1,4 +1,4 @@
-// Package discovery provides filesystem-based repository and worktree discovery.
+// Package discovery provides filesystem-based repository and workspace discovery.
 package discovery
 
 import (
@@ -7,15 +7,15 @@ import (
 	"strings"
 )
 
-// DiscoveredRepo represents a discovered repository.
+// DiscoveredRepo represents a discovered jj repository or workspace.
 type DiscoveredRepo struct {
 	Path         string
 	Name         string
-	IsWorktree   bool
-	MainRepoPath string // For worktrees, points to main repo
+	IsWorktree   bool   // True for secondary jj workspaces (analogous to git worktrees).
+	MainRepoPath string // For secondary workspaces, points to the main workspace.
 }
 
-// Discovery discovers repositories and worktrees in configured base directories.
+// Discovery discovers repositories and workspaces in configured base directories.
 type Discovery struct {
 	baseDirs        []string
 	scanDepth       int
@@ -31,7 +31,7 @@ func New(baseDirs []string, scanDepth int, excludePatterns []string) *Discovery 
 	}
 }
 
-// DiscoverAll discovers all repositories and worktrees.
+// DiscoverAll discovers all repositories and workspaces.
 func (d *Discovery) DiscoverAll() ([]DiscoveredRepo, error) {
 	var repos []DiscoveredRepo
 
@@ -62,8 +62,8 @@ func (d *Discovery) discoverInDir(dir string, depth int) ([]DiscoveredRepo, erro
 	}
 
 	for _, entry := range entries {
-		// Skip hidden directories except .git
-		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".git" {
+		// Skip hidden directories except .jj
+		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".jj" {
 			continue
 		}
 
@@ -74,11 +74,10 @@ func (d *Discovery) discoverInDir(dir string, depth int) ([]DiscoveredRepo, erro
 
 		fullPath := filepath.Join(dir, entry.Name())
 
-		// Check if it's a .git directory (bare repo or regular repo)
-		if entry.Name() == ".git" && entry.IsDir() {
-			isWorktree := d.isWorktree(fullPath)
+		// Check if it's a .jj directory (a jj repo or workspace).
+		if entry.Name() == ".jj" && entry.IsDir() {
+			isWorktree := d.isSecondaryWorkspace(fullPath)
 			if isWorktree {
-				// Extract main repo path from .git file
 				mainRepo := d.getMainRepoPath(fullPath)
 				repos = append(repos, DiscoveredRepo{
 					Path:         dir,
@@ -87,14 +86,13 @@ func (d *Discovery) discoverInDir(dir string, depth int) ([]DiscoveredRepo, erro
 					MainRepoPath: mainRepo,
 				})
 			} else {
-				// Regular repo
 				repos = append(repos, DiscoveredRepo{
 					Path:       dir,
 					Name:       filepath.Base(dir),
 					IsWorktree: false,
 				})
 			}
-			// Don't recurse into .git
+			// Don't recurse into .jj
 			continue
 		}
 
@@ -118,46 +116,56 @@ func (d *Discovery) isExcluded(path string) bool {
 	return false
 }
 
-// isWorktree checks if a .git directory is a worktree (file) rather than a directory.
-func (d *Discovery) isWorktree(gitPath string) bool {
-	info, err := os.Stat(gitPath)
+// isSecondaryWorkspace reports whether the given .jj directory belongs to a
+// secondary workspace (one created with `jj workspace add`). In a main
+// workspace, `.jj/repo` is a directory holding the repo storage; in a
+// secondary workspace, `.jj/repo` is a file containing the relative path to
+// the main workspace's storage.
+func (d *Discovery) isSecondaryWorkspace(jjPath string) bool {
+	repoPath := filepath.Join(jjPath, "repo")
+	info, err := os.Stat(repoPath)
 	if err != nil {
 		return false
 	}
 	return !info.IsDir()
 }
 
-// getMainRepoPath extracts the main repo path from a worktree's .git file.
-func (d *Discovery) getMainRepoPath(gitPath string) string {
-	// .git might be a file for worktrees containing "gitdir: /path/to/repo/.git/worktrees/name"
-	data, err := os.ReadFile(gitPath)
+// getMainRepoPath returns the path to the main workspace given a secondary
+// workspace's .jj directory. The secondary workspace's `.jj/repo` file
+// contains the relative path to the main workspace's `.jj/repo` directory
+// (e.g. `../../main/.jj/repo`).
+func (d *Discovery) getMainRepoPath(jjPath string) string {
+	repoFile := filepath.Join(jjPath, "repo")
+	data, err := os.ReadFile(repoFile)
 	if err != nil {
 		return ""
 	}
 
-	content := string(data)
-	if strings.HasPrefix(content, "gitdir: ") {
-		path := strings.TrimPrefix(content, "gitdir: ")
-		path = strings.TrimSpace(path)
-
-		// Extract the main repo path
-		if strings.Contains(path, ".git/worktrees") {
-			idx := strings.Index(path, ".git/worktrees")
-			return path[:idx]
-		}
+	target := strings.TrimSpace(string(data))
+	if target == "" {
+		return ""
 	}
 
+	// Resolve relative to .jj/.
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(jjPath, target)
+	}
+
+	// Strip trailing /.jj/repo to get the main workspace root.
+	target = filepath.Clean(target)
+	if strings.HasSuffix(target, "/.jj/repo") {
+		return strings.TrimSuffix(target, "/.jj/repo")
+	}
 	return ""
 }
 
-// IsRepo checks if a directory is a git repository.
+// IsRepo reports whether the given directory contains a jj repository or
+// workspace (i.e. has a `.jj/` directory).
 func IsRepo(path string) bool {
-	gitPath := filepath.Join(path, ".git")
-	info, err := os.Stat(gitPath)
+	jjPath := filepath.Join(path, ".jj")
+	info, err := os.Stat(jjPath)
 	if err != nil {
 		return false
 	}
-
-	// Could be a directory (regular repo) or file (worktree)
-	return info.IsDir() || info.Mode().IsRegular()
+	return info.IsDir()
 }
