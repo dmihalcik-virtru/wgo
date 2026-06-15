@@ -101,7 +101,10 @@ func (c *CLIClient) ListMyOpenPRs() ([]ExtendedPRInfo, error) {
 }
 
 // ListInvolvedPRs returns open PRs where the user is involved (assigned,
-// review-requested, or has commented) but is NOT the author.
+// review-requested, or has commented) but is NOT the author. The original
+// behavior excluded the user's authored PRs from the "involves:@me" search
+// result; we replicate that by issuing a second search for the user's open
+// PRs and subtracting those by (slug, number) key.
 func (c *CLIClient) ListInvolvedPRs(excludeAuthor string) ([]ExtendedPRInfo, error) {
 	if !c.Available() {
 		return nil, nil
@@ -113,35 +116,20 @@ func (c *CLIClient) ListInvolvedPRs(excludeAuthor string) ([]ExtendedPRInfo, err
 	if excludeAuthor == "" {
 		return items, nil
 	}
-	out := make([]ExtendedPRInfo, 0, len(items))
-	for _, item := range items {
-		// search-api items have user.Login on the item itself, but we already
-		// stripped that during conversion. Re-query is not worth it; instead
-		// the call sites already pass excludeAuthor matched against the search
-		// item. We do a best-effort recheck via a second search if needed.
-		if item.RepoOwner == excludeAuthor {
-			continue
-		}
-		out = append(out, item)
-	}
-	// The pre-existing semantics rely on filtering by author; do an explicit
-	// second pass using the search API to subtract authored PRs.
-	mine, _ := c.searchPRs(fmt.Sprintf("author:%s state:open", excludeAuthor))
-	if len(mine) == 0 {
-		return out, nil
-	}
+	// Build the set of PRs authored by excludeAuthor so we can subtract them.
+	authoredItems, _ := c.searchPRs(fmt.Sprintf("author:%s state:open", excludeAuthor))
 	authored := map[string]bool{}
-	for _, pr := range mine {
+	for _, pr := range authoredItems {
 		authored[fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.Number)] = true
 	}
-	filtered := out[:0]
-	for _, pr := range out {
+	out := items[:0]
+	for _, pr := range items {
 		if authored[fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.Number)] {
 			continue
 		}
-		filtered = append(filtered, pr)
+		out = append(out, pr)
 	}
-	return filtered, nil
+	return out, nil
 }
 
 // FetchMyLastActivityOnPR returns the time of the user's most recent comment
