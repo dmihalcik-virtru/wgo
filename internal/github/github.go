@@ -127,6 +127,35 @@ func PRBranch(owner, repo string, number int) (string, error) {
 	return pr.Head.Ref, nil
 }
 
+// PRHeadInfo bundles the bits of a PR's head ref we need to fetch it into a
+// local jj repo: the branch name on the head repo, the head commit OID, and
+// the slug of the head repository (which differs from the base repo for
+// fork PRs).
+type PRHeadInfo struct {
+	Ref      string // headRefName, the branch on the head repo
+	OID      string // headRefOid, the 40-char commit id
+	RepoSlug string // headRepository.FullName ("owner/repo")
+}
+
+// GetPRHeadRef returns the head-ref details for a pull request. Used by
+// `wgo to <PR URL>` to decide whether to fetch from origin or add a fork
+// remote first.
+func GetPRHeadRef(slug string, number int) (*PRHeadInfo, error) {
+	c := defaultClient()
+	pr, err := c.fetchPR(slug, number)
+	if err != nil {
+		return nil, fmt.Errorf("get PR #%d head ref: %w", number, err)
+	}
+	if pr.Head.Ref == "" {
+		return nil, fmt.Errorf("github returned empty head ref for PR #%d", number)
+	}
+	return &PRHeadInfo{
+		Ref:      pr.Head.Ref,
+		OID:      pr.Head.SHA,
+		RepoSlug: pr.Head.Repo.FullName,
+	}, nil
+}
+
 // IssueTitle returns the title of a GitHub issue.
 func IssueTitle(owner, repo string, number int) (string, error) {
 	c := defaultClient()

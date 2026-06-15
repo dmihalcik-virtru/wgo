@@ -14,8 +14,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/discovery"
-	"github.com/virtru/wgo/internal/git"
 	gh "github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
 )
 
 var toOnParent string
@@ -77,7 +77,7 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 
-	gitClient := git.New("")
+	jjc := jj.NewCLI()
 
 	type candidate struct {
 		completion string
@@ -104,13 +104,19 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 		go func() {
 			defer wg.Done()
 
-			remoteURLs, err := gitClient.RemoteURLs(r.Path)
-			if err != nil || len(remoteURLs) == 0 {
+			remotes, err := jjc.RemoteURLs(r.Path)
+			if err != nil || len(remotes) == 0 {
 				return
 			}
-
-			// Extract owner/repo from remote URL
-			ownerRepo := extractOwnerRepo(remoteURLs[0])
+			// Prefer origin, fall back to any.
+			remoteURL := remotes["origin"]
+			if remoteURL == "" {
+				for _, u := range remotes {
+					remoteURL = u
+					break
+				}
+			}
+			ownerRepo := extractOwnerRepo(remoteURL)
 			if ownerRepo == "" {
 				return
 			}
@@ -128,11 +134,10 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 				}
 			}
 
-			// Score by last commit recency
+			// Score by last commit recency on the workspace's @-.
 			var score float64
-			commit, err := gitClient.LastCommit(r.Path)
-			if err == nil {
-				age := now.Sub(commit.Date)
+			if entries, err := jjc.Log(r.Path, "@-"); err == nil && len(entries) > 0 {
+				age := now.Sub(entries[0].AuthorTimestamp)
 				ageDays := age.Hours() / 24
 				switch {
 				case ageDays < 1:
@@ -145,8 +150,7 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 			}
 
 			// Bonus for uncommitted changes
-			status, err := gitClient.Status(r.Path)
-			if err == nil && (status.Modified > 0 || status.Staged > 0 || status.Untracked > 0) {
+			if status, err := jjc.Status(r.Path); err == nil && !status.Clean {
 				score += 40
 			}
 
@@ -155,7 +159,7 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 
 			// Base completion: owner/repo (only when not filtering by branch)
 			if !hasAt {
-				branch, _ := gitClient.CurrentBranch(r.Path)
+				branch := currentBookmark(jjc, r.Path)
 				desc := r.Path
 				if branch != "" {
 					desc = fmt.Sprintf("%s (%s)", r.Path, branch)
@@ -167,39 +171,41 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 				}
 			}
 
-			// Also add worktree-specific completions for non-main branches
-			worktrees, wtErr := gitClient.ListWorktrees(r.Path)
-			if wtErr == nil {
-				for _, wt := range worktrees {
-					if wt.Branch == "" || wt.IsMain {
+			// Also add workspace-specific completions for non-default workspaces.
+			workspaces, wsErr := jjc.ListWorkspaces(r.Path)
+			if wsErr == nil {
+				for _, ws := range workspaces {
+					if ws.Name == "default" {
 						continue
 					}
-					// Apply branch prefix filter if present
-					if hasAt && !strings.HasPrefix(wt.Branch, branchPrefix) {
+					wsBookmark := currentBookmark(jjc, ws.Path)
+					if wsBookmark == "" {
+						continue
+					}
+					if hasAt && !strings.HasPrefix(wsBookmark, branchPrefix) {
 						continue
 					}
 
-					key := ownerRepo + "@" + wt.Branch
+					key := ownerRepo + "@" + wsBookmark
 					if seen[key] {
 						continue
 					}
 					seen[key] = true
 
-					// Worktree score: slightly decay non-main by recency
-					wtScore := score * math.Exp(-0.1)
-					wtCommit, err := gitClient.LastCommit(wt.Path)
-					if err == nil {
-						ageDays := now.Sub(wtCommit.Date).Hours() / 24
+					// Workspace score: slightly decay by recency
+					wsScore := score * math.Exp(-0.1)
+					if entries, err := jjc.Log(ws.Path, "@-"); err == nil && len(entries) > 0 {
+						ageDays := now.Sub(entries[0].AuthorTimestamp).Hours() / 24
 						switch {
 						case ageDays < 1:
-							wtScore = 30
+							wsScore = 30
 						case ageDays < 7:
-							wtScore = 15
+							wsScore = 15
 						case ageDays < 30:
-							wtScore = 5
+							wsScore = 5
 						}
 					}
-					candidates = append(candidates, candidate{key + "\t" + wt.Path, wtScore})
+					candidates = append(candidates, candidate{key + "\t" + ws.Path, wsScore})
 				}
 			}
 		}()
@@ -261,10 +267,10 @@ func runTo(rawURL string) error {
 	}
 	cfg := config.Get()
 
-	gitClient := git.New("")
+	jjc := jj.NewCLI()
 
 	// 4. Search for existing checkout
-	existing, err := findExistingCheckout(gitClient, cfg, parsed.Owner, parsed.Repo, branch)
+	existing, err := findExistingCheckout(jjc, cfg, parsed.Owner, parsed.Repo, branch)
 	if err == nil && existing != "" {
 		logTo("found existing checkout")
 		fmt.Println(existing)
@@ -272,17 +278,17 @@ func runTo(rawURL string) error {
 	}
 
 	// 5. Find or clone the repo
-	repoPath, err := findOrCloneRepo(gitClient, cfg, parsed.Owner, parsed.Repo)
+	repoPath, err := findOrCloneRepo(jjc, cfg, parsed.Owner, parsed.Repo)
 	if err != nil {
 		return err
 	}
 
 	// 6. Fetch latest (best-effort)
 	logTo("fetching latest...")
-	_ = gitClient.Fetch(repoPath)
+	_ = jjc.GitFetch(repoPath, "", nil)
 
-	// 7. Create worktree
-	wtPath, err := createWorktree(gitClient, repoPath, cfg, parsed, branch)
+	// 7. Create workspace
+	wtPath, err := createWorktree(jjc, repoPath, cfg, parsed, branch)
 	if err != nil {
 		return err
 	}
@@ -346,10 +352,10 @@ func runToLocal(short string) error {
 		return fmt.Errorf("config: %w", err)
 	}
 	cfg := config.Get()
-	gitClient := git.New("")
+	jjc := jj.NewCLI()
 
 	if branch != "" {
-		existing, err := findExistingCheckout(gitClient, cfg, owner, repo, branch)
+		existing, err := findExistingCheckout(jjc, cfg, owner, repo, branch)
 		if err == nil && existing != "" {
 			logTo("found existing checkout")
 			fmt.Println(existing)
@@ -367,7 +373,7 @@ func runToLocal(short string) error {
 		return fmt.Errorf("discovery: %w", err)
 	}
 	for _, r := range repos {
-		if matchesRemote(gitClient, r.Path, owner, repo) {
+		if matchesRemote(jjc, r.Path, owner, repo) {
 			logTo("found existing checkout")
 			fmt.Println(r.Path)
 			return nil
@@ -379,9 +385,23 @@ func runToLocal(short string) error {
 	return runTo(rawURL)
 }
 
-// findExistingCheckout searches discovered repos for one that matches the
-// owner/repo and has the branch checked out.
-func findExistingCheckout(gitClient *git.CLIClient, cfg *config.Config, owner, repo, branch string) (string, error) {
+// currentBookmark returns the first local bookmark on the workspace's @
+// change, or "" if there is none. Used as the jj-side equivalent of git's
+// "current branch" concept.
+func currentBookmark(jjc jj.Client, workspacePath string) string {
+	ch, err := jjc.CurrentChange(workspacePath)
+	if err != nil {
+		return ""
+	}
+	if len(ch.Bookmarks) > 0 {
+		return ch.Bookmarks[0]
+	}
+	return ""
+}
+
+// findExistingCheckout searches discovered repos for one whose origin
+// matches owner/repo and has a workspace whose @ carries the named bookmark.
+func findExistingCheckout(jjc jj.Client, cfg *config.Config, owner, repo, branch string) (string, error) {
 	disc := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
 	repos, err := disc.DiscoverAll()
 	if err != nil {
@@ -389,24 +409,23 @@ func findExistingCheckout(gitClient *git.CLIClient, cfg *config.Config, owner, r
 	}
 
 	for _, r := range repos {
-		if !matchesRemote(gitClient, r.Path, owner, repo) {
+		if !matchesRemote(jjc, r.Path, owner, repo) {
 			continue
 		}
 
-		// Check current branch
-		cur, err := gitClient.CurrentBranch(r.Path)
-		if err == nil && cur == branch {
+		// Check the workspace at r.Path itself first.
+		if currentBookmark(jjc, r.Path) == branch {
 			return r.Path, nil
 		}
 
-		// Check worktrees
-		worktrees, err := gitClient.ListWorktrees(r.Path)
+		// Then check sibling workspaces.
+		workspaces, err := jjc.ListWorkspaces(r.Path)
 		if err != nil {
 			continue
 		}
-		for _, wt := range worktrees {
-			if wt.Branch == branch {
-				return wt.Path, nil
+		for _, ws := range workspaces {
+			if currentBookmark(jjc, ws.Path) == branch {
+				return ws.Path, nil
 			}
 		}
 	}
@@ -416,13 +435,13 @@ func findExistingCheckout(gitClient *git.CLIClient, cfg *config.Config, owner, r
 
 // matchesRemote checks if any of a repo's remotes match the given owner/repo.
 // This handles fork setups where origin is a fork and upstream is the canonical repo.
-func matchesRemote(gitClient *git.CLIClient, repoPath, owner, repo string) bool {
+func matchesRemote(jjc jj.Client, repoPath, owner, repo string) bool {
 	target := owner + "/" + repo
-	remoteURLs, err := gitClient.RemoteURLs(repoPath)
+	remotes, err := jjc.RemoteURLs(repoPath)
 	if err != nil {
 		return false
 	}
-	for _, remoteURL := range remoteURLs {
+	for _, remoteURL := range remotes {
 		// Handle HTTPS (github.com/owner/repo.git) and SSH (git@github.com:owner/repo.git)
 		remoteURL = strings.TrimSuffix(remoteURL, ".git")
 		if strings.HasSuffix(remoteURL, target) {
@@ -433,13 +452,13 @@ func matchesRemote(gitClient *git.CLIClient, repoPath, owner, repo string) bool 
 }
 
 // findOrCloneRepo locates an existing clone or creates one.
-func findOrCloneRepo(gitClient *git.CLIClient, cfg *config.Config, owner, repo string) (string, error) {
+func findOrCloneRepo(jjc jj.Client, cfg *config.Config, owner, repo string) (string, error) {
 	// Search existing repos
 	disc := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
 	repos, err := disc.DiscoverAll()
 	if err == nil {
 		for _, r := range repos {
-			if matchesRemote(gitClient, r.Path, owner, repo) {
+			if matchesRemote(jjc, r.Path, owner, repo) {
 				mainPath := r.Path
 				if r.IsWorktree && r.MainRepoPath != "" {
 					mainPath = r.MainRepoPath
@@ -460,8 +479,7 @@ func findOrCloneRepo(gitClient *git.CLIClient, cfg *config.Config, owner, repo s
 	// Check if destPath already exists as a repo (not found by discovery
 	// due to path structure, e.g. missing owner directory level)
 	if _, err := os.Stat(destPath); err == nil {
-		isRepo, _ := gitClient.IsRepo(destPath)
-		if isRepo {
+		if jjc.IsRepo(destPath) {
 			logTo("using existing repo at: %s", destPath)
 			return destPath, nil
 		}
@@ -473,90 +491,160 @@ func findOrCloneRepo(gitClient *git.CLIClient, cfg *config.Config, owner, repo s
 
 	cloneURL := gh.RepoCloneURL(owner, repo)
 	logTo("cloning %s...", cloneURL)
-	if err := gitClient.Clone(cloneURL, destPath); err != nil {
+	if err := jjc.GitClone(cloneURL, destPath); err != nil {
 		return "", fmt.Errorf("clone failed: %w", err)
 	}
 
 	return destPath, nil
 }
 
-// createWorktree creates a new worktree for the given branch.
-func createWorktree(gitClient *git.CLIClient, repoPath string, cfg *config.Config, parsed *gh.ParsedURL, branch string) (string, error) {
-	wtPath := filepath.Join(cfg.Worktree.WorktreesDir, gh.SanitizeBranch(branch), parsed.Repo)
+// createWorktree creates a new jj workspace for the given branch.
+//
+// Layout per gh-21:
+//   - URLTypeIssue / URLTypeBranch: <worktrees_dir>/<sanitized-branch>/<repo>
+//   - URLTypePR:                    <worktrees_dir>/pr-<N>-<sanitized-headRef>/<owner>/<repo>
+//
+// The PR layout encodes both the PR number and the head ref so two PRs that
+// share a branch name can coexist on disk.
+func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *gh.ParsedURL, branch string) (string, error) {
+	var wtPath string
+	if parsed.Type == gh.URLTypePR {
+		wtPath = filepath.Join(cfg.Worktree.WorktreesDir,
+			"pr-"+parsed.Identifier+"-"+gh.SanitizeBranch(branch),
+			parsed.Owner, parsed.Repo)
+	} else {
+		wtPath = filepath.Join(cfg.Worktree.WorktreesDir, gh.SanitizeBranch(branch), parsed.Repo)
+	}
 
-	// Check if path already exists (e.g. from a previous run)
+	// Check if path already exists (e.g. from a previous run).
 	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
-		cur, err := gitClient.CurrentBranch(wtPath)
-		if err == nil && cur != branch {
-			logTo("worktree exists on branch %q, switching to %q...", cur, branch)
-			if err := gitClient.Checkout(wtPath, branch); err != nil {
-				logTo("warning: could not switch branch: %v", err)
+		if currentBookmark(jjc, wtPath) != branch {
+			logTo("workspace exists at %s, moving @ to %s...", wtPath, branch)
+			if err := jjc.EditChange(wtPath, branch); err != nil {
+				logTo("warning: could not move to %s: %v", branch, err)
 			}
 		} else {
-			logTo("worktree path already exists")
+			logTo("workspace path already exists")
 		}
 		return wtPath, nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
-		return "", fmt.Errorf("failed to create worktree parent: %w", err)
+		return "", fmt.Errorf("failed to create workspace parent: %w", err)
 	}
 
 	switch parsed.Type {
 	case gh.URLTypeIssue:
-		// New branch off default branch, or off --on parent if provided.
 		startPoint := ""
 		if toOnParent != "" {
-			exists, _ := gitClient.BranchExists(repoPath, toOnParent)
-			if !exists {
+			if !bookmarkExists(jjc, repoPath, toOnParent) {
 				return "", fmt.Errorf("--on parent %q not found locally or on origin", toOnParent)
 			}
 			startPoint = toOnParent
-			logTo("creating worktree with new branch %s on top of %s...", branch, toOnParent)
+			logTo("creating workspace with new bookmark %s on top of %s...", branch, toOnParent)
 		} else {
-			defaultBranch, err := gitClient.DefaultBranch(repoPath)
+			defaultBranch, err := defaultBranchFor(jjc, repoPath)
 			if err != nil {
 				defaultBranch = "main"
 			}
 			startPoint = "origin/" + defaultBranch
-			logTo("creating worktree with new branch %s from %s...", branch, startPoint)
+			logTo("creating workspace with new bookmark %s from %s...", branch, startPoint)
 		}
-		if err := gitClient.WorktreeAdd(repoPath, wtPath, branch, true, startPoint); err != nil {
-			return "", fmt.Errorf("worktree add failed: %w", err)
+		if err := jjc.WorkspaceAdd(repoPath, branch, wtPath, startPoint); err != nil {
+			return "", fmt.Errorf("workspace add failed: %w", err)
+		}
+		if err := jjc.BookmarkCreate(repoPath, branch, startPoint); err != nil {
+			return "", fmt.Errorf("create bookmark %s: %w", branch, err)
 		}
 		if toOnParent != "" {
 			if err := recordStackParent(repoPath, branch, toOnParent); err != nil {
 				logTo("error: %v", err)
-				logTo("worktree created but stack parent not recorded")
-				logTo("you can manually run: wgo stack new")
+				logTo("workspace created but stack parent not recorded")
 			}
 		}
 
-	case gh.URLTypePR, gh.URLTypeBranch:
-		// Check if branch exists on remote
-		exists, _ := gitClient.BranchExists(repoPath, branch)
-		if !exists && parsed.Type == gh.URLTypePR {
-			// Branch may be from a fork; fetch the PR ref directly
-			num, _ := strconv.Atoi(parsed.Identifier)
-			logTo("branch not on origin, fetching PR #%d ref...", num)
-			if err := gitClient.FetchPRRef(repoPath, num, branch); err != nil {
-				return "", fmt.Errorf("branch %q not found and PR #%d fetch failed: %w", branch, num, err)
-			}
-			exists = true
+	case gh.URLTypePR:
+		num, _ := strconv.Atoi(parsed.Identifier)
+		logTo("looking up PR #%d head ref...", num)
+		info, err := gh.GetPRHeadRef(parsed.Owner+"/"+parsed.Repo, num)
+		if err != nil {
+			return "", err
 		}
-		if !exists {
+		baseSlug := parsed.Owner + "/" + parsed.Repo
+		bookmark := fmt.Sprintf("pr-%d-%s", num, gh.SanitizeBranch(info.Ref))
+
+		if info.RepoSlug == "" || info.RepoSlug == baseSlug {
+			// Same-repo PR: fetch from origin.
+			logTo("fetching origin/%s...", info.Ref)
+			if err := jjc.GitFetch(repoPath, "origin", []string{info.Ref}); err != nil {
+				return "", fmt.Errorf("fetch %s from origin: %w", info.Ref, err)
+			}
+		} else {
+			// Fork PR: add the fork as a temporary remote, fetch, then
+			// leave the remote in place (it's harmless and lets the user
+			// re-fetch without re-adding).
+			forkRemote := "pr-" + parsed.Identifier + "-fork"
+			forkURL := "https://github.com/" + info.RepoSlug + ".git"
+			logTo("PR is from fork %s; adding remote %s...", info.RepoSlug, forkRemote)
+			if err := jjc.GitRemoteAdd(repoPath, forkRemote, forkURL); err != nil {
+				// Remote already exists is non-fatal; jj returns it as
+				// stderr text. Try to fetch anyway.
+				logTo("warning: add remote %s: %v", forkRemote, err)
+			}
+			if err := jjc.GitFetch(repoPath, forkRemote, []string{info.Ref}); err != nil {
+				return "", fmt.Errorf("fetch %s from %s: %w", info.Ref, forkRemote, err)
+			}
+		}
+
+		// Pin the bookmark to the exact head OID so subsequent advancement
+		// on the remote does not surprise the local workspace.
+		if err := jjc.BookmarkCreate(repoPath, bookmark, info.OID); err != nil {
+			return "", fmt.Errorf("create bookmark %s at %s: %w", bookmark, info.OID, err)
+		}
+		logTo("creating workspace at bookmark %s...", bookmark)
+		if err := jjc.WorkspaceAdd(repoPath, bookmark, wtPath, bookmark); err != nil {
+			return "", fmt.Errorf("workspace add failed: %w", err)
+		}
+
+	case gh.URLTypeBranch:
+		if !bookmarkExists(jjc, repoPath, branch) {
 			return "", fmt.Errorf("branch %q not found locally or on origin", branch)
 		}
-		logTo("creating worktree for branch %s...", branch)
-		if err := gitClient.WorktreeAdd(repoPath, wtPath, branch, false, ""); err != nil {
-			return "", fmt.Errorf("worktree add failed: %w", err)
+		logTo("creating workspace for branch %s...", branch)
+		if err := jjc.WorkspaceAdd(repoPath, branch, wtPath, branch); err != nil {
+			return "", fmt.Errorf("workspace add failed: %w", err)
 		}
 
 	default:
-		return "", fmt.Errorf("unsupported URL type for worktree creation")
+		return "", fmt.Errorf("unsupported URL type for workspace creation")
 	}
 
 	return wtPath, nil
+}
+
+// bookmarkExists returns true when a bookmark of name exists locally or on
+// any remote of repo.
+func bookmarkExists(jjc jj.Client, repo, name string) bool {
+	bms, err := jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true, Names: []string{name}})
+	if err != nil {
+		return false
+	}
+	for _, b := range bms {
+		if b.Name == name {
+			return true
+		}
+	}
+	// Also accept a remote-tracking ref written as "origin/name".
+	bms, err = jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true})
+	if err != nil {
+		return false
+	}
+	for _, b := range bms {
+		if b.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // recordStackParent used to persist a parent link in state.json so the new

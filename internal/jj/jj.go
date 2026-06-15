@@ -53,6 +53,8 @@ type Client interface {
 	GitClone(url, dest string) error
 	GitFetch(repo, remote string, refs []string) error
 	GitPush(repo string, opts PushOpts) (PushResult, error)
+	GitRemoteAdd(repo, name, url string) error
+	GitRemoteRemove(repo, name string) error
 }
 
 // CLIClient shells out to the system `jj` binary. The binary path defaults
@@ -650,6 +652,19 @@ func (c *CLIClient) GitClone(url, dest string) error {
 		return fmt.Errorf("jj git clone: mkdir parent %s: %w", parent, err)
 	}
 	_, err := c.runIn(parent, "git", "clone", "--no-colocate", url, dest)
+	return err
+}
+
+// GitRemoteAdd registers a new git remote with the repo.
+func (c *CLIClient) GitRemoteAdd(repo, name, url string) error {
+	_, err := c.runR(repo, "git", "remote", "add", name, url)
+	return err
+}
+
+// GitRemoteRemove removes a git remote from the repo. Safe to call on a
+// remote that doesn't exist (returns jj's "no such remote" error verbatim).
+func (c *CLIClient) GitRemoteRemove(repo, name string) error {
+	_, err := c.runR(repo, "git", "remote", "remove", name)
 	return err
 }
 
