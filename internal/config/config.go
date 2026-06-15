@@ -201,8 +201,8 @@ func Init() error {
 func setDefaults() {
 	home, _ := os.UserHomeDir()
 
-	// Default author to git user.email, falling back to user.name
-	viper.SetDefault("author", gitConfigAuthor())
+	// Default author to jj user.email, falling back to user.name or env vars.
+	viper.SetDefault("author", defaultAuthor())
 
 	viper.SetDefault("discovery.base_dirs", []string{filepath.Join(home, "Documents", "GitHub")})
 	viper.SetDefault("worktree.mains_dir", filepath.Join(home, "Documents", "GitHub", "mains"))
@@ -294,19 +294,35 @@ spec_required = false
 	return nil
 }
 
-// gitConfigAuthor returns the git user email or name for filtering commits.
-func gitConfigAuthor() string {
-	if out, err := exec.Command("git", "config", "--global", "user.email").Output(); err == nil {
-		if v := strings.TrimSpace(string(out)); v != "" {
-			return v
-		}
+// defaultAuthor returns the user's email (preferred) or display name from jj
+// config for filtering commits. Falls back to the JJ_EMAIL / JJ_USER env vars
+// so containers and CI without `jj config get` still pick up identity.
+func defaultAuthor() string {
+	if v := jjConfigValue("user.email"); v != "" {
+		return v
 	}
-	if out, err := exec.Command("git", "config", "--global", "user.name").Output(); err == nil {
-		if v := strings.TrimSpace(string(out)); v != "" {
-			return v
-		}
+	if v := jjConfigValue("user.name"); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("JJ_EMAIL")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("JJ_USER")); v != "" {
+		return v
 	}
 	return ""
+}
+
+// jjConfigValue returns the value of a jj config key, stripping any
+// surrounding quotes that `jj config get` may add.
+func jjConfigValue(key string) string {
+	out, err := exec.Command("jj", "config", "get", key).Output()
+	if err != nil {
+		return ""
+	}
+	v := strings.TrimSpace(string(out))
+	v = strings.Trim(v, `"`)
+	return v
 }
 
 // expandPath expands a leading ~ to the user's home directory.
