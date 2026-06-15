@@ -10,65 +10,79 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/virtru/wgo/internal/jjtest"
 )
 
-// initPilotTestRepo creates a git repo with spec commits and [no-spec] commits
-// spanning the given date range for metric collection tests.
+// initPilotTestRepo creates a jj repo with spec commits and [no-spec]
+// commits spanning the given date range for metric collection tests.
+//
+// Each commit is created with JJ_TIMESTAMP set to a specific moment in the
+// window so author_date revsets resolve deterministically.
 func initPilotTestRepo(t *testing.T) (string, time.Time, time.Time) {
 	t.Helper()
+	jjtest.RequireJJ(t)
+
 	dir := t.TempDir()
 
-	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.Local)
-	until := time.Date(2026, 5, 31, 23, 59, 59, 0, time.Local)
+	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	until := time.Date(2026, 5, 31, 23, 59, 59, 0, time.UTC)
 
-	run := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "command %v failed: %s", args, out)
-	}
+	t.Setenv("JJ_USER", "Dave")
+	t.Setenv("JJ_EMAIL", "dave@example.com")
 
-	run("git", "init")
-	run("git", "config", "user.email", "dave@example.com")
-	run("git", "config", "user.name", "Dave")
-	run("git", "config", "commit.gpgsign", "false")
+	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "git", "init", "--no-colocate")
+	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "config", "set", "--repo", "user.name", "Dave")
+	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "config", "set", "--repo", "user.email", "dave@example.com")
 
-	// Initial commit
+	// initial commit on the auto-created @
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644))
-	run("git", "add", "README.md")
-	run("git", "commit", "--date=2026-05-01T09:00:00", "-m", "init")
+	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "describe", "-m", "init")
 
-	// Create spec directory and add spec files
 	specDir := filepath.Join(dir, "spec")
 	require.NoError(t, os.MkdirAll(specDir, 0o755))
 
-	// Spec 1 created
+	// Spec 1 created — first do `jj new` to give the new change a clean
+	// author identity from the env vars (the initial change still has the
+	// git config identity used by `jj git init`).
+	mustRunAt(t, dir, "2026-05-02T10:00:00Z", "jj", "new")
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, "WGO-1.md"), []byte("# WGO-1\n\nspec content"), 0o644))
-	run("git", "add", "spec/WGO-1.md")
-	run("git", "commit", "--date=2026-05-02T10:00:00", "-m", "spec: add WGO-1")
+	mustRunAt(t, dir, "2026-05-02T10:00:00Z", "jj", "describe", "-m", "spec: add WGO-1")
 
-	// Spec 2 created by same author
+	// Spec 2 created
+	mustRunAt(t, dir, "2026-05-03T11:00:00Z", "jj", "new")
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, "WGO-2.md"), []byte("# WGO-2\n\nspec content"), 0o644))
-	run("git", "add", "spec/WGO-2.md")
-	run("git", "commit", "--date=2026-05-03T11:00:00", "-m", "spec: add WGO-2")
+	mustRunAt(t, dir, "2026-05-03T11:00:00Z", "jj", "describe", "-m", "spec: add WGO-2")
 
 	// Update spec 1 (not a creation)
+	mustRunAt(t, dir, "2026-05-04T12:00:00Z", "jj", "new")
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, "WGO-1.md"), []byte("# WGO-1\n\nupdated content"), 0o644))
-	run("git", "add", "spec/WGO-1.md")
-	run("git", "commit", "--date=2026-05-04T12:00:00", "-m", "spec: update WGO-1 scope")
+	mustRunAt(t, dir, "2026-05-04T12:00:00Z", "jj", "describe", "-m", "spec: update WGO-1 scope")
 
-	// Regular commit with [no-spec]
+	// Two [no-spec] commits that touch non-spec files.
+	mustRunAt(t, dir, "2026-05-05T14:00:00Z", "jj", "new")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644))
-	run("git", "add", "main.go")
-	run("git", "commit", "--date=2026-05-05T14:00:00", "-m", "fix typo [no-spec]")
+	mustRunAt(t, dir, "2026-05-05T14:00:00Z", "jj", "describe", "-m", "fix typo [no-spec]")
 
-	// Another no-spec override
+	mustRunAt(t, dir, "2026-05-06T15:00:00Z", "jj", "new")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "util.go"), []byte("package main\n"), 0o644))
-	run("git", "add", "util.go")
-	run("git", "commit", "--date=2026-05-06T15:00:00", "-m", "docs: update readme [no-spec]")
+	mustRunAt(t, dir, "2026-05-06T15:00:00Z", "jj", "describe", "-m", "docs: update readme [no-spec]")
+
+	// Leave the workspace on a fresh empty @ so no later mutation drifts
+	// the previous commit's timestamps.
+	mustRunAt(t, dir, "2026-05-06T15:00:01Z", "jj", "new")
 
 	return dir, since, until
+}
+
+// mustRunAt runs jj at the given JJ_TIMESTAMP. Used to pin commit author
+// timestamps to specific moments in the test window.
+func mustRunAt(t *testing.T, dir, timestamp string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "JJ_TIMESTAMP="+timestamp)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "command %v failed: %s", args, out)
 }
 
 func TestCollect_SpecsCreated(t *testing.T) {
@@ -128,25 +142,17 @@ func TestCollect_OutOfRange_NotCounted(t *testing.T) {
 }
 
 func TestCollect_NoSpecDir_GracefulZero(t *testing.T) {
+	jjtest.RequireJJ(t)
 	dir := t.TempDir()
 
-	run := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "command %v failed: %s", args, out)
-	}
-	run("git", "init")
-	run("git", "config", "user.email", "test@example.com")
-	run("git", "config", "user.name", "Test")
-	run("git", "config", "commit.gpgsign", "false")
+	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "git", "init", "--no-colocate")
+	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "config", "set", "--repo", "user.name", "Test")
+	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "config", "set", "--repo", "user.email", "test@example.com")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644))
-	run("git", "add", "README.md")
-	run("git", "commit", "--date=2026-05-01T09:00:00", "-m", "init")
+	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "describe", "-m", "init")
 
-	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.Local)
-	until := time.Date(2026, 5, 31, 0, 0, 0, 0, time.Local)
+	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	until := time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC)
 	opts := Options{Since: since, Until: until}
 
 	m, err := Collect([]string{dir}, "", opts)

@@ -146,6 +146,17 @@ type BookmarkListOpts struct {
 	Names []string
 }
 
+// FileChange is a single per-file entry from `jj diff --summary`, used by
+// callers that need to distinguish added vs modified vs deleted paths
+// (e.g. counting "newly created spec files" in the pilot summary).
+type FileChange struct {
+	// Status is the diff-status character emitted by jj: 'A' (added),
+	// 'M' (modified), or 'D' (deleted).
+	Status rune
+	// Path is the file path relative to the repo root.
+	Path string
+}
+
 // ErrLeaseFailed is returned by GitPush when jj's safety check refused to
 // move a remote bookmark because the remote had advanced since the last
 // fetch.

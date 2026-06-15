@@ -92,6 +92,47 @@ func (c *CLIClient) searchPRs(q string) ([]ExtendedPRInfo, error) {
 	return out, nil
 }
 
+// SearchPRs runs a free-form GitHub search query and returns matching PRs
+// as ExtendedPRInfo. The caller supplies the search body; the function
+// appends `is:pr` automatically. Used by pilot to issue queries like
+// "author:X merged:>=S merged:<=U".
+func (c *CLIClient) SearchPRs(query string) ([]ExtendedPRInfo, error) {
+	if !c.Available() {
+		return nil, nil
+	}
+	return c.searchPRs(query)
+}
+
+// PRReview is a single review on a specific PR, surfaced for callers that
+// need raw review state without the PR-context wrapping of ReviewSubmission
+// (which is shaped for "the reviews I submitted today" use cases).
+type PRReview struct {
+	Author      string
+	State       string // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED
+	SubmittedAt time.Time
+}
+
+// GetPRReviews returns the review submissions on a PR, in submission
+// order. Used by pilot to count review round-trips.
+func (c *CLIClient) GetPRReviews(slug string, number int) ([]PRReview, error) {
+	if !c.Available() {
+		return nil, nil
+	}
+	raw, err := c.listReviewsForPR(slug, number)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PRReview, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, PRReview{
+			Author:      r.User.Login,
+			State:       r.State,
+			SubmittedAt: r.SubmittedAt,
+		})
+	}
+	return out, nil
+}
+
 // ListMyOpenPRs returns all open (including draft) PRs authored by the current user.
 func (c *CLIClient) ListMyOpenPRs() ([]ExtendedPRInfo, error) {
 	if !c.Available() {

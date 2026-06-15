@@ -36,6 +36,7 @@ type Client interface {
 	AheadBehind(repo, bookmark string) (ahead, behind int, err error)
 	DiffStat(repo, revset string) (added, deleted int, err error)
 	ChangedFiles(repo, revset string) ([]string, error)
+	DiffSummary(repo, revset string) ([]FileChange, error)
 	CountRevset(repo, revset string) (int, error)
 
 	// Bookmarks
@@ -500,6 +501,39 @@ func parseDiffStatSummary(out string) (added, deleted int, err error) {
 		}
 	}
 	return added, deleted, nil
+}
+
+// DiffSummary returns the categorised per-file changes for revset (added,
+// modified, deleted), parsed from `jj diff --summary`. Used by callers
+// that need to distinguish file creation from modification (e.g. pilot's
+// "specs created" metric).
+//
+// Paths are repo-relative. revset must resolve to a single commit.
+func (c *CLIClient) DiffSummary(repo, revset string) ([]FileChange, error) {
+	if revset == "" {
+		return nil, fmt.Errorf("jj DiffSummary: empty revset")
+	}
+	out, err := c.runIn(repo, "diff", "-r", revset, "--summary")
+	if err != nil {
+		return nil, err
+	}
+	var changes []FileChange
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if len(line) < 3 || line[1] != ' ' {
+			continue
+		}
+		status := rune(line[0])
+		if status != 'A' && status != 'M' && status != 'D' {
+			continue
+		}
+		path := strings.TrimSpace(line[2:])
+		if path == "" {
+			continue
+		}
+		changes = append(changes, FileChange{Status: status, Path: path})
+	}
+	return changes, nil
 }
 
 // ChangedFiles returns the file paths touched by the diff of revset against

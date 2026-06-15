@@ -69,6 +69,9 @@ func (m *mockJJClient) DiffStat(string, string) (int, int, error) {
 	return m.diffAdded, m.diffDeleted, nil
 }
 func (m *mockJJClient) ChangedFiles(string, string) ([]string, error) { return m.changedFiles, nil }
+func (m *mockJJClient) DiffSummary(string, string) ([]jj.FileChange, error) {
+	return nil, nil
+}
 func (m *mockJJClient) CountRevset(_, revset string) (int, error) {
 	if m.countResults != nil {
 		if n, ok := m.countResults[revset]; ok {

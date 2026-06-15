@@ -1,11 +1,13 @@
-// Package contrib provides git activity aggregation for the contributions heatmap.
+// Package contrib provides commit activity aggregation for the
+// contributions heatmap. Reads commit history via internal/jj.
 package contrib
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/virtru/wgo/internal/jj"
 )
 
 // DayCount maps a date string (YYYY-MM-DD) to a commit count.
@@ -19,13 +21,14 @@ type RepoActivity struct {
 	Total     int
 }
 
-// Collect aggregates git log commit counts for repos in the given paths,
-// from `since` to now. If author is non-empty, only commits by that author
-// (matched against email or name via git log --author) are counted.
+// Collect aggregates commit counts for repos in the given paths, from
+// `since` to now. If author is non-empty, only commits whose author email
+// matches that string (as a jj `author(exact:...)` filter) are counted.
 //
-// Forks are consolidated: if a repo has an "upstream" remote pointing to GitHub,
-// its commits are merged into the upstream repo's activity entry.
+// Forks are consolidated: if a repo has an "upstream" remote pointing to
+// GitHub, its commits are merged into the upstream repo's activity entry.
 func Collect(repoPaths []string, since time.Time, author string) ([]RepoActivity, DayCount, error) {
+	jjc := jj.NewCLI()
 	total := make(DayCount)
 
 	// canonical key → merged activity
@@ -33,10 +36,8 @@ func Collect(repoPaths []string, since time.Time, author string) ([]RepoActivity
 	// preserve insertion order for stable output
 	var order []string
 
-	sinceStr := since.Format("2006-01-02")
-
 	for _, path := range repoPaths {
-		activity, err := collectRepo(path, sinceStr, author)
+		activity, err := collectRepo(jjc, path, since, author)
 		if err != nil {
 			continue // skip repos that fail
 		}
@@ -73,7 +74,6 @@ func Collect(repoPaths []string, since time.Time, author string) ([]RepoActivity
 // available, otherwise the local repo name.
 func (r *RepoActivity) canonicalKey() string {
 	if r.GitHubURL != "" {
-		// strip https://github.com/ prefix
 		slug := strings.TrimPrefix(r.GitHubURL, "https://github.com/")
 		slug = strings.TrimSuffix(slug, ".git")
 		return slug
@@ -81,28 +81,34 @@ func (r *RepoActivity) canonicalKey() string {
 	return r.Name
 }
 
-func collectRepo(path, since, author string) (RepoActivity, error) {
-	args := []string{"-C", path, "log",
-		"--oneline",
-		"--format=%cd",
-		"--date=format:%Y-%m-%d",
-		"--since=" + since,
-	}
+// buildRevset composes a jj revset for commits authored after `since`,
+// optionally filtered by author email. The revset only includes commits
+// reachable from the current workspace's @ (the same scope `git log` uses
+// for a normal checkout).
+func buildRevset(since time.Time, author string) string {
+	revset := fmt.Sprintf(
+		`author_date(after:%q) & ::@`,
+		since.UTC().Format(time.RFC3339),
+	)
 	if author != "" {
-		args = append(args, "--author="+author)
+		revset = fmt.Sprintf("%s & author(exact:%q)", revset, author)
 	}
-	cmd := exec.Command("git", args...)
-	out, err := cmd.Output()
+	return revset
+}
+
+func collectRepo(jjc jj.Client, path string, since time.Time, author string) (RepoActivity, error) {
+	entries, err := jjc.Log(path, buildRevset(since, author))
 	if err != nil {
-		return RepoActivity{}, fmt.Errorf("git log failed: %w", err)
+		return RepoActivity{}, fmt.Errorf("jj log failed: %w", err)
 	}
 
 	counts := make(DayCount)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
+	for _, e := range entries {
+		if e.AuthorTimestamp.IsZero() {
 			continue
 		}
-		counts[line]++
+		day := e.AuthorTimestamp.Format("2006-01-02")
+		counts[day]++
 	}
 
 	total := 0
@@ -110,7 +116,7 @@ func collectRepo(path, since, author string) (RepoActivity, error) {
 		total += n
 	}
 
-	ghURL := resolveGitHubURL(path)
+	ghURL := resolveGitHubURL(jjc, path)
 	name := repoNameFromURL(ghURL, path)
 
 	return RepoActivity{
@@ -124,17 +130,19 @@ func collectRepo(path, since, author string) (RepoActivity, error) {
 // ResolveGitHubURL returns the canonical GitHub HTTPS URL for a repo.
 // It prefers the "upstream" remote (fork parent) over "origin".
 func ResolveGitHubURL(path string) string {
-	return resolveGitHubURL(path)
+	return resolveGitHubURL(jj.NewCLI(), path)
 }
 
-func resolveGitHubURL(path string) string {
-	for _, remote := range []string{"upstream", "origin"} {
-		out, err := exec.Command("git", "-C", path, "remote", "get-url", remote).Output()
-		if err != nil {
-			continue
-		}
-		if u := parseGitHubHTTPS(strings.TrimSpace(string(out))); u != "" {
-			return u
+func resolveGitHubURL(jjc jj.Client, path string) string {
+	remotes, err := jjc.RemoteURLs(path)
+	if err != nil {
+		return ""
+	}
+	for _, name := range []string{"upstream", "origin"} {
+		if u, ok := remotes[name]; ok {
+			if normalized := parseGitHubHTTPS(u); normalized != "" {
+				return normalized
+			}
 		}
 	}
 	return ""
@@ -154,7 +162,6 @@ func parseGitHubHTTPS(remote string) string {
 		idx := strings.Index(remote, "github.com/")
 		slug := remote[idx+len("github.com/"):]
 		slug = strings.TrimSuffix(slug, ".git")
-		// ensure at least owner/repo
 		if strings.Contains(slug, "/") {
 			return "https://github.com/" + slug
 		}
@@ -196,17 +203,18 @@ type RepoCommits struct {
 	Commits   []CommitDetail
 }
 
-// CollectCommitsWithFiles returns detailed commit info (messages + files changed)
-// for each repo with activity since the given time.
+// CollectCommitsWithFiles returns detailed commit info (messages + files
+// changed) for each repo with activity since the given time. Author filter
+// matches the git form: substring of the author email.
 func CollectCommitsWithFiles(repoPaths []string, since time.Time, author string) ([]RepoCommits, error) {
-	sinceStr := since.Format(time.RFC3339)
+	jjc := jj.NewCLI()
 
 	// canonical key → merged commits
 	merged := map[string]*RepoCommits{}
 	var order []string
 
 	for _, path := range repoPaths {
-		rc, err := collectRepoCommits(path, sinceStr, author)
+		rc, err := collectRepoCommits(jjc, path, since, author)
 		if err != nil || len(rc.Commits) == 0 {
 			continue
 		}
@@ -245,28 +253,19 @@ func (r *RepoCommits) canonicalKey() string {
 	return r.Name
 }
 
-func collectRepoCommits(path, since, author string) (RepoCommits, error) {
-	// Get current branch
-	branchOut, _ := exec.Command("git", "-C", path, "branch", "--show-current").Output()
-	branch := strings.TrimSpace(string(branchOut))
+func collectRepoCommits(jjc jj.Client, path string, since time.Time, author string) (RepoCommits, error) {
+	// Current bookmark on this workspace (the jj-side "branch").
+	branch := ""
+	if ch, err := jjc.CurrentChange(path); err == nil && len(ch.Bookmarks) > 0 {
+		branch = ch.Bookmarks[0]
+	}
 
-	// Get commits with files: format is SHA<tab>message, followed by file names
-	// Use %x09 for a literal tab character (git --format doesn't interpret \t)
-	args := []string{"-C", path, "log",
-		"--format=%h%x09%s",
-		"--name-only",
-		"--since=" + since,
-	}
-	if author != "" {
-		args = append(args, "--author="+author)
-	}
-	cmd := exec.Command("git", args...)
-	out, err := cmd.Output()
+	entries, err := jjc.Log(path, buildRevset(since, author))
 	if err != nil {
-		return RepoCommits{}, fmt.Errorf("git log failed: %w", err)
+		return RepoCommits{}, fmt.Errorf("jj log failed: %w", err)
 	}
 
-	ghURL := resolveGitHubURL(path)
+	ghURL := resolveGitHubURL(jjc, path)
 	name := repoNameFromURL(ghURL, path)
 
 	rc := RepoCommits{
@@ -276,26 +275,31 @@ func collectRepoCommits(path, since, author string) (RepoCommits, error) {
 		Branch:    branch,
 	}
 
-	// Parse the output: commit lines have a tab, file lines don't
-	var current *CommitDetail
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
+	for _, e := range entries {
+		short := e.CommitID
+		if len(short) > 7 {
+			short = short[:7]
 		}
-		if strings.Contains(line, "\t") {
-			// This is a commit line: SHA<tab>message
-			parts := strings.SplitN(line, "\t", 2)
-			commit := CommitDetail{SHA: parts[0]}
-			if len(parts) > 1 {
-				commit.Message = parts[1]
-			}
-			rc.Commits = append(rc.Commits, commit)
-			current = &rc.Commits[len(rc.Commits)-1]
-		} else if current != nil {
-			// This is a filename
-			current.Files = append(current.Files, line)
+		commit := CommitDetail{
+			SHA:     short,
+			Message: firstLine(e.Description),
 		}
+		// File list per commit. Errors are non-fatal; commits with no
+		// resolvable diff (e.g. merges) just get an empty Files list.
+		if files, err := jjc.ChangedFiles(path, e.CommitID); err == nil {
+			commit.Files = files
+		}
+		rc.Commits = append(rc.Commits, commit)
 	}
 
 	return rc, nil
+}
+
+// firstLine returns the first newline-delimited line of s, used to extract
+// a short commit subject from a multi-line description.
+func firstLine(s string) string {
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		return strings.TrimSpace(s[:idx])
+	}
+	return strings.TrimSpace(s)
 }
