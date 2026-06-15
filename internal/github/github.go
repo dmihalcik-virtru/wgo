@@ -210,6 +210,7 @@ type PRInfo struct {
 	Number      int            `json:"number"`
 	State       string         `json:"state"`
 	Branch      string         `json:"headRefName"`
+	BaseRefName string         `json:"baseRefName"`
 	HeadSHA     string         `json:"headRefOid"`
 	MergeCommit *PRMergeCommit `json:"mergeCommit"`
 	MergedAt    *time.Time     `json:"mergedAt"`

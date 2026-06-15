@@ -47,15 +47,16 @@ type apiUser struct {
 // shape used by callers.
 func (p *apiPullRequest) toPRInfo() *PRInfo {
 	info := &PRInfo{
-		Number:   p.Number,
-		State:    p.State,
-		Branch:   p.Head.Ref,
-		HeadSHA:  p.Head.SHA,
-		MergedAt: p.MergedAt,
-		ClosedAt: p.ClosedAt,
-		URL:      p.HTMLURL,
-		Title:    p.Title,
-		Author:   p.User.Login,
+		Number:      p.Number,
+		State:       p.State,
+		Branch:      p.Head.Ref,
+		BaseRefName: p.Base.Ref,
+		HeadSHA:     p.Head.SHA,
+		MergedAt:    p.MergedAt,
+		ClosedAt:    p.ClosedAt,
+		URL:         p.HTMLURL,
+		Title:       p.Title,
+		Author:      p.User.Login,
 	}
 	if p.MergeSHA != nil && *p.MergeSHA != "" {
 		info.MergeCommit = &PRMergeCommit{OID: *p.MergeSHA}
