@@ -28,6 +28,36 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install jj (Jujutsu)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fetch the latest jj release tarball from GitHub. No version pin
+          # by design (gh-21 constraint) — the schema-drift smoke test in
+          # internal/jj catches breaking template changes at PR time.
+          asset_url="$(
+            curl -fsSL https://api.github.com/repos/jj-vcs/jj/releases/latest \
+              | grep -E '"browser_download_url".*x86_64-unknown-linux-musl.tar.gz"' \
+              | head -n1 \
+              | sed -E 's/.*"(https[^"]+)".*/\1/'
+          )"
+          if [ -z "$asset_url" ]; then
+            echo "could not locate a jj x86_64-unknown-linux-musl asset"
+            exit 1
+          fi
+          echo "Downloading $asset_url"
+          curl -fsSL "$asset_url" -o /tmp/jj.tar.gz
+          mkdir -p /tmp/jj-extract
+          tar -xzf /tmp/jj.tar.gz -C /tmp/jj-extract
+          # Locate the jj binary inside the extracted tree and move it to PATH.
+          jj_bin="$(find /tmp/jj-extract -type f -name jj | head -n1)"
+          if [ -z "$jj_bin" ]; then
+            echo "jj binary not found in extracted tarball"
+            exit 1
+          fi
+          install -m 0755 "$jj_bin" /usr/local/bin/jj
+          jj --version
+
       - name: Verify formatting
         shell: bash
         run: |
