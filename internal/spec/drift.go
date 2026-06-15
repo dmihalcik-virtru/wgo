@@ -3,11 +3,21 @@ package spec
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/virtru/wgo/internal/jj"
 )
+
+// driftClient is the jj surface drift detection needs. Tests inject a fake.
+type driftClient interface {
+	Log(repo, revset string) ([]jj.LogEntry, error)
+	BookmarkList(repo string, opts jj.BookmarkListOpts) ([]jj.Bookmark, error)
+}
+
+// jjClient is the package-level jj client; tests may override it.
+var jjClient driftClient = jj.NewCLI()
 
 // DriftKind classifies why a spec/branch pair is drifting.
 type DriftKind string
@@ -91,69 +101,30 @@ func DetectAll(repoRoot string) ([]DriftReport, error) {
 	return reports, nil
 }
 
-// countImplCommitsAfter counts commits on branch since `since` touching files outside spec/.
+// countImplCommitsAfter counts commits on branch since `since` touching files
+// outside spec/. Uses jj's `files()` revset with a negated `spec` fileset to
+// have jj do the filtering server-side.
 func countImplCommitsAfter(repoRoot, branch string, since time.Time) (int, error) {
 	sinceStr := since.UTC().Format("2006-01-02T15:04:05Z")
-	out, err := exec.Command("git", "-C", repoRoot, "log", branch,
-		"--after="+sinceStr, "--name-only", "--format=%H").Output()
+	revset := fmt.Sprintf(
+		`ancestors(bookmarks(exact:%q)) & author_date(after:%q) & files(~root:"spec")`,
+		branch, sinceStr,
+	)
+	entries, err := jjClient.Log(repoRoot, revset)
 	if err != nil {
 		return 0, err
 	}
-
-	count := 0
-	inCommit := false
-	hasNonSpec := false
-
-	for _, line := range strings.Split(string(out), "\n") {
-		if line == "" {
-			if inCommit && hasNonSpec {
-				count++
-			}
-			inCommit = false
-			hasNonSpec = false
-			continue
-		}
-		if isHexStr(line, 40) {
-			if inCommit && hasNonSpec {
-				count++
-			}
-			inCommit = true
-			hasNonSpec = false
-			continue
-		}
-		if inCommit && !strings.HasPrefix(line, "spec/") {
-			hasNonSpec = true
-		}
-	}
-	if inCommit && hasNonSpec {
-		count++
-	}
-
-	return count, nil
-}
-
-func isHexStr(s string, n int) bool {
-	if len(s) != n {
-		return false
-	}
-	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			return false
-		}
-	}
-	return true
+	return len(entries), nil
 }
 
 func listBranches(repoRoot string) ([]string, error) {
-	out, err := exec.Command("git", "-C", repoRoot, "branch", "--format=%(refname:short)").Output()
+	bookmarks, err := jjClient.BookmarkList(repoRoot, jj.BookmarkListOpts{Local: true})
 	if err != nil {
 		return nil, err
 	}
-	var branches []string
-	for _, line := range strings.Split(string(out), "\n") {
-		if b := strings.TrimSpace(line); b != "" {
-			branches = append(branches, b)
-		}
+	branches := make([]string, 0, len(bookmarks))
+	for _, b := range bookmarks {
+		branches = append(branches, b.Name)
 	}
 	return branches, nil
 }

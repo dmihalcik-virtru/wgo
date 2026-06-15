@@ -101,19 +101,3 @@ updated: 2026-05-01T00:00:00Z
 	assert.Empty(t, reports, "terminal spec should not be orphaned")
 }
 
-func TestIsHexStr(t *testing.T) {
-	tests := []struct {
-		s    string
-		n    int
-		want bool
-	}{
-		{"abc123def456abc123def456abc123def456abc1", 40, true},
-		{"abc123def456abc123def456abc123def456abc1", 39, false},
-		{"abc123def456abc123def456abc123def456abcg", 40, false},
-		{"", 0, true},
-	}
-	for _, tt := range tests {
-		got := isHexStr(tt.s, tt.n)
-		assert.Equal(t, tt.want, got, "isHexStr(%q, %d)", tt.s, tt.n)
-	}
-}
