@@ -12,8 +12,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/cleanup"
 	"github.com/virtru/wgo/internal/config"
-	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/store"
 )
@@ -55,12 +55,12 @@ func runClean(cmd *cobra.Command, args []string) error {
 	}
 	cfg := config.Get()
 
-	gitClient := git.New("")
+	jjc := jj.NewCLI()
 	ghClient := github.NewClient()
 
 	fmt.Fprintln(os.Stderr, "Scanning for cleanup candidates...")
 
-	candidates, err := cleanup.FindCandidates(cfg, gitClient, ghClient)
+	candidates, err := cleanup.FindCandidates(cfg, jjc, ghClient)
 	if err != nil {
 		return fmt.Errorf("failed to find candidates: %w", err)
 	}
@@ -127,7 +127,7 @@ func runClean(cmd *cobra.Command, args []string) error {
 			promptPath := c.DisplayPath()
 			promptReason := c.Reason
 			if isTerminal() {
-				remoteURL := getRemoteURL(gitClient, c.RepoPath)
+				remoteURL := getRemoteURL(jjc, c.RepoPath)
 				if c.Branch != "" {
 					if branchURL := links.BranchURL(remoteURL, c.Branch); branchURL != "" {
 						promptPath = strings.Replace(promptPath, c.Branch, links.Hyperlink(branchURL, c.Branch), 1)
@@ -159,7 +159,7 @@ func runClean(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		if err := executeRemoval(c, gitClient, ghClient, state); err != nil {
+		if err := executeRemoval(c, jjc, ghClient, state); err != nil {
 			fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
 		} else {
 			fmt.Printf("  Removed %s %s\n", c.Kind, c.DisplayPath())
@@ -184,16 +184,17 @@ func runClean(cmd *cobra.Command, args []string) error {
 // KindRepo is re-exported from cleanup for use inside this file.
 const KindRepo = cleanup.KindRepo
 
-// remoteURLCache caches remote URLs by repo path to avoid repeated git calls.
+// remoteURLCache caches origin URLs by repo path to avoid repeated jj calls.
 var remoteURLCache = map[string]string{}
 
-func getRemoteURL(gitClient git.Client, repoPath string) string {
+func getRemoteURL(jjc jj.Client, repoPath string) string {
 	if u, ok := remoteURLCache[repoPath]; ok {
 		return u
 	}
-	u, err := gitClient.RemoteURL(repoPath)
-	if err != nil {
-		u = ""
+	remotes, err := jjc.RemoteURLs(repoPath)
+	u := ""
+	if err == nil {
+		u = remotes["origin"]
 	}
 	remoteURLCache[repoPath] = u
 	return u
@@ -203,7 +204,7 @@ var prNumberRe = regexp.MustCompile(`PR #(\d+)`)
 
 func printCandidateTable(candidates []Candidate) {
 	tty := isTerminal()
-	gitClient := git.New("")
+	jjc := jj.NewCLI()
 
 	fmt.Printf("\n%-12s %-40s %s\n", "KIND", "LOCATION", "REASON")
 	fmt.Println(strings.Repeat("-", 80))
@@ -212,7 +213,7 @@ func printCandidateTable(candidates []Candidate) {
 
 		// Link branch name in display path
 		if tty && c.Branch != "" {
-			remoteURL := getRemoteURL(gitClient, c.RepoPath)
+			remoteURL := getRemoteURL(jjc, c.RepoPath)
 			branchURL := links.BranchURL(remoteURL, c.Branch)
 			if branchURL != "" {
 				linked := links.Hyperlink(branchURL, c.Branch)
@@ -238,59 +239,56 @@ func printCandidateTable(candidates []Candidate) {
 
 type Candidate = cleanup.Candidate
 
-func executeRemoval(c Candidate, gitClient git.Client, ghClient github.Client, _ *store.State) error {
+func executeRemoval(c Candidate, jjc jj.Client, ghClient github.Client, _ *store.State) error {
 	switch c.Kind {
 	case cleanup.KindWorktree:
-		// Find the main repo for this worktree
-		repoPath := c.RepoPath
-		if err := gitClient.RemoveWorktree(repoPath, c.Path, cleanForce); err != nil {
-			return err
+		// Look up the workspace name from its on-disk path.
+		wsName := workspaceNameForPath(jjc, c.RepoPath, c.Path)
+		if wsName != "" {
+			if err := jjc.WorkspaceForget(c.RepoPath, wsName); err != nil {
+				return err
+			}
 		}
-		// Prune after removal
-		_ = gitClient.PruneWorktrees(repoPath)
-		return nil
+		return os.RemoveAll(c.Path)
 
 	case cleanup.KindLocalBranch:
 		force := cleanForce
 		if !force && c.PRInfo != nil && c.PRInfo.IsMerged() {
-			defaultBranch, _ := gitClient.DefaultBranch(c.RepoPath)
-			if defaultBranch == "" {
-				defaultBranch = "main"
-			}
-			target := "origin/" + defaultBranch
+			defaultBranch := defaultBranchOrFallback(jjc, c.RepoPath)
+			target := defaultBranch + "@origin"
 
-			// Check 1: local tip is reachable from target (standard merge).
-			if hasExtra, err := gitClient.HasLocalOnlyCommits(c.RepoPath, c.Branch, target); err == nil && !hasExtra {
+			// Check 1: local bookmark commit is fully contained in target
+			// (standard merge — bookmark's history matches target).
+			if isContained(jjc, c.RepoPath, c.Branch, target) {
 				force = true
 			}
 
-			// Check 2: PR merge commit is an ancestor of target (squash/rebase merge).
+			// Check 2: PR merge commit is an ancestor of target
+			// (squash/rebase merge — GitHub created a new commit on target).
 			if !force && c.PRInfo.MergeCommit != nil && c.PRInfo.MergeCommit.OID != "" {
 				sha := c.PRInfo.MergeCommit.OID
-				isAnc, ancErr := gitClient.IsAncestor(c.RepoPath, sha, target)
-				if ancErr != nil {
-					if fetchErr := gitClient.Fetch(c.RepoPath); fetchErr == nil {
-						isAnc, _ = gitClient.IsAncestor(c.RepoPath, sha, target)
-					}
-				}
-				if isAnc {
+				if isAncestor(jjc, c.RepoPath, sha, target) {
 					force = true
-				}
-			}
-
-			// Check 3: local tip has no commits beyond the pushed PR head.
-			if !force && c.PRInfo.HeadSHA != "" {
-				if hasExtra, err := gitClient.HasLocalOnlyCommits(c.RepoPath, c.Branch, c.PRInfo.HeadSHA); err == nil && !hasExtra {
-					force = true
-				}
-			}
-
-			// Check 4: local tip has no commits beyond the upstream tracking ref.
-			if !force {
-				if upstream, _ := gitClient.UpstreamRef(c.RepoPath, c.Branch); upstream != "" {
-					if hasExtra, err := gitClient.HasLocalOnlyCommits(c.RepoPath, c.Branch, upstream); err == nil && !hasExtra {
+				} else if fetchErr := jjc.GitFetch(c.RepoPath, "", nil); fetchErr == nil {
+					if isAncestor(jjc, c.RepoPath, sha, target) {
 						force = true
 					}
+				}
+			}
+
+			// Check 3: local bookmark has no commits beyond the pushed PR head.
+			if !force && c.PRInfo.HeadSHA != "" {
+				if isContained(jjc, c.RepoPath, c.Branch, c.PRInfo.HeadSHA) {
+					force = true
+				}
+			}
+
+			// Check 4: local bookmark has no commits beyond its remote
+			// counterpart (jj's bookmark@origin equivalent of git upstream).
+			if !force {
+				remoteRef := c.Branch + "@origin"
+				if isContained(jjc, c.RepoPath, c.Branch, remoteRef) {
+					force = true
 				}
 			}
 
@@ -303,20 +301,15 @@ func executeRemoval(c Candidate, gitClient git.Client, ghClient github.Client, _
 				if c.PRInfo.HeadSHA != "" {
 					reasons = append(reasons, fmt.Sprintf("local commits exist beyond pushed PR head (%s)", c.PRInfo.HeadSHA[:7]))
 				}
-				upstream, _ := gitClient.UpstreamRef(c.RepoPath, c.Branch)
-				if upstream == "" {
-					reasons = append(reasons, "no upstream branch configured")
-				} else {
-					reasons = append(reasons, fmt.Sprintf("local commits exist beyond upstream (%s)", upstream))
-				}
-				return fmt.Errorf("cannot verify branch is safe to delete:\n- %s\nuse --force to delete anyway", strings.Join(reasons, "\n- "))
+				reasons = append(reasons, fmt.Sprintf("local commits exist beyond remote bookmark (%s@origin)", c.Branch))
+				return fmt.Errorf("cannot verify bookmark is safe to delete:\n- %s\nuse --force to delete anyway", strings.Join(reasons, "\n- "))
 			}
 		}
-		return gitClient.DeleteBranch(c.RepoPath, c.Branch, force)
+		return jjc.BookmarkDelete(c.RepoPath, c.Branch)
 
 	case cleanup.KindRemoteBranch:
 		if ghClient == nil || !ghClient.Available() {
-			return fmt.Errorf("gh CLI not available for remote branch deletion")
+			return fmt.Errorf("github client not available for remote branch deletion")
 		}
 		return ghClient.DeleteRemoteBranch(c.RepoPath, c.Branch)
 
@@ -326,4 +319,49 @@ func executeRemoval(c Candidate, gitClient git.Client, ghClient github.Client, _
 	default:
 		return fmt.Errorf("unknown candidate kind: %v", c.Kind)
 	}
+}
+
+// defaultBranchOrFallback returns the default branch for repoPath, falling
+// back to "main" on any error.
+func defaultBranchOrFallback(jjc jj.Client, repoPath string) string {
+	branch, err := defaultBranchFor(jjc, repoPath)
+	if err != nil || branch == "" {
+		return "main"
+	}
+	return branch
+}
+
+// isContained returns true when src has no commits beyond dst — i.e. src is
+// fully merged into dst. Equivalent to git's `<dst>..<src>` returning empty.
+func isContained(jjc jj.Client, repo, src, dst string) bool {
+	n, err := jjc.CountRevset(repo, fmt.Sprintf("(%s)..(%s)", dst, src))
+	if err != nil {
+		return false
+	}
+	return n == 0
+}
+
+// isAncestor reports whether anc is an ancestor of desc.
+func isAncestor(jjc jj.Client, repo, anc, desc string) bool {
+	n, err := jjc.CountRevset(repo, fmt.Sprintf("(%s) & ::(%s)", anc, desc))
+	if err != nil {
+		return false
+	}
+	return n > 0
+}
+
+// workspaceNameForPath returns the jj workspace name whose on-disk root
+// matches wsPath, or "" if no match. Required because jj.WorkspaceForget
+// takes a workspace name, not a path.
+func workspaceNameForPath(jjc jj.Client, repoPath, wsPath string) string {
+	ws, err := jjc.ListWorkspaces(repoPath)
+	if err != nil {
+		return ""
+	}
+	for _, w := range ws {
+		if w.Path == wsPath {
+			return w.Name
+		}
+	}
+	return ""
 }

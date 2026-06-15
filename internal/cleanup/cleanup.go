@@ -7,8 +7,8 @@ import (
 
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/discovery"
-	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
 )
 
 // CandidateKind identifies what type of item is a cleanup candidate.
@@ -48,14 +48,14 @@ type Candidate struct {
 }
 
 // FindCandidates discovers all cleanup candidates across tracked repos.
-func FindCandidates(cfg *config.Config, gitClient git.Client, ghClient github.Client) ([]Candidate, error) {
+func FindCandidates(cfg *config.Config, jjc jj.Client, ghClient github.Client) ([]Candidate, error) {
 	disc := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
 	repos, err := disc.DiscoverAll()
 	if err != nil {
 		return nil, fmt.Errorf("discovery failed: %w", err)
 	}
 
-	// Only process main repos (not worktrees found during discovery)
+	// Only process main workspaces (not secondary workspaces found during discovery)
 	var candidates []Candidate
 	seen := map[string]bool{}
 	for _, repo := range repos {
@@ -67,7 +67,7 @@ func FindCandidates(cfg *config.Config, gitClient git.Client, ghClient github.Cl
 		}
 		seen[repo.Path] = true
 
-		found, err := findRepoCandidate(repo.Path, gitClient, ghClient, cfg.Status.StaleDays)
+		found, err := findRepoCandidate(repo.Path, jjc, ghClient, cfg.Status.StaleDays)
 		if err != nil {
 			continue
 		}
@@ -77,37 +77,79 @@ func FindCandidates(cfg *config.Config, gitClient git.Client, ghClient github.Cl
 	return candidates, nil
 }
 
-func findRepoCandidate(repoPath string, gitClient git.Client, ghClient github.Client, staleDays int) ([]Candidate, error) {
+// repoDefaultBranch derives the GitHub default branch for a jj repo path,
+// falling back to "main" on any error.
+func repoDefaultBranch(jjc jj.Client, repoPath string) string {
+	remotes, err := jjc.RemoteURLs(repoPath)
+	if err != nil {
+		return "main"
+	}
+	url := remotes["origin"]
+	if url == "" {
+		return "main"
+	}
+	slug := github.SlugFromRemoteURL(url)
+	if slug == "" {
+		return "main"
+	}
+	parts := splitSlug(slug)
+	if parts == nil {
+		return "main"
+	}
+	branch, err := github.RepoDefaultBranch(parts[0], parts[1])
+	if err != nil || branch == "" {
+		return "main"
+	}
+	return branch
+}
+
+func splitSlug(slug string) []string {
+	for i := 0; i < len(slug); i++ {
+		if slug[i] == '/' {
+			return []string{slug[:i], slug[i+1:]}
+		}
+	}
+	return nil
+}
+
+// workspaceBookmark returns the first local bookmark on the workspace's @,
+// or "" when the @ has no bookmark.
+func workspaceBookmark(jjc jj.Client, wsPath string) string {
+	ch, err := jjc.CurrentChange(wsPath)
+	if err != nil || len(ch.Bookmarks) == 0 {
+		return ""
+	}
+	return ch.Bookmarks[0]
+}
+
+func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, staleDays int) ([]Candidate, error) {
 	var candidates []Candidate
 
-	defaultBranch, err := gitClient.DefaultBranch(repoPath)
-	if err != nil {
-		defaultBranch = "main"
-	}
+	defaultBranch := repoDefaultBranch(jjc, repoPath)
 
-	// --- Worktrees ---
-	worktrees, err := gitClient.ListWorktrees(repoPath)
+	// --- Workspaces (the jj equivalent of git worktrees) ---
+	workspaces, err := jjc.ListWorkspaces(repoPath)
 	if err == nil {
-		for _, wt := range worktrees {
-			if wt.IsMain {
+		for _, ws := range workspaces {
+			if ws.Name == "default" {
 				continue
 			}
+			bookmark := workspaceBookmark(jjc, ws.Path)
 			c := Candidate{
 				Kind:     KindWorktree,
-				Path:     wt.Path,
+				Path:     ws.Path,
 				RepoPath: repoPath,
-				Branch:   wt.Branch,
+				Branch:   bookmark,
 			}
 
 			// Check if dirty
-			status, err := gitClient.Status(wt.Path)
-			if err == nil {
-				c.IsDirty = status.Modified > 0 || status.Staged > 0 || status.Added > 0
+			if st, err := jjc.Status(ws.Path); err == nil {
+				c.IsDirty = !st.Clean
 			}
 
 			// Check PR status
-			if ghClient != nil && ghClient.Available() && wt.Branch != "" {
-				pr, _ := ghClient.GetPRStatus(repoPath, wt.Branch)
+			if ghClient != nil && ghClient.Available() && bookmark != "" {
+				pr, _ := ghClient.GetPRStatus(repoPath, bookmark)
 				if pr != nil {
 					c.PRInfo = pr
 					if pr.IsMerged() {
@@ -123,10 +165,9 @@ func findRepoCandidate(repoPath string, gitClient git.Client, ghClient github.Cl
 				}
 			}
 
-			// Check if branch is locally merged into default
-			if wt.Branch != "" && wt.Branch != defaultBranch {
-				merged, err := gitClient.IsBranchMerged(repoPath, wt.Branch, defaultBranch)
-				if err == nil && merged {
+			// Check if bookmark is locally merged into default.
+			if bookmark != "" && bookmark != defaultBranch {
+				if isMergedInto(jjc, repoPath, bookmark, defaultBranch+"@origin") {
 					c.Reason = fmt.Sprintf("merged into %s", defaultBranch)
 					candidates = append(candidates, c)
 				}
@@ -134,19 +175,20 @@ func findRepoCandidate(repoPath string, gitClient git.Client, ghClient github.Cl
 		}
 	}
 
-	// --- Local branches ---
-	branches, err := gitClient.ListLocalBranches(repoPath)
+	// --- Local bookmarks ---
+	localBookmarks, err := jjc.BookmarkList(repoPath, jj.BookmarkListOpts{Local: true})
 	if err != nil {
 		return candidates, nil
 	}
 
 	staleThreshold := time.Now().AddDate(0, 0, -staleDays)
 
-	for _, branch := range branches {
+	for _, bm := range localBookmarks {
+		branch := bm.Name
 		if branch == defaultBranch {
 			continue
 		}
-		if isWorktreeBranch(branch, worktrees) {
+		if isWorkspaceBookmark(jjc, branch, workspaces) {
 			// Already handled above
 			continue
 		}
@@ -183,9 +225,8 @@ func findRepoCandidate(repoPath string, gitClient git.Client, ghClient github.Cl
 			}
 		}
 
-		// Check local merge
-		merged, err := gitClient.IsBranchMerged(repoPath, branch, defaultBranch)
-		if err == nil && merged {
+		// Check local merge into default@origin.
+		if isMergedInto(jjc, repoPath, branch, defaultBranch+"@origin") {
 			c.Reason = fmt.Sprintf("merged into %s", defaultBranch)
 			candidates = append(candidates, c)
 			continue
@@ -193,7 +234,12 @@ func findRepoCandidate(repoPath string, gitClient git.Client, ghClient github.Cl
 
 		// Check staleness by last commit
 		_ = staleThreshold
-		// (commit time check could be added here via LastCommit)
+		// (commit time check could be added here via Log)
+	}
+
+	branches := make([]string, 0, len(localBookmarks))
+	for _, bm := range localBookmarks {
+		branches = append(branches, bm.Name)
 	}
 
 	// --- Stale remote branches that have merged PRs ---
@@ -228,10 +274,25 @@ func findRepoCandidate(repoPath string, gitClient git.Client, ghClient github.Cl
 	return candidates, nil
 }
 
-// isWorktreeBranch returns true if the branch is checked out in a non-main worktree.
-func isWorktreeBranch(branch string, worktrees []git.WorktreeInfo) bool {
-	for _, wt := range worktrees {
-		if !wt.IsMain && wt.Branch == branch {
+// isMergedInto reports whether all commits reachable from branch are also
+// reachable from target. Implemented via the jj revset `(target)..(branch)`
+// — zero result means branch is fully contained in target's history.
+func isMergedInto(jjc jj.Client, repoPath, branch, target string) bool {
+	n, err := jjc.CountRevset(repoPath, fmt.Sprintf("(%s)..(%s)", target, branch))
+	if err != nil {
+		return false
+	}
+	return n == 0
+}
+
+// isWorkspaceBookmark returns true if the named bookmark is currently
+// attached to any non-default workspace's @.
+func isWorkspaceBookmark(jjc jj.Client, branch string, workspaces []jj.Workspace) bool {
+	for _, ws := range workspaces {
+		if ws.Name == "default" {
+			continue
+		}
+		if workspaceBookmark(jjc, ws.Path) == branch {
 			return true
 		}
 	}

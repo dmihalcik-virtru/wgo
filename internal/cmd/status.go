@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/discovery"
-	"github.com/virtru/wgo/internal/git"
+	gh "github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
+	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/status"
 	"github.com/virtru/wgo/internal/store"
@@ -139,7 +140,7 @@ func runStatus() error {
 	state, _ := s.LoadState()
 
 	// Build collector
-	gitClient := git.New("")
+	jjc := jj.NewCLI()
 	staleThreshold := time.Duration(staleDays) * 24 * time.Hour
 
 	collectorOpts := []status.CollectorOption{
@@ -149,7 +150,7 @@ func runStatus() error {
 		collectorOpts = append(collectorOpts, status.WithSince(since))
 	}
 
-	collector := status.NewCollector(gitClient, p, state, collectorOpts...)
+	collector := status.NewCollector(jjc, p, state, collectorOpts...)
 
 	// Watch mode
 	if statusWatch {
@@ -263,18 +264,20 @@ func handleOpen(activities []models.RepoActivity, row int) error {
 		return fmt.Errorf("row %d out of range (1-%d)", row, len(activities))
 	}
 
-	path := activities[row-1].Path
-
-	// Try gh to open PR
-	ghCmd := exec.Command("gh", "pr", "view", "--web")
-	ghCmd.Dir = path
-	ghCmd.Stdout = os.Stdout
-	ghCmd.Stderr = os.Stderr
-	if err := ghCmd.Run(); err == nil {
-		return nil
+	a := activities[row-1]
+	// Prefer the PR URL the collector already resolved; otherwise look it up
+	// fresh via the GitHub HTTP client. Falls back to opening the workspace
+	// path in the OS file manager if no PR exists.
+	if a.PRURL != "" {
+		return links.OpenInBrowser(a.PRURL)
 	}
-
-	// Fallback: open path in Finder (macOS)
-	openCmd := exec.Command("open", path)
-	return openCmd.Run()
+	if a.Branch != "" {
+		ghClient := gh.NewClient()
+		if ghClient.Available() {
+			if pr, _ := ghClient.GetPRStatus(a.Path, a.Branch); pr != nil && pr.URL != "" {
+				return links.OpenInBrowser(pr.URL)
+			}
+		}
+	}
+	return links.OpenInBrowser("file://" + a.Path)
 }

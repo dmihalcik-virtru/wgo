@@ -11,6 +11,7 @@ import (
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
 	specpkg "github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/status"
 )
@@ -125,6 +126,7 @@ func buildPairRows(prs []github.ExtendedPRInfo) []teamBranchRow {
 
 // collectTogetherTeamRows finds specs co-authored by both users.
 func collectTogetherTeamRows(repoPaths []string, myAuthor, pairAuthor string) []teamBranchRow {
+	jjc := jj.NewCLI()
 	var rows []teamBranchRow
 	seen := map[string]bool{}
 	for _, repoPath := range repoPaths {
@@ -148,7 +150,7 @@ func collectTogetherTeamRows(repoPaths []string, myAuthor, pairAuthor string) []
 			}
 			seen[key] = true
 			rows = append(rows, teamBranchRow{
-				Repo:   repoDisplayName(repoPath),
+				Repo:   repoDisplayName(jjc, repoPath),
 				Ticket: parsed.Frontmatter.Ticket,
 				Status: string(parsed.Frontmatter.Status),
 			})

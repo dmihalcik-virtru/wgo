@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/store"
 )
 
@@ -36,23 +36,19 @@ func trackRepository(path string) error {
 		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
-	// Create git client for this path
-	gitClient := git.New(absPath)
-
-	isRepo, err := gitClient.IsRepo(absPath)
-	if err != nil || !isRepo {
-		return fmt.Errorf("not a git repository")
+	jjc := jj.NewCLI()
+	if !jjc.IsRepo(absPath) {
+		return fmt.Errorf("not a jj repository")
 	}
 
-	repoName, err := gitClient.RepoName(absPath)
+	root, err := jjc.Root(absPath)
 	if err != nil {
-		return fmt.Errorf("failed to get repository name: %w", err)
+		return fmt.Errorf("failed to get repository root: %w", err)
 	}
+	repoName := filepath.Base(root)
 
-	remoteURL, err := gitClient.RemoteURL(absPath)
-	if err != nil {
-		remoteURL = ""
-	}
+	remotes, _ := jjc.RemoteURLs(absPath)
+	remoteURL := remotes["origin"]
 
 	// Load and update state
 	s, err := store.New()

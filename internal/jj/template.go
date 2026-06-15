@@ -174,6 +174,7 @@ func ParseBookmarks(stdout []byte) ([]Bookmark, error) {
 			Remote:   raw.Remote,
 			Tracked:  raw.Tracked,
 			Conflict: raw.Conflict,
+			Present:  raw.Present,
 		})
 	}
 	return out, nil

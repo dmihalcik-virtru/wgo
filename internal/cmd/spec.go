@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
-	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
@@ -118,13 +118,31 @@ func init() {
 
 // --- helpers ---
 
-// repoRoot returns the git repository root for the current working directory.
-func repoRoot() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+// repoNameFromJJRoot returns the basename of the main workspace root for
+// the workspace containing path, or "" on any error. This is the jj-side
+// equivalent of the deleted git.CLIClient.RepoName helper.
+func repoNameFromJJRoot(jjc jj.Client, path string) string {
+	root, err := jjc.MainWorkspaceRoot(path)
 	if err != nil {
-		return "", fmt.Errorf("not a git repository")
+		root, err = jjc.Root(path)
+		if err != nil {
+			return ""
+		}
 	}
-	return strings.TrimSpace(string(out)), nil
+	return filepath.Base(root)
+}
+
+// repoRoot returns the jj workspace root for the current working directory.
+func repoRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getwd: %w", err)
+	}
+	root, err := jj.NewCLI().Root(cwd)
+	if err != nil {
+		return "", fmt.Errorf("not a jj repository")
+	}
+	return root, nil
 }
 
 // resolveSpecTarget returns repoRoot and ticket for a command that takes an optional TICKET arg.
@@ -138,11 +156,11 @@ func resolveSpecTarget(args []string) (root, ticket string, err error) {
 		ticket = strings.ToUpper(args[0])
 		return
 	}
-	client := git.New("")
+	jjc := jj.NewCLI()
 	cwd, _ := os.Getwd()
-	branch, gitErr := client.CurrentBranch(cwd)
-	if gitErr != nil {
-		err = fmt.Errorf("get current branch: %w", gitErr)
+	branch := currentBookmark(jjc, cwd)
+	if branch == "" {
+		err = fmt.Errorf("could not determine current bookmark; check `jj log -r @`")
 		return
 	}
 	ticket = spec.ParseTicketFromBranch(branch)
@@ -203,13 +221,13 @@ func runSpecNew(ticket, title string) error {
 	}
 	cfg := config.Get()
 
-	client := git.New("")
+	jjc := jj.NewCLI()
 	cwd, _ := os.Getwd()
-	branch, _ := client.CurrentBranch(cwd)
+	branch := currentBookmark(jjc, cwd)
 
 	var branches []string
 	if branch != "" {
-		repoName, _ := client.RepoName(cwd)
+		repoName := repoNameFromJJRoot(jjc, cwd)
 		if repoName != "" {
 			branches = []string{repoName + ":" + branch}
 		} else {
@@ -239,7 +257,7 @@ func runSpecNew(ticket, title string) error {
 	// Update plan and state.
 	s, _ := store.New()
 	if s.EnsureDir() == nil && branch != "" {
-		repoName, _ := client.RepoName(cwd)
+		repoName := repoNameFromJJRoot(jjc, cwd)
 		if content, err := s.LoadPlan(); err == nil {
 			if p, err := plan.Parse(content); err == nil {
 				p.AddBranch(repoName, branch, ticket+": "+title, specRel)
@@ -331,9 +349,9 @@ func runSpecEdit(args []string) error {
 	}
 
 	// Sync annotation.
-	client := git.New("")
+	jjc := jj.NewCLI()
 	cwd, _ := os.Getwd()
-	if branch, err := client.CurrentBranch(cwd); err == nil {
+	if branch := currentBookmark(jjc, cwd); branch != "" {
 		s, _ := store.New()
 		if state, err := s.LoadState(); err == nil {
 			state.SetSpec(root, branch, filepath.Join("spec", ticket+".md"), string(newStatus))
@@ -524,11 +542,11 @@ func runSpecLink(ticket string) error {
 		return err
 	}
 
-	client := git.New("")
+	jjc := jj.NewCLI()
 	cwd, _ := os.Getwd()
-	branch, err := client.CurrentBranch(cwd)
-	if err != nil {
-		return fmt.Errorf("get current branch: %w", err)
+	branch := currentBookmark(jjc, cwd)
+	if branch == "" {
+		return fmt.Errorf("could not determine current bookmark; check `jj log -r @`")
 	}
 
 	// Resolve ticket from arg, flag, or branch name.
@@ -548,7 +566,7 @@ func runSpecLink(ticket string) error {
 		return fmt.Errorf("no spec/%s.md found — run: wgo spec new %s", ticket, ticket)
 	}
 
-	repoName, _ := client.RepoName(cwd)
+	repoName := repoNameFromJJRoot(jjc, cwd)
 	branchRef := branch
 	if repoName != "" {
 		branchRef = repoName + ":" + branch

@@ -40,6 +40,10 @@ type Bookmark struct {
 	Tracked bool
 	// Conflict is true when the bookmark has conflicting targets.
 	Conflict bool
+	// Present is true when the bookmark resolves to a commit. After
+	// `jj bookmark delete` of a tracked bookmark, jj keeps a tombstone
+	// entry with Present=false until the deletion is pushed to the remote.
+	Present bool
 }
 
 // Change is a single node in the jj change DAG.

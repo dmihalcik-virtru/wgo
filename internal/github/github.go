@@ -369,6 +369,21 @@ func (c *CLIClient) Available() bool {
 	return ghAvailable()
 }
 
+// GetPRByNumber fetches PR details by number, resolving the repo slug
+// from repoPath's "origin" remote. Used by `wgo pr --open N` to translate
+// a PR number into a browser URL without shelling out to `gh`.
+func (c *CLIClient) GetPRByNumber(repoPath string, number int) (*PRInfo, error) {
+	slug, err := c.resolveSlug(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	pr, err := c.fetchPR(slug, number)
+	if err != nil {
+		return nil, err
+	}
+	return pr.toPRInfo(), nil
+}
+
 // GetPRStatus fetches PR status for a branch. Returns (nil, nil) if no PR
 // exists, mirroring the previous behavior. Authentication failures and
 // transport errors are also collapsed to (nil, nil) for graceful degradation

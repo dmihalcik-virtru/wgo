@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,8 +10,8 @@ import (
 	"time"
 
 	"github.com/virtru/wgo/internal/discovery"
-	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/spec"
@@ -20,7 +21,7 @@ import (
 
 // Collector gathers status information from repositories in parallel.
 type Collector struct {
-	gitClient      git.Client
+	jjc            jj.Client
 	ghClient       *github.CLIClient
 	currentUser    string // cached current GitHub user login
 	plan           *plan.Plan
@@ -50,9 +51,9 @@ func WithRepoTimeout(d time.Duration) CollectorOption {
 }
 
 // NewCollector creates a new Collector.
-func NewCollector(gitClient git.Client, p *plan.Plan, state *store.State, opts ...CollectorOption) *Collector {
+func NewCollector(jjc jj.Client, p *plan.Plan, state *store.State, opts ...CollectorOption) *Collector {
 	c := &Collector{
-		gitClient:      gitClient,
+		jjc:            jjc,
 		ghClient:       github.NewClient(),
 		plan:           p,
 		state:          state,
@@ -98,23 +99,23 @@ func (c *Collector) CollectAll(ctx context.Context, repos []discovery.Discovered
 	for _, main := range mainRepos {
 		targets = append(targets, collectionTarget{repo: main})
 
-		worktrees, err := c.gitClient.ListWorktrees(main.Path)
+		workspaces, err := c.jjc.ListWorkspaces(main.Path)
 		if err != nil {
 			continue
 		}
 
-		for _, wt := range worktrees {
-			if wt.IsMain || wt.Path == main.Path {
+		for _, ws := range workspaces {
+			if ws.Name == "default" || ws.Path == main.Path {
 				continue
 			}
 			// Skip if already in discovery list (will be handled as dedup)
-			if discoveredPaths[wt.Path] {
+			if discoveredPaths[ws.Path] {
 				continue
 			}
-			name := filepath.Base(wt.Path)
+			name := filepath.Base(ws.Path)
 			targets = append(targets, collectionTarget{
 				repo: discovery.DiscoveredRepo{
-					Path: wt.Path,
+					Path: ws.Path,
 					Name: name,
 				},
 				isWorktree:   true,
@@ -192,54 +193,81 @@ func (c *Collector) collectOne(ctx context.Context, repo discovery.DiscoveredRep
 		}
 	}
 
-	// Branch
-	branch, err := c.gitClient.CurrentBranch(repo.Path)
+	// Bookmark on this workspace's @ (jj-side equivalent of "branch").
+	curChange, err := c.jjc.CurrentChange(repo.Path)
 	if err != nil {
 		activity.Branch = "?"
 		activity.State = models.StateClean
 		return activity
 	}
+	branch := ""
+	if len(curChange.Bookmarks) > 0 {
+		branch = curChange.Bookmarks[0]
+	}
+	if branch == "" {
+		branch = "(no bookmark)"
+	}
 	activity.Branch = branch
 
-	// Remote URL and GitHub links
-	remoteURL, err := c.gitClient.RemoteURL(repo.Path)
-	if err == nil {
-		activity.RemoteURL = remoteURL
-		activity.RepoURL = links.RepoURL(remoteURL)
-		activity.BranchURL = links.BranchURL(remoteURL, branch)
-	}
-
-	// Status
-	status, err := c.gitClient.Status(repo.Path)
-	if err == nil {
-		activity.Status = status
-	}
-
-	// Last commit
-	commit, err := c.gitClient.LastCommit(repo.Path)
-	if err == nil {
-		activity.LastCommit = commit
-	}
-
-	// Recent commits (if since is set)
-	if !c.since.IsZero() {
-		count, err := c.gitClient.RecentCommitCount(repo.Path, c.since)
-		if err == nil {
-			activity.RecentCommits = count
+	// Remote URL and GitHub links (origin remote only).
+	if remotes, err := c.jjc.RemoteURLs(repo.Path); err == nil {
+		remoteURL := remotes["origin"]
+		if remoteURL != "" {
+			activity.RemoteURL = remoteURL
+			activity.RepoURL = links.RepoURL(remoteURL)
+			activity.BranchURL = links.BranchURL(remoteURL, branch)
 		}
 	}
 
-	// Diff stat
-	diffStat, err := c.gitClient.DiffStat(repo.Path)
-	if err == nil {
-		activity.DiffStat = diffStat
+	// Status — convert jj's slice-based representation into the count-based
+	// models.GitStatus the renderers expect.
+	status := models.GitStatus{}
+	if jjStatus, err := c.jjc.Status(repo.Path); err == nil {
+		status = models.GitStatus{
+			Modified: len(jjStatus.Modified),
+			Added:    len(jjStatus.Added),
+			Deleted:  len(jjStatus.Deleted),
+		}
+	}
+	activity.Status = status
+
+	// Last commit — the workspace's @- (the last described change).
+	commit := models.CommitInfo{}
+	if entries, err := c.jjc.Log(repo.Path, "@-"); err == nil && len(entries) > 0 {
+		commit = models.CommitInfo{
+			Hash:    entries[0].CommitID,
+			Message: firstLine(entries[0].Description),
+			Author:  entries[0].AuthorEmail,
+			Date:    entries[0].AuthorTimestamp,
+		}
+	}
+	activity.LastCommit = commit
+
+	// Recent commits (if since is set). Counts commits visible on the
+	// current bookmark that were authored after `since`.
+	if !c.since.IsZero() && branch != "" && branch != "(no bookmark)" {
+		revset := fmt.Sprintf("(::%s) & author_date(after:%q)", branch, c.since.UTC().Format(time.RFC3339))
+		if n, err := c.jjc.CountRevset(repo.Path, revset); err == nil {
+			activity.RecentCommits = n
+		}
 	}
 
-	// Ahead/behind vs remote
-	ahead, behind, err := c.gitClient.AheadBehind(repo.Path, branch)
-	if err == nil {
-		activity.Status.Ahead = ahead
-		activity.Status.Behind = behind
+	// Diff stat on the working-copy commit.
+	if added, deleted, err := c.jjc.DiffStat(repo.Path, "@"); err == nil {
+		files, _ := c.jjc.ChangedFiles(repo.Path, "@")
+		activity.DiffStat = models.DiffStat{
+			FilesChanged: len(files),
+			Insertions:   added,
+			Deletions:    deleted,
+		}
+	}
+
+	// Ahead/behind vs origin.
+	if branch != "" && branch != "(no bookmark)" {
+		if ahead, behind, err := c.jjc.AheadBehind(repo.Path, branch); err == nil {
+			activity.Status.Ahead = ahead
+			activity.Status.Behind = behind
+		}
 	}
 
 	// Last activity: use last commit date, or check tracked files
@@ -308,13 +336,39 @@ func (c *Collector) getCurrentUser() string {
 	return c.currentUser
 }
 
-// getDefaultBranch retrieves the default branch for a repo.
+// getDefaultBranch retrieves the GitHub default branch for a repo by
+// resolving its origin remote URL and querying the GitHub API.
 func (c *Collector) getDefaultBranch(repoPath string) string {
-	branch, err := c.gitClient.DefaultBranch(repoPath)
+	remotes, err := c.jjc.RemoteURLs(repoPath)
+	if err != nil {
+		return ""
+	}
+	url := remotes["origin"]
+	if url == "" {
+		return ""
+	}
+	slug := github.SlugFromRemoteURL(url)
+	if slug == "" {
+		return ""
+	}
+	owner, repo, ok := strings.Cut(slug, "/")
+	if !ok {
+		return ""
+	}
+	branch, err := github.RepoDefaultBranch(owner, repo)
 	if err != nil {
 		return ""
 	}
 	return branch
+}
+
+// firstLine returns the first newline-delimited line of s, suitable for
+// use as a short commit subject.
+func firstLine(s string) string {
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		return strings.TrimSpace(s[:idx])
+	}
+	return strings.TrimSpace(s)
 }
 
 // classifyEngagementLevel determines engagement level based on repo state.

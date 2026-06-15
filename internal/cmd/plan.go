@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
-	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/store"
 )
@@ -137,24 +138,20 @@ func addAnnotation(reason string) error {
 		return fmt.Errorf("failed to get current directory: %w", err)
 	}
 
-	gitClient, err := git.NewFromCwd()
-	if err != nil {
-		return fmt.Errorf("failed to create git client: %w", err)
+	jjc := jj.NewCLI()
+	if !jjc.IsRepo(cwd) {
+		return fmt.Errorf("not a jj repository")
 	}
 
-	isRepo, err := gitClient.IsRepo(cwd)
-	if err != nil || !isRepo {
-		return fmt.Errorf("not a git repository")
-	}
-
-	repoName, err := gitClient.RepoName(cwd)
+	root, err := jjc.Root(cwd)
 	if err != nil {
-		return fmt.Errorf("failed to get repository name: %w", err)
+		return fmt.Errorf("failed to get repository root: %w", err)
 	}
+	repoName := filepath.Base(root)
 
-	branch, err := gitClient.CurrentBranch(cwd)
-	if err != nil {
-		return fmt.Errorf("failed to get current branch: %w", err)
+	branch := currentBookmark(jjc, cwd)
+	if branch == "" {
+		return fmt.Errorf("could not determine current bookmark; check `jj log -r @`")
 	}
 
 	// Load store

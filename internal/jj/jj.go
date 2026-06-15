@@ -36,6 +36,7 @@ type Client interface {
 	AheadBehind(repo, bookmark string) (ahead, behind int, err error)
 	DiffStat(repo, revset string) (added, deleted int, err error)
 	ChangedFiles(repo, revset string) ([]string, error)
+	CountRevset(repo, revset string) (int, error)
 
 	// Bookmarks
 	BookmarkList(repo string, opts BookmarkListOpts) ([]Bookmark, error)
@@ -421,6 +422,20 @@ func (c *CLIClient) bookmarkPairExists(repo, bookmark, remote string) (local, ha
 		}
 	}
 	return local, hasRemote, nil
+}
+
+// CountRevset returns the number of commits matching revset, suitable for
+// ancestry and containment checks. Callers compose their own revset string
+// rather than picking from a fixed menu of helpers.
+//
+// Examples:
+//
+//	count "(A)..(B)"          → commits in B not in A
+//	count "(X) & ::(Y)"       → 1 if X is an ancestor of Y, else 0
+//
+// An empty result returns 0 with no error.
+func (c *CLIClient) CountRevset(repo, revset string) (int, error) {
+	return c.countRevset(repo, revset)
 }
 
 // countRevset returns the number of commits matching revset. An empty

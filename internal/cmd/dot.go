@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/spec"
@@ -51,56 +51,65 @@ func init() {
 
 // showContext prints the current repo context. Returns (dirty, error).
 func showContext() (bool, error) {
-	client, err := git.NewFromCwd()
-	if err != nil {
-		return false, fmt.Errorf("failed to create git client: %w", err)
-	}
+	jjc := jj.NewCLI()
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		return false, fmt.Errorf("failed to get current directory: %w", err)
 	}
 
-	isRepo, err := client.IsRepo(cwd)
-	if err != nil {
-		return false, fmt.Errorf("failed to check if directory is a git repository: %w", err)
-	}
-	if !isRepo {
-		return false, fmt.Errorf("not a git repository")
+	if !jjc.IsRepo(cwd) {
+		return false, fmt.Errorf("not a jj repository")
 	}
 
-	repoName, err := client.RepoName(cwd)
+	wsRoot, err := jjc.Root(cwd)
 	if err != nil {
-		return false, fmt.Errorf("failed to get repository name: %w", err)
+		return false, fmt.Errorf("failed to get workspace root: %w", err)
+	}
+	repoPath, err := jjc.MainWorkspaceRoot(cwd)
+	if err != nil {
+		repoPath = wsRoot
+	}
+	repoName := filepath.Base(repoPath)
+
+	branch := currentBookmark(jjc, cwd)
+	if branch == "" {
+		branch = "(no bookmark)"
 	}
 
-	branch, err := client.CurrentBranch(cwd)
+	jjStatus, err := jjc.Status(cwd)
 	if err != nil {
-		return false, fmt.Errorf("failed to get current branch: %w", err)
+		return false, fmt.Errorf("failed to get jj status: %w", err)
 	}
-	repoPath, err := client.MainRepoPath(cwd)
-	if err != nil {
-		return false, fmt.Errorf("failed to determine canonical repo path: %w", err)
-	}
-
-	status, err := client.Status(cwd)
-	if err != nil {
-		return false, fmt.Errorf("failed to get git status: %w", err)
+	status := models.GitStatus{
+		Modified: len(jjStatus.Modified),
+		Added:    len(jjStatus.Added),
+		Deleted:  len(jjStatus.Deleted),
 	}
 
-	commit, err := client.LastCommit(cwd)
-	if err != nil {
-		return false, fmt.Errorf("failed to get last commit: %w", err)
+	commit := models.CommitInfo{}
+	if entries, err := jjc.Log(cwd, "@-"); err == nil && len(entries) > 0 {
+		line, _, _ := strings.Cut(entries[0].Description, "\n")
+		commit = models.CommitInfo{
+			Hash:    entries[0].CommitID,
+			Message: strings.TrimSpace(line),
+			Author:  entries[0].AuthorEmail,
+			Date:    entries[0].AuthorTimestamp,
+		}
 	}
 
-	ahead, behind, err := client.AheadBehind(cwd, branch)
-	if err != nil {
-		ahead, behind = 0, 0
+	ahead, behind := 0, 0
+	if branch != "(no bookmark)" {
+		if a, b, err := jjc.AheadBehind(cwd, branch); err == nil {
+			ahead, behind = a, b
+		}
 	}
 
-	remoteURL, err := client.RemoteURL(cwd)
-	if err != nil {
-		remoteURL = "(no remote)"
+	remoteURL := "(no remote)"
+	if remotes, err := jjc.RemoteURLs(cwd); err == nil {
+		if url := remotes["origin"]; url != "" {
+			remoteURL = url
+		}
 	}
 
 	// Fetch PRs for the current branch (gracefully degrades if gh unavailable)
@@ -202,19 +211,19 @@ func showContext() (bool, error) {
 		}
 	}
 
-	showSiblings(client, cwd)
+	showSiblings(jjc, cwd)
 
 	return dirty, nil
 }
 
-// showSiblings prints a "Workspace siblings:" section when the parent directory
-// of the current worktree contains 2+ git repos (i.e. at least one sibling).
-func showSiblings(client *git.CLIClient, cwd string) {
-	wtPath, err := client.RootDir(cwd)
+// showSiblings prints a "Workspace siblings:" section when the parent
+// directory of the current workspace contains 2+ jj repos/workspaces.
+func showSiblings(jjc jj.Client, cwd string) {
+	wsRoot, err := jjc.Root(cwd)
 	if err != nil {
 		return
 	}
-	parentDir := filepath.Dir(wtPath)
+	parentDir := filepath.Dir(wsRoot)
 
 	entries, err := os.ReadDir(parentDir)
 	if err != nil {
@@ -237,22 +246,25 @@ func showSiblings(client *git.CLIClient, cwd string) {
 			continue
 		}
 		p := filepath.Join(parentDir, e.Name())
-		if p == wtPath {
+		if p == wsRoot {
 			continue
 		}
-		isRepo, _ := client.IsRepo(p)
-		if !isRepo {
+		if !jjc.IsRepo(p) {
 			continue
 		}
 		if len(siblings) >= maxDisplay {
 			overflow++
 			continue
 		}
-		branch, _ := client.CurrentBranch(p)
-		st, _ := client.Status(p)
+		branch := currentBookmark(jjc, p)
+		st, _ := jjc.Status(p)
 		statusStr := "clean"
-		if isDirty(st) {
-			statusStr = formatStatus(st)
+		if !st.Clean {
+			statusStr = formatStatus(models.GitStatus{
+				Modified: len(st.Modified),
+				Added:    len(st.Added),
+				Deleted:  len(st.Deleted),
+			})
 		}
 		siblings = append(siblings, sibling{e.Name(), branch, statusStr})
 	}

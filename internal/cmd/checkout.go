@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/virtru/wgo/internal/config"
-	"github.com/virtru/wgo/internal/git"
 	gh "github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
 )
 
 type checkoutInfo struct {
@@ -22,12 +22,12 @@ func currentCheckout() (*checkoutInfo, error) {
 		return nil, fmt.Errorf("could not determine working directory: %w", err)
 	}
 
-	g := git.New("")
-	branch, err := g.CurrentBranch(wd)
-	if err != nil {
-		return nil, fmt.Errorf("could not determine current branch: %w", err)
+	jjc := jj.NewCLI()
+	branch := currentBookmark(jjc, wd)
+	if branch == "" {
+		return nil, fmt.Errorf("could not determine current bookmark on %s", wd)
 	}
-	repoPath, err := g.MainRepoPath(wd)
+	repoPath, err := jjc.MainWorkspaceRoot(wd)
 	if err != nil {
 		return nil, fmt.Errorf("could not determine canonical repo path: %w", err)
 	}
@@ -40,7 +40,7 @@ func currentCheckout() (*checkoutInfo, error) {
 }
 
 func canonicalRepoPath(path string) (string, error) {
-	return git.New("").MainRepoPath(path)
+	return jj.NewCLI().MainWorkspaceRoot(path)
 }
 
 func configuredWorktreePath(repoName, branch string) (string, error) {

@@ -9,11 +9,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/discovery"
-	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/store"
-	"github.com/virtru/wgo/models"
 )
 
 var lsFormat string
@@ -93,18 +92,17 @@ func listRepos(cmd *cobra.Command) error {
 		BranchURL string `json:"branch_url,omitempty"`
 	}
 
+	jjc := jj.NewCLI()
 	rows := make([]row, 0, len(repos))
 	for _, repo := range repos {
-		gitClient := git.New(repo.Path)
-
-		branch, err := gitClient.CurrentBranch(repo.Path)
-		if err != nil {
+		branch := currentBookmark(jjc, repo.Path)
+		if branch == "" {
 			branch = "?"
 		}
 
-		gitStatus, err := gitClient.Status(repo.Path)
-		if err != nil {
-			gitStatus.Modified = -1
+		statusStr := "?"
+		if st, err := jjc.Status(repo.Path); err == nil {
+			statusStr = formatJJStatusShort(st)
 		}
 
 		repoName := repo.Name
@@ -122,13 +120,14 @@ func listRepos(cmd *cobra.Command) error {
 			}
 		}
 
-		remoteURL, _ := gitClient.RemoteURL(repo.Path)
+		remotes, _ := jjc.RemoteURLs(repo.Path)
+		remoteURL := remotes["origin"]
 		rows = append(rows, row{
 			Path:      repo.Path,
 			Repo:      repoName,
 			Branch:    branch,
 			Why:       why,
-			Status:    formatStatusShort(gitStatus),
+			Status:    statusStr,
 			RepoURL:   links.RepoURL(remoteURL),
 			BranchURL: links.BranchURL(remoteURL, branch),
 		})
@@ -156,29 +155,28 @@ func listRepos(cmd *cobra.Command) error {
 	return nil
 }
 
-func formatStatusShort(status models.GitStatus) string {
-	if status.Modified == -1 {
-		return "?"
-	}
-
-	if status.Modified == 0 && status.Added == 0 && status.Deleted == 0 && status.Untracked == 0 {
+// formatJJStatusShort renders a jj.Status as a compact "5M 2A 1D"-style
+// string for the table view. Returns "clean" when the workspace matches
+// its parent commit. jj has no "untracked" concept — newly written files
+// land in Added — so the trailing "U" column from the git formatter is
+// dropped here.
+func formatJJStatusShort(st jj.Status) string {
+	if st.Clean {
 		return "clean"
 	}
-
 	var parts []string
-	if status.Modified > 0 {
-		parts = append(parts, fmt.Sprintf("%dM", status.Modified))
+	if n := len(st.Modified); n > 0 {
+		parts = append(parts, fmt.Sprintf("%dM", n))
 	}
-	if status.Added > 0 {
-		parts = append(parts, fmt.Sprintf("%dA", status.Added))
+	if n := len(st.Added); n > 0 {
+		parts = append(parts, fmt.Sprintf("%dA", n))
 	}
-	if status.Deleted > 0 {
-		parts = append(parts, fmt.Sprintf("%dD", status.Deleted))
+	if n := len(st.Deleted); n > 0 {
+		parts = append(parts, fmt.Sprintf("%dD", n))
 	}
-	if status.Untracked > 0 {
-		parts = append(parts, fmt.Sprintf("%dU", status.Untracked))
+	if len(parts) == 0 {
+		return "clean"
 	}
-
 	return strings.Join(parts, " ")
 }
 
