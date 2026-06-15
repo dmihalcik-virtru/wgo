@@ -18,7 +18,7 @@ type Config struct {
 	Worktree  WorktreeConfig  `mapstructure:"worktree"`
 	UI        UIConfig        `mapstructure:"ui"`
 	Status    StatusConfig    `mapstructure:"status"`
-	Hooks     HooksConfig     `mapstructure:"hooks"`
+	Doctor    DoctorConfig    `mapstructure:"doctor"`
 	Pair      PairConfig      `mapstructure:"pair"`
 	Jira      JiraConfig      `mapstructure:"jira"`
 }
@@ -108,13 +108,15 @@ func (c *Config) PairDisplayName() string {
 	return c.Pair.Teammate
 }
 
-// HooksConfig contains git hooks configuration.
-type HooksConfig struct {
-	Enabled              bool     `mapstructure:"enabled"`
-	AutoPlan             bool     `mapstructure:"auto_plan"`
-	ExcludeBranches      []string `mapstructure:"exclude_branches"`
-	SpecRequired         bool     `mapstructure:"spec_required"`
-	SpecRequiredMinLines int      `mapstructure:"spec_required_min_lines"`
+// DoctorConfig contains settings for the active `wgo doctor` check that
+// replaced the previous passive git-hook spec enforcement.
+type DoctorConfig struct {
+	// ExcludeBookmarks names bookmarks (glob patterns) that are exempt from
+	// spec enforcement, typically default branches.
+	ExcludeBookmarks []string `mapstructure:"exclude_bookmarks"`
+	// SpecRequired causes `wgo doctor` to warn (or fail with --strict) on
+	// workspaces whose current bookmark has no recorded spec file.
+	SpecRequired bool `mapstructure:"spec_required"`
 }
 
 // StatusConfig contains status dashboard configuration.
@@ -215,11 +217,8 @@ func setDefaults() {
 	viper.SetDefault("status.stale_days", 14)
 	viper.SetDefault("status.refresh_interval", 5)
 	viper.SetDefault("status.show_spec_column", true)
-	viper.SetDefault("hooks.enabled", true)
-	viper.SetDefault("hooks.auto_plan", true)
-	viper.SetDefault("hooks.exclude_branches", []string{"main", "master", "develop", "release/*"})
-	viper.SetDefault("hooks.spec_required", false)
-	viper.SetDefault("hooks.spec_required_min_lines", 5)
+	viper.SetDefault("doctor.exclude_bookmarks", []string{"main", "master", "develop", "release/*"})
+	viper.SetDefault("doctor.spec_required", false)
 }
 
 // createDefaultConfig creates a default config file.
@@ -252,19 +251,13 @@ icons = false
 # Display home directory as ~ in output
 tilde_home = true
 
-[hooks]
-# Enable passive git hook monitoring
-enabled = true
+[doctor]
+# Bookmarks (glob patterns) exempt from spec enforcement, typically default branches.
+exclude_bookmarks = ["main", "master", "develop", "release/*"]
 
-# Automatically add new branches to the plan file
-auto_plan = true
-
-# Branches to exclude from auto-plan (glob patterns)
-exclude_branches = ["main", "master", "develop", "release/*"]
-
-# Block commits on branches without a spec reference (opt-in)
+# When true, "wgo doctor" warns (or fails with --strict) on workspaces whose
+# current bookmark has no recorded spec file. Opt-in.
 spec_required = false
-spec_required_min_lines = 5   # commits touching <= N lines bypass the check
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)
