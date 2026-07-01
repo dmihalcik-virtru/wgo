@@ -84,7 +84,7 @@ func Collect(repos []string, logsDir string, opts Options) (*Metrics, error) {
 		}
 
 		// Specs created (diff-filter=A means added)
-		created, err := gitLogSpecFiles(repoRoot, sinceStr, untilStr, "--diff-filter=A")
+		created, err := gitLogSpecFiles(repoRoot, opts.Since, opts.Until, "--diff-filter=A")
 		if err != nil {
 			m.Warnings = append(m.Warnings, fmt.Sprintf("specs created (%s): %v", repoRoot, err))
 		} else {
@@ -95,7 +95,7 @@ func Collect(repos []string, logsDir string, opts Options) (*Metrics, error) {
 		}
 
 		// Specs updated (all commits touching spec/*.md)
-		updated, err := gitLogSpecFiles(repoRoot, sinceStr, untilStr, "")
+		updated, err := gitLogSpecFiles(repoRoot, opts.Since, opts.Until, "")
 		if err != nil {
 			m.Warnings = append(m.Warnings, fmt.Sprintf("specs updated (%s): %v", repoRoot, err))
 		} else {
@@ -103,7 +103,7 @@ func Collect(repos []string, logsDir string, opts Options) (*Metrics, error) {
 		}
 
 		// [no-spec] overrides
-		count, err := gitCountNoSpec(repoRoot, sinceStr, untilStr)
+		count, err := gitCountNoSpec(repoRoot, opts.Since, opts.Until)
 		if err != nil {
 			m.Warnings = append(m.Warnings, fmt.Sprintf("no-spec overrides (%s): %v", repoRoot, err))
 		} else {
@@ -150,17 +150,14 @@ type specCommit struct {
 }
 
 // gitLogSpecFiles returns commits touching spec/*.md files in the given time window.
-// extraFilter is optional (e.g., "--diff-filter=A").
-func gitLogSpecFiles(repoRoot, since, until, extraFilter string) ([]specCommit, error) {
+// extraFilter is optional (e.g., "--diff-filter=A"). Filtering is by author date (not
+// committer date), so specs stay in-window even after a rebase resets committer dates.
+func gitLogSpecFiles(repoRoot string, since, until time.Time, extraFilter string) ([]specCommit, error) {
 	args := []string{"log", "--format=%H\x1f%ae\x1f%aI"}
 	if extraFilter != "" {
 		args = append(args, extraFilter)
 	}
-	args = append(args,
-		"--since="+since,
-		"--until="+until,
-		"--", "spec/*.md",
-	)
+	args = append(args, "--", "spec/*.md")
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
@@ -177,19 +174,21 @@ func gitLogSpecFiles(repoRoot, since, until, extraFilter string) ([]specCommit, 
 			continue
 		}
 		t, _ := time.Parse(time.RFC3339, parts[2])
+		if t.Before(since) || t.After(until) {
+			continue
+		}
 		result = append(result, specCommit{hash: parts[0], author: parts[1], time: t})
 	}
 	return result, nil
 }
 
 // gitCountNoSpec counts commits containing "[no-spec]" in their message.
-func gitCountNoSpec(repoRoot, since, until string) (int, error) {
+// Filtering is by author date to stay consistent with gitLogSpecFiles.
+func gitCountNoSpec(repoRoot string, since, until time.Time) (int, error) {
 	cmd := exec.Command("git", "log",
 		"--grep=[no-spec]",
 		"--fixed-strings",
-		"--format=%H",
-		"--since="+since,
-		"--until="+until,
+		"--format=%aI",
 	)
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
@@ -198,9 +197,15 @@ func gitCountNoSpec(repoRoot, since, until string) (int, error) {
 	}
 	count := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if strings.TrimSpace(line) != "" {
-			count++
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
 		}
+		t, err := time.Parse(time.RFC3339, line)
+		if err != nil || t.Before(since) || t.After(until) {
+			continue
+		}
+		count++
 	}
 	return count, nil
 }
