@@ -36,10 +36,22 @@ type JiraProjectRule struct {
 // JiraConfig holds optional Jira integration settings.
 // acli handles authentication; these fields are informational only except where noted.
 type JiraConfig struct {
-	Project        string            `mapstructure:"project"`         // informational project key
-	DefaultProject string            `mapstructure:"default_project"` // used by: wgo add --jira
-	DefaultType    string            `mapstructure:"default_type"`    // used by: wgo add --jira (e.g. "Task")
-	ProjectRules   []JiraProjectRule `mapstructure:"project_rules"`   // ordered; first match wins
+	Project         string            `mapstructure:"project"`          // informational project key; also board/backlog URL segment
+	DefaultProject  string            `mapstructure:"default_project"`  // used by: wgo add --jira
+	DefaultType     string            `mapstructure:"default_type"`     // used by: wgo add --jira (e.g. "Task")
+	ProjectRules    []JiraProjectRule `mapstructure:"project_rules"`    // ordered; first match wins
+	Board           int               `mapstructure:"board"`            // default board id for: wgo standup
+	Site            string            `mapstructure:"site"`             // Jira host; auto-detected from acli when empty
+	StandupStatuses []string          `mapstructure:"standup_statuses"` // in-flight statuses for: wgo standup
+}
+
+// StandupStatusesOrDefault returns the configured in-flight statuses, or the
+// default set (In Progress / In Review / In QA) when none are configured.
+func (c *JiraConfig) StandupStatusesOrDefault() []string {
+	if len(c.StandupStatuses) > 0 {
+		return c.StandupStatuses
+	}
+	return []string{"In Progress", "In Review", "In QA"}
 }
 
 // ResolveProject returns the Jira project key and issue type for the given repo
@@ -263,9 +275,12 @@ spec_required_min_lines = 5   # commits touching <= N lines bypass the check
 # teammate_email = "sujan@example.com"  # optional, for git-author filtering in today --pair
 
 # [jira]
-# project         = "WGO"    # informational project key
+# project         = "WGO"    # informational project key; also board/backlog URL segment
 # default_project = "WGO"    # fallback project used by: wgo add --jira
 # default_type    = "Task"   # fallback issue type used by: wgo add --jira
+# board           = 305      # default board id used by: wgo standup (override with --board)
+# site            = "your-org.atlassian.net"  # optional; auto-detected from acli when omitted
+# standup_statuses = ["In Progress", "In Review", "In QA"]  # in-flight states for: wgo standup
 #
 # Per-repo/path rules — first match wins; either field is sufficient
 # [[jira.project_rules]]
