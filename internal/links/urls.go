@@ -82,3 +82,36 @@ func IssueURL(remoteURL string, number int) string {
 	}
 	return fmt.Sprintf("%s/issues/%d", base, number)
 }
+
+// JiraIssueURL returns the browse URL for a Jira issue key (e.g. "DSPX-3397").
+// site is the Jira host, e.g. "virtru.atlassian.net". Returns "" if either is empty.
+func JiraIssueURL(site, key string) string {
+	if site == "" || key == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://%s/browse/%s", site, key)
+}
+
+// JiraBoardURL returns the URL for a Jira software board. When project is empty it
+// falls back to the RapidBoard view, which does not require the project key.
+func JiraBoardURL(site, project string, boardID int) string {
+	if site == "" || boardID == 0 {
+		return ""
+	}
+	if project == "" {
+		return fmt.Sprintf("https://%s/secure/RapidBoard.jspa?rapidView=%d", site, boardID)
+	}
+	return fmt.Sprintf("https://%s/jira/software/c/projects/%s/boards/%d", site, project, boardID)
+}
+
+// JiraBacklogURL returns the URL for a Jira board's backlog view.
+func JiraBacklogURL(site, project string, boardID int) string {
+	base := JiraBoardURL(site, project, boardID)
+	if base == "" {
+		return ""
+	}
+	if project == "" {
+		return base + "&view=planning"
+	}
+	return base + "/backlog"
+}
