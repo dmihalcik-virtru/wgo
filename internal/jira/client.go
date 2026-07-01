@@ -58,6 +58,16 @@ type User struct {
 	EmailAddress string `json:"emailAddress"`
 }
 
+// Sprint represents a Jira agile sprint returned by `acli jira board list-sprints`.
+type Sprint struct {
+	ID        int
+	Name      string
+	Goal      string
+	State     string // "future", "active", or "closed"
+	StartDate time.Time
+	EndDate   time.Time
+}
+
 // CheckAuth runs `acli jira auth status` and returns an error if not authenticated.
 func CheckAuth() error {
 	out, err := run("auth", "status")
@@ -65,6 +75,97 @@ func CheckAuth() error {
 		return fmt.Errorf("acli jira not authenticated — run: acli jira auth login\n%s", out)
 	}
 	return nil
+}
+
+// SiteHost returns the Jira site host (e.g. "virtru.atlassian.net") parsed from
+// `acli jira auth status`. It lets callers build browse/board URLs without any
+// configuration. Returns an error if not authenticated or the site cannot be found.
+func SiteHost() (string, error) {
+	out, err := run("auth", "status")
+	if err != nil {
+		return "", fmt.Errorf("acli jira not authenticated — run: acli jira auth login\n%s", out)
+	}
+	for line := range strings.SplitSeq(out, "\n") {
+		line = strings.TrimSpace(line)
+		if rest, ok := strings.CutPrefix(line, "Site:"); ok {
+			return strings.TrimSpace(rest), nil
+		}
+	}
+	return "", fmt.Errorf("could not determine Jira site from acli auth status")
+}
+
+// ListSprints returns the sprints for the given board id in the requested states.
+// state is a comma-separated list of "future", "active", and/or "closed"; pass ""
+// for the acli default (active). When paginate is true all pages are fetched —
+// necessary for closed sprints, which acli returns oldest-first across many pages.
+func ListSprints(boardID int, state string, paginate bool) ([]Sprint, error) {
+	args := []string{"board", "list-sprints", "--id", fmt.Sprintf("%d", boardID), "--json"}
+	if state != "" {
+		args = append(args, "--state", state)
+	}
+	if paginate {
+		args = append(args, "--paginate")
+	}
+	out, err := run(args...)
+	if err != nil {
+		return nil, fmt.Errorf("list sprints for board %d: %w\n%s", boardID, err, out)
+	}
+	return parseSprints(out)
+}
+
+// ListActiveSprints returns the active sprints for the given board id.
+func ListActiveSprints(boardID int) ([]Sprint, error) {
+	return ListSprints(boardID, "active", false)
+}
+
+// SearchIssues runs a JQL search and returns the matching issues. fields is the
+// list of issue fields to request; acli restricts these to a fixed allowed set
+// (issuetype, key, assignee, priority, status, summary). Pass nil for the default.
+func SearchIssues(jql string, fields []string) ([]Issue, error) {
+	args := []string{"workitem", "search", "--jql", jql, "--json"}
+	if len(fields) > 0 {
+		args = append(args, "--fields", strings.Join(fields, ","))
+	}
+	out, err := run(args...)
+	if err != nil {
+		return nil, fmt.Errorf("search issues: %w\n%s", err, out)
+	}
+	var issues []Issue
+	if err := json.Unmarshal([]byte(out), &issues); err != nil {
+		return nil, fmt.Errorf("parse search results: %w", err)
+	}
+	return issues, nil
+}
+
+// InFlightJQL builds a JQL query for a single sprint's in-flight work assigned to
+// the given assignee ("" means the current acli user). statuses are the workflow
+// states that count as in flight (e.g. In Progress, In Review, In QA).
+func InFlightJQL(sprintID int, assignee string, statuses []string) string {
+	return fmt.Sprintf("sprint = %d AND %s", sprintID, inFlightClause(assignee, statuses))
+}
+
+// AllInFlightJQL builds a JQL query for all of the assignee's in-flight work,
+// regardless of sprint (or lack of one).
+func AllInFlightJQL(assignee string, statuses []string) string {
+	return inFlightClause(assignee, statuses)
+}
+
+// inFlightClause builds the shared "assignee = X AND status in (...)" fragment.
+func inFlightClause(assignee string, statuses []string) string {
+	who := "currentUser()"
+	if assignee != "" {
+		who = quoteJQL(assignee)
+	}
+	quoted := make([]string, len(statuses))
+	for i, s := range statuses {
+		quoted[i] = quoteJQL(s)
+	}
+	return fmt.Sprintf("assignee = %s AND status in (%s)", who, strings.Join(quoted, ","))
+}
+
+// quoteJQL wraps a value in single quotes, escaping any embedded single quotes.
+func quoteJQL(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "\\'") + "'"
 }
 
 // GetIssue fetches summary, description, status, priority, and assignee for the given ticket.
@@ -200,6 +301,46 @@ func run(args ...string) (string, error) {
 }
 
 // --- JSON parsing helpers ---
+
+// rawSprintList matches `{"sprints":[...]}` from `acli jira board list-sprints`.
+type rawSprintList struct {
+	Sprints []rawSprint `json:"sprints"`
+}
+
+// rawSprint matches a single sprint entry with string dates.
+type rawSprint struct {
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	Goal      string `json:"goal"`
+	State     string `json:"state"`
+	StartDate string `json:"startDate"`
+	EndDate   string `json:"endDate"`
+}
+
+// parseSprints decodes one or more `{"sprints":[...]}` documents. `acli --paginate`
+// emits one JSON object per page (concatenated, not a single array), so we stream
+// the input and accumulate across every document.
+func parseSprints(raw string) ([]Sprint, error) {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	var sprints []Sprint
+	for dec.More() {
+		var wrapper rawSprintList
+		if err := dec.Decode(&wrapper); err != nil {
+			return nil, fmt.Errorf("parse sprints: %w", err)
+		}
+		for _, r := range wrapper.Sprints {
+			s := Sprint{ID: r.ID, Name: r.Name, Goal: r.Goal, State: r.State}
+			if t, err := parseJiraTime(r.StartDate); err == nil {
+				s.StartDate = t
+			}
+			if t, err := parseJiraTime(r.EndDate); err == nil {
+				s.EndDate = t
+			}
+			sprints = append(sprints, s)
+		}
+	}
+	return sprints, nil
+}
 
 // rawComment matches the JSON shape returned by `acli jira workitem comment list`.
 type rawComment struct {
