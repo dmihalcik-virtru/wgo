@@ -634,10 +634,7 @@ func collectTodayDataForAuthor(repoPaths []string, since time.Time, author, ghAu
 				defer ghWg.Done()
 				prs, err := gh.ListPRsByAuthor(ghAuthor)
 				if err == nil {
-					var attn []github.ExtendedPRInfo
-					for _, pr := range prs {
-						attn = append(attn, pr)
-					}
+					attn := append([]github.ExtendedPRInfo(nil), prs...)
 					mu.Lock()
 					data.needsAttn = attn
 					mu.Unlock()

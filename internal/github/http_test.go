@@ -343,7 +343,7 @@ func TestETagCaching(t *testing.T) {
 			return
 		}
 		w.Header().Set("ETag", `"v1"`)
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"login":"user","hit":%d}`, n)))
+		_, _ = fmt.Fprintf(w, `{"login":"user","hit":%d}`, n)
 	}))
 	defer srv.Close()
 

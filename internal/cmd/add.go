@@ -400,10 +400,10 @@ func runAddWithJiraCreate(desc string, repos []string, priority bool) error {
 	}
 
 	if project == "" {
-		return fmt.Errorf("Jira project key required: pass --jira-project, set jira.default_project, or add a matching [[jira.project_rules]] entry in ~/.wgo/config.toml")
+		return fmt.Errorf("missing Jira project key: pass --jira-project, set jira.default_project, or add a matching [[jira.project_rules]] entry in ~/.wgo/config.toml")
 	}
 	if issueType == "" {
-		return fmt.Errorf("Jira issue type required: pass --jira-type or set jira.default_type in ~/.wgo/config.toml")
+		return fmt.Errorf("missing Jira issue type: pass --jira-type or set jira.default_type in ~/.wgo/config.toml")
 	}
 
 	ticket, err := jira.CreateIssue(project, desc, issueType, "")

@@ -18,19 +18,19 @@ import (
 type mockJJClient struct {
 	currentChange jj.Change
 	status        jj.Status
-	logEntries    map[string][]jj.LogEntry            // keyed by revset
-	countResults  map[string]int                      // keyed by revset
+	logEntries    map[string][]jj.LogEntry // keyed by revset
+	countResults  map[string]int           // keyed by revset
 	diffAdded     int
 	diffDeleted   int
 	changedFiles  []string
 	ahead         int
 	behind        int
 	remotes       map[string]string
-	workspaces    map[string][]jj.Workspace           // keyed by repo path
+	workspaces    map[string][]jj.Workspace // keyed by repo path
 }
 
-func (m *mockJJClient) Root(string) (string, error)         { return "", nil }
-func (m *mockJJClient) IsRepo(string) bool                  { return true }
+func (m *mockJJClient) Root(string) (string, error) { return "", nil }
+func (m *mockJJClient) IsRepo(string) bool          { return true }
 func (m *mockJJClient) RemoteURLs(string) (map[string]string, error) {
 	if m.remotes != nil {
 		return m.remotes, nil
@@ -95,8 +95,8 @@ func (m *mockJJClient) GitFetch(string, string, []string) error        { return 
 func (m *mockJJClient) GitPush(string, jj.PushOpts) (jj.PushResult, error) {
 	return jj.PushResult{}, nil
 }
-func (m *mockJJClient) GitRemoteAdd(string, string, string) error    { return nil }
-func (m *mockJJClient) GitRemoteRemove(string, string) error         { return nil }
+func (m *mockJJClient) GitRemoteAdd(string, string, string) error { return nil }
+func (m *mockJJClient) GitRemoteRemove(string, string) error      { return nil }
 
 func TestCollector_DetermineState(t *testing.T) {
 	c := NewCollector(&mockJJClient{}, nil, nil)

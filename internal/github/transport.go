@@ -214,7 +214,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	if cacheable && resp.StatusCode == http.StatusNotModified {
 		entry, ok := t.cache.lookup(cacheKey)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if !ok {
 			// We sent If-None-Match without having a cached body — shouldn't
 			// happen, but surface a useful error rather than crashing.
@@ -226,7 +226,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	if cacheable && resp.StatusCode == http.StatusOK {
 		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("github api: reading response body: %w", readErr)
 		}

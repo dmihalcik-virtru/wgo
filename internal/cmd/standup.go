@@ -244,24 +244,27 @@ func deriveProject(issues []jira.Issue) string {
 }
 
 func renderStandup(w *os.File, groups []standupGroup, site, project string, board int, isTTY bool) {
+	// pf ignores write errors: this is best-effort terminal output.
+	pf := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
+
 	total := 0
 	for _, g := range groups {
 		total += len(g.issues)
 	}
-	fmt.Fprintf(w, "Standup — %s · %d in flight\n", time.Now().Format("Mon Jan 2"), total)
+	pf("Standup — %s · %d in flight\n", time.Now().Format("Mon Jan 2"), total)
 
 	boardURL := links.JiraBoardURL(site, project, board)
 	backlogURL := links.JiraBacklogURL(site, project, board)
 
 	for _, g := range groups {
-		fmt.Fprintln(w)
+		pf("\n")
 		if g.sprint == nil {
-			fmt.Fprintf(w, "Other in-flight — not in an active or recent sprint   %s\n",
+			pf("Other in-flight — not in an active or recent sprint   %s\n",
 				links.Link(boardURL, "[board]", isTTY))
 		} else {
 			deadline, _ := sprintDeadline(g.sprint.EndDate, g.sprint.State)
 			name := links.Link(boardURL, g.sprint.Name, isTTY)
-			fmt.Fprintf(w, "%s   %s   %s  %s\n", name, deadline,
+			pf("%s   %s   %s  %s\n", name, deadline,
 				links.Link(boardURL, "[board]", isTTY),
 				links.Link(backlogURL, "[backlog]", isTTY))
 			if goal := strings.TrimSpace(g.sprint.Goal); goal != "" {
@@ -270,23 +273,23 @@ func renderStandup(w *os.File, groups []standupGroup, site, project string, boar
 					if i == 0 {
 						prefix = "Goal:   "
 					}
-					fmt.Fprintf(w, "%s%s\n", prefix, line)
+					pf("%s%s\n", prefix, line)
 				}
 			}
 		}
 
 		if len(g.issues) == 0 {
-			fmt.Fprintf(w, "  (no in-flight work assigned to you)\n")
+			pf("  (no in-flight work assigned to you)\n")
 			continue
 		}
-		fmt.Fprintf(w, "\n  %-10s %-12s %-8s %s\n", "KEY", "STATUS", "PRI", "SUMMARY")
+		pf("\n  %-10s %-12s %-8s %s\n", "KEY", "STATUS", "PRI", "SUMMARY")
 		for _, iss := range g.issues {
 			key := links.Link(links.JiraIssueURL(site, iss.Key), iss.Key, isTTY)
 			pad := ""
 			if n := 10 - len(iss.Key); n > 0 {
 				pad = strings.Repeat(" ", n)
 			}
-			fmt.Fprintf(w, "  %s%s %-12s %-8s %s\n",
+			pf("  %s%s %-12s %-8s %s\n",
 				key, pad,
 				truncatePR(iss.Fields.Status.Name, 12),
 				truncatePR(iss.Fields.Priority.Name, 8),

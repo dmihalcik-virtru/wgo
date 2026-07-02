@@ -19,9 +19,7 @@ func TestFileStoreEnsureDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Temporarily change home
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
 
 	s, err := New()
 	require.NoError(t, err, "New failed")
@@ -35,9 +33,7 @@ func TestFileStoreEnsureDir(t *testing.T) {
 
 func TestSaveLoadState(t *testing.T) {
 	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
 
 	s, err := New()
 	require.NoError(t, err, "New failed")
@@ -63,9 +59,7 @@ func TestSaveLoadState(t *testing.T) {
 
 func TestSaveLoadPlan(t *testing.T) {
 	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
 
 	s, err := New()
 	require.NoError(t, err, "New failed")
@@ -91,9 +85,7 @@ Test notes
 
 func TestLoadNonexistentState(t *testing.T) {
 	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
 
 	s, err := New()
 	require.NoError(t, err, "New failed")
@@ -108,9 +100,7 @@ func TestLoadNonexistentState(t *testing.T) {
 
 func TestCreatePlanSymlink(t *testing.T) {
 	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
 
 	s, err := New()
 	require.NoError(t, err, "New failed")

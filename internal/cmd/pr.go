@@ -303,13 +303,9 @@ func renderPairSection(gh *github.CLIClient, cfg *config.Config, myLogin string,
 		if err != nil {
 			return
 		}
-		// Keep only PRs authored by the teammate.
-		var filtered []github.ExtendedPRInfo
-		for _, pr := range reqs {
-			// We don't have the author field from searchPRItem after conversion,
-			// so include all review-requested PRs (they are not the user's own).
-			filtered = append(filtered, pr)
-		}
+		// We don't have the author field from searchPRItem after conversion,
+		// so include all review-requested PRs (they are not the user's own).
+		filtered := append([]github.ExtendedPRInfo(nil), reqs...)
 		mu.Lock()
 		reviewReqs = filtered
 		mu.Unlock()

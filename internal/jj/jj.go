@@ -416,9 +416,10 @@ func (c *CLIClient) bookmarkPairExists(repo, bookmark, remote string) (local, ha
 		if b.Name != bookmark {
 			continue
 		}
-		if b.Remote == "" {
+		switch b.Remote {
+		case "":
 			local = true
-		} else if b.Remote == remote {
+		case remote:
 			hasRemote = true
 		}
 	}
@@ -575,9 +576,7 @@ func (c *CLIClient) BookmarkList(repo string, opts BookmarkListOpts) ([]Bookmark
 	if opts.Remote != "" {
 		args = append(args, "--remote", opts.Remote)
 	}
-	for _, n := range opts.Names {
-		args = append(args, n)
-	}
+	args = append(args, opts.Names...)
 	out, err := c.runR(repo, args...)
 	if err != nil {
 		return nil, err

@@ -465,7 +465,7 @@ func (c *CLIClient) DeleteRemoteBranch(repoPath, branch string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {
 	case http.StatusNoContent, http.StatusOK:
 		return nil
@@ -747,7 +747,7 @@ func (c *CLIClient) getJSON(endpoint string, v any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("github api: reading body: %w", err)
@@ -770,10 +770,6 @@ func (c *CLIClient) patchJSON(endpoint string, body any, v any) error {
 }
 
 // postJSON performs a POST with body and (if v != nil) unmarshals the response.
-func (c *CLIClient) postJSON(endpoint string, body any, v any) error {
-	return c.bodyJSON(http.MethodPost, endpoint, body, v)
-}
-
 func (c *CLIClient) bodyJSON(method, endpoint string, body, v any) error {
 	var rdr io.Reader
 	if body != nil {
@@ -787,7 +783,7 @@ func (c *CLIClient) bodyJSON(method, endpoint string, body, v any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("github api: reading body: %w", err)

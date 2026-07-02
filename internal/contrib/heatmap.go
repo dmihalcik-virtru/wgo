@@ -76,7 +76,7 @@ func RenderHeatmap(total DayCount, weeks int, now time.Time) string {
 	dayNames := []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
 	showRows := []int{1, 3, 5} // Mon, Wed, Fri
 	for _, d := range showRows {
-		b.WriteString(fmt.Sprintf("%-3s ", dayNames[d]))
+		fmt.Fprintf(&b, "%-3s ", dayNames[d])
 		for w := 0; w < weeks; w++ {
 			b.WriteString(cols[w][d] + " ")
 		}

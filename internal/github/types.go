@@ -70,23 +70,6 @@ func (p *apiPullRequest) toPRInfo() *PRInfo {
 	return info
 }
 
-// toExtendedPRInfo converts an API pull request payload into the dashboard
-// ExtendedPRInfo shape.
-func (p *apiPullRequest) toExtendedPRInfo() ExtendedPRInfo {
-	owner, repo := splitOwnerRepo(p.Head.Repo.FullName)
-	return ExtendedPRInfo{
-		Number:     p.Number,
-		Title:      p.Title,
-		State:      p.State,
-		IsDraft:    p.Draft,
-		URL:        p.HTMLURL,
-		UpdatedAt:  p.UpdatedAt,
-		RepoOwner:  owner,
-		RepoName:   repo,
-		CheckTotal: -1,
-	}
-}
-
 // apiSearchResults is GET /search/issues with q=is:pr ...
 type apiSearchResults struct {
 	TotalCount        int             `json:"total_count"`
@@ -134,7 +117,7 @@ func (s *apiSearchItem) toExtendedPRInfo() ExtendedPRInfo {
 // apiCheckRun and apiStatus mirror the relevant fields from
 // /repos/{slug}/commits/{ref}/check-runs and /commits/{ref}/status.
 type apiCheckRunsResponse struct {
-	TotalCount int          `json:"total_count"`
+	TotalCount int           `json:"total_count"`
 	CheckRuns  []apiCheckRun `json:"check_runs"`
 }
 
@@ -164,15 +147,6 @@ type apiReview struct {
 	User        apiUser   `json:"user"`
 	State       string    `json:"state"`
 	SubmittedAt time.Time `json:"submitted_at"`
-}
-
-// apiIssue is /repos/{slug}/issues/{n} (search results return similar shape).
-type apiIssue struct {
-	Number     int     `json:"number"`
-	Title      string  `json:"title"`
-	HTMLURL    string  `json:"html_url"`
-	State      string  `json:"state"`
-	Repository apiRepo `json:"repository"`
 }
 
 // apiUserInfo is /user.

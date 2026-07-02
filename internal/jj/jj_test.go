@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -174,7 +175,7 @@ func TestStatusAndIsClean(t *testing.T) {
 	if st.Clean {
 		t.Fatalf("Status reported clean after writing a file: %+v", st)
 	}
-	if !contains(st.Added, "new.txt") {
+	if !slices.Contains(st.Added, "new.txt") {
 		t.Fatalf("Status.Added missing new.txt: %+v", st)
 	}
 	clean, dirty, err = c.IsClean(repo)
@@ -487,21 +488,12 @@ func TestDiffStatAndChangedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ChangedFiles: %v", err)
 	}
-	if len(files) != 2 || !contains(files, "a.txt") || !contains(files, "b.txt") {
+	if len(files) != 2 || !slices.Contains(files, "a.txt") || !slices.Contains(files, "b.txt") {
 		t.Fatalf("ChangedFiles = %v, want [a.txt b.txt]", files)
 	}
 }
 
 // helpers
-
-func contains(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
-}
 
 func hasBookmark(bms []jj.Bookmark, name string) bool {
 	for _, b := range bms {

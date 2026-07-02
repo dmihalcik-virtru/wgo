@@ -126,7 +126,7 @@ func (fs *FileStore) SaveState(state *State) error {
 	}
 
 	if err := os.Rename(tmpFile, fs.stateFile); err != nil {
-		os.Remove(tmpFile)
+		_ = os.Remove(tmpFile)
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
 
@@ -159,7 +159,7 @@ func (fs *FileStore) SavePlan(content string) error {
 	}
 
 	if err := os.Rename(tmpFile, fs.planFile); err != nil {
-		os.Remove(tmpFile)
+		_ = os.Remove(tmpFile)
 		return fmt.Errorf("failed to rename plan file: %w", err)
 	}
 
@@ -238,7 +238,7 @@ func (fs *FileStore) SaveDailyLog(dl *bujo.DailyLog) error {
 		return fmt.Errorf("failed to write daily log: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("failed to rename daily log: %w", err)
 	}
 	return nil

@@ -100,4 +100,3 @@ updated: 2026-05-01T00:00:00Z
 	require.NoError(t, err)
 	assert.Empty(t, reports, "terminal spec should not be orphaned")
 }
-
