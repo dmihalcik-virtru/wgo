@@ -547,7 +547,7 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 			if err != nil {
 				defaultBranch = "main"
 			}
-			startPoint = "origin/" + defaultBranch
+			startPoint = defaultBranch + "@origin"
 			logTo("creating workspace with new bookmark %s from %s...", branch, startPoint)
 		}
 		if err := jjc.WorkspaceAdd(repoPath, branch, wtPath, startPoint); err != nil {

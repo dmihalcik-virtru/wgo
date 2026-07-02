@@ -230,16 +230,16 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 		}
 
 		fmt.Fprintf(os.Stderr, "creating workspace %s...\n", wtPath)
-		if err := jjc.WorkspaceAdd(repoPath, branchName, wtPath, "origin/"+defaultBranch); err != nil {
+		if err := jjc.WorkspaceAdd(repoPath, branchName, wtPath, defaultBranch+"@origin"); err != nil {
 			return fmt.Errorf("workspace add %s: %w", spec.repo, err)
 		}
 		created = append(created, struct{ repoPath, wtPath, bookmark string }{repoPath, wtPath, branchName})
 
-		// Create the bookmark at origin/<default> so it exists for push.
+		// Create the bookmark at <default>@origin so it exists for push.
 		// The spec-commit flow below moves it to the spec change; non-spec
-		// repos push the bookmark at origin/<default>, creating an empty
+		// repos push the bookmark at <default>@origin, creating an empty
 		// remote branch ready for future commits.
-		if err := jjc.BookmarkCreate(repoPath, branchName, "origin/"+defaultBranch); err != nil {
+		if err := jjc.BookmarkCreate(repoPath, branchName, defaultBranch+"@origin"); err != nil {
 			return fmt.Errorf("create bookmark %s: %w", branchName, err)
 		}
 
