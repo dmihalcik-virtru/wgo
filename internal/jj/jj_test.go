@@ -453,11 +453,12 @@ func TestAheadBehindWithRemote(t *testing.T) {
 	if _, err := c.GitPush(seed, jj.PushOpts{Bookmarks: []string{"main"}, AllowNew: true}); err != nil {
 		t.Fatalf("GitPush main: %v", err)
 	}
-	// Add one more local commit on main, do not push.
+	// Add one more local commit and advance main onto it (do not push), so
+	// the local bookmark is one change ahead of its pushed remote position.
 	if err := c.New(seed, "", "second"); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := c.BookmarkSet(seed, "main", "@-", false); err != nil {
+	if err := c.BookmarkSet(seed, "main", "@", false); err != nil {
 		t.Fatalf("BookmarkSet main: %v", err)
 	}
 	ahead, behind, err := c.AheadBehind(seed, "main")
