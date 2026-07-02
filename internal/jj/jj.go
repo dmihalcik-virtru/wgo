@@ -43,6 +43,7 @@ type Client interface {
 	BookmarkList(repo string, opts BookmarkListOpts) ([]Bookmark, error)
 	BookmarkSet(repo, name, revset string, allowBackwards bool) error
 	BookmarkCreate(repo, name, revset string) error
+	BookmarkTrack(repo, name, remote string) error
 	BookmarkDelete(repo, name string) error
 
 	// Mutations
@@ -622,6 +623,19 @@ func (c *CLIClient) BookmarkCreate(repo, name, revset string) error {
 	}
 	args = append(args, name)
 	_, err := c.runR(repo, args...)
+	return err
+}
+
+// BookmarkTrack starts tracking name@remote, creating (or associating) a
+// local bookmark named `name` that follows the remote. A tracked bookmark
+// drops out of the default immutable set, so its commits become mutable and
+// `jj git push` will update the remote branch. Re-tracking an already-tracked
+// bookmark is treated as success.
+func (c *CLIClient) BookmarkTrack(repo, name, remote string) error {
+	_, err := c.runR(repo, "bookmark", "track", name+"@"+remote)
+	if err != nil && strings.Contains(err.Error(), "already tracked") {
+		return nil
+	}
 	return err
 }
 

@@ -493,6 +493,83 @@ func TestDiffStatAndChangedFiles(t *testing.T) {
 	}
 }
 
+// TestBookmarkTrack fetches a branch as an untracked remote bookmark, then
+// tracks it — verifying a local bookmark appears and the remote entry is
+// marked tracked. A second track call must be a no-op (idempotent).
+func TestBookmarkTrack(t *testing.T) {
+	jjtest.RequireJJ(t)
+	c := jj.NewCLI()
+
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if _, err := runRaw(t, "", "git", "init", "--bare", remote); err != nil {
+		t.Fatalf("git init bare: %v", err)
+	}
+
+	// Seed repo: create a feature bookmark and push it to the remote.
+	seed := filepath.Join(t.TempDir(), "seed")
+	if err := c.GitInit(seed, jj.InitOpts{}); err != nil {
+		t.Fatalf("GitInit seed: %v", err)
+	}
+	if _, err := runRaw(t, seed, "jj", "git", "remote", "add", "origin", remote); err != nil {
+		t.Fatalf("seed remote add: %v", err)
+	}
+	if err := c.Describe(seed, "feature work"); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if err := c.BookmarkCreate(seed, "feature", "@"); err != nil {
+		t.Fatalf("BookmarkCreate feature: %v", err)
+	}
+	if _, err := c.GitPush(seed, jj.PushOpts{Bookmarks: []string{"feature"}, AllowNew: true}); err != nil {
+		t.Fatalf("GitPush feature: %v", err)
+	}
+
+	// Consumer repo: fetch the branch. With auto-local-bookmark off (the jj
+	// default) this arrives as an untracked remote bookmark.
+	consumer := filepath.Join(t.TempDir(), "consumer")
+	if err := c.GitInit(consumer, jj.InitOpts{}); err != nil {
+		t.Fatalf("GitInit consumer: %v", err)
+	}
+	if _, err := runRaw(t, consumer, "jj", "git", "remote", "add", "origin", remote); err != nil {
+		t.Fatalf("consumer remote add: %v", err)
+	}
+	if err := c.GitFetch(consumer, "origin", []string{"feature"}); err != nil {
+		t.Fatalf("GitFetch: %v", err)
+	}
+
+	// Track it.
+	if err := c.BookmarkTrack(consumer, "feature", "origin"); err != nil {
+		t.Fatalf("BookmarkTrack: %v", err)
+	}
+
+	bms, err := c.BookmarkList(consumer, jj.BookmarkListOpts{AllRemotes: true})
+	if err != nil {
+		t.Fatalf("BookmarkList: %v", err)
+	}
+	var haveLocal, remoteTracked bool
+	for _, b := range bms {
+		if b.Name != "feature" {
+			continue
+		}
+		if b.Remote == "" {
+			haveLocal = true
+		}
+		if b.Remote == "origin" && b.Tracked {
+			remoteTracked = true
+		}
+	}
+	if !haveLocal {
+		t.Fatalf("expected a local 'feature' bookmark after track: %+v", bms)
+	}
+	if !remoteTracked {
+		t.Fatalf("expected feature@origin to be tracked after track: %+v", bms)
+	}
+
+	// Idempotent: tracking again is a no-op, not an error.
+	if err := c.BookmarkTrack(consumer, "feature", "origin"); err != nil {
+		t.Fatalf("BookmarkTrack (second call) should be a no-op: %v", err)
+	}
+}
+
 // helpers
 
 func hasBookmark(bms []jj.Bookmark, name string) bool {

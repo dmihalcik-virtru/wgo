@@ -85,6 +85,7 @@ func (m *mockJJClient) BookmarkList(string, jj.BookmarkListOpts) ([]jj.Bookmark,
 }
 func (m *mockJJClient) BookmarkSet(string, string, string, bool) error { return nil }
 func (m *mockJJClient) BookmarkCreate(string, string, string) error    { return nil }
+func (m *mockJJClient) BookmarkTrack(string, string, string) error     { return nil }
 func (m *mockJJClient) BookmarkDelete(string, string) error            { return nil }
 func (m *mockJJClient) New(string, string, string) error               { return nil }
 func (m *mockJJClient) Describe(string, string) error                  { return nil }

@@ -571,8 +571,12 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 			return "", err
 		}
 		baseSlug := parsed.Owner + "/" + parsed.Repo
-		bookmark := fmt.Sprintf("pr-%d-%s", num, gh.SanitizeBranch(info.Ref))
+		// The workspace identity stays a stable, unique, slash-free id even
+		// though the bookmark below is the (possibly slashed) head ref.
+		wsName := fmt.Sprintf("pr-%d-%s", num, gh.SanitizeBranch(info.Ref))
 
+		// Fetch the head ref from whichever remote hosts it.
+		remote := "origin"
 		if info.RepoSlug == "" || info.RepoSlug == baseSlug {
 			// Same-repo PR: fetch from origin.
 			logTo("fetching origin/%s...", info.Ref)
@@ -580,35 +584,56 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 				return "", fmt.Errorf("fetch %s from origin: %w", info.Ref, err)
 			}
 		} else {
-			// Fork PR: add the fork as a temporary remote, fetch, then
-			// leave the remote in place (it's harmless and lets the user
-			// re-fetch without re-adding).
-			forkRemote := "pr-" + parsed.Identifier + "-fork"
+			// Fork PR: add the fork as a remote, fetch, then leave the remote
+			// in place (it's harmless and lets the user re-fetch and push).
+			remote = "pr-" + parsed.Identifier + "-fork"
 			forkURL := "https://github.com/" + info.RepoSlug + ".git"
-			logTo("PR is from fork %s; adding remote %s...", info.RepoSlug, forkRemote)
-			if err := jjc.GitRemoteAdd(repoPath, forkRemote, forkURL); err != nil {
+			logTo("PR is from fork %s; adding remote %s...", info.RepoSlug, remote)
+			if err := jjc.GitRemoteAdd(repoPath, remote, forkURL); err != nil {
 				// Remote already exists is non-fatal; jj returns it as
 				// stderr text. Try to fetch anyway.
-				logTo("warning: add remote %s: %v", forkRemote, err)
+				logTo("warning: add remote %s: %v", remote, err)
 			}
-			if err := jjc.GitFetch(repoPath, forkRemote, []string{info.Ref}); err != nil {
-				return "", fmt.Errorf("fetch %s from %s: %w", info.Ref, forkRemote, err)
+			if err := jjc.GitFetch(repoPath, remote, []string{info.Ref}); err != nil {
+				return "", fmt.Errorf("fetch %s from %s: %w", info.Ref, remote, err)
 			}
 		}
 
-		// Pin the bookmark to the exact head OID so subsequent advancement
-		// on the remote does not surprise the local workspace.
-		if err := jjc.BookmarkCreate(repoPath, bookmark, info.OID); err != nil {
-			return "", fmt.Errorf("create bookmark %s at %s: %w", bookmark, info.OID, err)
+		// Prefer a tracked local bookmark named after the head ref: it is
+		// mutable (so you can rebase/amend to resume a stale PR) and pushable
+		// (`jj git push` updates the PR directly). Fall back to a pinned
+		// pr-<N> bookmark when the ref is protected or a divergent local
+		// bookmark of the same name already exists.
+		bookmark := info.Ref
+		if shouldTrack(cfg, info.Ref) && !localBookmarkConflicts(jjc, repoPath, info.Ref, info.OID) {
+			logTo("tracking %s@%s...", info.Ref, remote)
+			if err := jjc.BookmarkTrack(repoPath, info.Ref, remote); err != nil {
+				return "", fmt.Errorf("track %s@%s: %w", info.Ref, remote, err)
+			}
+		} else {
+			bookmark = wsName
+			logTo("not tracking %s; pinning bookmark %s to %s...", info.Ref, bookmark, info.OID)
+			if err := jjc.BookmarkCreate(repoPath, bookmark, info.OID); err != nil {
+				return "", fmt.Errorf("create bookmark %s at %s: %w", bookmark, info.OID, err)
+			}
 		}
 		logTo("creating workspace at bookmark %s...", bookmark)
-		if err := jjc.WorkspaceAdd(repoPath, bookmark, wtPath, bookmark); err != nil {
+		if err := jjc.WorkspaceAdd(repoPath, wsName, wtPath, bookmark); err != nil {
 			return "", fmt.Errorf("workspace add failed: %w", err)
 		}
 
 	case gh.URLTypeBranch:
 		if !bookmarkExists(jjc, repoPath, branch) {
 			return "", fmt.Errorf("branch %q not found locally or on origin", branch)
+		}
+		// Track the branch so the workspace gets a mutable local bookmark,
+		// unless it's protected (those stay immutable via trunk()) or has no
+		// untracked origin counterpart (local-only, or already tracked).
+		if shouldTrack(cfg, branch) && remoteBookmarkTrackable(jjc, repoPath, branch, "origin") {
+			logTo("tracking %s@origin...", branch)
+			if err := jjc.BookmarkTrack(repoPath, branch, "origin"); err != nil {
+				logTo("warning: track %s@origin: %v", branch, err)
+			}
 		}
 		logTo("creating workspace for branch %s...", branch)
 		if err := jjc.WorkspaceAdd(repoPath, branch, wtPath, branch); err != nil {
@@ -620,6 +645,62 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 	}
 
 	return wtPath, nil
+}
+
+// shouldTrack reports whether wgo should create a tracked local bookmark for
+// branch when checking it out. Protected branches — matched against the
+// configured doctor.exclude_bookmarks globs (main/master/develop, release/*)
+// — are left untracked: they stay immutable via jj's trunk() anyway and are
+// not meant to be rewritten locally. (The default branch is covered by those
+// globs; even if a repo's default is named oddly, tracking it is harmless
+// because trunk() still holds it immutable.)
+func shouldTrack(cfg *config.Config, branch string) bool {
+	return !bookmarkExcluded(branch, cfg.Doctor.ExcludeBookmarks)
+}
+
+// bookmarkLister is the subset of jj.Client needed to inspect bookmarks; taking
+// it (rather than the full client) keeps the tracking helpers easy to unit test.
+type bookmarkLister interface {
+	BookmarkList(repo string, opts jj.BookmarkListOpts) ([]jj.Bookmark, error)
+}
+
+// localBookmarkConflicts reports whether a local bookmark named name already
+// exists pointing somewhere other than oid (or is conflicted). Used to avoid
+// clobbering a pre-existing divergent bookmark — e.g. a fork PR whose head ref
+// collides with an already-tracked origin branch of the same name.
+func localBookmarkConflicts(jjc bookmarkLister, repo, name, oid string) bool {
+	bms, err := jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true, Names: []string{name}})
+	if err != nil {
+		return false
+	}
+	for _, b := range bms {
+		if b.Name != name || b.Remote != "" || !b.Present {
+			continue
+		}
+		if b.Conflict {
+			return true
+		}
+		if oid != "" && b.CommitID != "" && b.CommitID != oid {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteBookmarkTrackable reports whether name has an untracked remote bookmark
+// on remote — i.e. tracking it would create a useful local bookmark. Returns
+// false for local-only branches (nothing to track) and already-tracked ones.
+func remoteBookmarkTrackable(jjc bookmarkLister, repo, name, remote string) bool {
+	bms, err := jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true, Names: []string{name}})
+	if err != nil {
+		return false
+	}
+	for _, b := range bms {
+		if b.Name == name && b.Remote == remote && b.Present && !b.Tracked {
+			return true
+		}
+	}
+	return false
 }
 
 // bookmarkExists returns true when a bookmark of name exists locally or on
