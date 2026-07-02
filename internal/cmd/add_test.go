@@ -4,7 +4,68 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/virtru/wgo/internal/jj"
 )
+
+// fakeWSClient records calls and lets tests seed pre-existing workspaces and
+// bookmarks to exercise ensureWorkspaceAndBookmark's idempotency.
+type fakeWSClient struct {
+	workspaces []jj.Workspace
+	bookmarks  []jj.Bookmark
+
+	workspaceAddCalls   int
+	bookmarkCreateCalls int
+}
+
+func (f *fakeWSClient) ListWorkspaces(string) ([]jj.Workspace, error) {
+	return f.workspaces, nil
+}
+
+func (f *fakeWSClient) WorkspaceAdd(_, name, dest, _ string) error {
+	f.workspaceAddCalls++
+	f.workspaces = append(f.workspaces, jj.Workspace{Name: name, Path: dest})
+	return nil
+}
+
+func (f *fakeWSClient) BookmarkList(string, jj.BookmarkListOpts) ([]jj.Bookmark, error) {
+	return f.bookmarks, nil
+}
+
+func (f *fakeWSClient) BookmarkCreate(_, name, _ string) error {
+	f.bookmarkCreateCalls++
+	f.bookmarks = append(f.bookmarks, jj.Bookmark{Name: name})
+	return nil
+}
+
+func TestEnsureWorkspaceAndBookmarkIdempotent(t *testing.T) {
+	f := &fakeWSClient{}
+	const branch = "DSPX-3636-audiotel"
+
+	// First run: nothing exists yet, so both are created.
+	err := ensureWorkspaceAndBookmark(f, "/repo", branch, "/wt", "main", "owner/repo")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, f.workspaceAddCalls)
+	assert.Equal(t, 1, f.bookmarkCreateCalls)
+
+	// Second run: both now exist, so neither is created again.
+	err = ensureWorkspaceAndBookmark(f, "/repo", branch, "/wt", "main", "owner/repo")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, f.workspaceAddCalls, "workspace should not be re-created")
+	assert.Equal(t, 1, f.bookmarkCreateCalls, "bookmark should not be re-created")
+}
+
+// A bookmark left over from a rolled-back run (workspace forgotten but bookmark
+// not deleted) must not cause a re-run to fail: the workspace is created, the
+// bookmark is skipped.
+func TestEnsureWorkspaceAndBookmarkOrphanBookmark(t *testing.T) {
+	const branch = "DSPX-3636-audiotel"
+	f := &fakeWSClient{bookmarks: []jj.Bookmark{{Name: branch}}}
+
+	err := ensureWorkspaceAndBookmark(f, "/repo", branch, "/wt", "main", "owner/repo")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, f.workspaceAddCalls)
+	assert.Equal(t, 0, f.bookmarkCreateCalls, "existing bookmark should be left as-is")
+}
 
 func TestIsJiraTicket(t *testing.T) {
 	tests := []struct {

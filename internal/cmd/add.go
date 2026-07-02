@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -138,7 +139,7 @@ func addTask(text string, priority bool) error {
 	return nil
 }
 
-func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr error) {
+func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 	if err := config.Init(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
@@ -147,17 +148,6 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 		return fmt.Errorf("worktree.worktrees_dir not configured; set it in ~/.wgo/config.toml")
 	}
 	jjc := jj.NewCLI()
-
-	var created []struct{ repoPath, wtPath, bookmark string }
-	defer func() {
-		if retErr != nil {
-			for _, wt := range created {
-				fmt.Fprintf(os.Stderr, "rolling back workspace %s...\n", wt.wtPath)
-				_ = jjc.WorkspaceForget(wt.repoPath, wt.bookmark)
-				_ = os.RemoveAll(wt.wtPath)
-			}
-		}
-	}()
 
 	// Resolve repos: default to current repo if none specified.
 	if len(repos) == 0 {
@@ -229,18 +219,8 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(wtPath), err)
 		}
 
-		fmt.Fprintf(os.Stderr, "creating workspace %s...\n", wtPath)
-		if err := jjc.WorkspaceAdd(repoPath, branchName, wtPath, defaultBranch+"@origin"); err != nil {
-			return fmt.Errorf("workspace add %s: %w", spec.repo, err)
-		}
-		created = append(created, struct{ repoPath, wtPath, bookmark string }{repoPath, wtPath, branchName})
-
-		// Create the bookmark at <default>@origin so it exists for push.
-		// The spec-commit flow below moves it to the spec change; non-spec
-		// repos push the bookmark at <default>@origin, creating an empty
-		// remote branch ready for future commits.
-		if err := jjc.BookmarkCreate(repoPath, branchName, defaultBranch+"@origin"); err != nil {
-			return fmt.Errorf("create bookmark %s: %w", branchName, err)
+		if err := ensureWorkspaceAndBookmark(jjc, repoPath, branchName, wtPath, defaultBranch, spec.repo); err != nil {
+			return err
 		}
 
 		fmt.Fprintf(os.Stderr, "pushing %s...\n", branchName)
@@ -261,6 +241,7 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 		for i, sp := range specs {
 			branches[i] = sp.owner + "/" + sp.repo + ":" + branchName
 		}
+		specWritten := false
 		if _, statErr := os.Stat(specAbs); os.IsNotExist(statErr) {
 			specTitle, specDesc, specPriority := fetchJiraEnrichment(ticket, desc)
 			if specTitle != desc || specDesc != desc {
@@ -290,30 +271,40 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) (retErr
 					return nil
 				})
 			}
+			specWritten = true
 		} else {
 			fmt.Fprintf(os.Stderr, "spec already exists: %s (skipping)\n", specRel)
 		}
-		// jj snapshots the spec file into the workspace's @ automatically;
-		// describe it to give the change a message, capture its commit id,
-		// then start a fresh empty change so the WC is clean. Bookmarks
-		// don't auto-advance with `jj new`, so explicitly move the
-		// branchName bookmark to the spec commit before pushing.
-		msg := fmt.Sprintf("spec: scaffold for %s\n\n%s", ticket, desc)
-		if err := jjc.Describe(specWtPath, msg); err != nil {
-			return fmt.Errorf("describe spec change: %w", err)
-		}
-		specChange, err := jjc.CurrentChange(specWtPath)
-		if err != nil {
-			return fmt.Errorf("read spec change: %w", err)
-		}
-		if err := jjc.New(specWtPath, "", ""); err != nil {
-			return fmt.Errorf("new change after spec: %w", err)
-		}
-		if err := jjc.BookmarkSet(specRepoPath, branchName, specChange.CommitID, false); err != nil {
-			return fmt.Errorf("set bookmark %s to spec: %w", branchName, err)
-		}
-		if _, err := jjc.GitPush(specRepoPath, jj.PushOpts{Bookmarks: []string{branchName}, AllowNew: true}); err != nil && !errors.Is(err, jj.ErrNothingToPush) {
-			return fmt.Errorf("push spec: %w", err)
+		// Only run the commit dance when there is actually something uncommitted
+		// to capture: either we just wrote the spec this run, or a prior run
+		// wrote it but crashed before committing (dirty @). On a clean re-run the
+		// spec is already committed and the bookmark already points at it, so
+		// skipping here avoids re-describing @ and moving the bookmark onto a
+		// fresh empty change.
+		clean, _, _ := jjc.IsClean(specWtPath)
+		if specWritten || !clean {
+			// jj snapshots the spec file into the workspace's @ automatically;
+			// describe it to give the change a message, capture its commit id,
+			// then start a fresh empty change so the WC is clean. Bookmarks
+			// don't auto-advance with `jj new`, so explicitly move the
+			// branchName bookmark to the spec commit before pushing.
+			msg := fmt.Sprintf("spec: scaffold for %s\n\n%s", ticket, desc)
+			if err := jjc.Describe(specWtPath, msg); err != nil {
+				return fmt.Errorf("describe spec change: %w", err)
+			}
+			specChange, err := jjc.CurrentChange(specWtPath)
+			if err != nil {
+				return fmt.Errorf("read spec change: %w", err)
+			}
+			if err := jjc.New(specWtPath, "", ""); err != nil {
+				return fmt.Errorf("new change after spec: %w", err)
+			}
+			if err := jjc.BookmarkSet(specRepoPath, branchName, specChange.CommitID, false); err != nil {
+				return fmt.Errorf("set bookmark %s to spec: %w", branchName, err)
+			}
+			if _, err := jjc.GitPush(specRepoPath, jj.PushOpts{Bookmarks: []string{branchName}, AllowNew: true}); err != nil && !errors.Is(err, jj.ErrNothingToPush) {
+				return fmt.Errorf("push spec: %w", err)
+			}
 		}
 	}
 
@@ -465,6 +456,42 @@ func detectCurrentJJRepo(jjc jj.Client) (string, error) {
 // defaultBranchFor returns the default branch of the GitHub repo backing
 // repoPath. Resolves owner/repo from jj's origin remote, then calls the
 // GitHub API.
+// workspaceBookmarkClient is the narrow slice of jj.Client that
+// ensureWorkspaceAndBookmark needs. Keeping it small makes the idempotency
+// logic easy to unit-test with a fake. jj.Client satisfies it.
+type workspaceBookmarkClient interface {
+	ListWorkspaces(repo string) ([]jj.Workspace, error)
+	WorkspaceAdd(repo, name, dest, revset string) error
+	BookmarkList(repo string, opts jj.BookmarkListOpts) ([]jj.Bookmark, error)
+	BookmarkCreate(repo, name, revset string) error
+}
+
+// ensureWorkspaceAndBookmark creates the workspace and bookmark for branchName
+// in repoPath, basing both at <defaultBranch>@origin. It is idempotent: if a
+// prior (possibly failed) run already registered the workspace or bookmark, the
+// corresponding step is skipped so `wgo add` can be safely re-run. An existing
+// bookmark is left where it points — it may already carry commits — rather than
+// being reset. repoLabel is used only for error messages.
+func ensureWorkspaceAndBookmark(jjc workspaceBookmarkClient, repoPath, branchName, wtPath, defaultBranch, repoLabel string) error {
+	wss, _ := jjc.ListWorkspaces(repoPath)
+	if slices.ContainsFunc(wss, func(w jj.Workspace) bool { return w.Name == branchName }) {
+		fmt.Fprintf(os.Stderr, "workspace %s exists, skipping\n", branchName)
+	} else {
+		fmt.Fprintf(os.Stderr, "creating workspace %s...\n", wtPath)
+		if err := jjc.WorkspaceAdd(repoPath, branchName, wtPath, defaultBranch+"@origin"); err != nil {
+			return fmt.Errorf("workspace add %s: %w", repoLabel, err)
+		}
+	}
+
+	bms, _ := jjc.BookmarkList(repoPath, jj.BookmarkListOpts{Local: true})
+	if slices.ContainsFunc(bms, func(b jj.Bookmark) bool { return b.Name == branchName }) {
+		fmt.Fprintf(os.Stderr, "bookmark %s exists, skipping\n", branchName)
+	} else if err := jjc.BookmarkCreate(repoPath, branchName, defaultBranch+"@origin"); err != nil {
+		return fmt.Errorf("create bookmark %s: %w", branchName, err)
+	}
+	return nil
+}
+
 func defaultBranchFor(jjc jj.Client, repoPath string) (string, error) {
 	remotes, err := jjc.RemoteURLs(repoPath)
 	if err != nil {
