@@ -22,20 +22,22 @@ func RenderTable(w io.Writer, activities []models.RepoActivity, verbose bool, tt
 // RenderTableWithSpec is like RenderTable but allows controlling the Spec column.
 func RenderTableWithSpec(w io.Writer, activities []models.RepoActivity, verbose, showSpec bool, tty ...bool) {
 	isTTY := len(tty) > 0 && tty[0]
+	// pf ignores write errors: this is best-effort table output.
+	pf := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 	if verbose {
 		if showSpec {
-			fmt.Fprintf(w, "  %-3s %-18s %-20s %-4s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
+			pf("  %-3s %-18s %-20s %-4s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
 				"#", "REPO", "BRANCH", "SPEC", "STATUS", "CHANGES", "COMMITS", "LINES", "ACTIVITY", "WHY", "PATH")
 		} else {
-			fmt.Fprintf(w, "  %-3s %-18s %-20s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
+			pf("  %-3s %-18s %-20s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
 				"#", "REPO", "BRANCH", "STATUS", "CHANGES", "COMMITS", "LINES", "ACTIVITY", "WHY", "PATH")
 		}
 	} else {
 		if showSpec {
-			fmt.Fprintf(w, "  %-3s %-18s %-20s %-4s %-10s %-10s %-8s %s\n",
+			pf("  %-3s %-18s %-20s %-4s %-10s %-10s %-8s %s\n",
 				"#", "REPO", "BRANCH", "SPEC", "STATUS", "CHANGES", "COMMITS", "ACTIVITY")
 		} else {
-			fmt.Fprintf(w, "  %-3s %-18s %-20s %-10s %-10s %-8s %s\n",
+			pf("  %-3s %-18s %-20s %-10s %-10s %-8s %s\n",
 				"#", "REPO", "BRANCH", "STATUS", "CHANGES", "COMMITS", "ACTIVITY")
 		}
 	}
@@ -62,18 +64,18 @@ func RenderTableWithSpec(w io.Writer, activities []models.RepoActivity, verbose,
 				why = "—"
 			}
 			if showSpec {
-				fmt.Fprintf(w, "  %-3d %-18s %-20s %-4s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
+				pf("  %-3d %-18s %-20s %-4s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
 					i+1, name, branch, specCol, state, changes, commits, lines, activity, why, a.Path)
 			} else {
-				fmt.Fprintf(w, "  %-3d %-18s %-20s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
+				pf("  %-3d %-18s %-20s %-10s %-10s %-8s %-8s %-14s %-30s %s\n",
 					i+1, name, branch, state, changes, commits, lines, activity, why, a.Path)
 			}
 		} else {
 			if showSpec {
-				fmt.Fprintf(w, "  %-3d %-18s %-20s %-4s %-10s %-10s %-8s %s\n",
+				pf("  %-3d %-18s %-20s %-4s %-10s %-10s %-8s %s\n",
 					i+1, name, branch, specCol, state, changes, commits, activity)
 			} else {
-				fmt.Fprintf(w, "  %-3d %-18s %-20s %-10s %-10s %-8s %s\n",
+				pf("  %-3d %-18s %-20s %-10s %-10s %-8s %s\n",
 					i+1, name, branch, state, changes, commits, activity)
 			}
 		}
@@ -111,7 +113,8 @@ func RenderCSV(w io.Writer, activities []models.RepoActivity, verbose bool) erro
 			formatTimeSince(a.LastActivity),
 		}
 		if verbose {
-			row = append(row,
+			row = append(
+				row,
 				formatLines(a.DiffStat),
 				a.Annotation,
 				a.Path,
@@ -127,6 +130,8 @@ func RenderCSV(w io.Writer, activities []models.RepoActivity, verbose bool) erro
 
 // RenderWatchHeader writes the watch mode header.
 func RenderWatchHeader(w io.Writer, activities []models.RepoActivity, since string, sortBy string) {
+	// pf ignores write errors: this is best-effort header output.
+	pf := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 	now := time.Now().Format("15:04:05")
 
 	var modified, clean, stale, unpushed int
@@ -144,8 +149,8 @@ func RenderWatchHeader(w io.Writer, activities []models.RepoActivity, since stri
 		}
 	}
 
-	fmt.Fprintf(w, "wgo status — Updated: %s\n", now)
-	fmt.Fprintf(w, "Total: %d | Modified: %d | Unpushed: %d | Clean: %d | Stale: %d\n",
+	pf("wgo status — Updated: %s\n", now)
+	pf("Total: %d | Modified: %d | Unpushed: %d | Clean: %d | Stale: %d\n",
 		len(activities), modified, unpushed, clean, stale)
 
 	parts := []string{}
@@ -153,7 +158,7 @@ func RenderWatchHeader(w io.Writer, activities []models.RepoActivity, since stri
 		parts = append(parts, fmt.Sprintf("Since: %s", since))
 	}
 	parts = append(parts, fmt.Sprintf("Sort: %s", sortBy))
-	fmt.Fprintf(w, "%s\n\n", strings.Join(parts, " | "))
+	pf("%s\n\n", strings.Join(parts, " | "))
 }
 
 // formatChanges creates a compact change summary like "3M 1U ↑2".

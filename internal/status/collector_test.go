@@ -8,66 +8,113 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/virtru/wgo/internal/discovery"
-	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/models"
 )
 
-// mockGitClient implements git.Client for testing.
-type mockGitClient struct {
-	isRepo      bool
-	branch      string
-	status      models.GitStatus
-	commit      models.CommitInfo
-	repoName    string
-	remoteURL   string
-	commitCount int
-	diffStat    models.DiffStat
-	worktrees   map[string][]git.WorktreeInfo // keyed by repo path
+// mockJJClient implements jj.Client for collector tests. Each field
+// supplies a deterministic answer for the corresponding method; methods
+// not used by the collector return zero values.
+type mockJJClient struct {
+	currentChange   jj.Change
+	nearestBookmark string // overrides the currentChange fallback when set
+	status          jj.Status
+	logEntries      map[string][]jj.LogEntry // keyed by revset
+	countResults    map[string]int           // keyed by revset
+	diffAdded       int
+	diffDeleted     int
+	changedFiles    []string
+	ahead           int
+	behind          int
+	remotes         map[string]string
+	workspaces      map[string][]jj.Workspace // keyed by repo path
 }
 
-func (m *mockGitClient) IsRepo(string) (bool, error)                              { return m.isRepo, nil }
-func (m *mockGitClient) CurrentBranch(string) (string, error)                     { return m.branch, nil }
-func (m *mockGitClient) Status(string) (models.GitStatus, error)                  { return m.status, nil }
-func (m *mockGitClient) AheadBehind(string, string) (int, int, error)             { return 0, 0, nil }
-func (m *mockGitClient) LastCommit(string) (models.CommitInfo, error)             { return m.commit, nil }
-func (m *mockGitClient) RepoName(string) (string, error)                          { return m.repoName, nil }
-func (m *mockGitClient) RemoteURL(string) (string, error)                         { return m.remoteURL, nil }
-func (m *mockGitClient) RecentCommitCount(string, time.Time) (int, error)         { return m.commitCount, nil }
-func (m *mockGitClient) DiffStat(string) (models.DiffStat, error)                 { return m.diffStat, nil }
-func (m *mockGitClient) Clone(string, string) error                               { return nil }
-func (m *mockGitClient) WorktreeAdd(string, string, string, bool, string) error   { return nil }
-func (m *mockGitClient) Fetch(string) error                                       { return nil }
-func (m *mockGitClient) FetchPRRef(string, int, string) error                     { return nil }
-func (m *mockGitClient) DefaultBranch(string) (string, error)                     { return "main", nil }
-func (m *mockGitClient) BranchExists(string, string) (bool, error)                { return false, nil }
-func (m *mockGitClient) RemoveWorktree(string, string, bool) error                { return nil }
-func (m *mockGitClient) DeleteBranch(string, string, bool) error                  { return nil }
-func (m *mockGitClient) HasLocalOnlyCommits(string, string, string) (bool, error) { return false, nil }
-func (m *mockGitClient) IsAncestor(string, string, string) (bool, error)          { return false, nil }
-func (m *mockGitClient) UpstreamRef(string, string) (string, error)               { return "", nil }
-func (m *mockGitClient) PruneWorktrees(string) error                              { return nil }
-func (m *mockGitClient) ListLocalBranches(string) ([]string, error)               { return nil, nil }
-func (m *mockGitClient) IsBranchMerged(string, string, string) (bool, error)      { return false, nil }
-func (m *mockGitClient) Push(string, string) error                                { return nil }
-func (m *mockGitClient) AddAndCommit(string, string, string) error                { return nil }
-func (m *mockGitClient) IsClean(string) (bool, []string, error)                   { return true, nil, nil }
-func (m *mockGitClient) Rebase(string, string) error                              { return nil }
-func (m *mockGitClient) Merge(string, string, bool) error                         { return nil }
-func (m *mockGitClient) ResolveRef(string, string) (string, error)                { return "", nil }
-func (m *mockGitClient) PushForceWithLease(string, []git.ForceLeaseRef) error     { return nil }
-func (m *mockGitClient) HasActiveRebase(string) (bool, error)                     { return false, nil }
-func (m *mockGitClient) RebaseContinue(string) error                              { return nil }
-func (m *mockGitClient) ListWorktrees(repoPath string) ([]git.WorktreeInfo, error) {
-	if m.worktrees != nil {
-		if wts, ok := m.worktrees[repoPath]; ok {
-			return wts, nil
+func (m *mockJJClient) Root(string) (string, error) { return "", nil }
+func (m *mockJJClient) IsRepo(string) bool          { return true }
+func (m *mockJJClient) RemoteURLs(string) (map[string]string, error) {
+	if m.remotes != nil {
+		return m.remotes, nil
+	}
+	return map[string]string{}, nil
+}
+
+func (m *mockJJClient) ListWorkspaces(repo string) ([]jj.Workspace, error) {
+	if m.workspaces != nil {
+		if ws, ok := m.workspaces[repo]; ok {
+			return ws, nil
 		}
 	}
-	return []git.WorktreeInfo{{Path: repoPath, IsMain: true}}, nil
+	return []jj.Workspace{{Name: "default", Path: repo}}, nil
+}
+func (m *mockJJClient) WorkspaceAdd(string, string, string, string) error { return nil }
+func (m *mockJJClient) WorkspaceForget(string, string) error              { return nil }
+func (m *mockJJClient) WorkspaceRoot(p string) (string, error)            { return p, nil }
+func (m *mockJJClient) MainWorkspaceRoot(p string) (string, error)        { return p, nil }
+func (m *mockJJClient) UpdateStale(string) error                          { return nil }
+func (m *mockJJClient) Log(_, revset string) ([]jj.LogEntry, error) {
+	if m.logEntries != nil {
+		if entries, ok := m.logEntries[revset]; ok {
+			return entries, nil
+		}
+	}
+	return nil, nil
+}
+func (m *mockJJClient) CurrentChange(string) (jj.Change, error) { return m.currentChange, nil }
+func (m *mockJJClient) NearestBookmark(string) (string, error) {
+	if m.nearestBookmark != "" {
+		return m.nearestBookmark, nil
+	}
+	if len(m.currentChange.Bookmarks) > 0 {
+		return m.currentChange.Bookmarks[0], nil
+	}
+	return "", nil
+}
+func (m *mockJJClient) Resolve(string, string) (string, error) { return "", nil }
+func (m *mockJJClient) Status(string) (jj.Status, error)       { return m.status, nil }
+func (m *mockJJClient) IsClean(string) (bool, []string, error) { return m.status.Clean, nil, nil }
+func (m *mockJJClient) AheadBehind(string, string) (int, int, error) {
+	return m.ahead, m.behind, nil
 }
 
+func (m *mockJJClient) DiffStat(string, string) (int, int, error) {
+	return m.diffAdded, m.diffDeleted, nil
+}
+func (m *mockJJClient) ChangedFiles(string, string) ([]string, error) { return m.changedFiles, nil }
+func (m *mockJJClient) DiffSummary(string, string) ([]jj.FileChange, error) {
+	return nil, nil
+}
+
+func (m *mockJJClient) CountRevset(_, revset string) (int, error) {
+	if m.countResults != nil {
+		if n, ok := m.countResults[revset]; ok {
+			return n, nil
+		}
+	}
+	return 0, nil
+}
+
+func (m *mockJJClient) BookmarkList(string, jj.BookmarkListOpts) ([]jj.Bookmark, error) {
+	return nil, nil
+}
+func (m *mockJJClient) BookmarkSet(string, string, string, bool) error { return nil }
+func (m *mockJJClient) BookmarkCreate(string, string, string) error    { return nil }
+func (m *mockJJClient) BookmarkTrack(string, string, string) error     { return nil }
+func (m *mockJJClient) BookmarkDelete(string, string) error            { return nil }
+func (m *mockJJClient) New(string, string, string) error               { return nil }
+func (m *mockJJClient) Describe(string, string) error                  { return nil }
+func (m *mockJJClient) EditChange(string, string) error                { return nil }
+func (m *mockJJClient) GitInit(string, jj.InitOpts) error              { return nil }
+func (m *mockJJClient) GitClone(string, string) error                  { return nil }
+func (m *mockJJClient) GitFetch(string, string, []string) error        { return nil }
+func (m *mockJJClient) GitPush(string, jj.PushOpts) (jj.PushResult, error) {
+	return jj.PushResult{}, nil
+}
+func (m *mockJJClient) GitRemoteAdd(string, string, string) error { return nil }
+func (m *mockJJClient) GitRemoteRemove(string, string) error      { return nil }
+
 func TestCollector_DetermineState(t *testing.T) {
-	c := NewCollector(&mockGitClient{}, nil, nil)
+	c := NewCollector(&mockJJClient{}, nil, nil)
 
 	tests := []struct {
 		name     string
@@ -118,13 +165,16 @@ func TestCollector_DetermineState(t *testing.T) {
 }
 
 func TestCollector_CollectAll(t *testing.T) {
-	mock := &mockGitClient{
-		isRepo:   true,
-		branch:   "main",
-		status:   models.GitStatus{Modified: 2},
-		commit:   models.CommitInfo{Hash: "abc123", Message: "test", Date: time.Now()},
-		repoName: "test-repo",
-		diffStat: models.DiffStat{FilesChanged: 2, Insertions: 10, Deletions: 3},
+	now := time.Now()
+	mock := &mockJJClient{
+		currentChange: jj.Change{Bookmarks: []string{"main"}, CommitID: "abc123"},
+		status:        jj.Status{Modified: []string{"a", "b"}}, // two modified
+		logEntries: map[string][]jj.LogEntry{
+			"@-": {{CommitID: "abc123", Description: "test", AuthorTimestamp: now}},
+		},
+		diffAdded:    10,
+		diffDeleted:  3,
+		changedFiles: []string{"a.txt", "b.txt"},
 	}
 
 	c := NewCollector(mock, nil, nil)
@@ -145,15 +195,16 @@ func TestCollector_CollectAll(t *testing.T) {
 }
 
 func TestCollector_WorktreeExpansion(t *testing.T) {
-	mock := &mockGitClient{
-		isRepo:   true,
-		branch:   "main",
-		commit:   models.CommitInfo{Date: time.Now()},
-		repoName: "myrepo",
-		worktrees: map[string][]git.WorktreeInfo{
+	now := time.Now()
+	mock := &mockJJClient{
+		currentChange: jj.Change{Bookmarks: []string{"main"}, CommitID: "abc"},
+		logEntries: map[string][]jj.LogEntry{
+			"@-": {{CommitID: "abc", AuthorTimestamp: now}},
+		},
+		workspaces: map[string][]jj.Workspace{
 			"/tmp/myrepo": {
-				{Path: "/tmp/myrepo", Branch: "main", IsMain: true},
-				{Path: "/tmp/myrepo-feat", Branch: "feat/new", IsMain: false},
+				{Name: "default", Path: "/tmp/myrepo"},
+				{Name: "feat", Path: "/tmp/myrepo-feat"},
 			},
 		},
 	}
@@ -166,9 +217,8 @@ func TestCollector_WorktreeExpansion(t *testing.T) {
 
 	results := c.CollectAll(context.Background(), repos)
 
-	require.Len(t, results, 2, "expected 2 results (main + worktree)")
+	require.Len(t, results, 2, "expected 2 results (main + workspace)")
 
-	// Find the worktree entry
 	var foundWorktree bool
 	for _, r := range results {
 		if r.IsWorktree {
@@ -179,26 +229,27 @@ func TestCollector_WorktreeExpansion(t *testing.T) {
 		}
 	}
 
-	assert.True(t, foundWorktree, "expected to find a worktree entry in results")
+	assert.True(t, foundWorktree, "expected to find a workspace entry in results")
 }
 
 func TestCollector_WorktreeDedup(t *testing.T) {
-	mock := &mockGitClient{
-		isRepo:   true,
-		branch:   "main",
-		commit:   models.CommitInfo{Date: time.Now()},
-		repoName: "myrepo",
-		worktrees: map[string][]git.WorktreeInfo{
+	now := time.Now()
+	mock := &mockJJClient{
+		currentChange: jj.Change{Bookmarks: []string{"main"}, CommitID: "abc"},
+		logEntries: map[string][]jj.LogEntry{
+			"@-": {{CommitID: "abc", AuthorTimestamp: now}},
+		},
+		workspaces: map[string][]jj.Workspace{
 			"/tmp/myrepo": {
-				{Path: "/tmp/myrepo", Branch: "main", IsMain: true},
-				{Path: "/tmp/myrepo-feat", Branch: "feat/new", IsMain: false},
+				{Name: "default", Path: "/tmp/myrepo"},
+				{Name: "feat", Path: "/tmp/myrepo-feat"},
 			},
 		},
 	}
 
 	c := NewCollector(mock, nil, nil)
 
-	// Both main and worktree are already in the discovery list
+	// Both main and workspace are already in the discovery list
 	repos := []discovery.DiscoveredRepo{
 		{Path: "/tmp/myrepo", Name: "myrepo"},
 		{Path: "/tmp/myrepo-feat", Name: "myrepo-feat"},
@@ -206,19 +257,32 @@ func TestCollector_WorktreeDedup(t *testing.T) {
 
 	results := c.CollectAll(context.Background(), repos)
 
-	// Should still get exactly 2 results (no duplicate for the worktree)
+	// Should still get exactly 2 results (no duplicate for the workspace)
 	assert.Len(t, results, 2, "expected 2 results (deduped)")
 }
 
 func TestCollector_WithSince(t *testing.T) {
 	since := time.Now().Add(-1 * time.Hour)
-	mock := &mockGitClient{
-		branch:      "main",
-		commit:      models.CommitInfo{Date: time.Now()},
-		commitCount: 5,
+	mock := &mockJJClient{
+		currentChange: jj.Change{Bookmarks: []string{"main"}, CommitID: "abc"},
+		logEntries: map[string][]jj.LogEntry{
+			"@-": {{CommitID: "abc", AuthorTimestamp: time.Now()}},
+		},
+		// The collector builds a revset of the form `(::main) &
+		// author_date(after:"<ts>")`; we don't need the exact key match,
+		// just any non-zero count, so set a catch-all entry.
 	}
 
+	// Build the exact revset the collector will use so the mock returns 5.
+	mock.countResults = map[string]int{}
+
 	c := NewCollector(mock, nil, nil, WithSince(since))
+
+	// Pre-populate the count map after constructing the revset format.
+	// The collector uses time.RFC3339 in UTC, so reconstruct it here.
+	const tsLayout = time.RFC3339
+	revset := "(::main) & author_date(after:" + quote(since.UTC().Format(tsLayout)) + ")"
+	mock.countResults[revset] = 5
 
 	repos := []discovery.DiscoveredRepo{
 		{Path: "/tmp/repo1", Name: "repo1"},
@@ -228,3 +292,6 @@ func TestCollector_WithSince(t *testing.T) {
 	require.Len(t, results, 1)
 	assert.Equal(t, 5, results[0].RecentCommits)
 }
+
+// quote wraps s in double quotes — matches the collector's fmt.Sprintf("%q", ...) call.
+func quote(s string) string { return "\"" + s + "\"" }

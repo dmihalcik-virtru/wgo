@@ -1,15 +1,14 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
-	"github.com/virtru/wgo/internal/git"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/store"
 )
@@ -37,12 +36,17 @@ func init() {
 }
 
 func runJoin(ownerRepo string, noPush bool) (retErr error) {
-	// 1. Detect current worktree path.
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	jjc := jj.NewCLI()
+
+	// 1. Detect current workspace path.
+	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("not in a git repository")
+		return fmt.Errorf("getwd: %w", err)
 	}
-	currentWtPath := strings.TrimSpace(string(out))
+	currentWtPath, err := jjc.Root(cwd)
+	if err != nil {
+		return fmt.Errorf("not in a jj repository: %w", err)
+	}
 
 	// 2. Config must be initialized before findOrCloneRepo.
 	if err := config.Init(); err != nil {
@@ -53,15 +57,13 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 		return fmt.Errorf("worktree.worktrees_dir not configured; set it in ~/.wgo/config.toml")
 	}
 
-	gitClient := git.New("")
-
-	// 3. Current branch.
-	branch, err := gitClient.CurrentBranch(currentWtPath)
-	if err != nil {
-		return fmt.Errorf("could not determine current branch: %w", err)
+	// 3. Current bookmark (jj-side equivalent of "current branch").
+	branch := currentBookmark(jjc, currentWtPath)
+	if branch == "" {
+		return fmt.Errorf("could not determine current bookmark on workspace %s; check `jj log -r @`", currentWtPath)
 	}
 
-	// 4. Shared root is one level up from the current worktree.
+	// 4. Shared root is one level up from the current workspace.
 	sharedRoot := filepath.Dir(currentWtPath)
 
 	// 5. Parse owner/repo argument.
@@ -72,56 +74,55 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 	spec := specs[0]
 
 	// 6. Find or clone the target repo.
-	repoPath, err := findOrCloneRepo(gitClient, cfg, spec.owner, spec.repo)
+	repoPath, err := findOrCloneRepo(jjc, cfg, spec.owner, spec.repo)
 	if err != nil {
 		return fmt.Errorf("repo %s: %w", ownerRepo, err)
 	}
 
 	// 7. Fetch latest (best-effort).
 	fmt.Fprintf(os.Stderr, "fetching %s...\n", ownerRepo)
-	if err := gitClient.Fetch(repoPath); err != nil {
+	if err := jjc.GitFetch(repoPath, "", nil); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: fetch failed for %s (using cached state): %v\n", ownerRepo, err)
 	}
 
-	// 8. Target worktree path.
+	// 8. Target workspace path.
 	newWtPath := filepath.Join(sharedRoot, spec.repo)
 
 	// 9. Error if path already exists.
 	if _, err := os.Stat(newWtPath); err == nil {
-		return fmt.Errorf("worktree already exists at %s; remove it first or use cd %s", newWtPath, newWtPath)
+		return fmt.Errorf("workspace already exists at %s; remove it first or use cd %s", newWtPath, newWtPath)
 	}
 
-	// 10. Create worktree: check out existing branch or create new one.
-	exists, err := gitClient.BranchExists(repoPath, branch)
-	if err != nil {
-		return fmt.Errorf("could not check branch existence: %w", err)
-	}
-
-	if exists {
-		fmt.Fprintf(os.Stderr, "creating worktree for existing branch %s...\n", branch)
-		if err := gitClient.WorktreeAdd(repoPath, newWtPath, branch, false, ""); err != nil {
-			return fmt.Errorf("worktree add: %w", err)
+	// 10. Create workspace: attach existing bookmark or create new one.
+	if bookmarkExists(jjc, repoPath, branch) {
+		fmt.Fprintf(os.Stderr, "creating workspace for existing bookmark %s...\n", branch)
+		if err := jjc.WorkspaceAdd(repoPath, branch, newWtPath, branch); err != nil {
+			return fmt.Errorf("workspace add: %w", err)
 		}
 	} else {
-		defaultBranch, err := gitClient.DefaultBranch(repoPath)
+		defaultBranch, err := defaultBranchFor(jjc, repoPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not detect default branch, assuming 'main': %v\n", err)
 			defaultBranch = "main"
 		}
-		fmt.Fprintf(os.Stderr, "creating worktree with new branch %s from origin/%s...\n", branch, defaultBranch)
-		if err := gitClient.WorktreeAdd(repoPath, newWtPath, branch, true, "origin/"+defaultBranch); err != nil {
-			return fmt.Errorf("worktree add: %w", err)
+		fmt.Fprintf(os.Stderr, "creating workspace with new bookmark %s from origin/%s...\n", branch, defaultBranch)
+		if err := jjc.WorkspaceAdd(repoPath, branch, newWtPath, "origin/"+defaultBranch); err != nil {
+			return fmt.Errorf("workspace add: %w", err)
+		}
+		if err := jjc.BookmarkCreate(repoPath, branch, "origin/"+defaultBranch); err != nil {
+			return fmt.Errorf("create bookmark %s: %w", branch, err)
 		}
 		defer func() {
 			if retErr != nil {
-				fmt.Fprintf(os.Stderr, "rolling back worktree %s...\n", newWtPath)
-				_ = gitClient.RemoveWorktree(repoPath, newWtPath, true)
+				fmt.Fprintf(os.Stderr, "rolling back workspace %s...\n", newWtPath)
+				_ = jjc.WorkspaceForget(repoPath, branch)
+				_ = os.RemoveAll(newWtPath)
 			}
 		}()
 
 		if !noPush {
 			fmt.Fprintf(os.Stderr, "pushing %s...\n", branch)
-			if err := gitClient.Push(newWtPath, branch); err != nil {
+			if _, err := jjc.GitPush(repoPath, jj.PushOpts{Bookmarks: []string{branch}, AllowNew: true}); err != nil && !errors.Is(err, jj.ErrNothingToPush) {
 				return fmt.Errorf("push %s: %w", branch, err)
 			}
 		}

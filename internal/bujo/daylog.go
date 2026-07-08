@@ -165,7 +165,7 @@ func parseBranchEvent(s string) *BranchEvent {
 func (dl *DailyLog) Render() string {
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("# %s\n", FormatDate(dl.Date)))
+	fmt.Fprintf(&b, "# %s\n", FormatDate(dl.Date))
 
 	if len(dl.Completed) > 0 {
 		b.WriteString("\n## Completed\n")

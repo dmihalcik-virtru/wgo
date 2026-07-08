@@ -1,10 +1,8 @@
 package github
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"os/exec"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -47,37 +45,6 @@ func (p *ExtendedPRInfo) StateLabel() string {
 	return strings.ToUpper(p.State)
 }
 
-// searchPRItem is the JSON shape returned by `gh search prs --json ...`.
-type searchPRItem struct {
-	Number    int       `json:"number"`
-	Title     string    `json:"title"`
-	State     string    `json:"state"`
-	IsDraft   bool      `json:"isDraft"`
-	URL       string    `json:"url"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	Author    struct {
-		Login string `json:"login"`
-	} `json:"author"`
-	Repository struct {
-		NameWithOwner string `json:"nameWithOwner"`
-	} `json:"repository"`
-}
-
-func (item searchPRItem) toExtended() ExtendedPRInfo {
-	owner, repo := splitOwnerRepo(item.Repository.NameWithOwner)
-	return ExtendedPRInfo{
-		Number:     item.Number,
-		Title:      item.Title,
-		State:      item.State,
-		IsDraft:    item.IsDraft,
-		URL:        item.URL,
-		UpdatedAt:  item.UpdatedAt,
-		RepoOwner:  owner,
-		RepoName:   repo,
-		CheckTotal: -1,
-	}
-}
-
 func splitOwnerRepo(slug string) (owner, repo string) {
 	parts := strings.SplitN(slug, "/", 2)
 	if len(parts) == 2 {
@@ -86,35 +53,84 @@ func splitOwnerRepo(slug string) (owner, repo string) {
 	return slug, ""
 }
 
-// searchPRsRaw runs `gh search prs` with the given extra args and returns raw items.
-func searchPRsRaw(args ...string) ([]searchPRItem, error) {
-	cmdArgs := []string{
-		"search", "prs",
-		"--json", "number,title,state,isDraft,url,updatedAt,author,repository",
-		"--limit", "50",
+// splitOwnerRepoFromAPIURL parses GitHub's repository_url shape
+// ("https://api.github.com/repos/owner/repo") and returns (owner, repo).
+func splitOwnerRepoFromAPIURL(repoURL string) (owner, repo string) {
+	const marker = "/repos/"
+	idx := strings.Index(repoURL, marker)
+	if idx < 0 {
+		return "", ""
 	}
-	cmdArgs = append(cmdArgs, args...)
-	cmd := exec.Command("gh", cmdArgs...)
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh search prs: %s", strings.TrimSpace(stderr.String()))
-	}
-	var items []searchPRItem
-	if err := json.Unmarshal([]byte(stdout.String()), &items); err != nil {
-		return nil, fmt.Errorf("parse search results: %w", err)
-	}
-	return items, nil
+	return splitOwnerRepo(repoURL[idx+len(marker):])
 }
 
 // CurrentUser returns the authenticated GitHub username.
 func (c *CLIClient) CurrentUser() (string, error) {
-	out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output()
-	if err != nil {
-		return "", fmt.Errorf("gh api user: %w", err)
+	var u apiUserInfo
+	if err := c.getJSON("/user", &u); err != nil {
+		return "", fmt.Errorf("get authenticated user: %w", err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	if u.Login == "" {
+		return "", fmt.Errorf("github /user returned empty login")
+	}
+	return u.Login, nil
+}
+
+// searchPRs runs the GitHub Search API for issues/PRs and returns the items
+// as ExtendedPRInfo. q is the search query body (without the type filter).
+func (c *CLIClient) searchPRs(q string) ([]ExtendedPRInfo, error) {
+	full := q + " is:pr"
+	endpoint := fmt.Sprintf("/search/issues?q=%s&per_page=50", url.QueryEscape(full))
+	var resp apiSearchResults
+	if err := c.getJSON(endpoint, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]ExtendedPRInfo, 0, len(resp.Items))
+	for i := range resp.Items {
+		out = append(out, resp.Items[i].toExtendedPRInfo())
+	}
+	return out, nil
+}
+
+// SearchPRs runs a free-form GitHub search query and returns matching PRs
+// as ExtendedPRInfo. The caller supplies the search body; the function
+// appends `is:pr` automatically. Used by pilot to issue queries like
+// "author:X merged:>=S merged:<=U".
+func (c *CLIClient) SearchPRs(query string) ([]ExtendedPRInfo, error) {
+	if !c.Available() {
+		return nil, nil
+	}
+	return c.searchPRs(query)
+}
+
+// PRReview is a single review on a specific PR, surfaced for callers that
+// need raw review state without the PR-context wrapping of ReviewSubmission
+// (which is shaped for "the reviews I submitted today" use cases).
+type PRReview struct {
+	Author      string
+	State       string // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED
+	SubmittedAt time.Time
+}
+
+// GetPRReviews returns the review submissions on a PR, in submission
+// order. Used by pilot to count review round-trips.
+func (c *CLIClient) GetPRReviews(slug string, number int) ([]PRReview, error) {
+	if !c.Available() {
+		return nil, nil
+	}
+	raw, err := c.listReviewsForPR(slug, number)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PRReview, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, PRReview{
+			Author:      r.User.Login,
+			State:       r.State,
+			SubmittedAt: r.SubmittedAt,
+		})
+	}
+	return out, nil
 }
 
 // ListMyOpenPRs returns all open (including draft) PRs authored by the current user.
@@ -122,152 +138,125 @@ func (c *CLIClient) ListMyOpenPRs() ([]ExtendedPRInfo, error) {
 	if !c.Available() {
 		return nil, nil
 	}
-	items, err := searchPRsRaw("--author", "@me", "--state", "open")
-	if err != nil {
-		return nil, err
-	}
-	result := make([]ExtendedPRInfo, len(items))
-	for i, item := range items {
-		result[i] = item.toExtended()
-	}
-	return result, nil
+	return c.searchPRs("author:@me state:open")
 }
 
-// ListInvolvedPRs returns open PRs where the user is involved (assigned, review-requested,
-// or has commented) but is NOT the author. Pass the current user's login as excludeAuthor.
+// ListInvolvedPRs returns open PRs where the user is involved (assigned,
+// review-requested, or has commented) but is NOT the author. The original
+// behavior excluded the user's authored PRs from the "involves:@me" search
+// result; we replicate that by issuing a second search for the user's open
+// PRs and subtracting those by (slug, number) key.
 func (c *CLIClient) ListInvolvedPRs(excludeAuthor string) ([]ExtendedPRInfo, error) {
 	if !c.Available() {
 		return nil, nil
 	}
-	items, err := searchPRsRaw("--involves", "@me", "--state", "open")
+	items, err := c.searchPRs("involves:@me state:open")
 	if err != nil {
 		return nil, err
 	}
-	var result []ExtendedPRInfo
-	for _, item := range items {
-		if strings.EqualFold(item.Author.Login, excludeAuthor) {
-			continue // already shown in "my PRs" section
-		}
-		result = append(result, item.toExtended())
+	if excludeAuthor == "" {
+		return items, nil
 	}
-	return result, nil
+	// Build the set of PRs authored by excludeAuthor so we can subtract them.
+	authoredItems, _ := c.searchPRs(fmt.Sprintf("author:%s state:open", excludeAuthor))
+	authored := map[string]bool{}
+	for _, pr := range authoredItems {
+		authored[fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.Number)] = true
+	}
+	out := items[:0]
+	for _, pr := range items {
+		if authored[fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.Number)] {
+			continue
+		}
+		out = append(out, pr)
+	}
+	return out, nil
 }
 
-// lastActivityQuery fetches the viewer's most recent comment and review timestamps on a PR.
-const lastActivityQuery = `query($owner: String!, $repo: String!, $number: Int!) {
-  repository(owner: $owner, name: $repo) {
-    pullRequest(number: $number) {
-      comments(last: 100) {
-        nodes { author { login } createdAt }
-      }
-      reviews(last: 100) {
-        nodes { author { login } submittedAt }
-      }
-    }
-  }
-}`
-
-type lastActivityResponse struct {
-	Data struct {
-		Repository struct {
-			PullRequest struct {
-				Comments struct {
-					Nodes []struct {
-						Author    struct{ Login string } `json:"author"`
-						CreatedAt time.Time              `json:"createdAt"`
-					} `json:"nodes"`
-				} `json:"comments"`
-				Reviews struct {
-					Nodes []struct {
-						Author      struct{ Login string } `json:"author"`
-						SubmittedAt time.Time              `json:"submittedAt"`
-					} `json:"nodes"`
-				} `json:"reviews"`
-			} `json:"pullRequest"`
-		} `json:"repository"`
-	} `json:"data"`
-}
-
-// FetchMyLastActivityOnPR returns the time of the user's most recent comment or review
-// on the specified PR. Returns zero time if the user has no recorded activity.
+// FetchMyLastActivityOnPR returns the time of the user's most recent comment
+// or review on the specified PR. Returns zero time if the user has no
+// recorded activity.
+//
+// Two calls are made: /repos/{slug}/issues/{n}/comments and
+// /repos/{slug}/pulls/{n}/reviews. Only entries authored by myLogin are
+// considered.
 func (c *CLIClient) FetchMyLastActivityOnPR(owner, repo string, number int, myLogin string) (time.Time, error) {
-	cmd := exec.Command("gh", "api", "graphql",
-		"-f", "query="+lastActivityQuery,
-		"-F", "owner="+owner,
-		"-F", "repo="+repo,
-		"-F", fmt.Sprintf("number=%d", number),
-	)
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return time.Time{}, fmt.Errorf("graphql: %s", strings.TrimSpace(stderr.String()))
-	}
-
-	var resp lastActivityResponse
-	if err := json.Unmarshal([]byte(stdout.String()), &resp); err != nil {
-		return time.Time{}, fmt.Errorf("parse graphql response: %w", err)
-	}
-
+	slug := owner + "/" + repo
 	var latest time.Time
-	pr := resp.Data.Repository.PullRequest
-	for _, node := range pr.Comments.Nodes {
-		if strings.EqualFold(node.Author.Login, myLogin) && node.CreatedAt.After(latest) {
-			latest = node.CreatedAt
+
+	var comments []apiIssueComment
+	commentsEndpoint := fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", slug, number)
+	if err := c.getJSON(commentsEndpoint, &comments); err != nil {
+		return time.Time{}, fmt.Errorf("fetch comments for #%d: %w", number, err)
+	}
+	for _, c := range comments {
+		if !strings.EqualFold(c.User.Login, myLogin) {
+			continue
+		}
+		if c.CreatedAt.After(latest) {
+			latest = c.CreatedAt
 		}
 	}
-	for _, node := range pr.Reviews.Nodes {
-		if strings.EqualFold(node.Author.Login, myLogin) && node.SubmittedAt.After(latest) {
-			latest = node.SubmittedAt
+
+	var reviews []apiReview
+	reviewsEndpoint := fmt.Sprintf("/repos/%s/pulls/%d/reviews?per_page=100", slug, number)
+	if err := c.getJSON(reviewsEndpoint, &reviews); err != nil {
+		return latest, fmt.Errorf("fetch reviews for #%d: %w", number, err)
+	}
+	for _, r := range reviews {
+		if !strings.EqualFold(r.User.Login, myLogin) {
+			continue
+		}
+		if r.SubmittedAt.After(latest) {
+			latest = r.SubmittedAt
 		}
 	}
 	return latest, nil
 }
 
-// checkRollupItem represents one entry in `gh pr view --json statusCheckRollup`.
-type checkRollupItem struct {
-	TypeName   string `json:"__typename"`
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
-	State      string `json:"state"` // StatusContext uses "state" instead of "conclusion"
-}
-
 // FetchPRChecks returns (passing, total) check counts for a PR.
 // Returns (-1, -1) if checks are unavailable or the PR has none.
+//
+// We combine two endpoints because GitHub split checks across Check Runs
+// (GitHub Actions, etc.) and Commit Statuses (older integrations).
 func (c *CLIClient) FetchPRChecks(owner, repo string, number int) (passing, total int) {
-	cmd := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
-		"--repo", owner+"/"+repo,
-		"--json", "statusCheckRollup",
-	)
-	var stdout strings.Builder
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
+	slug := owner + "/" + repo
+	pr, err := c.fetchPR(slug, number)
+	if err != nil || pr == nil || pr.Head.SHA == "" {
 		return -1, -1
 	}
 
-	var obj struct {
-		StatusCheckRollup []checkRollupItem `json:"statusCheckRollup"`
-	}
-	if err := json.Unmarshal([]byte(stdout.String()), &obj); err != nil || len(obj.StatusCheckRollup) == 0 {
-		return -1, -1
+	checkRunsEndpoint := fmt.Sprintf("/repos/%s/commits/%s/check-runs", slug, pr.Head.SHA)
+	var runs apiCheckRunsResponse
+	if err := c.getJSON(checkRunsEndpoint, &runs); err != nil {
+		runs = apiCheckRunsResponse{}
 	}
 
-	total = len(obj.StatusCheckRollup)
-	for _, check := range obj.StatusCheckRollup {
-		// CheckRun uses conclusion; StatusContext uses state
-		result := strings.ToUpper(check.Conclusion)
-		if result == "" {
-			result = strings.ToUpper(check.State)
+	combinedEndpoint := fmt.Sprintf("/repos/%s/commits/%s/status", slug, pr.Head.SHA)
+	var combined apiCombinedStatus
+	if err := c.getJSON(combinedEndpoint, &combined); err != nil {
+		combined = apiCombinedStatus{}
+	}
+
+	total = len(runs.CheckRuns) + len(combined.Statuses)
+	if total == 0 {
+		return -1, -1
+	}
+	for _, r := range runs.CheckRuns {
+		if strings.EqualFold(r.Conclusion, "success") {
+			passing++
 		}
-		if result == "SUCCESS" {
+	}
+	for _, s := range combined.Statuses {
+		if strings.EqualFold(s.State, "success") {
 			passing++
 		}
 	}
 	return passing, total
 }
 
-// EnrichWithActivity fetches last-activity timestamps and check statuses for all PRs
-// in parallel and mutates the slice in place.
+// EnrichWithActivity fetches last-activity timestamps for all PRs in parallel
+// and mutates the slice in place.
 func (c *CLIClient) EnrichWithActivity(prs []ExtendedPRInfo, myLogin string) {
 	var wg sync.WaitGroup
 	for i := range prs {
@@ -275,8 +264,6 @@ func (c *CLIClient) EnrichWithActivity(prs []ExtendedPRInfo, myLogin string) {
 		go func(i int) {
 			defer wg.Done()
 			pr := &prs[i]
-
-			// Fetch my last comment/review on this PR
 			if t, err := c.FetchMyLastActivityOnPR(pr.RepoOwner, pr.RepoName, pr.Number, myLogin); err == nil {
 				pr.MyLastActivity = t
 				if !t.IsZero() && pr.UpdatedAt.After(t) {
@@ -308,153 +295,91 @@ type ReviewSubmission struct {
 }
 
 // ListMyCommentedPRs returns PRs/issues the user commented on since the given time.
+//
+// REST equivalent of the old GraphQL search: q="commenter:{user} updated:>={date}".
 func (c *CLIClient) ListMyCommentedPRs(myLogin string, since time.Time) ([]CommentedPR, error) {
 	if !c.Available() {
 		return nil, nil
 	}
-
 	dateStr := since.Format("2006-01-02")
-	query := fmt.Sprintf(`{
-  search(query: "commenter:%s updated:>=%s", type: ISSUE, first: 30) {
-    nodes {
-      ... on PullRequest {
-        number
-        title
-        repository { nameWithOwner }
-        url
-        updatedAt
-      }
-      ... on Issue {
-        number
-        title
-        repository { nameWithOwner }
-        url
-        updatedAt
-      }
-    }
-  }
-}`, myLogin, dateStr)
-
-	cmd := exec.Command("gh", "api", "graphql", "-f", "query="+query)
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("graphql: %s", strings.TrimSpace(stderr.String()))
+	q := fmt.Sprintf("commenter:%s updated:>=%s", myLogin, dateStr)
+	endpoint := fmt.Sprintf("/search/issues?q=%s&per_page=30", url.QueryEscape(q))
+	var resp apiSearchResults
+	if err := c.getJSON(endpoint, &resp); err != nil {
+		return nil, fmt.Errorf("search commented: %w", err)
 	}
-
-	var resp struct {
-		Data struct {
-			Search struct {
-				Nodes []struct {
-					Number     int    `json:"number"`
-					Title      string `json:"title"`
-					Repository struct {
-						NameWithOwner string `json:"nameWithOwner"`
-					} `json:"repository"`
-					URL       string    `json:"url"`
-					UpdatedAt time.Time `json:"updatedAt"`
-				} `json:"nodes"`
-			} `json:"search"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(stdout.String()), &resp); err != nil {
-		return nil, fmt.Errorf("parse graphql response: %w", err)
-	}
-
-	var result []CommentedPR
-	for _, node := range resp.Data.Search.Nodes {
-		if node.Number == 0 {
-			continue
+	out := make([]CommentedPR, 0, len(resp.Items))
+	for _, item := range resp.Items {
+		owner, repo := splitOwnerRepoFromAPIURL(item.RepositoryURL)
+		slug := owner + "/" + repo
+		if slug == "/" {
+			slug = ""
 		}
-		result = append(result, CommentedPR{
-			Number:    node.Number,
-			Title:     node.Title,
-			RepoSlug:  node.Repository.NameWithOwner,
-			URL:       node.URL,
-			UpdatedAt: node.UpdatedAt,
+		out = append(out, CommentedPR{
+			Number:    item.Number,
+			Title:     item.Title,
+			RepoSlug:  slug,
+			URL:       item.HTMLURL,
+			UpdatedAt: item.UpdatedAt,
 		})
 	}
-	return result, nil
+	return out, nil
 }
 
 // ListMyReviewsToday returns PR reviews the user submitted since the given time.
+//
+// REST equivalent: for each authored review event we need to query the user's
+// reviews across PRs. The cheap approximation is to use the search API for
+// PRs the user reviewed since `since`, then list reviews on each.
 func (c *CLIClient) ListMyReviewsToday(myLogin string, since time.Time) ([]ReviewSubmission, error) {
 	if !c.Available() {
 		return nil, nil
 	}
-
-	sinceStr := since.Format(time.RFC3339)
-	query := fmt.Sprintf(`{
-  viewer {
-    contributionsCollection(from: "%s") {
-      pullRequestReviewContributions(first: 30) {
-        nodes {
-          pullRequestReview {
-            state
-            createdAt
-            pullRequest {
-              number
-              title
-              url
-              repository { nameWithOwner }
-            }
-          }
-        }
-      }
-    }
-  }
-}`, sinceStr)
-
-	cmd := exec.Command("gh", "api", "graphql", "-f", "query="+query)
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("graphql: %s", strings.TrimSpace(stderr.String()))
+	dateStr := since.Format("2006-01-02")
+	q := fmt.Sprintf("reviewed-by:%s updated:>=%s is:pr", myLogin, dateStr)
+	endpoint := fmt.Sprintf("/search/issues?q=%s&per_page=30", url.QueryEscape(q))
+	var resp apiSearchResults
+	if err := c.getJSON(endpoint, &resp); err != nil {
+		return nil, fmt.Errorf("search reviewed: %w", err)
 	}
+	var out []ReviewSubmission
+	for _, item := range resp.Items {
+		owner, repo := splitOwnerRepoFromAPIURL(item.RepositoryURL)
+		slug := owner + "/" + repo
+		if slug == "/" {
+			slug = ""
+		}
+		reviews, err := c.listReviewsForPR(slug, item.Number)
+		if err != nil {
+			continue
+		}
+		for _, r := range reviews {
+			if !strings.EqualFold(r.User.Login, myLogin) {
+				continue
+			}
+			if r.SubmittedAt.Before(since) {
+				continue
+			}
+			out = append(out, ReviewSubmission{
+				PRNumber: item.Number,
+				PRTitle:  item.Title,
+				RepoSlug: slug,
+				PRURL:    item.HTMLURL,
+				State:    r.State,
+				Time:     r.SubmittedAt,
+			})
+		}
+	}
+	return out, nil
+}
 
-	var resp struct {
-		Data struct {
-			Viewer struct {
-				ContributionsCollection struct {
-					PullRequestReviewContributions struct {
-						Nodes []struct {
-							PullRequestReview struct {
-								State       string    `json:"state"`
-								CreatedAt   time.Time `json:"createdAt"`
-								PullRequest struct {
-									Number     int    `json:"number"`
-									Title      string `json:"title"`
-									URL        string `json:"url"`
-									Repository struct {
-										NameWithOwner string `json:"nameWithOwner"`
-									} `json:"repository"`
-								} `json:"pullRequest"`
-							} `json:"pullRequestReview"`
-						} `json:"nodes"`
-					} `json:"pullRequestReviewContributions"`
-				} `json:"contributionsCollection"`
-			} `json:"viewer"`
-		} `json:"data"`
+func (c *CLIClient) listReviewsForPR(slug string, number int) ([]apiReview, error) {
+	endpoint := fmt.Sprintf("/repos/%s/pulls/%d/reviews?per_page=100", slug, number)
+	var out []apiReview
+	if err := c.getJSON(endpoint, &out); err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal([]byte(stdout.String()), &resp); err != nil {
-		return nil, fmt.Errorf("parse graphql response: %w", err)
-	}
-
-	var result []ReviewSubmission
-	for _, node := range resp.Data.Viewer.ContributionsCollection.PullRequestReviewContributions.Nodes {
-		r := node.PullRequestReview
-		result = append(result, ReviewSubmission{
-			PRNumber: r.PullRequest.Number,
-			PRTitle:  r.PullRequest.Title,
-			RepoSlug: r.PullRequest.Repository.NameWithOwner,
-			PRURL:    r.PullRequest.URL,
-			State:    r.State,
-			Time:     r.CreatedAt,
-		})
-	}
-	return result, nil
+	return out, nil
 }
 
 // ListPRsByAuthor returns open PRs authored by the given GitHub handle.
@@ -462,15 +387,7 @@ func (c *CLIClient) ListPRsByAuthor(author string) ([]ExtendedPRInfo, error) {
 	if !c.Available() {
 		return nil, nil
 	}
-	items, err := searchPRsRaw("--author", author, "--state", "open")
-	if err != nil {
-		return nil, err
-	}
-	result := make([]ExtendedPRInfo, len(items))
-	for i, item := range items {
-		result[i] = item.toExtended()
-	}
-	return result, nil
+	return c.searchPRs(fmt.Sprintf("author:%s state:open", author))
 }
 
 // ListPRsReviewRequestedFor returns open PRs where the given GitHub handle has
@@ -479,39 +396,31 @@ func (c *CLIClient) ListPRsReviewRequestedFor(reviewer string) ([]ExtendedPRInfo
 	if !c.Available() {
 		return nil, nil
 	}
-	items, err := searchPRsRaw("--review-requested", reviewer, "--state", "open")
-	if err != nil {
-		return nil, err
-	}
-	result := make([]ExtendedPRInfo, len(items))
-	for i, item := range items {
-		result[i] = item.toExtended()
-	}
-	return result, nil
+	return c.searchPRs(fmt.Sprintf("review-requested:%s state:open", reviewer))
 }
 
-// GetSpecFrontmatterForBranch fetches a raw spec file from a remote branch via
-// the GitHub Contents API and returns the YAML frontmatter block (between ---
-// delimiters). Returns ("", nil) when the file does not exist on that branch.
+// GetSpecFrontmatterForBranch fetches a raw spec file from a remote branch
+// via the GitHub Contents API and returns the YAML frontmatter block
+// (between --- delimiters). Returns ("", nil) when the file does not exist
+// on that branch.
 func (c *CLIClient) GetSpecFrontmatterForBranch(slug, branch, specPath string) (string, error) {
 	if !c.Available() {
 		return "", nil
 	}
-	endpoint := fmt.Sprintf("repos/%s/contents/%s?ref=%s", slug, specPath, branch)
-	cmd := exec.Command("gh", "api", endpoint, "--jq", ".content")
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		// 404 = file not found on branch, not an error
-		if strings.Contains(stderr.String(), "404") || strings.Contains(stdout.String(), "Not Found") {
+	endpoint := fmt.Sprintf("/repos/%s/contents/%s?ref=%s",
+		slug, specPath, url.QueryEscape(branch))
+	var contents apiContents
+	err := c.getJSON(endpoint, &contents)
+	if err != nil {
+		if IsNotFound(err) {
 			return "", nil
 		}
-		return "", fmt.Errorf("gh api %s: %s", endpoint, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("github contents %s: %w", endpoint, err)
 	}
-	// GitHub API returns base64-encoded content with embedded newlines; strip them before decoding.
-	encoded := strings.ReplaceAll(strings.TrimSpace(stdout.String()), "\n", "")
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if !strings.EqualFold(contents.Encoding, "base64") {
+		return contents.Content, nil
+	}
+	decoded, err := decodeBase64Content(contents.Content)
 	if err != nil {
 		return "", nil
 	}

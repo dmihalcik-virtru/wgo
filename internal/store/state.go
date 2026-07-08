@@ -1,19 +1,26 @@
 package store
 
 import (
-	"sort"
 	"strings"
 	"time"
 )
 
+// StateVersion is the current schema version. Bumped to 2 for the jj
+// migration; older state files (Version <= 1) are refused on load.
+const StateVersion = 2
+
 // State represents the persistent state for wgo.
+//
+// As of version 2 (the jj migration), Annotation no longer records Parents
+// or StackID, and State no longer carries a Stacks map. The jj DAG is the
+// single source of truth for stack topology; wgo annotations only carry
+// metadata that isn't derivable from jj (Purpose, SpecPath, SpecState).
 type State struct {
 	Version       int                     `json:"version"`
 	Repos         map[string]RepoInfo     `json:"repos"`
 	Annotations   map[string]Annotation   `json:"annotations"`
 	Efforts       map[string]Effort       `json:"efforts"`
 	AgentSessions map[string]AgentSession `json:"agent_sessions"`
-	Stacks        map[string]Stack        `json:"stacks,omitempty"`
 }
 
 // RepoInfo contains information about a tracked repository.
@@ -22,31 +29,13 @@ type RepoInfo struct {
 	LastSeen  time.Time `json:"last_seen"`
 }
 
-// Annotation contains information about why a branch exists.
+// Annotation contains the wgo-specific metadata for a bookmark (formerly a
+// branch). Stack topology (Parents/StackID) was removed in the jj migration:
+// jj's DAG owns that information now.
 type Annotation struct {
-	Purpose   string `json:"purpose"`
-	SpecPath  string `json:"spec_path,omitempty"`
-	SpecState string `json:"spec_state,omitempty"`
-	// Parents lists the keys ("repo:branch") of branches this one stacks on
-	// top of. Empty == based on the repo's default branch. Multiple entries
-	// describe a merge node in the stack DAG.
-	Parents []string `json:"parents,omitempty"`
-	// StackID groups this branch into a named stack (see State.Stacks). Empty
-	// means the branch is not part of a managed stack.
-	StackID   string    `json:"stack_id,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// Stack is a named collection of branches that form a DAG via Annotation.Parents.
-// The graph itself is implicit — derived by walking parents. Stack only carries
-// presentation/identity metadata.
-type Stack struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	// RootRef is the ref that root nodes (those with no Parents) rebase onto,
-	// e.g. "origin/main". Defaults to the repo's default branch at creation time.
-	RootRef   string    `json:"root_ref,omitempty"`
+	Purpose   string    `json:"purpose"`
+	SpecPath  string    `json:"spec_path,omitempty"`
+	SpecState string    `json:"spec_state,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -69,27 +58,29 @@ type AgentSession struct {
 	LastActivity time.Time `json:"last_activity"`
 }
 
-// NewState creates a new empty State.
+// NewState creates a new empty State at the current schema version.
 func NewState() *State {
 	return &State{
-		Version:       1,
+		Version:       StateVersion,
 		Repos:         make(map[string]RepoInfo),
 		Annotations:   make(map[string]Annotation),
 		Efforts:       make(map[string]Effort),
 		AgentSessions: make(map[string]AgentSession),
-		Stacks:        make(map[string]Stack),
 	}
 }
 
-// AnnotationKey is the canonical "repoPath:branch" key used throughout state.
-func AnnotationKey(repoPath, branch string) string {
-	return repoPath + ":" + branch
+// AnnotationKey is the canonical "repoPath:bookmark" key used throughout
+// state. The semantic name is bookmark (jj) rather than branch (git), but
+// the format is unchanged for backwards compatibility with existing
+// state files at version 2.
+func AnnotationKey(repoPath, bookmark string) string {
+	return repoPath + ":" + bookmark
 }
 
-// AddAnnotation adds or updates an annotation for a branch. Pre-existing
-// spec metadata, parent links, and stack membership are preserved.
-func (s *State) AddAnnotation(repoPath, branch, purpose string) {
-	key := AnnotationKey(repoPath, branch)
+// AddAnnotation adds or updates an annotation for a bookmark. Pre-existing
+// spec metadata is preserved.
+func (s *State) AddAnnotation(repoPath, bookmark, purpose string) {
+	key := AnnotationKey(repoPath, bookmark)
 	now := time.Now()
 
 	existing, exists := s.Annotations[key]
@@ -98,8 +89,6 @@ func (s *State) AddAnnotation(repoPath, branch, purpose string) {
 			Purpose:   purpose,
 			SpecPath:  existing.SpecPath,
 			SpecState: existing.SpecState,
-			Parents:   existing.Parents,
-			StackID:   existing.StackID,
 			CreatedAt: existing.CreatedAt,
 			UpdatedAt: now,
 		}
@@ -112,9 +101,9 @@ func (s *State) AddAnnotation(repoPath, branch, purpose string) {
 	}
 }
 
-// GetAnnotation retrieves an annotation for a branch.
-func (s *State) GetAnnotation(repoPath, branch string) *Annotation {
-	key := repoPath + ":" + branch
+// GetAnnotation retrieves an annotation for a bookmark.
+func (s *State) GetAnnotation(repoPath, bookmark string) *Annotation {
+	key := repoPath + ":" + bookmark
 	if ann, exists := s.Annotations[key]; exists {
 		return &ann
 	}
@@ -122,14 +111,14 @@ func (s *State) GetAnnotation(repoPath, branch string) *Annotation {
 }
 
 // RemoveAnnotation removes an annotation.
-func (s *State) RemoveAnnotation(repoPath, branch string) {
-	key := repoPath + ":" + branch
+func (s *State) RemoveAnnotation(repoPath, bookmark string) {
+	key := repoPath + ":" + bookmark
 	delete(s.Annotations, key)
 }
 
-// SetSpec updates the spec path and state for a branch annotation.
-func (s *State) SetSpec(repoPath, branch, specPath, specState string) {
-	key := repoPath + ":" + branch
+// SetSpec updates the spec path and state for a bookmark annotation.
+func (s *State) SetSpec(repoPath, bookmark, specPath, specState string) {
+	key := repoPath + ":" + bookmark
 	now := time.Now()
 	ann := s.Annotations[key]
 	ann.SpecPath = specPath
@@ -166,121 +155,4 @@ func (s *State) UntrackRepo(path string) {
 			delete(s.Annotations, key)
 		}
 	}
-}
-
-// SetParents records the parent keys for a branch annotation. An empty slice
-// (or nil) clears the parents, marking this branch as a stack root. The
-// annotation is created if it doesn't already exist. Duplicate parent keys
-// are dropped (order preserved) so callers that pass accidental repeats —
-// e.g. `wgo stack push --on foo --on foo` — don't trigger false cycle
-// detection or skewed indegree counts in graph operations.
-func (s *State) SetParents(repoPath, branch string, parents []string) {
-	key := AnnotationKey(repoPath, branch)
-	now := time.Now()
-	ann := s.Annotations[key]
-	ann.Parents = dedupStrings(parents)
-	ann.UpdatedAt = now
-	if ann.CreatedAt.IsZero() {
-		ann.CreatedAt = now
-	}
-	s.Annotations[key] = ann
-}
-
-// SetStackID assigns the branch to a stack. An empty stackID removes the
-// branch from its stack but keeps the annotation otherwise intact.
-func (s *State) SetStackID(repoPath, branch, stackID string) {
-	key := AnnotationKey(repoPath, branch)
-	now := time.Now()
-	ann := s.Annotations[key]
-	ann.StackID = stackID
-	ann.UpdatedAt = now
-	if ann.CreatedAt.IsZero() {
-		ann.CreatedAt = now
-	}
-	s.Annotations[key] = ann
-}
-
-// AddStack creates or updates a stack record. On updates, fields the caller
-// leaves at their zero value are preserved from the existing record, so a
-// partial update like `AddStack(Stack{ID: id, Name: "renamed"})` does not
-// silently clobber RootRef or other metadata. To explicitly clear a field,
-// use the dedicated setter (or for now, replace the whole record by reading
-// the existing one first).
-func (s *State) AddStack(stack Stack) {
-	if s.Stacks == nil {
-		s.Stacks = make(map[string]Stack)
-	}
-	now := time.Now()
-	if existing, ok := s.Stacks[stack.ID]; ok {
-		stack.CreatedAt = existing.CreatedAt
-		if stack.Name == "" {
-			stack.Name = existing.Name
-		}
-		if stack.RootRef == "" {
-			stack.RootRef = existing.RootRef
-		}
-	} else if stack.CreatedAt.IsZero() {
-		stack.CreatedAt = now
-	}
-	stack.UpdatedAt = now
-	s.Stacks[stack.ID] = stack
-}
-
-// GetStack returns the stack with the given ID, or nil if absent.
-func (s *State) GetStack(id string) *Stack {
-	if s.Stacks == nil {
-		return nil
-	}
-	if st, ok := s.Stacks[id]; ok {
-		return &st
-	}
-	return nil
-}
-
-// RemoveStack deletes the stack record and clears StackID from every
-// annotation that referenced it. Parents links are left intact so the
-// DAG remains queryable; callers that want to fully unstack should clear
-// Parents separately.
-func (s *State) RemoveStack(id string) {
-	delete(s.Stacks, id)
-	for key, ann := range s.Annotations {
-		if ann.StackID == id {
-			ann.StackID = ""
-			s.Annotations[key] = ann
-		}
-	}
-}
-
-// AnnotationsInStack returns all annotation keys whose StackID matches.
-// The returned slice is sorted lexicographically for deterministic iteration.
-func (s *State) AnnotationsInStack(stackID string) []string {
-	if stackID == "" {
-		return nil
-	}
-	var keys []string
-	for key, ann := range s.Annotations {
-		if ann.StackID == stackID {
-			keys = append(keys, key)
-		}
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-// dedupStrings returns a copy of in with duplicate entries removed, preserving
-// the first occurrence of each value.
-func dedupStrings(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	return out
 }

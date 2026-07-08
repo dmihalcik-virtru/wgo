@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -65,12 +64,18 @@ func runPRCmd() error {
 		return fmt.Errorf("gh CLI not available — install from https://cli.github.com/")
 	}
 
-	// --open N: open the PR in browser and exit immediately
+	// --open N: open the PR in browser and exit immediately. Resolve the
+	// PR's URL via the same HTTP client used by the rest of the dashboard.
 	if prOpen > 0 {
-		cmd := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", prOpen), "--web")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		cwd, _ := os.Getwd()
+		pr, err := gh.GetPRByNumber(cwd, prOpen)
+		if err != nil {
+			return fmt.Errorf("look up PR #%d: %w", prOpen, err)
+		}
+		if pr == nil || pr.URL == "" {
+			return fmt.Errorf("PR #%d not found or has no URL", prOpen)
+		}
+		return links.OpenInBrowser(pr.URL)
 	}
 
 	if prWatch {
@@ -298,13 +303,9 @@ func renderPairSection(gh *github.CLIClient, cfg *config.Config, myLogin string,
 		if err != nil {
 			return
 		}
-		// Keep only PRs authored by the teammate.
-		var filtered []github.ExtendedPRInfo
-		for _, pr := range reqs {
-			// We don't have the author field from searchPRItem after conversion,
-			// so include all review-requested PRs (they are not the user's own).
-			filtered = append(filtered, pr)
-		}
+		// We don't have the author field from searchPRItem after conversion,
+		// so include all review-requested PRs (they are not the user's own).
+		filtered := append([]github.ExtendedPRInfo(nil), reqs...)
 		mu.Lock()
 		reviewReqs = filtered
 		mu.Unlock()

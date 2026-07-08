@@ -35,7 +35,7 @@ func UpdateFrontmatter(path string, fn func(*Frontmatter) error) error {
 	}
 
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename file: %w", err)
 	}
 

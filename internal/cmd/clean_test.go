@@ -1,246 +1,232 @@
 package cmd
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/virtru/wgo/internal/cleanup"
-	"github.com/virtru/wgo/internal/git"
 	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
+	"github.com/virtru/wgo/internal/jjtest"
 )
 
-// setupCleanRepo initialises a git repo with an initial commit on main and returns its path.
-func setupCleanRepo(t *testing.T) string {
+// setupCleanRepo creates a jj repo with an "origin" remote backed by a bare
+// git repo, seeds an initial commit on the "main" bookmark, and pushes
+// "main" to origin so `main@origin` resolves. Returns (repoPath, jjClient,
+// originURL).
+func setupCleanRepo(t *testing.T) (string, *jj.CLIClient, string) {
 	t.Helper()
-	dir := t.TempDir()
-	for _, args := range [][]string{
-		{"git", "init"},
-		{"git", "symbolic-ref", "HEAD", "refs/heads/main"},
-		{"git", "config", "user.email", "test@example.com"},
-		{"git", "config", "user.name", "Test User"},
-		{"git", "config", "commit.gpgsign", "false"},
-	} {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = dir
-		require.NoError(t, cmd.Run())
-	}
-	addCleanCommit(t, dir, "initial")
-	return dir
+	jjtest.RequireJJ(t)
+
+	originDir := filepath.Join(t.TempDir(), "origin.git")
+	require.NoError(t, os.MkdirAll(originDir, 0o755))
+	out, err := exec.Command("git", "init", "--bare", originDir).CombinedOutput()
+	require.NoError(t, err, "git init bare failed: %s", string(out))
+
+	repo, c := jjtest.NewRepo(t)
+	mustRun(t, repo, "jj", "git", "remote", "add", "origin", originDir)
+
+	// Seed an initial described commit and bookmark it as "main".
+	jjtest.Commit(t, repo, "initial", map[string]string{"README.md": "init\n"})
+	require.NoError(t, c.BookmarkCreate(repo, "main", "@-"))
+	_, err = c.GitPush(repo, jj.PushOpts{Bookmarks: []string{"main"}, AllowNew: true})
+	require.NoError(t, err, "GitPush main")
+
+	return repo, c, originDir
 }
 
-// addCleanCommit writes a file and creates a commit, returning the new HEAD SHA.
-func addCleanCommit(t *testing.T, dir, msg string) string {
+// addBookmarkOnNewCommit creates a child commit of @- on the given branch,
+// sets the bookmark to point at the new commit, and returns the new commit
+// id. Leaves the workspace on a fresh empty @ so subsequent calls compose.
+func addBookmarkOnNewCommit(t *testing.T, repo string, c *jj.CLIClient, branch, msg, file string) string {
 	t.Helper()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, msg+".txt"), []byte(msg), 0o644))
-	require.NoError(t, exec.Command("git", "-C", dir, "add", ".").Run())
-	require.NoError(t, exec.Command("git", "-C", dir, "commit", "-m", msg).Run())
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	jjtest.Commit(t, repo, msg, map[string]string{file: msg + "\n"})
+	cur, err := c.Log(repo, "@-")
 	require.NoError(t, err)
-	return strings.TrimSpace(string(out))
+	require.NotEmpty(t, cur)
+	commitID := cur[0].CommitID
+	if err := c.BookmarkSet(repo, branch, commitID, true); err != nil {
+		require.NoError(t, c.BookmarkCreate(repo, branch, commitID))
+	}
+	return commitID
 }
 
-// setRemoteRef manually sets a remote-tracking ref without needing an actual remote.
-func setRemoteRef(t *testing.T, dir, ref, sha string) {
-	t.Helper()
-	require.NoError(t, exec.Command("git", "-C", dir, "update-ref", ref, sha).Run())
-}
-
-// mergedPR returns a minimal PRInfo for a merged PR, optionally with HeadSHA and MergeCommit.
+// mergedPR returns a minimal PRInfo for a merged PR. Sets MergedAt so
+// IsMerged() returns true regardless of the State string casing.
 func mergedPR(headSHA, mergeOID string) *github.PRInfo {
-	pr := &github.PRInfo{State: "MERGED", HeadSHA: headSHA}
+	merged := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	pr := &github.PRInfo{State: "merged", HeadSHA: headSHA, MergedAt: &merged}
 	if mergeOID != "" {
 		pr.MergeCommit = &github.PRMergeCommit{OID: mergeOID}
 	}
 	return pr
 }
 
-func callExecuteRemoval(dir, branch string, pr *github.PRInfo) error {
-	c := cleanup.Candidate{
+func callExecuteRemoval(repo string, c *jj.CLIClient, branch string, pr *github.PRInfo) error {
+	cand := cleanup.Candidate{
 		Kind:     cleanup.KindLocalBranch,
-		RepoPath: dir,
+		RepoPath: repo,
 		Branch:   branch,
 		PRInfo:   pr,
 	}
-	return executeRemoval(c, git.New(dir), nil, nil)
+	return executeRemoval(cand, c, nil, nil)
 }
 
-// TestExecuteRemoval_StandardMerge: local tip is reachable from origin/main (Check 1).
+// TestExecuteRemoval_StandardMerge: local feat bookmark is fully reachable
+// from main@origin (origin was advanced to include feat's commits).
 func TestExecuteRemoval_StandardMerge(t *testing.T) {
-	dir := setupCleanRepo(t)
+	repo, c, _ := setupCleanRepo(t)
 
-	// Create feature branch with one commit, record its SHA.
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "-b", "feat").Run())
-	featSHA := addCleanCommit(t, dir, "feature work")
-
-	// Back to main; set origin/main = feat tip (simulates fast-forward merge).
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "main").Run())
-	setRemoteRef(t, dir, "refs/remotes/origin/main", featSHA)
+	featSHA := addBookmarkOnNewCommit(t, repo, c, "feat", "feature work", "feat.txt")
+	require.NoError(t, c.BookmarkSet(repo, "main", featSHA, true))
+	_, err := c.GitPush(repo, jj.PushOpts{Bookmarks: []string{"main"}, AllowNew: true})
+	require.NoError(t, err)
 
 	origForce := cleanForce
 	cleanForce = false
 	defer func() { cleanForce = origForce }()
 
-	err := callExecuteRemoval(dir, "feat", mergedPR("", ""))
+	err = callExecuteRemoval(repo, c, "feat", mergedPR("", ""))
 	assert.NoError(t, err, "standard merge should auto-delete without error")
 
-	branches, _ := git.New(dir).ListLocalBranches(dir)
-	for _, b := range branches {
-		assert.NotEqual(t, "feat", b, "feat branch should have been deleted")
+	for _, b := range presentBookmarks(t, c, repo) {
+		assert.NotEqual(t, "feat", b.Name, "feat bookmark should have been deleted")
 	}
 }
 
-// TestExecuteRemoval_SquashMerge: local tip is NOT reachable from origin/main, but
-// PRInfo.MergeCommit.OID is on origin/main (Check 2).
+// TestExecuteRemoval_SquashMerge: local feat bookmark's commits are NOT
+// reachable from main@origin, but PRInfo.MergeCommit.OID *is* on
+// main@origin (a fresh squash commit replaced feat's history).
 func TestExecuteRemoval_SquashMerge(t *testing.T) {
-	dir := setupCleanRepo(t)
+	repo, c, _ := setupCleanRepo(t)
 
-	// Feature branch with commit C1 (squashed, not a parent of origin/main).
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "-b", "feat").Run())
-	addCleanCommit(t, dir, "feature work")
+	addBookmarkOnNewCommit(t, repo, c, "feat", "feature work", "feat.txt")
 
-	// Back to main; add a squash commit S (parent = initial, NOT C1).
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "main").Run())
-	squashSHA := addCleanCommit(t, dir, "squash merge result")
-
-	// Simulate origin/main = S (the squash commit).
-	setRemoteRef(t, dir, "refs/remotes/origin/main", squashSHA)
-
-	// Reset local main back to initial so feat's commits are definitely not reachable.
-	require.NoError(t, exec.Command("git", "-C", dir, "reset", "--hard", "HEAD~1").Run())
+	squashSHA := addBookmarkOnNewCommit(t, repo, c, "main", "squash merge result", "squash.txt")
+	_, err := c.GitPush(repo, jj.PushOpts{Bookmarks: []string{"main"}, AllowNew: true})
+	require.NoError(t, err)
 
 	origForce := cleanForce
 	cleanForce = false
 	defer func() { cleanForce = origForce }()
 
-	err := callExecuteRemoval(dir, "feat", mergedPR("", squashSHA))
-	assert.NoError(t, err, "squash merge (MergeCommit on origin/main) should auto-delete")
+	err = callExecuteRemoval(repo, c, "feat", mergedPR("", squashSHA))
+	assert.NoError(t, err, "squash merge (MergeCommit on main@origin) should auto-delete")
 
-	branches, _ := git.New(dir).ListLocalBranches(dir)
-	for _, b := range branches {
-		assert.NotEqual(t, "feat", b)
+	for _, b := range presentBookmarks(t, c, repo) {
+		assert.NotEqual(t, "feat", b.Name)
 	}
 }
 
-// TestExecuteRemoval_PushedHeadMatch: local tip equals PRInfo.HeadSHA — no extra commits
-// were added after the last push (Check 3).
+// TestExecuteRemoval_PushedHeadMatch: PRInfo.HeadSHA matches feat's local
+// commit, so feat has no commits beyond what was pushed (Check 3).
 func TestExecuteRemoval_PushedHeadMatch(t *testing.T) {
-	dir := setupCleanRepo(t)
+	repo, c, _ := setupCleanRepo(t)
 
-	// Feature branch at C1; remote branch was deleted post-merge (no upstream).
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "-b", "feat").Run())
-	c1 := addCleanCommit(t, dir, "feature work")
-
-	// Back to main; origin/main stays at initial (does NOT contain C1).
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "main").Run())
-	initialSHA, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
-	require.NoError(t, err)
-	setRemoteRef(t, dir, "refs/remotes/origin/main", strings.TrimSpace(string(initialSHA)))
+	featSHA := addBookmarkOnNewCommit(t, repo, c, "feat", "feature work", "feat.txt")
 
 	origForce := cleanForce
 	cleanForce = false
 	defer func() { cleanForce = origForce }()
 
-	// HeadSHA = C1 (what was pushed); local tip == pushed tip → no extra commits.
-	err = callExecuteRemoval(dir, "feat", mergedPR(c1, ""))
+	err := callExecuteRemoval(repo, c, "feat", mergedPR(featSHA, ""))
 	assert.NoError(t, err, "local tip matching pushed HeadSHA should auto-delete")
 
-	branches, _ := git.New(dir).ListLocalBranches(dir)
-	for _, b := range branches {
-		assert.NotEqual(t, "feat", b)
+	for _, b := range presentBookmarks(t, c, repo) {
+		assert.NotEqual(t, "feat", b.Name)
 	}
 }
 
-// TestExecuteRemoval_UpstreamRef: local tip matches upstream ref with no extra commits (Check 4).
+// TestExecuteRemoval_UpstreamRef: feat is also pushed to origin, so
+// feat@origin exists and matches feat (Check 4).
 func TestExecuteRemoval_UpstreamRef(t *testing.T) {
-	dir := setupCleanRepo(t)
+	repo, c, _ := setupCleanRepo(t)
 
-	// Feature branch at C1.
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "-b", "feat").Run())
-	c1 := addCleanCommit(t, dir, "feature work")
-
-	// Back to main; origin/main stays at initial.
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "main").Run())
-	initialSHA, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	addBookmarkOnNewCommit(t, repo, c, "feat", "feature work", "feat.txt")
+	_, err := c.GitPush(repo, jj.PushOpts{Bookmarks: []string{"feat"}, AllowNew: true})
 	require.NoError(t, err)
-	setRemoteRef(t, dir, "refs/remotes/origin/main", strings.TrimSpace(string(initialSHA)))
-
-	// Set up a fake remote "origin" in config so @{upstream} resolution works.
-	require.NoError(t, exec.Command("git", "-C", dir, "config", "remote.origin.url", "https://example.com/repo.git").Run())
-	require.NoError(t, exec.Command("git", "-C", dir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").Run())
-	// Set up upstream tracking: origin/feat = C1, branch config tracking origin.
-	setRemoteRef(t, dir, "refs/remotes/origin/feat", c1)
-	require.NoError(t, exec.Command("git", "-C", dir, "config", "branch.feat.remote", "origin").Run())
-	require.NoError(t, exec.Command("git", "-C", dir, "config", "branch.feat.merge", "refs/heads/feat").Run())
 
 	origForce := cleanForce
 	cleanForce = false
 	defer func() { cleanForce = origForce }()
 
-	err = callExecuteRemoval(dir, "feat", mergedPR("", ""))
-	assert.NoError(t, err, "local tip at upstream ref should auto-delete")
+	err = callExecuteRemoval(repo, c, "feat", mergedPR("", ""))
+	assert.NoError(t, err, "local tip at feat@origin should auto-delete")
 
-	branches, _ := git.New(dir).ListLocalBranches(dir)
-	for _, b := range branches {
-		assert.NotEqual(t, "feat", b)
+	for _, b := range presentBookmarks(t, c, repo) {
+		assert.NotEqual(t, "feat", b.Name)
 	}
 }
 
-// TestExecuteRemoval_UnpushedCommits: all four checks fail, yielding a detailed error.
+// TestExecuteRemoval_UnpushedCommits: feat has extra commits beyond what
+// was pushed AND beyond main@origin — all four safety checks fail.
 func TestExecuteRemoval_UnpushedCommits(t *testing.T) {
-	dir := setupCleanRepo(t)
+	repo, c, _ := setupCleanRepo(t)
 
-	// Feature branch: C1 was pushed (HeadSHA), then C2 added locally (unpushed).
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "-b", "feat").Run())
-	c1 := addCleanCommit(t, dir, "pushed work")
-	addCleanCommit(t, dir, "unpushed extra commit")
-
-	// Back to main; origin/main stays at initial (C1 and C2 not reachable from it).
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "main").Run())
-	initialSHA, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
-	require.NoError(t, err)
-	setRemoteRef(t, dir, "refs/remotes/origin/main", strings.TrimSpace(string(initialSHA)))
+	c1 := addBookmarkOnNewCommit(t, repo, c, "feat", "pushed work", "feat1.txt")
+	addBookmarkOnNewCommit(t, repo, c, "feat", "unpushed extra", "feat2.txt")
 
 	origForce := cleanForce
 	cleanForce = false
 	defer func() { cleanForce = origForce }()
 
-	// HeadSHA = C1 (pushed), but feat is now at C2 (extra unpushed commit).
-	// No MergeCommit, no upstream ref → all checks fail.
-	err = callExecuteRemoval(dir, "feat", mergedPR(c1, ""))
+	err := callExecuteRemoval(repo, c, "feat", mergedPR(c1, ""))
 	require.Error(t, err, "unpushed commits should block deletion")
-	assert.Contains(t, err.Error(), "cannot verify branch is safe to delete")
+	assert.Contains(t, err.Error(), "cannot verify bookmark is safe to delete")
 	assert.Contains(t, err.Error(), "use --force to delete anyway")
 	assert.Contains(t, err.Error(), "local commits exist beyond pushed PR head")
 }
 
 // TestExecuteRemoval_ForceFlag: --force bypasses all safety checks.
 func TestExecuteRemoval_ForceFlag(t *testing.T) {
-	dir := setupCleanRepo(t)
+	repo, c, _ := setupCleanRepo(t)
 
-	// Feature branch with genuinely unpushed commits.
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "-b", "feat").Run())
-	c1 := addCleanCommit(t, dir, "pushed")
-	addCleanCommit(t, dir, "unpushed extra")
-	require.NoError(t, exec.Command("git", "-C", dir, "checkout", "main").Run())
-
-	initialSHA, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
-	require.NoError(t, err)
-	setRemoteRef(t, dir, "refs/remotes/origin/main", strings.TrimSpace(string(initialSHA)))
+	c1 := addBookmarkOnNewCommit(t, repo, c, "feat", "pushed", "feat1.txt")
+	addBookmarkOnNewCommit(t, repo, c, "feat", "unpushed extra", "feat2.txt")
 
 	origForce := cleanForce
 	cleanForce = true
 	defer func() { cleanForce = origForce }()
 
-	err = callExecuteRemoval(dir, "feat", mergedPR(c1, ""))
-	assert.NoError(t, err, "--force should bypass all checks and delete the branch")
+	err := callExecuteRemoval(repo, c, "feat", mergedPR(c1, ""))
+	assert.NoError(t, err, "--force should bypass all checks and delete the bookmark")
 
-	branches, _ := git.New(dir).ListLocalBranches(dir)
-	for _, b := range branches {
-		assert.NotEqual(t, "feat", b)
+	for _, b := range presentBookmarks(t, c, repo) {
+		assert.NotEqual(t, "feat", b.Name)
+	}
+}
+
+// presentBookmarks returns the local bookmarks that resolve to a commit,
+// filtering out tombstone entries that jj retains after `bookmark delete`
+// of a previously-tracked bookmark.
+func presentBookmarks(t *testing.T, c *jj.CLIClient, repo string) []jj.Bookmark {
+	t.Helper()
+	bms, err := c.BookmarkList(repo, jj.BookmarkListOpts{Local: true})
+	require.NoError(t, err)
+	out := bms[:0]
+	for _, b := range bms {
+		if b.Present {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// mustRun executes name+args from dir, failing the test verbatim on error.
+func mustRun(t *testing.T, dir, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%s %s (in %s): %v\nstderr: %s", name, strings.Join(args, " "), dir, err, stderr.String())
 	}
 }

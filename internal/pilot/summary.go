@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
 )
 
 // Options controls what data is collected and how output is rendered.
@@ -74,36 +75,30 @@ func Collect(repos []string, logsDir string, opts Options) (*Metrics, error) {
 		SpecEditsByAuthor: make(map[string]int),
 	}
 
-	sinceStr := opts.Since.Format("2006-01-02")
-	untilStr := opts.Until.Format("2006-01-02")
+	jjc := jj.NewCLI()
 
-	// Collect git-based metrics across all repos
+	// Collect jj-based metrics across all repos.
 	for _, repoRoot := range repos {
 		if _, err := os.Stat(repoRoot); err != nil {
 			continue
 		}
 
-		// Specs created (diff-filter=A means added)
-		created, err := gitLogSpecFiles(repoRoot, opts.Since, opts.Until, "--diff-filter=A")
+		commits, err := specChangingCommits(jjc, repoRoot, opts.Since, opts.Until)
 		if err != nil {
-			m.Warnings = append(m.Warnings, fmt.Sprintf("specs created (%s): %v", repoRoot, err))
+			m.Warnings = append(m.Warnings, fmt.Sprintf("spec commits (%s): %v", repoRoot, err))
 		} else {
-			m.SpecsCreated += len(created)
-			for _, e := range created {
-				m.SpecEditsByAuthor[e.author]++
+			for _, c := range commits {
+				m.SpecsUpdated++
+				if c.created {
+					m.SpecsCreated++
+					m.SpecEditsByAuthor[c.author]++
+				}
 			}
 		}
 
-		// Specs updated (all commits touching spec/*.md)
-		updated, err := gitLogSpecFiles(repoRoot, opts.Since, opts.Until, "")
-		if err != nil {
-			m.Warnings = append(m.Warnings, fmt.Sprintf("specs updated (%s): %v", repoRoot, err))
-		} else {
-			m.SpecsUpdated += len(updated)
-		}
-
-		// [no-spec] overrides
-		count, err := gitCountNoSpec(repoRoot, opts.Since, opts.Until)
+		// [no-spec] overrides — commits whose description contains the
+		// literal "[no-spec]" string within the window.
+		count, err := countNoSpecCommits(jjc, repoRoot, opts.Since, opts.Until)
 		if err != nil {
 			m.Warnings = append(m.Warnings, fmt.Sprintf("no-spec overrides (%s): %v", repoRoot, err))
 		} else {
@@ -112,8 +107,11 @@ func Collect(repos []string, logsDir string, opts Options) (*Metrics, error) {
 	}
 
 	// Collect GitHub metrics for each team member
+	ghClient := github.NewClient()
+	sinceStr := opts.Since.Format("2006-01-02")
+	untilStr := opts.Until.Format("2006-01-02")
 	for _, handle := range opts.Team {
-		prs, err := ghListMergedPRs(handle, sinceStr, untilStr)
+		prs, err := listMergedPRs(ghClient, handle, sinceStr, untilStr)
 		if err != nil {
 			m.Warnings = append(m.Warnings, fmt.Sprintf("PRs for %s: %v", handle, err))
 			continue
@@ -121,7 +119,7 @@ func Collect(repos []string, logsDir string, opts Options) (*Metrics, error) {
 		m.PRsMerged += len(prs)
 
 		for _, pr := range prs {
-			iters, err := ghReviewIterations(pr.owner, pr.repo, pr.number)
+			iters, err := reviewIterations(ghClient, pr.slug, pr.number)
 			if err == nil {
 				m.ReviewIterations = append(m.ReviewIterations, iters)
 			}
@@ -142,135 +140,114 @@ func Collect(repos []string, logsDir string, opts Options) (*Metrics, error) {
 	return m, nil
 }
 
-// specCommit holds minimal data from git log for spec file commits.
+// specCommit captures a single commit that touched a spec/*.md file.
+// `created` is true when the commit added a new spec file (vs modifying an
+// existing one), used for the SpecsCreated count.
 type specCommit struct {
-	hash   string
-	author string
-	time   time.Time
+	hash    string
+	author  string
+	time    time.Time
+	created bool
 }
 
-// gitLogSpecFiles returns commits touching spec/*.md files in the given time window.
-// extraFilter is optional (e.g., "--diff-filter=A"). Filtering is by author date (not
-// committer date), so specs stay in-window even after a rebase resets committer dates.
-func gitLogSpecFiles(repoRoot string, since, until time.Time, extraFilter string) ([]specCommit, error) {
-	args := []string{"log", "--format=%H\x1f%ae\x1f%aI"}
-	if extraFilter != "" {
-		args = append(args, extraFilter)
-	}
-	args = append(args, "--", "spec/*.md")
-	cmd := exec.Command("git", args...)
-	cmd.Dir = repoRoot
-	out, err := cmd.Output()
+// specChangingCommits returns commits in [since, until] that touch spec/*.md
+// files, tagging each with whether it added a new spec file.
+func specChangingCommits(jjc jj.Client, repoRoot string, since, until time.Time) ([]specCommit, error) {
+	// jj 0.42's author_date() accepts a single keyword arg; intersect two
+	// calls to express a half-open range. files() patterns are resolved
+	// against the cwd by default; use root-glob: to force the pattern to
+	// be interpreted relative to the repo root regardless of cwd.
+	revset := fmt.Sprintf(
+		`author_date(after:%q) & author_date(before:%q) & files(root-glob:"spec/*.md")`,
+		since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339),
+	)
+	entries, err := jjc.Log(repoRoot, revset)
 	if err != nil {
 		return nil, err
 	}
-	var result []specCommit
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
+	var out []specCommit
+	for _, e := range entries {
+		summary, sErr := jjc.DiffSummary(repoRoot, e.CommitID)
+		if sErr != nil {
+			// Skip commits we can't diff (e.g. merge commits without a
+			// single parent diff); they still count as updates but we
+			// can't classify them as creates.
+			out = append(out, specCommit{hash: e.CommitID, author: e.AuthorEmail, time: e.AuthorTimestamp})
 			continue
 		}
-		parts := strings.SplitN(line, "\x1f", 3)
-		if len(parts) < 3 {
-			continue
+		created := false
+		for _, fc := range summary {
+			if fc.Status == 'A' && isSpecPath(fc.Path) {
+				created = true
+				break
+			}
 		}
-		t, _ := time.Parse(time.RFC3339, parts[2])
-		if t.Before(since) || t.After(until) {
-			continue
-		}
-		result = append(result, specCommit{hash: parts[0], author: parts[1], time: t})
+		out = append(out, specCommit{
+			hash:    e.CommitID,
+			author:  e.AuthorEmail,
+			time:    e.AuthorTimestamp,
+			created: created,
+		})
 	}
-	return result, nil
+	return out, nil
 }
 
-// gitCountNoSpec counts commits containing "[no-spec]" in their message.
-// Filtering is by author date to stay consistent with gitLogSpecFiles.
-func gitCountNoSpec(repoRoot string, since, until time.Time) (int, error) {
-	cmd := exec.Command("git", "log",
-		"--grep=[no-spec]",
-		"--fixed-strings",
-		"--format=%aI",
+// isSpecPath returns true for paths matching spec/*.md (one level deep, .md
+// extension).
+func isSpecPath(p string) bool {
+	if !strings.HasPrefix(p, "spec/") {
+		return false
+	}
+	rest := strings.TrimPrefix(p, "spec/")
+	if strings.Contains(rest, "/") {
+		return false
+	}
+	return strings.HasSuffix(rest, ".md")
+}
+
+// countNoSpecCommits counts commits whose description contains "[no-spec]"
+// within the [since, until] window. Uses a case-insensitive substring
+// revset, mirroring git's `--grep=[no-spec] --fixed-strings` behaviour.
+func countNoSpecCommits(jjc jj.Client, repoRoot string, since, until time.Time) (int, error) {
+	revset := fmt.Sprintf(
+		`description(substring-i:"[no-spec]") & author_date(after:%q) & author_date(before:%q)`,
+		since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339),
 	)
-	cmd.Dir = repoRoot
-	out, err := cmd.Output()
+	return jjc.CountRevset(repoRoot, revset)
+}
+
+// mergedPR holds minimal merged PR data from the GitHub search endpoint.
+type mergedPR struct {
+	number int
+	slug   string // "owner/repo"
+}
+
+// listMergedPRs returns merged PRs for a GitHub handle in the given date
+// range, sourced from the GitHub search endpoint via the HTTP client.
+func listMergedPRs(ghClient *github.CLIClient, handle, since, until string) ([]mergedPR, error) {
+	query := fmt.Sprintf("author:%s merged:>=%s merged:<=%s is:merged", handle, since, until)
+	items, err := ghClient.SearchPRs(query)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]mergedPR, 0, len(items))
+	for _, item := range items {
+		slug := item.RepoOwner + "/" + item.RepoName
+		out = append(out, mergedPR{number: item.Number, slug: slug})
+	}
+	return out, nil
+}
+
+// reviewIterations counts distinct review round-trips on a PR. A round-trip
+// is defined as any APPROVED or CHANGES_REQUESTED submission (matches the
+// previous gh-CLI implementation).
+func reviewIterations(ghClient *github.CLIClient, slug string, number int) (int, error) {
+	reviews, err := ghClient.GetPRReviews(slug, number)
 	if err != nil {
 		return 0, err
 	}
 	count := 0
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		t, err := time.Parse(time.RFC3339, line)
-		if err != nil || t.Before(since) || t.After(until) {
-			continue
-		}
-		count++
-	}
-	return count, nil
-}
-
-// mergedPR holds minimal merged PR data from gh.
-type mergedPR struct {
-	number int
-	owner  string
-	repo   string
-}
-
-// ghListMergedPRs returns merged PRs for a GitHub handle in the given date range.
-func ghListMergedPRs(handle, since, until string) ([]mergedPR, error) {
-	query := fmt.Sprintf("author:%s merged:>=%s merged:<=%s", handle, since, until)
-	cmd := exec.Command("gh", "pr", "list",
-		"--search", query,
-		"--state", "merged",
-		"--json", "number,repository",
-		"--limit", "100",
-	)
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh pr list: %s", strings.TrimSpace(stderr.String()))
-	}
-	var items []struct {
-		Number     int `json:"number"`
-		Repository struct {
-			NameWithOwner string `json:"nameWithOwner"`
-		} `json:"repository"`
-	}
-	if err := json.Unmarshal([]byte(stdout.String()), &items); err != nil {
-		return nil, fmt.Errorf("parse gh output: %w", err)
-	}
-	result := make([]mergedPR, 0, len(items))
-	for _, item := range items {
-		owner, repo, _ := strings.Cut(item.Repository.NameWithOwner, "/")
-		result = append(result, mergedPR{number: item.Number, owner: owner, repo: repo})
-	}
-	return result, nil
-}
-
-// ghReviewIterations counts distinct review round-trips on a PR.
-// A round-trip is defined as at least one non-author review submission.
-func ghReviewIterations(owner, repo string, number int) (int, error) {
-	cmd := exec.Command("gh", "pr", "view", strconv.Itoa(number),
-		"--repo", owner+"/"+repo,
-		"--json", "reviews",
-	)
-	var stdout strings.Builder
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return 0, err
-	}
-	var obj struct {
-		Reviews []struct {
-			State string `json:"state"`
-		} `json:"reviews"`
-	}
-	if err := json.Unmarshal([]byte(stdout.String()), &obj); err != nil {
-		return 0, err
-	}
-	count := 0
-	for _, r := range obj.Reviews {
+	for _, r := range reviews {
 		if r.State == "CHANGES_REQUESTED" || r.State == "APPROVED" {
 			count++
 		}

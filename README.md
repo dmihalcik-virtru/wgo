@@ -73,8 +73,55 @@ go install ./cmd/wgo
 ### Prerequisites
 
 - Go 1.26 or later
-- Git 2.0 or later
-- [GitHub CLI](https://cli.github.com/) (`gh`) — optional, required for `wgo to` with PR/issue URLs
+- [`jj`](https://jj-vcs.github.io/jj/latest/install-and-setup/) (Jujutsu) 0.42 or later — required at runtime
+- A `GITHUB_TOKEN` environment variable, **or** [GitHub CLI](https://cli.github.com/) (`gh`) installed for `gh auth token` to bootstrap credentials
+
+`wgo` no longer shells out to the `git` CLI for any operation — workspace,
+branch (bookmark), and remote management all go through `jj`. The GitHub
+integration talks to the REST API directly; `gh` is only used to resolve
+an API token when `GITHUB_TOKEN` is unset.
+
+### Removed in the jj migration
+
+The transition to jj also retired a handful of features that no longer
+make sense (or that jj covers natively):
+
+- **Passive git hooks** (`wgo hooks ...`). The hook system relied on
+  `core.hooksPath` and tracked branch creation / commit events. jj's
+  operation log already records the same information and `wgo doctor`
+  surfaces drift on demand.
+- **`wgo stack {new,push,restack,rm,adopt,sync}`** and `wgo stack status`.
+  jj's commit DAG is the source of truth for stacks; `wgo sync`
+  (top-level) handles PR-base alignment.
+- **Cross-repo stacked PRs.** The per-repo DAG model in jj is the unit
+  of work; multi-repo grouping happens via the spec file's `branches:`
+  frontmatter and the `~/.plan` markdown, not via persistent stack state.
+
+### No-migration policy for old state
+
+If you have an existing `~/.wgo/state.json` from a pre-jj installation,
+**delete it and re-run `wgo`**:
+
+```bash
+rm ~/.wgo/state.json
+wgo ls   # repopulates state from on-disk discovery
+```
+
+The schema bumped from v1 to v2 (drops the `Stacks` / `Parents` / `StackID`
+fields) and there is no in-place upgrade path.
+
+### Tradeoffs of pure jj
+
+Workspaces created by `wgo add` and `wgo to` do not contain a `.git/`
+directory (jj's `--no-colocate` mode). External tools that look for git
+state will not work in those workspaces:
+
+- IDE / editor git plugins that rely on libgit2 or `.git/index`
+- The [`pre-commit`](https://pre-commit.com/) framework
+- `direnv`'s git-aware features
+
+If you need those tools, run them in a separate colocated checkout of
+the same repo (not managed by wgo) or upstream a jj-aware adapter.
 
 ## Usage
 

@@ -20,10 +20,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - **Unified View:** `wgo status` and `wgo pr` aggregate information across repos/branches so you don't hunt through multiple tabs
 
 2. **Automation Without Opinion**
-   - **Passive Tracking:** Global git hooks automatically record branch creation, commits, and state changes without explicit `wgo track` commands
-   - **Auto-Discovery:** Filesystem scanning finds repos and worktrees without manual registration
-   - **Smart Defaults:** Commands infer intent from context (e.g., `wgo stack restack` knows which stack from the current branch)
-   - **Graceful Degradation:** Work without `gh`, without hooks, without tmux — each integration is optional
+   - **DAG-Backed History:** `wgo` reads the jj operation log and change DAG directly — no separate hook system or shadow state for tracking commit/bookmark activity
+   - **Auto-Discovery:** Filesystem scanning finds repos and workspaces (jj's worktree equivalent) without manual registration
+   - **Smart Defaults:** Commands infer intent from context (e.g., `wgo sync` resolves the current bookmark from the workspace's `@`)
+   - **Graceful Degradation:** Work without a `GITHUB_TOKEN`, without `gh`, without tmux — each integration is optional
 
 3. **AI Agent Integration**
    - **Claude Code First-Class Support:** Designed for workflows where Claude Code (or other AI agents) create branches, worktrees, and PRs
@@ -123,11 +123,16 @@ If the spec file exists, treat its Acceptance Criteria as the definition of done
 
 ### What `wgo` adds beyond both
 
-1. **The `.plan` file** — a git-versioned markdown journal in `~/.wgo/` that records what you're working on, why branches exist, and how efforts relate across repos
-2. **Agent tracking** — record which AI tool (Claude, Codex, etc.) is working on which worktree/branch
-3. **Cross-repo effort correlation** — link branches across repos that belong to the same task
-4. **Passive git monitoring** — global git hooks that build context automatically as you work
-5. **Branch annotations** — "why did I make this" metadata that `wgo .` displays alongside live status
+1. **The `.plan` file** — a versioned markdown journal in `~/.wgo/` that records what you're working on, why bookmarks exist, and how efforts relate across repos
+2. **Agent tracking** — record which AI tool (Claude, Codex, etc.) is working on which workspace/bookmark
+3. **Cross-repo effort correlation** — link bookmarks across repos that belong to the same task
+4. **Branch annotations** — "why did I make this" metadata that `wgo .` displays alongside live status
+
+> **VCS backend:** `wgo` uses [jj (Jujutsu)](https://github.com/jj-vcs/jj)
+> as its only VCS backend. The git/`go-git`/hook integration from the
+> early prototypes has been removed; see `spec/gh-21.md` and
+> `spec/gh-21-b.md` for the migration history. The repo `wgo` itself is
+> tracked with git for contributor convenience (CI, PR workflow).
 
 ### Storage Model
 
@@ -152,18 +157,17 @@ wgo agent status         # Show what AI agents are doing across worktrees
 
 ### Integration Points
 
-- **Git** — `go-git` for read operations, shell out to `git` for worktree management. Global hooks via `core.hooksPath` for passive monitoring.
-- **GitHub CLI** (`gh`) — PR status, checks, reviews. Follow workset's pattern of wrapping `gh` CLI calls.
+- **jj** — `internal/jj` shells out to the system `jj` binary (>= 0.42) for every VCS operation: workspaces, bookmarks, the change DAG, and git interop (`jj git fetch/push/init/clone/remote`). No `git` CLI calls anywhere in the runtime.
+- **GitHub HTTP API** — `internal/github` talks to `https://api.github.com` directly using `net/http`. The only `gh` CLI shell-out is `gh auth token` in `internal/github/auth.go`, used as a fallback when `GITHUB_TOKEN` is unset.
 - **Fuzzy finder** — follow gwq's pattern using `go-fuzzyfinder` for interactive selection with preview windows.
 - **Terminal** — tmux integration for session management, following gwq's approach.
 
 ### Data Flow
 
-1. Global git hooks fire on branch/worktree/commit operations → `wgo` records events in `state.json`
-2. `wgo .` reads current directory's git state, merges with stored annotations and cached PR data
-3. `wgo status` discovers worktrees via filesystem walk (gwq's discovery pattern), collects status in parallel
-4. `wgo plan add` writes branch annotation to `.plan` file → auto-committed in `~/.wgo/`
-5. PR data fetched from `gh` on demand, cached with TTL
+1. `wgo .` / `wgo status` read the current workspace's bookmark and parent change via `jj log -T <template>` and merge with stored annotations + cached PR data
+2. `wgo status` discovers workspaces via filesystem walk (gwq's discovery pattern, adapted to scan for `.jj/` instead of `.git/`), collects status in parallel
+3. `wgo plan add` writes branch annotation to `.plan` file → committed in `~/.wgo/`
+4. PR data fetched from the GitHub REST API on demand, cached with TTL via the per-client transport in `internal/github/transport.go`
 
 ## Development Commands
 

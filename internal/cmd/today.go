@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/virtru/wgo/internal/contrib"
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
 	specpkg "github.com/virtru/wgo/internal/spec"
@@ -447,6 +447,7 @@ func collectActiveBranches(repoPaths []string) []activeBranch {
 	}
 
 	results := make([]result, len(repoPaths))
+	jjc := jj.NewCLI()
 	var wg sync.WaitGroup
 
 	for i, path := range repoPaths {
@@ -454,24 +455,17 @@ func collectActiveBranches(repoPaths []string) []activeBranch {
 		go func(i int, path string) {
 			defer wg.Done()
 
-			branchOut, err := exec.Command("git", "-C", path, "branch", "--show-current").Output()
-			if err != nil {
-				return
-			}
-			branch := strings.TrimSpace(string(branchOut))
+			branch := currentBookmark(jjc, path)
+			changes := changedFileCount(jjc, path)
+
 			if branch == "" || branch == "main" || branch == "master" || branch == "develop" {
 				// Only include non-default branches, unless dirty
-				statusOut, _ := exec.Command("git", "-C", path, "status", "--short").Output()
-				changes := len(strings.Split(strings.TrimSpace(string(statusOut)), "\n"))
-				if strings.TrimSpace(string(statusOut)) == "" {
-					changes = 0
-				}
 				if changes == 0 {
 					return
 				}
 				results[i] = result{
 					branch: activeBranch{
-						RepoName: repoDisplayName(path),
+						RepoName: repoDisplayName(jjc, path),
 						Branch:   branch,
 						Path:     path,
 						Changes:  changes,
@@ -481,17 +475,11 @@ func collectActiveBranches(repoPaths []string) []activeBranch {
 				return
 			}
 
-			statusOut, _ := exec.Command("git", "-C", path, "status", "--short").Output()
-			changes := 0
-			if trimmed := strings.TrimSpace(string(statusOut)); trimmed != "" {
-				changes = len(strings.Split(trimmed, "\n"))
-			}
-
 			ghURL := contrib.ResolveGitHubURL(path)
 
 			results[i] = result{
 				branch: activeBranch{
-					RepoName:  repoDisplayName(path),
+					RepoName:  repoDisplayName(jjc, path),
 					Branch:    branch,
 					Path:      path,
 					GitHubURL: ghURL,
@@ -521,20 +509,13 @@ func collectActiveBranches(repoPaths []string) []activeBranch {
 	return branches
 }
 
-func repoDisplayName(path string) string {
-	// Try to show owner/repo from remote
-	out, err := exec.Command("git", "-C", path, "remote", "get-url", "origin").Output()
-	if err == nil {
-		remote := strings.TrimSpace(string(out))
-		// SSH form
-		if strings.HasPrefix(remote, "git@github.com:") {
-			slug := strings.TrimPrefix(remote, "git@github.com:")
-			return strings.TrimSuffix(slug, ".git")
-		}
-		// HTTPS form
-		if idx := strings.Index(remote, "github.com/"); idx >= 0 {
-			slug := remote[idx+len("github.com/"):]
-			return strings.TrimSuffix(slug, ".git")
+func repoDisplayName(jjc jj.Client, path string) string {
+	// Try to show owner/repo from origin remote.
+	if remotes, err := jjc.RemoteURLs(path); err == nil {
+		if url := remotes["origin"]; url != "" {
+			if slug := github.SlugFromRemoteURL(url); slug != "" {
+				return slug
+			}
 		}
 	}
 	// Fallback: last two path components
@@ -543,6 +524,16 @@ func repoDisplayName(path string) string {
 		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
 	}
 	return parts[len(parts)-1]
+}
+
+// changedFileCount returns the number of files with uncommitted changes in
+// the workspace at path. Returns 0 on any jj error.
+func changedFileCount(jjc jj.Client, path string) int {
+	st, err := jjc.Status(path)
+	if err != nil {
+		return 0
+	}
+	return len(st.Modified) + len(st.Added) + len(st.Deleted)
 }
 
 func syncPlanBranches(data *todayData) {
@@ -559,13 +550,13 @@ func syncPlanBranches(data *todayData) {
 		if existing != nil {
 			continue
 		}
-		// Auto-generate reason from last commit on the branch
+		// Auto-generate reason from last described change on the branch.
 		reason := "active branch"
-		out, err := exec.Command("git", "-C", b.Path, "log", "-1", "--format=%s").Output()
-		if err == nil {
-			msg := strings.TrimSpace(string(out))
-			if msg != "" {
-				reason = msg
+		jjc := jj.NewCLI()
+		if entries, err := jjc.Log(b.Path, "@-"); err == nil && len(entries) > 0 {
+			line, _, _ := strings.Cut(entries[0].Description, "\n")
+			if line = strings.TrimSpace(line); line != "" {
+				reason = line
 			}
 		}
 		data.plan.AddBranch(b.RepoName, b.Branch, reason)
@@ -643,10 +634,7 @@ func collectTodayDataForAuthor(repoPaths []string, since time.Time, author, ghAu
 				defer ghWg.Done()
 				prs, err := gh.ListPRsByAuthor(ghAuthor)
 				if err == nil {
-					var attn []github.ExtendedPRInfo
-					for _, pr := range prs {
-						attn = append(attn, pr)
-					}
+					attn := append([]github.ExtendedPRInfo(nil), prs...)
 					mu.Lock()
 					data.needsAttn = attn
 					mu.Unlock()
@@ -677,9 +665,10 @@ func collectTogetherBranches(p *plan.Plan, repoPaths []string, myAuthor, pairAut
 	}
 
 	// Build a map from repo display name to local path for spec file lookups.
+	jjc := jj.NewCLI()
 	repoPathMap := map[string]string{}
 	for _, rp := range repoPaths {
-		name := repoDisplayName(rp)
+		name := repoDisplayName(jjc, rp)
 		repoPathMap[name] = rp
 	}
 
