@@ -27,10 +27,11 @@ type GitStatus struct {
 
 // CommitInfo contains information about a Git commit.
 type CommitInfo struct {
-	Hash    string    `json:"hash"`    // Commit hash
-	Message string    `json:"message"` // Commit message
-	Author  string    `json:"author"`  // Commit author
-	Date    time.Time `json:"date"`    // Commit date
+	Hash    string    `json:"hash"`          // Commit hash
+	Message string    `json:"message"`       // Commit message
+	Author  string    `json:"author"`        // Commit author
+	Date    time.Time `json:"date"`          // Commit date
+	URL     string    `json:"url,omitempty"` // Web URL for the commit
 }
 
 // BranchInfo contains information about a branch.
