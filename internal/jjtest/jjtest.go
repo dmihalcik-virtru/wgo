@@ -22,6 +22,19 @@ func RequireJJ(t *testing.T) {
 	}
 }
 
+// SetIdentity pins a deterministic jj author/committer identity for the
+// current test via the JJ_USER/JJ_EMAIL environment variables. Tests that
+// build repos with jj.GitInit directly (bypassing NewRepo) and then create
+// or push commits must call this: CI has no global jj config, so without an
+// identity jj records commits with an empty author/committer and refuses to
+// push them ("Won't push commit ... since it has no author and/or committer
+// set"). Locally this is masked by the contributor's global jj config.
+func SetIdentity(t *testing.T) {
+	t.Helper()
+	t.Setenv("JJ_USER", "wgo-test")
+	t.Setenv("JJ_EMAIL", "wgo-test@example.com")
+}
+
 // NewRepo creates a fresh non-colocated jj repo inside t.TempDir(), seeds an
 // initial described commit, and returns the repo root plus a CLIClient
 // pointing at the system `jj` binary.
@@ -32,8 +45,7 @@ func NewRepo(t *testing.T) (string, *jj.CLIClient) {
 	runJJ(t, repo, "git", "init", "--no-colocate")
 	// jj reads user identity from XDG config / env; pin both so tests are
 	// deterministic without touching the contributor's global jj config.
-	t.Setenv("JJ_USER", "wgo-test")
-	t.Setenv("JJ_EMAIL", "wgo-test@example.com")
+	SetIdentity(t)
 	runJJ(t, repo, "config", "set", "--repo", "user.name", "wgo-test")
 	runJJ(t, repo, "config", "set", "--repo", "user.email", "wgo-test@example.com")
 	runJJ(t, repo, "describe", "-m", "initial")

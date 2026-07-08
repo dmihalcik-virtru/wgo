@@ -293,6 +293,7 @@ func TestGitInitInteropAndRemotes(t *testing.T) {
 
 func TestGitCloneAndFetch(t *testing.T) {
 	jjtest.RequireJJ(t)
+	jjtest.SetIdentity(t)
 	c := jj.NewCLI()
 
 	// Use a bare-init local git repo as the "remote" to keep the test
@@ -431,6 +432,7 @@ func TestAheadBehindNoRemote(t *testing.T) {
 
 func TestAheadBehindWithRemote(t *testing.T) {
 	jjtest.RequireJJ(t)
+	jjtest.SetIdentity(t)
 	c := jj.NewCLI()
 
 	remote := filepath.Join(t.TempDir(), "remote.git")
@@ -498,6 +500,7 @@ func TestDiffStatAndChangedFiles(t *testing.T) {
 // marked tracked. A second track call must be a no-op (idempotent).
 func TestBookmarkTrack(t *testing.T) {
 	jjtest.RequireJJ(t)
+	jjtest.SetIdentity(t)
 	c := jj.NewCLI()
 
 	remote := filepath.Join(t.TempDir(), "remote.git")
