@@ -11,8 +11,10 @@ import (
 	"github.com/virtru/wgo/internal/links"
 )
 
-var contribWeeks int
-var contribAuthor string
+var (
+	contribWeeks  int
+	contribAuthor string
+)
 
 // contribCmd represents the `wgo contrib` command.
 var contribCmd = &cobra.Command{

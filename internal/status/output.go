@@ -113,7 +113,8 @@ func RenderCSV(w io.Writer, activities []models.RepoActivity, verbose bool) erro
 			formatTimeSince(a.LastActivity),
 		}
 		if verbose {
-			row = append(row,
+			row = append(
+				row,
 				formatLines(a.DiffStat),
 				a.Annotation,
 				a.Path,

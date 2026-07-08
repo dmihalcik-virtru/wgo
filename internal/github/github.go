@@ -316,8 +316,10 @@ func WithToken(tok string) ClientOption {
 	}
 }
 
-const defaultBaseURL = "https://api.github.com"
-const defaultCacheTTL = 60 * time.Second
+const (
+	defaultBaseURL  = "https://api.github.com"
+	defaultCacheTTL = 60 * time.Second
+)
 
 // NewClient creates a new GitHub API client.
 func NewClient(opts ...ClientOption) *CLIClient {

@@ -453,7 +453,8 @@ func runSpecLs() error {
 	for _, e := range entries {
 		authors := strings.Join(e.Authors, ", ")
 		branches := strings.Join(e.Branches, ", ")
-		fmt.Printf("  %-12s %-12s %-20s %-30s %s\n",
+		fmt.Printf(
+			"  %-12s %-12s %-20s %-30s %s\n",
 			specTruncate(e.Ticket, 12),
 			specTruncate(e.Status, 12),
 			specTruncate(authors, 20),

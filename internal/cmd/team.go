@@ -16,9 +16,7 @@ import (
 	"github.com/virtru/wgo/internal/status"
 )
 
-var (
-	teamRefresh bool
-)
+var teamRefresh bool
 
 // teamCache caches teammate PR data between calls within the same process.
 var teamCache = cache.NewTTL[[]github.ExtendedPRInfo](60 * time.Second)

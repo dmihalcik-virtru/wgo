@@ -19,15 +19,15 @@ type mockJJClient struct {
 	currentChange   jj.Change
 	nearestBookmark string // overrides the currentChange fallback when set
 	status          jj.Status
-	logEntries    map[string][]jj.LogEntry // keyed by revset
-	countResults  map[string]int           // keyed by revset
-	diffAdded     int
-	diffDeleted   int
-	changedFiles  []string
-	ahead         int
-	behind        int
-	remotes       map[string]string
-	workspaces    map[string][]jj.Workspace // keyed by repo path
+	logEntries      map[string][]jj.LogEntry // keyed by revset
+	countResults    map[string]int           // keyed by revset
+	diffAdded       int
+	diffDeleted     int
+	changedFiles    []string
+	ahead           int
+	behind          int
+	remotes         map[string]string
+	workspaces      map[string][]jj.Workspace // keyed by repo path
 }
 
 func (m *mockJJClient) Root(string) (string, error) { return "", nil }
@@ -38,6 +38,7 @@ func (m *mockJJClient) RemoteURLs(string) (map[string]string, error) {
 	}
 	return map[string]string{}, nil
 }
+
 func (m *mockJJClient) ListWorkspaces(repo string) ([]jj.Workspace, error) {
 	if m.workspaces != nil {
 		if ws, ok := m.workspaces[repo]; ok {
@@ -69,12 +70,13 @@ func (m *mockJJClient) NearestBookmark(string) (string, error) {
 	}
 	return "", nil
 }
-func (m *mockJJClient) Resolve(string, string) (string, error)  { return "", nil }
-func (m *mockJJClient) Status(string) (jj.Status, error)        { return m.status, nil }
-func (m *mockJJClient) IsClean(string) (bool, []string, error)  { return m.status.Clean, nil, nil }
+func (m *mockJJClient) Resolve(string, string) (string, error) { return "", nil }
+func (m *mockJJClient) Status(string) (jj.Status, error)       { return m.status, nil }
+func (m *mockJJClient) IsClean(string) (bool, []string, error) { return m.status.Clean, nil, nil }
 func (m *mockJJClient) AheadBehind(string, string) (int, int, error) {
 	return m.ahead, m.behind, nil
 }
+
 func (m *mockJJClient) DiffStat(string, string) (int, int, error) {
 	return m.diffAdded, m.diffDeleted, nil
 }
@@ -82,6 +84,7 @@ func (m *mockJJClient) ChangedFiles(string, string) ([]string, error) { return m
 func (m *mockJJClient) DiffSummary(string, string) ([]jj.FileChange, error) {
 	return nil, nil
 }
+
 func (m *mockJJClient) CountRevset(_, revset string) (int, error) {
 	if m.countResults != nil {
 		if n, ok := m.countResults[revset]; ok {
@@ -90,6 +93,7 @@ func (m *mockJJClient) CountRevset(_, revset string) (int, error) {
 	}
 	return 0, nil
 }
+
 func (m *mockJJClient) BookmarkList(string, jj.BookmarkListOpts) ([]jj.Bookmark, error) {
 	return nil, nil
 }
