@@ -16,8 +16,9 @@ import (
 // supplies a deterministic answer for the corresponding method; methods
 // not used by the collector return zero values.
 type mockJJClient struct {
-	currentChange jj.Change
-	status        jj.Status
+	currentChange   jj.Change
+	nearestBookmark string // overrides the currentChange fallback when set
+	status          jj.Status
 	logEntries    map[string][]jj.LogEntry // keyed by revset
 	countResults  map[string]int           // keyed by revset
 	diffAdded     int
@@ -59,6 +60,15 @@ func (m *mockJJClient) Log(_, revset string) ([]jj.LogEntry, error) {
 	return nil, nil
 }
 func (m *mockJJClient) CurrentChange(string) (jj.Change, error) { return m.currentChange, nil }
+func (m *mockJJClient) NearestBookmark(string) (string, error) {
+	if m.nearestBookmark != "" {
+		return m.nearestBookmark, nil
+	}
+	if len(m.currentChange.Bookmarks) > 0 {
+		return m.currentChange.Bookmarks[0], nil
+	}
+	return "", nil
+}
 func (m *mockJJClient) Resolve(string, string) (string, error)  { return "", nil }
 func (m *mockJJClient) Status(string) (jj.Status, error)        { return m.status, nil }
 func (m *mockJJClient) IsClean(string) (bool, []string, error)  { return m.status.Clean, nil, nil }

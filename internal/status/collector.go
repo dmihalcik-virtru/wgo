@@ -193,16 +193,14 @@ func (c *Collector) collectOne(ctx context.Context, repo discovery.DiscoveredRep
 		}
 	}
 
-	// Bookmark on this workspace's @ (jj-side equivalent of "branch").
-	curChange, err := c.jjc.CurrentChange(repo.Path)
+	// Nearest bookmark at or below this workspace's @ (jj-side equivalent of
+	// "branch"). jj's working copy is usually an empty change above the
+	// bookmark, so inspecting @ alone would miss it.
+	branch, err := c.jjc.NearestBookmark(repo.Path)
 	if err != nil {
 		activity.Branch = "?"
 		activity.State = models.StateClean
 		return activity
-	}
-	branch := ""
-	if len(curChange.Bookmarks) > 0 {
-		branch = curChange.Bookmarks[0]
 	}
 	if branch == "" {
 		branch = "(no bookmark)"

@@ -30,6 +30,7 @@ type Client interface {
 	// DAG / status
 	Log(repo, revset string) ([]LogEntry, error)
 	CurrentChange(workspacePath string) (Change, error)
+	NearestBookmark(workspacePath string) (string, error)
 	Resolve(repo, revset string) (string, error)
 	Status(workspacePath string) (Status, error)
 	IsClean(workspacePath string) (bool, []string, error)
@@ -269,6 +270,35 @@ func (c *CLIClient) CurrentChange(workspacePath string) (Change, error) {
 		return Change{}, fmt.Errorf("jj log @: no entries returned")
 	}
 	return entries[0], nil
+}
+
+// NearestBookmark returns the closest local bookmark at or below the
+// workspace's @ — @ itself when it carries a bookmark, otherwise the nearest
+// ancestor that does. Returns "" when no ancestor has a local bookmark.
+//
+// This is the jj-side equivalent of git's "current branch": jj's working-copy
+// commit is normally an empty change on top of the bookmark (the bookmark sits
+// on @-), so inspecting @ alone misses it.
+//
+// The revset `heads(::@ & bookmarks())` selects, among @ and its ancestors that
+// carry a local bookmark, the one(s) nearest @. Must run inside the workspace
+// directory (like CurrentChange) so @ resolves to this workspace and not the
+// repo's default workspace.
+func (c *CLIClient) NearestBookmark(workspacePath string) (string, error) {
+	out, err := c.runIn(workspacePath, "log", "--no-graph", "-r", "heads(::@ & bookmarks())", "-T", LogEntryTemplate)
+	if err != nil {
+		return "", err
+	}
+	entries, err := ParseLogEntries([]byte(out))
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if len(e.Bookmarks) > 0 {
+			return e.Bookmarks[0], nil
+		}
+	}
+	return "", nil
 }
 
 // Resolve resolves revset to a single commit id. Errors if revset is empty

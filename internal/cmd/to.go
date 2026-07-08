@@ -385,18 +385,17 @@ func runToLocal(short string) error {
 	return runTo(rawURL)
 }
 
-// currentBookmark returns the first local bookmark on the workspace's @
-// change, or "" if there is none. Used as the jj-side equivalent of git's
-// "current branch" concept.
+// currentBookmark returns the nearest local bookmark at or below the
+// workspace's @, or "" if there is none. Used as the jj-side equivalent of
+// git's "current branch" concept. jj's working copy is normally an empty
+// change above the bookmark (which sits on @-), so this resolves through
+// jj.NearestBookmark rather than inspecting @ alone.
 func currentBookmark(jjc jj.Client, workspacePath string) string {
-	ch, err := jjc.CurrentChange(workspacePath)
+	bm, err := jjc.NearestBookmark(workspacePath)
 	if err != nil {
 		return ""
 	}
-	if len(ch.Bookmarks) > 0 {
-		return ch.Bookmarks[0]
-	}
-	return ""
+	return bm
 }
 
 // findExistingCheckout searches discovered repos for one whose origin

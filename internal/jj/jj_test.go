@@ -570,6 +570,54 @@ func TestBookmarkTrack(t *testing.T) {
 	}
 }
 
+// TestNearestBookmark verifies that NearestBookmark resolves the bookmark the
+// way git resolves "current branch": @ when it carries a bookmark, otherwise
+// the nearest ancestor that does (jj's working copy is normally an empty change
+// above the bookmark, which sits on @-), and "" when nothing in the ancestry is
+// bookmarked.
+func TestNearestBookmark(t *testing.T) {
+	t.Run("bookmark on @-", func(t *testing.T) {
+		repo, c := jjtest.NewRepo(t)
+		// Commit leaves @ empty with the described change on @-.
+		jjtest.Commit(t, repo, "work", map[string]string{"a.txt": "hi"})
+		jjtest.Bookmark(t, repo, "feat", "@-")
+
+		got, err := c.NearestBookmark(repo)
+		if err != nil {
+			t.Fatalf("NearestBookmark: %v", err)
+		}
+		if got != "feat" {
+			t.Fatalf("NearestBookmark = %q, want %q", got, "feat")
+		}
+	})
+
+	t.Run("bookmark on @", func(t *testing.T) {
+		repo, c := jjtest.NewRepo(t)
+		jjtest.Bookmark(t, repo, "onhead", "@")
+
+		got, err := c.NearestBookmark(repo)
+		if err != nil {
+			t.Fatalf("NearestBookmark: %v", err)
+		}
+		if got != "onhead" {
+			t.Fatalf("NearestBookmark = %q, want %q", got, "onhead")
+		}
+	})
+
+	t.Run("no bookmark in ancestry", func(t *testing.T) {
+		repo, c := jjtest.NewRepo(t)
+		jjtest.Commit(t, repo, "work", map[string]string{"a.txt": "hi"})
+
+		got, err := c.NearestBookmark(repo)
+		if err != nil {
+			t.Fatalf("NearestBookmark: %v", err)
+		}
+		if got != "" {
+			t.Fatalf("NearestBookmark = %q, want empty", got)
+		}
+	})
+}
+
 // helpers
 
 func hasBookmark(bms []jj.Bookmark, name string) bool {
