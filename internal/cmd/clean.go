@@ -14,6 +14,7 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/links"
+	"github.com/virtru/wgo/internal/prcache"
 	"github.com/virtru/wgo/internal/store"
 )
 
@@ -304,13 +305,21 @@ func executeRemoval(c Candidate, jjc jj.Client, ghClient github.Client, _ *store
 				return fmt.Errorf("cannot verify bookmark is safe to delete:\n- %s\nuse --force to delete anyway", strings.Join(reasons, "\n- "))
 			}
 		}
-		return jjc.BookmarkDelete(c.RepoPath, c.Branch)
+		if err := jjc.BookmarkDelete(c.RepoPath, c.Branch); err != nil {
+			return err
+		}
+		invalidateBranchCache(jjc, c.RepoPath, c.Branch)
+		return nil
 
 	case cleanup.KindRemoteBranch:
 		if ghClient == nil || !ghClient.Available() {
 			return fmt.Errorf("github client not available for remote branch deletion")
 		}
-		return ghClient.DeleteRemoteBranch(c.RepoPath, c.Branch)
+		if err := ghClient.DeleteRemoteBranch(c.RepoPath, c.Branch); err != nil {
+			return err
+		}
+		invalidateBranchCache(jjc, c.RepoPath, c.Branch)
+		return nil
 
 	case cleanup.KindRepo:
 		return os.RemoveAll(c.Path)
@@ -318,6 +327,16 @@ func executeRemoval(c Candidate, jjc jj.Client, ghClient github.Client, _ *store
 	default:
 		return fmt.Errorf("unknown candidate kind: %v", c.Kind)
 	}
+}
+
+// invalidateBranchCache drops the on-disk PR cache entry for a deleted branch so
+// a stale PR does not linger in `wgo .`/statusline output.
+func invalidateBranchCache(jjc jj.Client, repoPath, branch string) {
+	remoteURL := ""
+	if remotes, err := jjc.RemoteURLs(repoPath); err == nil {
+		remoteURL = remotes["origin"]
+	}
+	_ = prcache.Invalidate(remoteURL, repoPath, branch)
 }
 
 // defaultBranchOrFallback returns the default branch for repoPath, falling

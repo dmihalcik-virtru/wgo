@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"os"
-	"os/exec"
 	"time"
 
 	"github.com/virtru/wgo/internal/config"
@@ -11,42 +9,54 @@ import (
 	"github.com/virtru/wgo/models"
 )
 
-// refreshBackoff is how long a background PR refresh suppresses further
-// background refreshes for the same branch, so rapid prompt re-renders don't
-// stampede the GitHub API.
-const refreshBackoff = 30 * time.Second
+// ghFetcher adapts the GitHub client to prcache.Fetcher: it lists a branch's
+// PRs over the network and projects them onto the compact models.PRRef the
+// cache stores.
+type ghFetcher struct {
+	c *github.CLIClient
+}
 
-// resolvePRs returns the PR refs for a branch according to opts.
+// newGHFetcher builds a prcache.Fetcher backed by a fresh GitHub client.
+func newGHFetcher() prcache.Fetcher {
+	return ghFetcher{c: github.NewClient()}
+}
+
+// FetchPRs implements prcache.Fetcher.
+func (g ghFetcher) FetchPRs(repoPath, branch string) ([]models.PRRef, error) {
+	prs, err := g.c.ListPRsForBranch(repoPath, branch)
+	if err != nil {
+		return nil, err
+	}
+	return toPRRefs(prs), nil
+}
+
+// resolvePRs returns the PR refs for a branch according to opts, delegating the
+// cache/network reconciliation to prcache.Resolve:
 //
-//   - LocalOnly && !Refresh (the statusline hot path): read the on-disk cache
-//     only. A hit (fresh or stale) is returned without any network call; a
-//     stale/miss additionally kicks a best-effort background refresh. Never
-//     blocks.
-//   - otherwise (`wgo .`, or statusline --refresh): make the synchronous
-//     GitHub call and write the result back so the cache stays warm.
+//   - statusline hot path (LocalOnly): read-through only; a Stale/Miss serves
+//     whatever is cached and kicks a background refresh. Never blocks.
+//   - wgo . (default): read-through with a synchronous fetch on a cold miss so
+//     the first run is never blank; a Stale hit serves instantly and warms in
+//     the background.
+//   - --refresh (opts.Refresh): bypass the cache and fetch synchronously.
 func resolvePRs(cwd, remoteURL, branch string, opts contextOptions) []models.PRRef {
 	if branch == "" || branch == "(no bookmark)" {
 		return nil
 	}
-
-	if opts.LocalOnly && !opts.Refresh {
-		refs, state := prcache.Read(remoteURL, cwd, branch, prTTL())
-		if state != prcache.Fresh {
-			kickBackgroundRefresh(remoteURL, cwd, branch)
-		}
-		return refs
-	}
-
-	gh := github.NewClient()
-	prs, err := gh.ListPRsForBranch(cwd, branch)
-	if err != nil {
-		return nil
-	}
-	refs := toPRRefs(prs)
-	// Write-through warms the cache for the next statusline render. Ignore
-	// errors: a failed cache write must not break `wgo .`.
-	_ = prcache.Write(remoteURL, cwd, branch, refs)
+	refs, _, _ := prcache.Resolve(newGHFetcher(), remoteURL, cwd, branch, cacheOpts(opts))
 	return refs
+}
+
+// cacheOpts maps the context resolver options onto prcache.Opts.
+func cacheOpts(opts contextOptions) prcache.Opts {
+	switch {
+	case opts.Refresh:
+		return prcache.Opts{Synchronous: true}
+	case opts.LocalOnly:
+		return prcache.Opts{TTL: prTTL(), RefreshStale: true}
+	default:
+		return prcache.Opts{TTL: prTTL(), RefreshStale: true, SyncOnMiss: true}
+	}
 }
 
 // toPRRefs projects GitHub PRInfo values onto the compact models.PRRef used by
@@ -72,21 +82,4 @@ func prTTL() time.Duration {
 		return time.Duration(cfg.Cache.PRTTL) * time.Second
 	}
 	return 120 * time.Second
-}
-
-// kickBackgroundRefresh spawns a detached `wgo -C <cwd> statusline --refresh`
-// to repopulate the cache out of the hot path. It is best-effort: a lock file
-// suppresses stampedes and any failure is silently ignored.
-func kickBackgroundRefresh(remoteURL, cwd, branch string) {
-	if !prcache.LockRefresh(remoteURL, cwd, branch, refreshBackoff) {
-		return
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return
-	}
-	// nil std streams (the exec.Cmd default) discard the child's output to the
-	// null device. No Wait: the orphaned child finishes the refresh after we exit.
-	c := exec.Command(exe, "-C", cwd, "statusline", "--refresh")
-	_ = c.Start()
 }

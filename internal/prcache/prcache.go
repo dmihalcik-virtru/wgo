@@ -64,49 +64,102 @@ func Read(remoteURL, repoPath, branch string, ttl time.Duration) ([]models.PRRef
 
 // Write stores the PR refs for a branch, stamping the current time. The write
 // is atomic (temp file + rename) so a killed writer never leaves a truncated
-// entry for a concurrent reader.
+// entry for a concurrent reader. The temp file gets a unique name so two
+// concurrent writers never clobber each other's temp before the rename.
 func Write(remoteURL, repoPath, branch string, refs []models.PRRef) error {
 	path, err := prPath(remoteURL, repoPath, branch)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(&entry{PRs: refs, FetchedAt: time.Now()}, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// Invalidate removes the cached PR entry (and any refresh lease) for a branch so
+// the next Read is a Miss. A missing entry is not an error. Callers invalidate
+// after mutating PR state (wgo sync, remote-branch deletion) so stale review or
+// merge state does not linger in the cache.
+func Invalidate(remoteURL, repoPath, branch string) error {
+	path, err := prPath(remoteURL, repoPath, branch)
+	if err != nil {
+		return err
+	}
+	lock := strings.TrimSuffix(path, ".json") + ".lock"
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Remove(lock); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
 }
 
 // LockRefresh reports whether a background refresh should be started now for
-// this repo/branch. It records the attempt (a lock file next to the cache
-// entry) so rapid re-renders back off for `window`. Best-effort: on any error
-// it returns false (skip the refresh) rather than risk a stampede.
+// this repo/branch. Acquisition is atomic (O_CREATE|O_EXCL) so that when no
+// lease exists exactly one concurrent caller wins; rapid re-renders back off
+// for `window`, and a stale lease (older than window) is reclaimed so a killed
+// refresher never wedges the key permanently. Best-effort: on any error it
+// returns false (skip the refresh) rather than risk a stampede.
 func LockRefresh(remoteURL, repoPath, branch string, window time.Duration) bool {
 	path, err := prPath(remoteURL, repoPath, branch)
 	if err != nil {
 		return false
 	}
 	lock := strings.TrimSuffix(path, ".json") + ".lock"
-	if fi, err := os.Stat(lock); err == nil && time.Since(fi.ModTime()) < window {
-		return false // a recent attempt is still in its back-off window
-	}
 	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
 		return false
 	}
-	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+	return acquireLease(lock, window)
+}
+
+// acquireLease atomically creates the lock file, returning true only for the
+// single caller that created it. If the lock already exists it is reclaimed
+// (and re-acquired) only when older than window.
+func acquireLease(lock string, window time.Duration) bool {
+	if f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644); err == nil {
+		_ = f.Close()
+		return true
+	} else if !os.IsExist(err) {
 		return false
 	}
+	// Lock exists: reclaim only once it has aged past the back-off window.
+	fi, err := os.Stat(lock)
+	if err != nil || time.Since(fi.ModTime()) < window {
+		return false
+	}
+	if err := os.Remove(lock); err != nil {
+		return false
+	}
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return false // lost the reclaim race to another caller
+	}
+	_ = f.Close()
 	return true
 }
 
