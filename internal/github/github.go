@@ -20,7 +20,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/virtru/wgo/models"
 )
 
 // URLType represents the type of GitHub URL.
@@ -247,6 +250,13 @@ type PRInfo struct {
 	URL         string         `json:"url"`
 	Title       string         `json:"title"`
 	Author      string         `json:"author"`
+	// ReviewDecision is APPROVED, CHANGES_REQUESTED, or "" (see models.PRRef).
+	// Populated only by ListPRsForBranchEnriched.
+	ReviewDecision string `json:"reviewDecision"`
+	// IsDraft reports whether the PR is a draft. Set on the base list path.
+	IsDraft bool `json:"isDraft"`
+	// Checks is the CI rollup for HeadSHA. Populated only by ListPRsForBranchEnriched.
+	Checks models.CIStatus `json:"checks"`
 }
 
 // IsMerged reports whether the PR was merged.
@@ -442,6 +452,36 @@ func (c *CLIClient) ListPRsForBranch(repoPath, branch string) ([]PRInfo, error) 
 		out = append(out, *list[i].toPRInfo())
 	}
 	return out, nil
+}
+
+// ListPRsForBranchEnriched is ListPRsForBranch plus the per-PR review decision
+// and CI rollup. It issues extra API calls (reviews + checks per PR), so it is
+// used only by the PR cache fetcher off the statusline hot path; the enriched
+// fields then round-trip through the cache. Enrichment degrades gracefully:
+// any per-PR fetch error leaves that field empty rather than failing the call.
+func (c *CLIClient) ListPRsForBranchEnriched(repoPath, branch string) ([]PRInfo, error) {
+	prs, err := c.ListPRsForBranch(repoPath, branch)
+	if err != nil || len(prs) == 0 {
+		return prs, err
+	}
+	slug, err := c.resolveSlug(repoPath)
+	if err != nil || slug == "" {
+		return prs, nil
+	}
+	var wg sync.WaitGroup
+	for i := range prs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			pr := &prs[i]
+			pr.ReviewDecision = c.fetchReviewDecision(slug, pr.Number)
+			checks, failingURL := c.fetchCIStatus(slug, pr.HeadSHA)
+			checks.URL = ciDeepLink(pr.URL, pr.Number, pr.BaseRefName, checks.State, failingURL)
+			pr.Checks = checks
+		}(i)
+	}
+	wg.Wait()
+	return prs, nil
 }
 
 // ClosePR closes a pull request.

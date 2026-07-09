@@ -37,10 +37,20 @@ func fixtureContext() *models.Context {
 			Date:    time.Time{},
 			URL:     "https://github.com/virtru/wgo/commit/abc1234",
 		},
-		Ticket:   "WGO-130",
-		Spec:     &models.SpecRef{Path: "spec/WGO-130.md", Status: "draft", Updated: "2026-07-08"},
-		Tasks:    []models.TaskRef{{Bullet: "○", Text: "implement context"}},
-		PRs:      []models.PRRef{{Number: 42, Title: "Add context", State: "open", URL: "https://github.com/virtru/wgo/pull/42"}},
+		Ticket: "WGO-130",
+		Spec:   &models.SpecRef{Path: "spec/WGO-130.md", Status: "draft", Updated: "2026-07-08"},
+		Tasks:  []models.TaskRef{{Bullet: "○", Text: "implement context"}},
+		PRs: []models.PRRef{{
+			Number:         42,
+			Title:          "Add context",
+			State:          "open",
+			URL:            "https://github.com/virtru/wgo/pull/42",
+			ReviewDecision: "APPROVED",
+			Checks: models.CIStatus{
+				State: "success", Passed: 3, Total: 3,
+				URL: "https://github.com/virtru/wgo/pull/42/checks",
+			},
+		}},
 		Siblings: []models.SiblingRef{{Name: "wgo-2", Branch: "main", Status: "clean"}},
 	}
 }
@@ -53,7 +63,7 @@ branch: WGO-130-statusline-context-api
 status: 2 modified, 1 added
 remote: ↑1  (origin/wgo)
 commit: abc1234 do a thing (unknown)
-pr:     #42 Add context [OPEN]
+pr:     #42 Add context [OPEN ✓ CI:green]
 task:   ○ implement context
 spec:   📄 spec/WGO-130.md (draft, updated 2026-07-08)
 
@@ -84,6 +94,8 @@ func TestJSONFieldParity(t *testing.T) {
 		`"spec"`, `"path": "spec/WGO-130.md"`, `"status": "draft"`, `"updated": "2026-07-08"`,
 		`"tasks"`, `"bullet": "○"`, `"text": "implement context"`,
 		`"prs"`, `"number": 42`,
+		`"review_decision": "APPROVED"`, `"checks"`, `"state": "success"`,
+		`"url": "https://github.com/virtru/wgo/pull/42/checks"`,
 		`"siblings"`, `"name": "wgo-2"`,
 		`"url": "https://github.com/virtru/wgo/commit/abc1234"`,
 	} {

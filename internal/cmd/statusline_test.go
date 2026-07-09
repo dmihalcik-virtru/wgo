@@ -14,7 +14,7 @@ import (
 func TestStatuslineDefaultGolden(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, renderStatuslineLine(&buf, fixtureContext(), false))
-	assert.Equal(t, "wgo WGO-130-statusline-context-api* [WGO-130] ↑1 #42 open\n", buf.String())
+	assert.Equal(t, "wgo WGO-130-statusline-context-api* [WGO-130] ↑1 #42 open ✓ ●\n", buf.String())
 }
 
 // TestStatuslineRichHasColorAndLinks asserts the rich line emits ANSI color and
