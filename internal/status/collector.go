@@ -69,6 +69,8 @@ func NewCollector(jjc jj.Client, p *plan.Plan, state *store.State, opts ...Colle
 // CollectAll gathers status for all discovered repos in parallel.
 // It expands main repos to include all their worktrees via git worktree list.
 func (c *Collector) CollectAll(ctx context.Context, repos []discovery.DiscoveredRepo) []models.RepoActivity {
+	// The multi-repo dashboard is not directory-targeted, so it uses the real
+	// working directory rather than the root command's -C/--repo flag.
 	cwd, _ := os.Getwd()
 
 	// Phase 1: Partition discovered repos into main repos vs already-discovered worktrees.

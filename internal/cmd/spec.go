@@ -134,9 +134,9 @@ func repoNameFromJJRoot(jjc jj.Client, path string) string {
 
 // repoRoot returns the jj workspace root for the current working directory.
 func repoRoot() (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := resolveCwd()
 	if err != nil {
-		return "", fmt.Errorf("getwd: %w", err)
+		return "", err
 	}
 	root, err := jj.NewCLI().Root(cwd)
 	if err != nil {
@@ -157,7 +157,7 @@ func resolveSpecTarget(args []string) (root, ticket string, err error) {
 		return
 	}
 	jjc := jj.NewCLI()
-	cwd, _ := os.Getwd()
+	cwd, _ := resolveCwd()
 	branch := currentBookmark(jjc, cwd)
 	if branch == "" {
 		err = fmt.Errorf("could not determine current bookmark; check `jj log -r @`")
@@ -222,7 +222,7 @@ func runSpecNew(ticket, title string) error {
 	cfg := config.Get()
 
 	jjc := jj.NewCLI()
-	cwd, _ := os.Getwd()
+	cwd, _ := resolveCwd()
 	branch := currentBookmark(jjc, cwd)
 
 	var branches []string
@@ -350,7 +350,7 @@ func runSpecEdit(args []string) error {
 
 	// Sync annotation.
 	jjc := jj.NewCLI()
-	cwd, _ := os.Getwd()
+	cwd, _ := resolveCwd()
 	if branch := currentBookmark(jjc, cwd); branch != "" {
 		s, _ := store.New()
 		if state, err := s.LoadState(); err == nil {
@@ -544,7 +544,7 @@ func runSpecLink(ticket string) error {
 	}
 
 	jjc := jj.NewCLI()
-	cwd, _ := os.Getwd()
+	cwd, _ := resolveCwd()
 	branch := currentBookmark(jjc, cwd)
 	if branch == "" {
 		return fmt.Errorf("could not determine current bookmark; check `jj log -r @`")

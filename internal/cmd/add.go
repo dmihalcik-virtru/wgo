@@ -379,7 +379,7 @@ func runAddWithJiraCreate(desc string, repos []string, priority bool) error {
 			ownerRepo = r
 		}
 	}
-	cwd, _ := os.Getwd()
+	cwd, _ := resolveCwd()
 	project, issueType := cfg.Jira.ResolveProject(ownerRepo, cwd)
 
 	// Explicit flags take priority over resolved values.
@@ -427,9 +427,9 @@ func fetchJiraEnrichment(ticket, fallback string) (title, description, priority 
 // detectCurrentJJRepo returns "owner/repo" for the jj repo containing the cwd.
 // Prefers the "origin" remote; falls back to the first remote found.
 func detectCurrentJJRepo(jjc jj.Client) (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := resolveCwd()
 	if err != nil {
-		return "", fmt.Errorf("getwd: %w", err)
+		return "", err
 	}
 	root, err := jjc.Root(cwd)
 	if err != nil {

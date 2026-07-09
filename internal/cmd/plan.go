@@ -133,9 +133,9 @@ func buildRepoPathMap(cfg *config.Config) map[string]string {
 }
 
 func addAnnotation(reason string) error {
-	cwd, err := os.Getwd()
+	cwd, err := resolveCwd()
 	if err != nil {
-		return fmt.Errorf("failed to get current directory: %w", err)
+		return err
 	}
 
 	jjc := jj.NewCLI()

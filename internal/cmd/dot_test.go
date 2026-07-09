@@ -284,3 +284,22 @@ func TestBuildContextSpecUnreadable(t *testing.T) {
 	assert.True(t, ctx.SpecUnreadable, "malformed spec must set SpecUnreadable")
 	assert.False(t, ctx.SpecMissing, "SpecMissing is for absent specs, not unreadable ones")
 }
+
+// TestBuildContextOptsLocalOnly verifies the statusline mode skips the sibling
+// walk and the network PR fetch: on a cold cache it yields no PRs and no
+// siblings without error.
+func TestBuildContextOptsLocalOnly(t *testing.T) {
+	jjtest.RequireJJ(t)
+	jjtest.SetIdentity(t)
+	// Isolate the on-disk PR cache so a cold cache is guaranteed.
+	t.Setenv("HOME", t.TempDir())
+
+	repo, _ := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "initial", map[string]string{"README.md": "hi\n"})
+	jjtest.Bookmark(t, repo, "WGO-130-smoke", "@-")
+
+	ctx, err := buildContextOpts(repo, contextOptions{LocalOnly: true, Siblings: false})
+	require.NoError(t, err)
+	assert.Nil(t, ctx.Siblings, "siblings walk should be skipped")
+	assert.Empty(t, ctx.PRs, "cold cache in local-only mode yields no PRs")
+}

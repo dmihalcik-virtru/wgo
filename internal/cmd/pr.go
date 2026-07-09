@@ -67,7 +67,7 @@ func runPRCmd() error {
 	// --open N: open the PR in browser and exit immediately. Resolve the
 	// PR's URL via the same HTTP client used by the rest of the dashboard.
 	if prOpen > 0 {
-		cwd, _ := os.Getwd()
+		cwd, _ := resolveCwd()
 		pr, err := gh.GetPRByNumber(cwd, prOpen)
 		if err != nil {
 			return fmt.Errorf("look up PR #%d: %w", prOpen, err)
