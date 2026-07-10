@@ -14,7 +14,22 @@ import (
 func TestStatuslineDefaultGolden(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, renderStatuslineLine(&buf, fixtureContext(), false))
-	assert.Equal(t, "wgo WGO-130-statusline-context-api* [WGO-130] ↑1 #42 open ✓ ●\n", buf.String())
+	assert.Equal(t, "wgo WGO-130-statusline-context-api* [WGO-130 In Review] ↑1 #42 open ✓ ● 🤖 claude\n", buf.String())
+}
+
+// TestStatuslineNoJiraNoAgent drops the Jira status from the ticket segment and
+// the agent segment entirely when absent (graceful degradation).
+func TestStatuslineNoJiraNoAgent(t *testing.T) {
+	ctx := fixtureContext()
+	ctx.JiraStatus = ""
+	ctx.Agent = nil
+
+	var buf bytes.Buffer
+	require.NoError(t, renderStatuslineLine(&buf, ctx, false))
+	out := buf.String()
+	assert.Contains(t, out, "[WGO-130]")
+	assert.NotContains(t, out, "In Review")
+	assert.NotContains(t, out, "🤖")
 }
 
 // TestStatuslineRichHasColorAndLinks asserts the rich line emits ANSI color and

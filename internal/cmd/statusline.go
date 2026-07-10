@@ -28,7 +28,38 @@ cache (a miss simply omits the PR segment). The line is colored and clickable
 (branch/repo/PR link to GitHub, ticket links to Jira) so it can be embedded in
 a shell prompt or the Claude Code statusline. Use -C/--repo to target a
 directory without changing into it, and --refresh in a background warmer to
-populate the cache.`,
+populate the cache.
+
+Claude Code integration:
+  Add these keys to ~/.claude/settings.json (requires jq; merge into any
+  existing settings without clobbering other hooks). The statusLine renders the
+  context; the hooks warm the cache with --refresh so PR/CI/Jira are current at
+  session start (so the very first line is right) and after each turn, while
+  refreshInterval re-renders so the warmed data shows within a few seconds:
+
+    "statusLine": {
+      "type": "command",
+      "command": "wgo statusline -C \"$(jq -r '.workspace.current_dir // empty')\"",
+      "refreshInterval": 5
+    },
+    "hooks": {
+      "SessionStart": [
+        { "hooks": [ {
+          "type": "command",
+          "command": "wgo statusline --refresh -C \"$(jq -r '.cwd // .workspace.current_dir // empty')\" >/dev/null 2>&1",
+          "statusMessage": "Warming wgo PR/CI status..."
+        } ] }
+      ],
+      "Stop": [
+        { "hooks": [ {
+          "type": "command",
+          "command": "wgo statusline --refresh -C \"$(jq -r '.cwd // .workspace.current_dir // empty')\" >/dev/null 2>&1 &"
+        } ] }
+      ]
+    }
+
+  The SessionStart warm is synchronous (no trailing &) so the first render is
+  correct; the Stop warm is backgrounded so it never delays a turn.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runStatusline(os.Stdout)
 	},

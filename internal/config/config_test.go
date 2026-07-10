@@ -4,7 +4,20 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// TestCacheTTLDefaults verifies the on-disk cache TTL defaults, including the
+// WGO-134 jira_ttl (10m).
+func TestCacheTTLDefaults(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, Init())
+
+	cfg := Get()
+	require.NotNil(t, cfg)
+	assert.Equal(t, 120, cfg.Cache.PRTTL)
+	assert.Equal(t, 600, cfg.Cache.JiraTTL)
+}
 
 func TestResolveProject(t *testing.T) {
 	rules := []JiraProjectRule{

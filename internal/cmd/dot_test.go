@@ -37,9 +37,11 @@ func fixtureContext() *models.Context {
 			Date:    time.Time{},
 			URL:     "https://github.com/virtru/wgo/commit/abc1234",
 		},
-		Ticket: "WGO-130",
-		Spec:   &models.SpecRef{Path: "spec/WGO-130.md", Status: "draft", Updated: "2026-07-08"},
-		Tasks:  []models.TaskRef{{Bullet: "○", Text: "implement context"}},
+		Ticket:       "WGO-130",
+		JiraStatus:   "In Review",
+		JiraAssignee: "Alice Dev",
+		Spec:         &models.SpecRef{Path: "spec/WGO-130.md", Status: "draft", Updated: "2026-07-08"},
+		Tasks:        []models.TaskRef{{Bullet: "○", Text: "implement context"}},
 		PRs: []models.PRRef{{
 			Number:         42,
 			Title:          "Add context",
@@ -52,6 +54,7 @@ func fixtureContext() *models.Context {
 			},
 		}},
 		Siblings: []models.SiblingRef{{Name: "wgo-2", Branch: "main", Status: "clean"}},
+		Agent:    &models.AgentRef{Name: "claude", Since: time.Time{}},
 	}
 }
 
@@ -65,7 +68,9 @@ remote: ↑1  (origin/wgo)
 commit: abc1234 do a thing (unknown)
 pr:     #42 Add context [OPEN ✓ CI:green]
 task:   ○ implement context
-spec:   📄 spec/WGO-130.md (draft, updated 2026-07-08)
+spec:   📄 spec/WGO-130.md (draft, updated 2026-07-08) [In Review]
+jira:   In Review · @Alice Dev
+agent:  🤖 claude (since unknown)
 
 Workspace siblings:
   wgo-2/       main   clean
@@ -207,6 +212,22 @@ func TestRenderTextRemoteStates(t *testing.T) {
 	}
 }
 
+// TestRenderTextTicketLineNoSpec: a ticket with a live Jira status but no spec
+// file still surfaces the status on a dedicated ticket line.
+func TestRenderTextTicketLineNoSpec(t *testing.T) {
+	ctx := fixtureContext()
+	ctx.Spec = nil
+	ctx.SpecMissing = false
+	ctx.JiraStatus = "In Progress"
+	ctx.JiraAssignee = ""
+
+	var buf bytes.Buffer
+	renderText(&buf, ctx, false)
+	out := buf.String()
+	assert.Contains(t, out, "ticket: WGO-130 [In Progress]")
+	assert.NotContains(t, out, "jira:", "no assignee line without an assignee")
+}
+
 const specSmokeContent = `---
 ticket: WGO-130
 title: Smoke
@@ -237,6 +258,9 @@ updated: 2026-07-08
 func TestBuildContextResolvesTicketAndSpec(t *testing.T) {
 	jjtest.RequireJJ(t)
 	jjtest.SetIdentity(t)
+	// Isolate ~/.wgo so the agent heartbeat and Jira cache write to a temp HOME
+	// rather than the developer's real state.
+	t.Setenv("HOME", t.TempDir())
 
 	repo, _ := jjtest.NewRepo(t)
 	jjtest.Commit(t, repo, "initial", map[string]string{

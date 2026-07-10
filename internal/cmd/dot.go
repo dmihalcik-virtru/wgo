@@ -221,6 +221,7 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 	if ticket := spec.ParseTicketFromBranch(branch); ticket != "" {
 		ctx.Ticket = ticket
 		ctx.TicketURL = ticketURL(ticket, remoteURL)
+		ctx.JiraStatus, ctx.JiraAssignee = resolveJiraStatus(ticket, opts)
 		specPath, err := spec.FindByTicket(wsRoot, ticket)
 		switch {
 		case err != nil:
@@ -240,6 +241,11 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 			}
 		}
 	}
+
+	// Agent session for this workspace. The env-detected heartbeat keeps a live
+	// Claude Code session fresh; resolveAgent then surfaces any non-stale one.
+	heartbeatAgent(wsRoot, branch)
+	ctx.Agent = resolveAgent(wsRoot)
 
 	if opts.Siblings {
 		ctx.Siblings, ctx.SiblingsOverflow = gatherSiblings(jjc, cwd)
@@ -314,15 +320,29 @@ func renderText(w io.Writer, c *models.Context, tty bool) {
 	}
 
 	if c.Ticket != "" {
+		jiraSuffix := ""
+		if c.JiraStatus != "" {
+			jiraSuffix = " [" + c.JiraStatus + "]"
+		}
 		switch {
 		case c.Spec != nil:
-			fmt.Fprintf(w, "spec:   📄 %s (%s, updated %s)\n",
-				c.Spec.Path, c.Spec.Status, c.Spec.Updated)
+			fmt.Fprintf(w, "spec:   📄 %s (%s, updated %s)%s\n",
+				c.Spec.Path, c.Spec.Status, c.Spec.Updated, jiraSuffix)
 		case c.SpecUnreadable:
-			fmt.Fprintf(w, "spec:   ⚠ spec/%s.md present but unreadable (malformed frontmatter)\n", c.Ticket)
+			fmt.Fprintf(w, "spec:   ⚠ spec/%s.md present but unreadable (malformed frontmatter)%s\n", c.Ticket, jiraSuffix)
 		case c.SpecMissing:
-			fmt.Fprintf(w, "spec:   ⚠ no spec (run: wgo spec new %s)\n", c.Ticket)
+			fmt.Fprintf(w, "spec:   ⚠ no spec (run: wgo spec new %s)%s\n", c.Ticket, jiraSuffix)
+		case c.JiraStatus != "":
+			// A ticket with a live status but no spec line still shows the status.
+			fmt.Fprintf(w, "ticket: %s%s\n", c.Ticket, jiraSuffix)
 		}
+		if c.JiraAssignee != "" {
+			fmt.Fprintf(w, "jira:   %s · @%s\n", c.JiraStatus, c.JiraAssignee)
+		}
+	}
+
+	if c.Agent != nil {
+		fmt.Fprintf(w, "agent:  🤖 %s (since %s)\n", c.Agent.Name, formatTime(c.Agent.Since))
 	}
 
 	if len(c.Siblings) > 0 {
