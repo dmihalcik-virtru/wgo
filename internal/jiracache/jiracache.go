@@ -105,23 +105,6 @@ func Write(ticket string, info Info) error {
 	return nil
 }
 
-// Invalidate removes the cached Jira entry (and any refresh lease) for a ticket
-// so the next Read is a Miss. A missing entry is not an error.
-func Invalidate(ticket string) error {
-	path, err := jiraPath(ticket)
-	if err != nil {
-		return err
-	}
-	lock := strings.TrimSuffix(path, ".json") + ".lock"
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.Remove(lock); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
 // LockRefresh reports whether a background refresh should be started now for
 // this ticket. Acquisition is atomic (O_CREATE|O_EXCL) so that when no lease
 // exists exactly one concurrent caller wins; rapid re-renders back off for

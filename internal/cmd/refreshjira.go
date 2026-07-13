@@ -33,6 +33,6 @@ func runRefreshJira(ticket string) error {
 	// config is only consulted for defaults elsewhere; a failure is non-fatal.
 	_ = config.Init()
 
-	_, _, err := jiracache.Resolve(newJiraFetcher(), ticket, jiracache.Opts{Synchronous: true})
+	_, _, err := jiracache.Resolve(jiraFetcherFn(), ticket, jiracache.Opts{Synchronous: true})
 	return err
 }

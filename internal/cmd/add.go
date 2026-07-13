@@ -349,11 +349,10 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 
 	// Update state annotation with spec path
 	if !addNoSpec {
-		state, err := s.LoadState()
-		if err == nil {
+		_ = s.MutateState(func(state *store.State) (bool, error) {
 			state.SetSpec(specRepoPath, branchName, specRel, "draft")
-			_ = s.SaveState(state)
-		}
+			return true, nil
+		})
 	}
 
 	fmt.Fprintf(os.Stderr, "Added task: %s %s\n", string(bullet), taskText)

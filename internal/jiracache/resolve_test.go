@@ -130,18 +130,3 @@ func TestResolveFetchErrorLeavesCache(t *testing.T) {
 	assert.Equal(t, Fresh, state)
 	assert.Equal(t, "In Review", cached.Status, "failed fetch must not wipe the cached entry")
 }
-
-// TestInvalidateRemovesEntry: invalidation drops the entry so the next read is a
-// Miss, and is idempotent for an absent entry.
-func TestInvalidateRemovesEntry(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	require.NoError(t, Write(testTicket, sampleInfo()))
-	_, state := Read(testTicket, time.Hour)
-	require.Equal(t, Fresh, state)
-
-	require.NoError(t, Invalidate(testTicket))
-	_, state = Read(testTicket, time.Hour)
-	assert.Equal(t, Miss, state)
-
-	assert.NoError(t, Invalidate(testTicket), "invalidating an absent entry is not an error")
-}

@@ -264,10 +264,10 @@ func runSpecNew(ticket, title string) error {
 				_ = s.SavePlan(p.Render())
 			}
 		}
-		if state, err := s.LoadState(); err == nil {
+		_ = s.MutateState(func(state *store.State) (bool, error) {
 			state.SetSpec(root, branch, specRel, "draft")
-			_ = s.SaveState(state)
-		}
+			return true, nil
+		})
 	}
 
 	fmt.Fprintf(os.Stderr, "created: %s\n", specRel)
@@ -353,10 +353,10 @@ func runSpecEdit(args []string) error {
 	cwd, _ := resolveCwd()
 	if branch := currentBookmark(jjc, cwd); branch != "" {
 		s, _ := store.New()
-		if state, err := s.LoadState(); err == nil {
+		_ = s.MutateState(func(state *store.State) (bool, error) {
 			state.SetSpec(root, branch, filepath.Join("spec", ticket+".md"), string(newStatus))
-			_ = s.SaveState(state)
-		}
+			return true, nil
+		})
 	}
 
 	return nil
@@ -589,10 +589,10 @@ func runSpecLink(ticket string) error {
 	specRel := filepath.Join("spec", ticket+".md")
 	s, _ := store.New()
 	if s.EnsureDir() == nil {
-		if state, err := s.LoadState(); err == nil {
+		_ = s.MutateState(func(state *store.State) (bool, error) {
 			state.SetSpec(root, branch, specRel, "draft")
-			_ = s.SaveState(state)
-		}
+			return true, nil
+		})
 		if content, err := s.LoadPlan(); err == nil {
 			if p, err := plan.Parse(content); err == nil {
 				p.AddBranch(repoName, branch, ticket, specRel)

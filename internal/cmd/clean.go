@@ -108,13 +108,9 @@ func runClean(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open store: %w", err)
 	}
-	state, err := st.LoadState()
-	if err != nil {
-		return fmt.Errorf("failed to load state: %w", err)
-	}
 
 	removed := 0
-	stateChanged := false
+	var untrackedRepos []string
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for i, c := range candidates {
@@ -159,20 +155,26 @@ func runClean(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		if err := executeRemoval(c, jjc, ghClient, state); err != nil {
+		if err := executeRemoval(c, jjc, ghClient, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
 		} else {
 			fmt.Printf("  Removed %s %s\n", c.Kind, c.DisplayPath())
 			removed++
 			if c.Kind == KindRepo {
-				state.UntrackRepo(c.RepoPath)
-				stateChanged = true
+				untrackedRepos = append(untrackedRepos, c.RepoPath)
 			}
 		}
 	}
 
-	if stateChanged {
-		if err := st.SaveState(state); err != nil {
+	// Apply the untracks under the lock at the end (re-reading current state)
+	// rather than holding it across the interactive prompts above.
+	if len(untrackedRepos) > 0 {
+		if err := st.MutateState(func(state *store.State) (bool, error) {
+			for _, repoPath := range untrackedRepos {
+				state.UntrackRepo(repoPath)
+			}
+			return true, nil
+		}); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to save state: %v\n", err)
 		}
 	}

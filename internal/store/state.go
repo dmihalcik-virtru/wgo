@@ -66,7 +66,13 @@ type AgentSession struct {
 // UpsertAgentSession records or refreshes the agent session for a workspace
 // root. An existing session's StartTime is preserved (so "since" is stable) and
 // LastActivity is bumped to now; a new session stamps both to now.
+//
+// An empty tool or workspace root is rejected (no-op): callers validate these,
+// so this is defense-in-depth against writing a nameless or unkeyed session.
 func (s *State) UpsertAgentSession(wsRoot, tool, branch string, pid int) {
+	if tool == "" || wsRoot == "" {
+		return
+	}
 	now := time.Now()
 	sess := AgentSession{
 		Tool:         tool,

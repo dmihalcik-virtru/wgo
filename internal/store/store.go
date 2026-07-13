@@ -15,6 +15,7 @@ import (
 type Store interface {
 	LoadState() (*State, error)
 	SaveState(state *State) error
+	MutateState(fn func(*State) (changed bool, err error)) error
 	LoadPlan() (string, error)
 	SavePlan(content string) error
 	EnsureDir() error
@@ -107,6 +108,43 @@ func (fs *FileStore) LoadState() (*State, error) {
 	}
 
 	return &state, nil
+}
+
+// lockPath is the advisory-lock file guarding read-modify-write of state.json.
+func (fs *FileStore) lockPath() string {
+	return fs.stateFile + ".lock"
+}
+
+// MutateState runs fn under an exclusive cross-process lock, re-reading state
+// inside the lock so concurrent wgo processes can't lose each other's updates
+// (the whole-document last-writer-wins hazard). It persists the result only when
+// fn reports changed==true and returns no error, so throttled no-op callers
+// (e.g. the agent heartbeat) avoid an unnecessary write.
+func (fs *FileStore) MutateState(fn func(*State) (changed bool, err error)) error {
+	if err := fs.EnsureDir(); err != nil {
+		return err
+	}
+
+	unlock, err := acquireStateLock(fs.lockPath())
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	state, err := fs.LoadState()
+	if err != nil {
+		return err
+	}
+
+	changed, err := fn(state)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+
+	return fs.SaveState(state)
 }
 
 // SaveState saves the state to disk atomically.

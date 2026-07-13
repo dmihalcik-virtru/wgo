@@ -136,10 +136,6 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 	if err := s.EnsureDir(); err != nil {
 		return fmt.Errorf("store ensure dir: %w", err)
 	}
-	state, err := s.LoadState()
-	if err != nil {
-		return fmt.Errorf("load state: %w", err)
-	}
 	planContent, err := s.LoadPlan()
 	if err != nil {
 		return fmt.Errorf("load plan: %w", err)
@@ -149,22 +145,24 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 		return fmt.Errorf("parse plan: %w", err)
 	}
 
-	// 12. Look up reason from existing annotation; fall back to branch name.
+	// 12/13. Look up reason (falling back to branch name) and update state under
+	// the lock so a concurrent wgo process can't clobber the annotation.
 	reason := branch
-	if ann := state.GetAnnotation(currentWtPath, branch); ann != nil && ann.Purpose != "" {
-		reason = ann.Purpose
+	if err := s.MutateState(func(state *store.State) (bool, error) {
+		if ann := state.GetAnnotation(currentWtPath, branch); ann != nil && ann.Purpose != "" {
+			reason = ann.Purpose
+		}
+		state.AddAnnotation(newWtPath, branch, reason)
+		state.AddRepo(newWtPath, "")
+		return true, nil
+	}); err != nil {
+		return fmt.Errorf("save state: %w", err)
 	}
 
-	// 13. Update plan and state.
+	// 13b. Update plan with the resolved reason.
 	p.AddBranch(spec.repo, branch, reason, "")
-	state.AddAnnotation(newWtPath, branch, reason)
-	state.AddRepo(newWtPath, "")
-
 	if err := s.SavePlan(p.Render()); err != nil {
 		return fmt.Errorf("save plan: %w", err)
-	}
-	if err := s.SaveState(state); err != nil {
-		return fmt.Errorf("save state: %w", err)
 	}
 
 	// 14. Print path to stdout for cd $(...) usage.

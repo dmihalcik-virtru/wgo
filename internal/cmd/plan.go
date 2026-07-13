@@ -164,16 +164,13 @@ func addAnnotation(reason string) error {
 		return err
 	}
 
-	// Load and update state
-	state, err := s.LoadState()
-	if err != nil {
-		return fmt.Errorf("failed to load state: %w", err)
-	}
-
-	state.AddAnnotation(cwd, branch, reason)
-	state.AddRepo(cwd, "")
-
-	if err := s.SaveState(state); err != nil {
+	// Load and update state under the lock so a concurrent write can't clobber
+	// the annotation.
+	if err := s.MutateState(func(state *store.State) (bool, error) {
+		state.AddAnnotation(cwd, branch, reason)
+		state.AddRepo(cwd, "")
+		return true, nil
+	}); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
 

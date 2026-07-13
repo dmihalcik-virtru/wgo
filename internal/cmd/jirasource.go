@@ -19,6 +19,11 @@ func newJiraFetcher() jiracache.Fetcher {
 	return jiraFetcher{}
 }
 
+// jiraFetcherFn is the seam used to obtain the Fetcher for cache resolution.
+// Production uses the acli-backed newJiraFetcher; tests override it to inject a
+// stub so they never shell out to acli.
+var jiraFetcherFn = newJiraFetcher
+
 // FetchJira implements jiracache.Fetcher. The acli shell-out lands here (off the
 // statusline hot path), never on reads.
 func (jiraFetcher) FetchJira(ticket string) (jiracache.Info, error) {
@@ -48,7 +53,7 @@ func resolveJiraStatus(ticket string, opts contextOptions) (status, assignee str
 	if ticket == "" || strings.HasPrefix(ticket, "GH-") {
 		return "", ""
 	}
-	info, _, _ := jiracache.Resolve(newJiraFetcher(), ticket, jiraCacheOpts(opts))
+	info, _, _ := jiracache.Resolve(jiraFetcherFn(), ticket, jiraCacheOpts(opts))
 	return info.Status, info.Assignee
 }
 

@@ -1,8 +1,10 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +15,47 @@ func TestFileStoreNew(t *testing.T) {
 	s, err := New()
 	require.NoError(t, err, "New failed")
 	assert.NotNil(t, s)
+}
+
+// TestMutateStateSkipsSaveWhenUnchanged: a callback reporting changed=false must
+// not write state (the throttled-heartbeat optimization).
+func TestMutateStateSkipsSaveWhenUnchanged(t *testing.T) {
+	s := NewWithDir(t.TempDir())
+	require.NoError(t, s.MutateState(func(st *State) (bool, error) {
+		st.AddRepo("/a", "")
+		return false, nil // report no change: must not persist
+	}))
+
+	state, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Nil(t, state.GetRepo("/a"), "an unchanged mutation must not be saved")
+}
+
+// TestMutateStateConcurrentNoLostUpdates: concurrent read-modify-write cycles
+// each adding a distinct annotation must all survive — this is the lost-update
+// race the store lock exists to prevent.
+func TestMutateStateConcurrentNoLostUpdates(t *testing.T) {
+	s := NewWithDir(t.TempDir())
+	require.NoError(t, s.EnsureDir())
+
+	const n = 20
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := fmt.Sprintf("/repo-%d", i)
+			require.NoError(t, s.MutateState(func(st *State) (bool, error) {
+				st.AddAnnotation(key, "main", fmt.Sprintf("purpose-%d", i))
+				return true, nil
+			}))
+		}(i)
+	}
+	wg.Wait()
+
+	state, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Len(t, state.Annotations, n, "every concurrent annotation must survive")
 }
 
 func TestFileStoreEnsureDir(t *testing.T) {

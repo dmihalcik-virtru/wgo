@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -92,6 +93,10 @@ func workspaceRoot() (string, error) {
 }
 
 func runAgentStart(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("agent name must not be empty")
+	}
 	wsRoot, err := workspaceRoot()
 	if err != nil {
 		return err
@@ -102,12 +107,10 @@ func runAgentStart(name string) error {
 	if err != nil {
 		return err
 	}
-	state, err := s.LoadState()
-	if err != nil {
-		return err
-	}
-	state.UpsertAgentSession(wsRoot, name, branch, os.Getppid())
-	if err := s.SaveState(state); err != nil {
+	if err := s.MutateState(func(state *store.State) (bool, error) {
+		state.UpsertAgentSession(wsRoot, name, branch, os.Getppid())
+		return true, nil
+	}); err != nil {
 		return err
 	}
 	fmt.Printf("🤖 %s working in %s\n", name, wsRoot)
@@ -123,17 +126,20 @@ func runAgentStop() error {
 	if err != nil {
 		return err
 	}
-	state, err := s.LoadState()
-	if err != nil {
+	hadSession := false
+	if err := s.MutateState(func(state *store.State) (bool, error) {
+		if state.GetAgentSession(wsRoot) == nil {
+			return false, nil
+		}
+		state.RemoveAgentSession(wsRoot)
+		hadSession = true
+		return true, nil
+	}); err != nil {
 		return err
 	}
-	if state.GetAgentSession(wsRoot) == nil {
+	if !hadSession {
 		fmt.Printf("no agent session for %s\n", wsRoot)
 		return nil
-	}
-	state.RemoveAgentSession(wsRoot)
-	if err := s.SaveState(state); err != nil {
-		return err
 	}
 	fmt.Printf("cleared agent session for %s\n", wsRoot)
 	return nil
@@ -200,18 +206,24 @@ func heartbeatAgent(wsRoot, branch string) {
 	}
 	s, err := store.New()
 	if err != nil {
+		debugf("agent heartbeat: %v", err)
 		return
 	}
-	state, err := s.LoadState()
+	// MutateState holds a lock across load+save so this hot-path write can't
+	// clobber a concurrent state mutation (plan add, track, agent start). The
+	// throttle returns changed=false so a recent same-tool session skips the
+	// write entirely.
+	err = s.MutateState(func(state *store.State) (bool, error) {
+		if existing := state.GetAgentSession(wsRoot); existing != nil &&
+			existing.Tool == name && time.Since(existing.LastActivity) < heartbeatThrottle {
+			return false, nil
+		}
+		state.UpsertAgentSession(wsRoot, name, branch, os.Getppid())
+		return true, nil
+	})
 	if err != nil {
-		return
+		debugf("agent heartbeat: %v", err)
 	}
-	if existing := state.GetAgentSession(wsRoot); existing != nil &&
-		existing.Tool == name && time.Since(existing.LastActivity) < heartbeatThrottle {
-		return
-	}
-	state.UpsertAgentSession(wsRoot, name, branch, os.Getppid())
-	_ = s.SaveState(state)
 }
 
 // resolveAgent returns the active (non-stale) agent session for wsRoot, or nil.
@@ -221,10 +233,12 @@ func resolveAgent(wsRoot string) *models.AgentRef {
 	}
 	s, err := store.New()
 	if err != nil {
+		debugf("resolve agent: %v", err)
 		return nil
 	}
 	state, err := s.LoadState()
 	if err != nil {
+		debugf("resolve agent: %v", err)
 		return nil
 	}
 	sess := state.GetAgentSession(wsRoot)
