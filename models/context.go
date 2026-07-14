@@ -24,6 +24,7 @@ type Context struct {
 	BranchURL      string       `json:"branch_url"`
 	Commit         CommitInfo   `json:"commit"`
 	Ticket         string       `json:"ticket,omitempty"`
+	TicketURL      string       `json:"ticket_url,omitempty"` // Jira/GitHub-issue link for Ticket
 	Spec           *SpecRef     `json:"spec,omitempty"`
 	SpecMissing    bool         `json:"spec_missing,omitempty"`    // ticket present but no spec file
 	SpecUnreadable bool         `json:"spec_unreadable,omitempty"` // spec file present but unparseable

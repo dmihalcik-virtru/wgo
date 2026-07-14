@@ -6,11 +6,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/links"
 	"github.com/virtru/wgo/internal/plan"
@@ -53,9 +54,9 @@ func init() {
 // showContext resolves the current work context once and renders it in the
 // requested format. Returns (dirty, error).
 func showContext() (bool, error) {
-	cwd, err := os.Getwd()
+	cwd, err := resolveCwd()
 	if err != nil {
-		return false, fmt.Errorf("failed to get current directory: %w", err)
+		return false, err
 	}
 
 	ctx, err := buildContext(cwd)
@@ -75,10 +76,35 @@ func showContext() (bool, error) {
 	return ctx.Dirty, nil
 }
 
-// buildContext resolves the full work context for the workspace at cwd. It
+// contextOptions controls which expensive resolvers buildContextOpts runs, so
+// the prompt hot path (statusline) can skip the network and the filesystem walk.
+type contextOptions struct {
+	// LocalOnly resolves PRs from the on-disk cache instead of a synchronous
+	// GitHub call. A cache miss yields no PR segment (never blocks).
+	LocalOnly bool
+	// Siblings enables the parent-directory filesystem walk.
+	Siblings bool
+	// Refresh forces a synchronous PR fetch and writes it back to the cache,
+	// even in LocalOnly mode (used by the background warmer).
+	Refresh bool
+}
+
+// defaultContextOptions preserves historical `wgo .` behavior: synchronous PR
+// fetch plus the sibling walk.
+func defaultContextOptions() contextOptions {
+	return contextOptions{Siblings: true}
+}
+
+// buildContext resolves the full work context for the workspace at cwd with the
+// default (`wgo .`) options.
+func buildContext(cwd string) (*models.Context, error) {
+	return buildContextOpts(cwd, defaultContextOptions())
+}
+
+// buildContextOpts resolves the full work context for the workspace at cwd. It
 // performs no stdout I/O: every field the text renderer displays is populated
 // here so the text and JSON projections can never drift.
-func buildContext(cwd string) (*models.Context, error) {
+func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) {
 	jjc := jj.NewCLI()
 
 	if !jjc.IsRepo(cwd) {
@@ -168,18 +194,9 @@ func buildContext(cwd string) (*models.Context, error) {
 		},
 	}
 
-	// PRs for the current branch (gracefully degrades if gh unavailable).
-	gh := github.NewClient()
-	if prs, err := gh.ListPRsForBranch(cwd, branch); err == nil {
-		for _, pr := range prs {
-			ctx.PRs = append(ctx.PRs, models.PRRef{
-				Number: pr.Number,
-				Title:  pr.Title,
-				State:  pr.State,
-				URL:    pr.URL,
-			})
-		}
-	}
+	// PRs for the current branch. In LocalOnly mode these come from the
+	// on-disk cache (no network); otherwise a synchronous fetch warms it.
+	ctx.PRs = resolvePRs(cwd, remoteURL, branch, opts)
 
 	// Tasks linked to this branch from the plan file.
 	if s, err := store.New(); err == nil {
@@ -199,6 +216,7 @@ func buildContext(cwd string) (*models.Context, error) {
 	// so `wgo .` finds spec/<TICKET>.md when run from a subdirectory.
 	if ticket := spec.ParseTicketFromBranch(branch); ticket != "" {
 		ctx.Ticket = ticket
+		ctx.TicketURL = ticketURL(ticket, remoteURL)
 		specPath, err := spec.FindByTicket(wsRoot, ticket)
 		switch {
 		case err != nil:
@@ -219,9 +237,28 @@ func buildContext(cwd string) (*models.Context, error) {
 		}
 	}
 
-	ctx.Siblings, ctx.SiblingsOverflow = gatherSiblings(jjc, cwd)
+	if opts.Siblings {
+		ctx.Siblings, ctx.SiblingsOverflow = gatherSiblings(jjc, cwd)
+	}
 
 	return ctx, nil
+}
+
+// ticketURL returns a browse/issue link for a ticket id, or "" when it can't
+// be resolved. A GH-<n> ticket (from a gh-<n> branch) links to a GitHub issue
+// on the repo's remote; any other key ([A-Z]+-<n>) links to the configured
+// Jira site (config.Jira.Site). Nil-safe when config is not initialized.
+func ticketURL(ticket, remoteURL string) string {
+	if num, ok := strings.CutPrefix(ticket, "GH-"); ok {
+		if n, err := strconv.Atoi(num); err == nil {
+			return links.IssueURL(remoteURL, n)
+		}
+		return ""
+	}
+	if cfg := config.Get(); cfg != nil {
+		return links.JiraIssueURL(cfg.Jira.Site, ticket)
+	}
+	return ""
 }
 
 // renderText writes the human-readable context. tty controls OSC8 hyperlinks.

@@ -140,6 +140,56 @@ remote: ↑2 ↓0 (origin/feat/plan-parser)
 commit: abc1234 Add initial plan parser (2 hours ago)
 ```
 
+### Shell / Claude Code prompt
+
+`wgo statusline` renders the same context as a single, colored, clickable line
+built for prompts. It is **local-only**: PR status comes from the on-disk cache
+(`~/.wgo/cache/`), so a warm render makes **zero** network calls and finishes in
+well under 100ms. On a cache miss it simply omits the PR segment (and kicks a
+background refresh) rather than blocking.
+
+```bash
+wgo statusline
+# → wgo feat/plan-parser* [WGO-131] ↑2 #42 open
+```
+
+Branch, repo, and PR link to GitHub; the ticket links to Jira (or the GitHub
+issue for `gh-<n>` branches). Flags:
+
+- `--json` — emit the full context (same schema as `wgo . --json`).
+- `--format '<tmpl>'` — Go `text/template` over the context. Funcs: `upper`,
+  `lower`, `color "<name>" <s>`, `link "<url>" "<text>"`. Fields include
+  `.Repo`, `.Branch`, `.Dirty`, `.Ticket`, `.Ahead`, `.Behind`, and `.PRs`
+  (each with `.Number`, `.State`, `.URL`).
+- `--no-color` — plain text (also honored via the `NO_COLOR` env var).
+- `--refresh` — force a synchronous PR fetch and warm the cache (use in a
+  background warmer, not the hot path).
+- `--siblings` — include sibling workspaces (adds a filesystem walk).
+
+Target another directory without `cd` using the global `-C/--repo` flag:
+
+```bash
+wgo -C /path/to/repo statusline
+```
+
+**Claude Code / shell integration.** `contrib/statusline.sh` reads the working
+directory (from Claude Code's JSON on stdin, else `$PWD`) and calls
+`wgo -C "$dir" statusline`:
+
+```bash
+# Claude Code: set this script as your statusLine command.
+# zsh prompt:
+precmd() { RPROMPT="$(wgo statusline)" }
+# fish prompt:
+function fish_right_prompt; wgo statusline; end
+```
+
+Keep the cache warm with a periodic refresh (cron or a shell hook):
+
+```bash
+wgo statusline --refresh >/dev/null 2>&1 &
+```
+
 ### Annotate Your Current Branch
 
 ```bash
@@ -630,6 +680,8 @@ wgo stack rm <branch>                # refuses if it has unmerged children
 | Command | Description |
 |---------|-------------|
 | `wgo .` | Show current repository context |
+| `wgo statusline` | Fast single-line context for shell / Claude Code prompts (local-only) |
+| `wgo -C <dir> <cmd>` | Run any command as if started in `<dir>` (no `cd`) |
 | `wgo to <url>` | Start a local checkout of a GitHub PR, branch, or issue |
 | `wto <url>` | `cd` alias for `wgo to` |
 | `wgo plan` | Display your plan file |

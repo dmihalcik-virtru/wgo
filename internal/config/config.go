@@ -21,6 +21,14 @@ type Config struct {
 	Doctor    DoctorConfig    `mapstructure:"doctor"`
 	Pair      PairConfig      `mapstructure:"pair"`
 	Jira      JiraConfig      `mapstructure:"jira"`
+	Cache     CacheConfig     `mapstructure:"cache"`
+}
+
+// CacheConfig controls the cross-invocation on-disk caches under ~/.wgo/cache.
+type CacheConfig struct {
+	// PRTTL is how long (in seconds) a cached PR entry is considered fresh
+	// before wgo statusline triggers a background refresh.
+	PRTTL int `mapstructure:"pr_ttl"`
 }
 
 // JiraProjectRule maps a repo glob and/or CWD path substring to a Jira project.
@@ -219,6 +227,7 @@ func setDefaults() {
 	viper.SetDefault("status.show_spec_column", true)
 	viper.SetDefault("doctor.exclude_bookmarks", []string{"main", "master", "develop", "release/*"})
 	viper.SetDefault("doctor.spec_required", false)
+	viper.SetDefault("cache.pr_ttl", 120)
 }
 
 // createDefaultConfig creates a default config file.
@@ -258,6 +267,11 @@ exclude_bookmarks = ["main", "master", "develop", "release/*"]
 # When true, "wgo doctor" warns (or fails with --strict) on workspaces whose
 # current bookmark has no recorded spec file. Opt-in.
 spec_required = false
+
+[cache]
+# How long (seconds) a cached PR entry stays fresh before "wgo statusline"
+# triggers a background refresh. Used by the ~/.wgo/cache/pr on-disk cache.
+pr_ttl = 120
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)

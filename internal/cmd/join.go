@@ -39,9 +39,9 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 	jjc := jj.NewCLI()
 
 	// 1. Detect current workspace path.
-	cwd, err := os.Getwd()
+	cwd, err := resolveCwd()
 	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
+		return err
 	}
 	currentWtPath, err := jjc.Root(cwd)
 	if err != nil {

@@ -61,6 +61,8 @@ func Execute() {
 func init() {
 	rootCmd.CompletionOptions.DisableDefaultCmd = false
 	rootCmd.CompletionOptions.HiddenDefaultCmd = false
+	rootCmd.PersistentFlags().StringVarP(&repoFlag, "repo", "C", "",
+		"Operate as if wgo were started in <dir> instead of the current directory")
 }
 
 // getVersionString returns a formatted version string using build info.
