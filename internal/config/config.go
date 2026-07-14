@@ -29,6 +29,10 @@ type CacheConfig struct {
 	// PRTTL is how long (in seconds) a cached PR entry is considered fresh
 	// before wgo statusline triggers a background refresh.
 	PRTTL int `mapstructure:"pr_ttl"`
+	// JiraTTL is how long (in seconds) a cached Jira ticket status is considered
+	// fresh before a background refresh. Jira status changes slowly, so this
+	// defaults higher than PRTTL (600s = 10m).
+	JiraTTL int `mapstructure:"jira_ttl"`
 }
 
 // JiraProjectRule maps a repo glob and/or CWD path substring to a Jira project.
@@ -228,6 +232,7 @@ func setDefaults() {
 	viper.SetDefault("doctor.exclude_bookmarks", []string{"main", "master", "develop", "release/*"})
 	viper.SetDefault("doctor.spec_required", false)
 	viper.SetDefault("cache.pr_ttl", 120)
+	viper.SetDefault("cache.jira_ttl", 600)
 }
 
 // createDefaultConfig creates a default config file.
@@ -272,6 +277,10 @@ spec_required = false
 # How long (seconds) a cached PR entry stays fresh before "wgo statusline"
 # triggers a background refresh. Used by the ~/.wgo/cache/pr on-disk cache.
 pr_ttl = 120
+
+# How long (seconds) a cached Jira ticket status stays fresh. Jira status
+# changes slowly, so this defaults to 600s (10m). Used by ~/.wgo/cache/jira.
+jira_ttl = 600
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)

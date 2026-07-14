@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 // ContextSchemaVersion is the version of the wgo . --json projection.
 //
 // Additive fields do not bump it; a breaking change (rename/removal/semantic
@@ -10,21 +12,26 @@ const ContextSchemaVersion = 1
 // as both human (text) and machine (--json) output. Both renderers are pure
 // projections of this value, so the two outputs can never drift.
 type Context struct {
-	SchemaVersion  int          `json:"schema_version"`
-	Repo           string       `json:"repo"`
-	RepoURL        string       `json:"repo_url"`
-	Branch         string       `json:"branch"`
-	Status         string       `json:"status"`  // clean|modified|staged|conflict
-	Changes        GitStatus    `json:"changes"` // detailed counts behind the status word
-	Dirty          bool         `json:"dirty"`
-	Ahead          int          `json:"ahead"`
-	Behind         int          `json:"behind"`
-	SyncUnknown    bool         `json:"sync_unknown,omitempty"` // ahead/behind could not be determined
-	Remote         string       `json:"remote"`
-	BranchURL      string       `json:"branch_url"`
-	Commit         CommitInfo   `json:"commit"`
-	Ticket         string       `json:"ticket,omitempty"`
-	TicketURL      string       `json:"ticket_url,omitempty"` // Jira/GitHub-issue link for Ticket
+	SchemaVersion int        `json:"schema_version"`
+	Repo          string     `json:"repo"`
+	RepoURL       string     `json:"repo_url"`
+	Branch        string     `json:"branch"`
+	Status        string     `json:"status"`  // clean|modified|staged|conflict
+	Changes       GitStatus  `json:"changes"` // detailed counts behind the status word
+	Dirty         bool       `json:"dirty"`
+	Ahead         int        `json:"ahead"`
+	Behind        int        `json:"behind"`
+	SyncUnknown   bool       `json:"sync_unknown,omitempty"` // ahead/behind could not be determined
+	Remote        string     `json:"remote"`
+	BranchURL     string     `json:"branch_url"`
+	Commit        CommitInfo `json:"commit"`
+	Ticket        string     `json:"ticket,omitempty"`
+	TicketURL     string     `json:"ticket_url,omitempty"` // Jira/GitHub-issue link for Ticket
+	// JiraStatus is the live status name of the ticket (e.g. "In Review"), served
+	// from the on-disk Jira cache. Empty for non-Jira tickets or when unavailable.
+	JiraStatus string `json:"jira_status,omitempty"`
+	// JiraAssignee is the display name of the ticket's assignee, if any.
+	JiraAssignee   string       `json:"jira_assignee,omitempty"`
 	Spec           *SpecRef     `json:"spec,omitempty"`
 	SpecMissing    bool         `json:"spec_missing,omitempty"`    // ticket present but no spec file
 	SpecUnreadable bool         `json:"spec_unreadable,omitempty"` // spec file present but unparseable
@@ -33,6 +40,14 @@ type Context struct {
 	Siblings       []SiblingRef `json:"siblings,omitempty"`
 	// SiblingsOverflow counts jj repos beyond the display cap of 10.
 	SiblingsOverflow int `json:"siblings_overflow,omitempty"`
+	// Agent is the active AI agent session holding this workspace, if any.
+	Agent *AgentRef `json:"agent,omitempty"`
+}
+
+// AgentRef is the active AI agent session for the current workspace.
+type AgentRef struct {
+	Name  string    `json:"name"`  // e.g. "claude"
+	Since time.Time `json:"since"` // when the session started
 }
 
 // SpecRef references the spec file associated with the current ticket branch.

@@ -123,7 +123,11 @@ func renderStatuslineLine(w io.Writer, c *models.Context, rich bool) error {
 	parts = append(parts, branch)
 
 	if c.Ticket != "" {
-		parts = append(parts, styleLink(c.TicketURL, "["+c.Ticket+"]", colYellow, rich))
+		label := "[" + c.Ticket + "]"
+		if c.JiraStatus != "" {
+			label = "[" + c.Ticket + " " + c.JiraStatus + "]"
+		}
+		parts = append(parts, styleLink(c.TicketURL, label, colYellow, rich))
 	}
 
 	if ab := aheadBehind(c.Ahead, c.Behind, rich); ab != "" {
@@ -142,6 +146,10 @@ func renderStatuslineLine(w io.Writer, c *models.Context, rich bool) error {
 			seg += " " + styleLink(pr.Checks.URL, "●", ciStateColor(pr.Checks.State), rich)
 		}
 		parts = append(parts, seg)
+	}
+
+	if c.Agent != nil {
+		parts = append(parts, colorize("🤖 "+c.Agent.Name, colMagenta, rich))
 	}
 
 	_, err := fmt.Fprintln(w, strings.Join(parts, " "))

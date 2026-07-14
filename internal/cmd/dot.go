@@ -50,7 +50,7 @@ func init() {
 	dotCmd.Flags().BoolVar(&dotJSON, "json", false, "JSON output")
 	dotCmd.Flags().BoolVar(&dotPorcelain, "porcelain", false, "Print only the status word (clean, modified, staged, conflict)")
 	dotCmd.Flags().BoolVar(&dotExitCode, "exit-code", false, "Exit 1 if working tree is dirty")
-	dotCmd.Flags().BoolVar(&dotRefresh, "refresh", false, "Bypass the on-disk PR cache and fetch fresh PR status from GitHub")
+	dotCmd.Flags().BoolVar(&dotRefresh, "refresh", false, "Bypass the on-disk caches and fetch fresh PR and Jira status")
 }
 
 // showContext resolves the current work context once and renders it in the
@@ -221,6 +221,7 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 	if ticket := spec.ParseTicketFromBranch(branch); ticket != "" {
 		ctx.Ticket = ticket
 		ctx.TicketURL = ticketURL(ticket, remoteURL)
+		ctx.JiraStatus, ctx.JiraAssignee = resolveJiraStatus(ticket, opts)
 		specPath, err := spec.FindByTicket(wsRoot, ticket)
 		switch {
 		case err != nil:
@@ -240,6 +241,11 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 			}
 		}
 	}
+
+	// Agent session for this workspace. The env-detected heartbeat keeps a live
+	// Claude Code session fresh; resolveAgent then surfaces any non-stale one.
+	heartbeatAgent(wsRoot, branch)
+	ctx.Agent = resolveAgent(wsRoot)
 
 	if opts.Siblings {
 		ctx.Siblings, ctx.SiblingsOverflow = gatherSiblings(jjc, cwd)
@@ -314,15 +320,35 @@ func renderText(w io.Writer, c *models.Context, tty bool) {
 	}
 
 	if c.Ticket != "" {
+		jiraSuffix := ""
+		if c.JiraStatus != "" {
+			jiraSuffix = " [" + c.JiraStatus + "]"
+		}
 		switch {
 		case c.Spec != nil:
-			fmt.Fprintf(w, "spec:   📄 %s (%s, updated %s)\n",
-				c.Spec.Path, c.Spec.Status, c.Spec.Updated)
+			fmt.Fprintf(w, "spec:   📄 %s (%s, updated %s)%s\n",
+				c.Spec.Path, c.Spec.Status, c.Spec.Updated, jiraSuffix)
 		case c.SpecUnreadable:
-			fmt.Fprintf(w, "spec:   ⚠ spec/%s.md present but unreadable (malformed frontmatter)\n", c.Ticket)
+			fmt.Fprintf(w, "spec:   ⚠ spec/%s.md present but unreadable (malformed frontmatter)%s\n", c.Ticket, jiraSuffix)
 		case c.SpecMissing:
-			fmt.Fprintf(w, "spec:   ⚠ no spec (run: wgo spec new %s)\n", c.Ticket)
+			fmt.Fprintf(w, "spec:   ⚠ no spec (run: wgo spec new %s)%s\n", c.Ticket, jiraSuffix)
+		case c.JiraStatus != "":
+			// A ticket with a live status but no spec line still shows the status.
+			fmt.Fprintf(w, "ticket: %s%s\n", c.Ticket, jiraSuffix)
 		}
+		if c.JiraAssignee != "" {
+			if c.JiraStatus != "" {
+				fmt.Fprintf(w, "jira:   %s · @%s\n", c.JiraStatus, c.JiraAssignee)
+			} else {
+				// No status but a known assignee: drop the empty "· " prefix
+				// rather than render "jira:    · @name".
+				fmt.Fprintf(w, "jira:   @%s\n", c.JiraAssignee)
+			}
+		}
+	}
+
+	if c.Agent != nil {
+		fmt.Fprintf(w, "agent:  🤖 %s (since %s)\n", c.Agent.Name, formatTime(c.Agent.Since))
 	}
 
 	if len(c.Siblings) > 0 {

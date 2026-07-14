@@ -1,8 +1,10 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +15,47 @@ func TestFileStoreNew(t *testing.T) {
 	s, err := New()
 	require.NoError(t, err, "New failed")
 	assert.NotNil(t, s)
+}
+
+// TestMutateStateSkipsSaveWhenUnchanged: a callback reporting changed=false must
+// not write state (the throttled-heartbeat optimization).
+func TestMutateStateSkipsSaveWhenUnchanged(t *testing.T) {
+	s := NewWithDir(t.TempDir())
+	require.NoError(t, s.MutateState(func(st *State) (bool, error) {
+		st.AddRepo("/a", "")
+		return false, nil // report no change: must not persist
+	}))
+
+	state, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Nil(t, state.GetRepo("/a"), "an unchanged mutation must not be saved")
+}
+
+// TestMutateStateConcurrentNoLostUpdates: concurrent read-modify-write cycles
+// each adding a distinct annotation must all survive — this is the lost-update
+// race the store lock exists to prevent.
+func TestMutateStateConcurrentNoLostUpdates(t *testing.T) {
+	s := NewWithDir(t.TempDir())
+	require.NoError(t, s.EnsureDir())
+
+	const n = 20
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := fmt.Sprintf("/repo-%d", i)
+			require.NoError(t, s.MutateState(func(st *State) (bool, error) {
+				st.AddAnnotation(key, "main", fmt.Sprintf("purpose-%d", i))
+				return true, nil
+			}))
+		}(i)
+	}
+	wg.Wait()
+
+	state, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Len(t, state.Annotations, n, "every concurrent annotation must survive")
 }
 
 func TestFileStoreEnsureDir(t *testing.T) {
@@ -81,6 +124,69 @@ Test notes
 	loaded, err := s.LoadPlan()
 	require.NoError(t, err, "LoadPlan failed")
 	assert.Equal(t, planContent, loaded)
+}
+
+// TestLoadStateRejectsOldVersion: a pre-jj (version 1) state file is refused
+// with a message that names the file and the rm remedy, rather than being
+// silently accepted at the wrong schema.
+func TestLoadStateRejectsOldVersion(t *testing.T) {
+	dir := t.TempDir()
+	s := NewWithDir(dir)
+	require.NoError(t, s.EnsureDir())
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"version":1}`), 0o644))
+
+	_, err := s.LoadState()
+	require.Error(t, err, "a version-1 state file must be refused")
+	assert.Contains(t, err.Error(), "version 1")
+	assert.Contains(t, err.Error(), filepath.Join(dir, "state.json"), "error should name the file to delete")
+}
+
+// TestLoadStateCorruptJSON: a truncated/garbage state file surfaces a parse
+// error instead of panicking or silently resetting.
+func TestLoadStateCorruptJSON(t *testing.T) {
+	dir := t.TempDir()
+	s := NewWithDir(dir)
+	require.NoError(t, s.EnsureDir())
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{`), 0o644))
+
+	_, err := s.LoadState()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse state file")
+}
+
+// TestLoadStateAcceptsCurrentAndNewerVersion: the current version loads, and a
+// future version is not rejected by the old-version guard (which only fires
+// below StateVersion).
+func TestLoadStateAcceptsCurrentAndNewerVersion(t *testing.T) {
+	dir := t.TempDir()
+	s := NewWithDir(dir)
+	require.NoError(t, s.EnsureDir())
+
+	for _, v := range []int{StateVersion, StateVersion + 1} {
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "state.json"),
+			fmt.Appendf(nil, `{"version":%d}`, v), 0o644))
+		state, err := s.LoadState()
+		require.NoError(t, err, "version %d should load", v)
+		assert.NotNil(t, state.AgentSessions, "maps should be initialized on load")
+	}
+}
+
+// TestMutateStateErrorDoesNotPersist: when the callback returns an error, the
+// mutation must not be written to disk even if it reported changed==true.
+func TestMutateStateErrorDoesNotPersist(t *testing.T) {
+	s := NewWithDir(t.TempDir())
+
+	boom := fmt.Errorf("boom")
+	err := s.MutateState(func(st *State) (bool, error) {
+		st.AddRepo("/a", "")
+		return true, boom
+	})
+	require.ErrorIs(t, err, boom)
+
+	state, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Nil(t, state.GetRepo("/a"), "a callback error must leave state on disk untouched")
 }
 
 func TestLoadNonexistentState(t *testing.T) {

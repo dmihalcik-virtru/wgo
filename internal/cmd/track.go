@@ -60,14 +60,10 @@ func trackRepository(path string) error {
 		return err
 	}
 
-	state, err := s.LoadState()
-	if err != nil {
-		return fmt.Errorf("failed to load state: %w", err)
-	}
-
-	state.AddRepo(absPath, remoteURL)
-
-	if err := s.SaveState(state); err != nil {
+	if err := s.MutateState(func(state *store.State) (bool, error) {
+		state.AddRepo(absPath, remoteURL)
+		return true, nil
+	}); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
 
