@@ -33,6 +33,36 @@ func TestWriteReadFresh(t *testing.T) {
 	assert.Equal(t, "open", refs[0].State)
 }
 
+// TestWriteReadEnrichedFields round-trips the WGO-133 fields (review decision,
+// draft, CI rollup) so the statusline hot path serves them from disk without a
+// network call.
+func TestWriteReadEnrichedFields(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	refs := []models.PRRef{{
+		Number:         7,
+		Title:          "Add widget",
+		State:          "open",
+		URL:            "https://github.com/acme/widgets/pull/7",
+		ReviewDecision: "CHANGES_REQUESTED",
+		IsDraft:        true,
+		Checks: models.CIStatus{
+			State: "failure", Passed: 2, Failed: 1, Total: 3,
+			URL: "https://ci/job/1",
+		},
+	}}
+	require.NoError(t, Write(testRemote, testRepo, "feature-x", refs))
+
+	got, state := Read(testRemote, testRepo, "feature-x", time.Hour)
+	assert.Equal(t, Fresh, state)
+	require.Len(t, got, 1)
+	assert.Equal(t, "CHANGES_REQUESTED", got[0].ReviewDecision)
+	assert.True(t, got[0].IsDraft)
+	assert.Equal(t, models.CIStatus{
+		State: "failure", Passed: 2, Failed: 1, Total: 3, URL: "https://ci/job/1",
+	}, got[0].Checks)
+}
+
 // TestReadStale returns the cached entry but flags it Stale past the TTL.
 func TestReadStale(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

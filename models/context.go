@@ -54,6 +54,27 @@ type PRRef struct {
 	Title  string `json:"title"`
 	State  string `json:"state"`
 	URL    string `json:"url"`
+	// ReviewDecision is the rolled-up review state: APPROVED,
+	// CHANGES_REQUESTED, or "" when none applies. REVIEW_REQUIRED is not
+	// synthesized (it needs branch-protection data, which wgo does not read).
+	ReviewDecision string `json:"review_decision,omitempty"`
+	// IsDraft reports whether the PR is a draft.
+	IsDraft bool `json:"is_draft,omitempty"`
+	// Checks is the CI/checks rollup for the PR's head commit.
+	Checks CIStatus `json:"checks"`
+}
+
+// CIStatus is the rolled-up CI/checks state for a commit, summarizing GitHub's
+// check-runs and legacy commit statuses into a single glanceable signal.
+type CIStatus struct {
+	State   string `json:"state"` // success | failure | pending | none
+	Passed  int    `json:"passed"`
+	Failed  int    `json:"failed"`
+	Pending int    `json:"pending"`
+	Total   int    `json:"total"`
+	// URL is a per-state deep link: failing job (failure), merge-queue view
+	// (pending), or the PR checks tab (success). Empty when State is none.
+	URL string `json:"url,omitempty"`
 }
 
 // SiblingRef is a sibling workspace/repo in the parent directory.

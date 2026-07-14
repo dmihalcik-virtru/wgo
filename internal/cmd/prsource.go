@@ -21,9 +21,11 @@ func newGHFetcher() prcache.Fetcher {
 	return ghFetcher{c: github.NewClient()}
 }
 
-// FetchPRs implements prcache.Fetcher.
+// FetchPRs implements prcache.Fetcher. It uses the enriched list so the review
+// decision, draft flag, and CI rollup are cached alongside the base PR data —
+// the extra API calls land here (off the statusline hot path), never on reads.
 func (g ghFetcher) FetchPRs(repoPath, branch string) ([]models.PRRef, error) {
-	prs, err := g.c.ListPRsForBranch(repoPath, branch)
+	prs, err := g.c.ListPRsForBranchEnriched(repoPath, branch)
 	if err != nil {
 		return nil, err
 	}
@@ -66,10 +68,13 @@ func toPRRefs(prs []github.PRInfo) []models.PRRef {
 	refs := make([]models.PRRef, 0, len(prs))
 	for _, pr := range prs {
 		refs = append(refs, models.PRRef{
-			Number: pr.Number,
-			Title:  pr.Title,
-			State:  pr.State,
-			URL:    pr.URL,
+			Number:         pr.Number,
+			Title:          pr.Title,
+			State:          pr.State,
+			URL:            pr.URL,
+			ReviewDecision: pr.ReviewDecision,
+			IsDraft:        pr.IsDraft,
+			Checks:         pr.Checks,
 		})
 	}
 	return refs

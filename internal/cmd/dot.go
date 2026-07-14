@@ -265,6 +265,34 @@ func ticketURL(ticket, remoteURL string) string {
 	return ""
 }
 
+// prBracket builds the "[OPEN ✓ CI:green]" annotation for a PR line: the state
+// word (DRAFT when draft), an optional review glyph, and an optional CI segment
+// hyperlinked (when tty) to the per-state target. Absent markers are omitted.
+func prBracket(pr models.PRRef, tty bool) string {
+	parts := []string{strings.ToUpper(prStateWord(pr))}
+	if g := reviewGlyph(pr.ReviewDecision); g != "" {
+		parts = append(parts, g)
+	}
+	if ci := ciWord(pr.Checks.State); ci != "" {
+		parts = append(parts, links.Link(pr.Checks.URL, "CI:"+ci, tty))
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// ciWord maps a CI rollup state to the word shown after "CI:" in text output,
+// or "" for none/unknown (so the segment is dropped).
+func ciWord(state string) string {
+	switch strings.ToLower(state) {
+	case "success":
+		return "green"
+	case "failure":
+		return "red"
+	case "pending":
+		return "pending"
+	}
+	return ""
+}
+
 // renderText writes the human-readable context. tty controls OSC8 hyperlinks.
 func renderText(w io.Writer, c *models.Context, tty bool) {
 	fmt.Fprintf(w, "repo:   %s\n", links.Link(c.RepoURL, c.Repo, tty))
@@ -278,8 +306,7 @@ func renderText(w io.Writer, c *models.Context, tty bool) {
 
 	for _, pr := range c.PRs {
 		label := fmt.Sprintf("#%d %s", pr.Number, pr.Title)
-		state := strings.ToUpper(pr.State)
-		fmt.Fprintf(w, "pr:     %s [%s]\n", links.Link(pr.URL, label, tty), state)
+		fmt.Fprintf(w, "pr:     %s %s\n", links.Link(pr.URL, label, tty), prBracket(pr, tty))
 	}
 
 	for _, t := range c.Tasks {

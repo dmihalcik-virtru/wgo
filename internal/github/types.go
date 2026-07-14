@@ -57,6 +57,7 @@ func (p *apiPullRequest) toPRInfo() *PRInfo {
 		URL:         p.HTMLURL,
 		Title:       p.Title,
 		Author:      p.User.Login,
+		IsDraft:     p.Draft,
 	}
 	if p.MergeSHA != nil && *p.MergeSHA != "" {
 		info.MergeCommit = &PRMergeCommit{OID: *p.MergeSHA}
@@ -124,6 +125,7 @@ type apiCheckRunsResponse struct {
 type apiCheckRun struct {
 	Status     string `json:"status"`     // queued, in_progress, completed
 	Conclusion string `json:"conclusion"` // success, failure, neutral, cancelled, ...
+	HTMLURL    string `json:"html_url"`   // job page, used to deep-link a failing check
 }
 
 type apiCombinedStatus struct {

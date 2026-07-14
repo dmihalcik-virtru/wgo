@@ -59,6 +59,52 @@ func prStateColor(state string) string {
 	}
 }
 
+// prStateWord returns the display state token for a PR: "draft" when it is a
+// draft, otherwise the lowercased PR state (open/merged/closed). Shared by the
+// text and statusline renderers so a draft reads the same in both.
+func prStateWord(pr models.PRRef) string {
+	if pr.IsDraft {
+		return "draft"
+	}
+	return strings.ToLower(pr.State)
+}
+
+// reviewGlyph maps a review decision to a compact marker: ✓ approved, ✗ changes
+// requested, "" otherwise. Plain (uncolored); callers colorize as needed.
+func reviewGlyph(decision string) string {
+	switch strings.ToUpper(decision) {
+	case "APPROVED":
+		return "✓"
+	case "CHANGES_REQUESTED":
+		return "✗"
+	}
+	return ""
+}
+
+// reviewColor returns the statusline color for a review decision.
+func reviewColor(decision string) string {
+	switch strings.ToUpper(decision) {
+	case "APPROVED":
+		return colGreen
+	case "CHANGES_REQUESTED":
+		return colRed
+	}
+	return ""
+}
+
+// ciStateColor returns the statusline color for a CI rollup state (the dot).
+func ciStateColor(state string) string {
+	switch strings.ToLower(state) {
+	case "success":
+		return colGreen
+	case "failure":
+		return colRed
+	case "pending":
+		return colYellow
+	}
+	return ""
+}
+
 // renderStatuslineLine writes the built-in default single line: repo, branch
 // (with a dirty marker), ticket, ahead/behind, and each PR. When rich, segments
 // are colored and hyperlinked (repo/branch/PR → GitHub, ticket → Jira/GitHub).
@@ -85,9 +131,17 @@ func renderStatuslineLine(w io.Writer, c *models.Context, rich bool) error {
 	}
 
 	for _, pr := range c.PRs {
-		code := prStateColor(pr.State)
+		state := prStateWord(pr)
+		code := prStateColor(state)
 		num := styleLink(pr.URL, fmt.Sprintf("#%d", pr.Number), code, rich)
-		parts = append(parts, num+" "+colorize(strings.ToLower(pr.State), code, rich))
+		seg := num + " " + colorize(state, code, rich)
+		if g := reviewGlyph(pr.ReviewDecision); g != "" {
+			seg += " " + colorize(g, reviewColor(pr.ReviewDecision), rich)
+		}
+		if pr.Checks.State != "" && pr.Checks.State != "none" {
+			seg += " " + styleLink(pr.Checks.URL, "●", ciStateColor(pr.Checks.State), rich)
+		}
+		parts = append(parts, seg)
 	}
 
 	_, err := fmt.Fprintln(w, strings.Join(parts, " "))
