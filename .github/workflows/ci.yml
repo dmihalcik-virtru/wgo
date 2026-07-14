@@ -23,9 +23,13 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Go
+        # Build/scan with the latest stable Go rather than pinning to the go.mod
+        # directive: standard-library vulnerabilities (e.g. crypto/tls) are fixed
+        # by newer toolchain patches, and govulncheck only clears them when run
+        # against a patched toolchain. Dependabot does not bump the Go toolchain.
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: stable
           cache: true
 
       - name: Install jj (Jujutsu)
