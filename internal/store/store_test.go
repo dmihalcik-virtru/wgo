@@ -126,6 +126,69 @@ Test notes
 	assert.Equal(t, planContent, loaded)
 }
 
+// TestLoadStateRejectsOldVersion: a pre-jj (version 1) state file is refused
+// with a message that names the file and the rm remedy, rather than being
+// silently accepted at the wrong schema.
+func TestLoadStateRejectsOldVersion(t *testing.T) {
+	dir := t.TempDir()
+	s := NewWithDir(dir)
+	require.NoError(t, s.EnsureDir())
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"version":1}`), 0o644))
+
+	_, err := s.LoadState()
+	require.Error(t, err, "a version-1 state file must be refused")
+	assert.Contains(t, err.Error(), "version 1")
+	assert.Contains(t, err.Error(), filepath.Join(dir, "state.json"), "error should name the file to delete")
+}
+
+// TestLoadStateCorruptJSON: a truncated/garbage state file surfaces a parse
+// error instead of panicking or silently resetting.
+func TestLoadStateCorruptJSON(t *testing.T) {
+	dir := t.TempDir()
+	s := NewWithDir(dir)
+	require.NoError(t, s.EnsureDir())
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{`), 0o644))
+
+	_, err := s.LoadState()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse state file")
+}
+
+// TestLoadStateAcceptsCurrentAndNewerVersion: the current version loads, and a
+// future version is not rejected by the old-version guard (which only fires
+// below StateVersion).
+func TestLoadStateAcceptsCurrentAndNewerVersion(t *testing.T) {
+	dir := t.TempDir()
+	s := NewWithDir(dir)
+	require.NoError(t, s.EnsureDir())
+
+	for _, v := range []int{StateVersion, StateVersion + 1} {
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "state.json"),
+			fmt.Appendf(nil, `{"version":%d}`, v), 0o644))
+		state, err := s.LoadState()
+		require.NoError(t, err, "version %d should load", v)
+		assert.NotNil(t, state.AgentSessions, "maps should be initialized on load")
+	}
+}
+
+// TestMutateStateErrorDoesNotPersist: when the callback returns an error, the
+// mutation must not be written to disk even if it reported changed==true.
+func TestMutateStateErrorDoesNotPersist(t *testing.T) {
+	s := NewWithDir(t.TempDir())
+
+	boom := fmt.Errorf("boom")
+	err := s.MutateState(func(st *State) (bool, error) {
+		st.AddRepo("/a", "")
+		return true, boom
+	})
+	require.ErrorIs(t, err, boom)
+
+	state, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Nil(t, state.GetRepo("/a"), "a callback error must leave state on disk untouched")
+}
+
 func TestLoadNonexistentState(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)

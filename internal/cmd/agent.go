@@ -108,6 +108,7 @@ func runAgentStart(name string) error {
 		return err
 	}
 	if err := s.MutateState(func(state *store.State) (bool, error) {
+		state.PruneStaleAgentSessions(agentStaleAfter)
 		state.UpsertAgentSession(wsRoot, name, branch, os.Getppid())
 		return true, nil
 	}); err != nil {
@@ -214,9 +215,15 @@ func heartbeatAgent(wsRoot, branch string) {
 	// throttle returns changed=false so a recent same-tool session skips the
 	// write entirely.
 	err = s.MutateState(func(state *store.State) (bool, error) {
+		// Opportunistically reap orphaned sessions while we hold the lock, so
+		// state.json doesn't grow unbounded from deleted worktrees or agents
+		// that never called stop.
+		pruned := state.PruneStaleAgentSessions(agentStaleAfter)
 		if existing := state.GetAgentSession(wsRoot); existing != nil &&
 			existing.Tool == name && time.Since(existing.LastActivity) < heartbeatThrottle {
-			return false, nil
+			// Throttled heartbeat: skip the session write, but still persist if
+			// this pass reaped stale sessions.
+			return pruned > 0, nil
 		}
 		state.UpsertAgentSession(wsRoot, name, branch, os.Getppid())
 		return true, nil

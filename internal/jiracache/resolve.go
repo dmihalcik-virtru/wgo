@@ -65,18 +65,30 @@ func Resolve(f Fetcher, ticket string, opts Opts) (Info, State, error) {
 }
 
 // fetchAndStore performs the live fetch and writes the result through the cache.
-// A fetch error is returned and the cache is left untouched; a successful fetch
-// is written so subsequent reads are served locally.
+// A fetch error is returned; a successful fetch is written so subsequent reads
+// are served locally. On error the cache is left untouched when a usable entry
+// already exists (a transient Jira outage keeps serving the last-known status),
+// and only a cold key gets a short-lived negative entry so an environment
+// without acli doesn't respawn the background warmer on every render forever.
 func fetchAndStore(f Fetcher, ticket string) (Info, State, error) {
 	if f == nil {
 		return Info{}, Miss, nil
 	}
 	info, err := f.FetchJira(ticket)
 	if err != nil {
+		if _, state := Read(ticket, 0); state == Miss {
+			if werr := writeNegative(ticket); werr != nil {
+				logf("jira cache: negative write for %s: %v", ticket, werr)
+			}
+		}
 		return Info{}, Miss, err
 	}
-	// Ignore write errors: a failed cache write must not fail the command.
-	_ = Write(ticket, info)
+	// Ignore write errors on the command path, but surface them for diagnosis:
+	// a failed cache write must not fail the command, yet a silently unwritable
+	// cache would make the feature appear permanently broken.
+	if werr := Write(ticket, info); werr != nil {
+		logf("jira cache: write for %s: %v", ticket, werr)
+	}
 	return info, Fresh, nil
 }
 
@@ -97,11 +109,14 @@ func spawnRefreshProcess(ticket string) {
 	}
 	exe, err := os.Executable()
 	if err != nil {
+		logf("jira cache: locate executable for refresh: %v", err)
 		return
 	}
 	// nil std streams discard the child's output; no Wait, so the orphaned
 	// child finishes the refresh after the parent exits.
-	_ = exec.Command(exe, "_refresh-jira", ticket).Start()
+	if err := exec.Command(exe, "_refresh-jira", ticket).Start(); err != nil {
+		logf("jira cache: spawn refresh for %s: %v", ticket, err)
+	}
 }
 
 // underTest reports whether the process is a `go test` binary, so the default

@@ -97,6 +97,30 @@ func TestRemoveAgentSession(t *testing.T) {
 	assert.Nil(t, s.GetAgentSession("/repo"))
 }
 
+func TestPruneStaleAgentSessions(t *testing.T) {
+	s := NewState()
+	s.UpsertAgentSession("/fresh", "claude", "main", 0)
+
+	// A session comfortably within the window survives; one well past it is reaped.
+	window := 10 * time.Minute
+	s.AgentSessions["/recent"] = AgentSession{
+		Tool:         "codex",
+		WorktreePath: "/recent",
+		LastActivity: time.Now().Add(-window / 2),
+	}
+	s.AgentSessions["/stale"] = AgentSession{
+		Tool:         "cursor",
+		WorktreePath: "/stale",
+		LastActivity: time.Now().Add(-2 * window),
+	}
+
+	removed := s.PruneStaleAgentSessions(window)
+	assert.Equal(t, 1, removed, "only the stale session should be reaped")
+	assert.NotNil(t, s.GetAgentSession("/fresh"))
+	assert.NotNil(t, s.GetAgentSession("/recent"), "a session within the window must not be pruned")
+	assert.Nil(t, s.GetAgentSession("/stale"))
+}
+
 func TestActiveAgentSessionsFiltersStale(t *testing.T) {
 	s := NewState()
 	s.UpsertAgentSession("/fresh", "claude", "main", 0)

@@ -9,6 +9,13 @@ import (
 	"github.com/virtru/wgo/internal/jiracache"
 )
 
+// Route jiracache's otherwise-swallowed cache faults through the WGO_DEBUG
+// logger so a broken (unwritable/unreadable) cache is diagnosable without
+// polluting the hot-path output.
+func init() {
+	jiracache.Logf = debugf
+}
+
 // jiraFetcher adapts the acli-backed jira client to jiracache.Fetcher: it reads
 // a ticket's live status and assignee and projects them onto the compact
 // jiracache.Info the cache stores.

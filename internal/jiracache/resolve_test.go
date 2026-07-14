@@ -130,3 +130,18 @@ func TestResolveFetchErrorLeavesCache(t *testing.T) {
 	assert.Equal(t, Fresh, state)
 	assert.Equal(t, "In Review", cached.Status, "failed fetch must not wipe the cached entry")
 }
+
+// TestResolveFetchErrorNegativeCachesColdKey: a fetch error on a cold key writes
+// a short-lived negative entry so an environment without acli serves it locally
+// instead of respawning the warmer on every render.
+func TestResolveFetchErrorNegativeCachesColdKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	f := &countingFetcher{err: errors.New("no acli")}
+	_, _, err := Resolve(f, testTicket, Opts{Synchronous: true})
+	require.Error(t, err)
+
+	info, state := Read(testTicket, time.Hour)
+	assert.Equal(t, Fresh, state, "a cold fetch failure should leave a negative entry")
+	assert.Equal(t, Info{}, info, "the negative entry carries no status")
+}

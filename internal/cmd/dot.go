@@ -50,7 +50,7 @@ func init() {
 	dotCmd.Flags().BoolVar(&dotJSON, "json", false, "JSON output")
 	dotCmd.Flags().BoolVar(&dotPorcelain, "porcelain", false, "Print only the status word (clean, modified, staged, conflict)")
 	dotCmd.Flags().BoolVar(&dotExitCode, "exit-code", false, "Exit 1 if working tree is dirty")
-	dotCmd.Flags().BoolVar(&dotRefresh, "refresh", false, "Bypass the on-disk PR cache and fetch fresh PR status from GitHub")
+	dotCmd.Flags().BoolVar(&dotRefresh, "refresh", false, "Bypass the on-disk caches and fetch fresh PR and Jira status")
 }
 
 // showContext resolves the current work context once and renders it in the
@@ -337,7 +337,13 @@ func renderText(w io.Writer, c *models.Context, tty bool) {
 			fmt.Fprintf(w, "ticket: %s%s\n", c.Ticket, jiraSuffix)
 		}
 		if c.JiraAssignee != "" {
-			fmt.Fprintf(w, "jira:   %s · @%s\n", c.JiraStatus, c.JiraAssignee)
+			if c.JiraStatus != "" {
+				fmt.Fprintf(w, "jira:   %s · @%s\n", c.JiraStatus, c.JiraAssignee)
+			} else {
+				// No status but a known assignee: drop the empty "· " prefix
+				// rather than render "jira:    · @name".
+				fmt.Fprintf(w, "jira:   @%s\n", c.JiraAssignee)
+			}
 		}
 	}
 

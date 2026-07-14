@@ -1,8 +1,9 @@
 // Package jiracache is a cross-invocation on-disk cache for a ticket's live
-// Jira status, living under ~/.wgo/cache/jira/<ticket>.json. It lets `wgo .`
-// and `wgo statusline` show a ticket's Jira status without a synchronous acli
-// call in the hot path: the read path serves whatever is on disk (fresh or
-// stale) and never blocks, while a background `_refresh-jira` warms the entry.
+// Jira status, living under ~/.wgo/cache/jira/<ticket>.json. It lets
+// `wgo statusline` show a ticket's Jira status without any synchronous acli
+// call: the read path serves whatever is on disk (fresh or stale) and never
+// blocks, while a background `_refresh-jira` warms the entry. `wgo .` blocks
+// only on a cold miss (SyncOnMiss), serving from disk on every render after.
 //
 // It deliberately mirrors internal/prcache; the only structural difference is
 // that a Jira status is repo-independent, so entries are keyed by ticket alone
@@ -19,6 +20,25 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/store"
 )
+
+// Logf, when non-nil, receives diagnostic messages for otherwise-swallowed
+// cache faults (an unwritable or unreadable cache dir, a failed refresh spawn).
+// It is nil by default so the hot path stays silent; cmd wires it to the
+// WGO_DEBUG logger. Hot-path callers still ignore the underlying error — this
+// only turns a persistently broken cache from an invisible failure into a
+// diagnosable one.
+var Logf func(format string, args ...any)
+
+func logf(format string, args ...any) {
+	if Logf != nil {
+		Logf(format, args...)
+	}
+}
+
+// negativeTTL bounds how long a failed-fetch (negative) entry is served before
+// a retry. It is deliberately shorter than a normal TTL: a genuine acli/auth
+// failure should be re-attempted soon, but not on every single render.
+const negativeTTL = 2 * time.Minute
 
 // State describes the freshness of a cache lookup.
 type State int
@@ -38,16 +58,22 @@ type Info struct {
 	Assignee string `json:"assignee,omitempty"` // assignee display name, if any
 }
 
-// entry is the on-disk representation of a cached Jira lookup.
+// entry is the on-disk representation of a cached Jira lookup. Failed marks a
+// negative entry written after a fetch error on a cold key; it is served under
+// the shorter negativeTTL so a broken/absent acli is retried sooner than a real
+// status would go stale.
 type entry struct {
 	Info      Info      `json:"info"`
 	FetchedAt time.Time `json:"fetched_at"`
+	Failed    bool      `json:"failed,omitempty"`
 }
 
 // Read returns the cached Jira info for a ticket and its freshness. It never
-// makes a network call and never blocks. A Miss returns a zero Info. A cached
-// empty status is a valid Fresh/Stale hit, so callers do not re-fetch a ticket
-// that genuinely has no mappable status.
+// makes a network call and never blocks. A Miss returns a zero Info — this
+// covers an absent, unreadable, or corrupt entry (a fault, unlike a real
+// absence, is reported via Logf). A cached empty status is a valid Fresh/Stale
+// hit, so callers do not re-fetch a ticket that genuinely has no mappable
+// status.
 func Read(ticket string, ttl time.Duration) (Info, State) {
 	path, err := jiraPath(ticket)
 	if err != nil {
@@ -55,13 +81,25 @@ func Read(ticket string, ttl time.Duration) (Info, State) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		// A missing entry is an ordinary cold cache; any other read error
+		// (permissions, I/O) is a real fault worth surfacing under WGO_DEBUG.
+		if !os.IsNotExist(err) {
+			logf("jira cache: read %s: %v", path, err)
+		}
 		return Info{}, Miss
 	}
 	var e entry
 	if err := json.Unmarshal(data, &e); err != nil {
+		logf("jira cache: corrupt entry %s: %v", path, err)
 		return Info{}, Miss
 	}
-	if time.Since(e.FetchedAt) >= ttl {
+	// A negative entry expires under the shorter negativeTTL; a normal entry
+	// under the caller's ttl.
+	effTTL := ttl
+	if e.Failed && negativeTTL < ttl {
+		effTTL = negativeTTL
+	}
+	if time.Since(e.FetchedAt) >= effTTL {
 		return e.Info, Stale
 	}
 	return e.Info, Fresh
@@ -72,6 +110,20 @@ func Read(ticket string, ttl time.Duration) (Info, State) {
 // entry for a concurrent reader. The temp file gets a unique name so two
 // concurrent writers never clobber each other's temp before the rename.
 func Write(ticket string, info Info) error {
+	return writeEntry(ticket, entry{Info: info, FetchedAt: time.Now()})
+}
+
+// writeNegative stamps a short-lived negative entry for a ticket so a cold key
+// whose fetch failed (no acli, auth error) is not re-fetched on every render;
+// see negativeTTL. It never overwrites a usable positive entry — callers gate
+// on a cold Miss first.
+func writeNegative(ticket string) error {
+	return writeEntry(ticket, entry{FetchedAt: time.Now(), Failed: true})
+}
+
+// writeEntry atomically persists e for a ticket (temp file + rename with a
+// unique temp name), the shared write path behind Write and writeNegative.
+func writeEntry(ticket string, e entry) error {
 	path, err := jiraPath(ticket)
 	if err != nil {
 		return err
@@ -80,7 +132,7 @@ func Write(ticket string, info Info) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(&entry{Info: info, FetchedAt: time.Now()}, "", "  ")
+	data, err := json.MarshalIndent(&e, "", "  ")
 	if err != nil {
 		return err
 	}

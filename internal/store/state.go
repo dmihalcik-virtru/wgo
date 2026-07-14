@@ -113,6 +113,23 @@ func (s *State) ActiveAgentSessions(window time.Duration) map[string]AgentSessio
 	return active
 }
 
+// PruneStaleAgentSessions deletes sessions whose LastActivity is older than
+// window and returns how many were removed. Sessions are only ever filtered on
+// read, so without this they accumulate forever (deleted worktrees, agents that
+// never call stop); callers holding the state lock invoke it to garbage-collect.
+// The strict > matches resolveAgent's staleness test, so a boundary session
+// ActiveAgentSessions still reports (<= window) is never pruned.
+func (s *State) PruneStaleAgentSessions(window time.Duration) int {
+	removed := 0
+	for root, sess := range s.AgentSessions {
+		if time.Since(sess.LastActivity) > window {
+			delete(s.AgentSessions, root)
+			removed++
+		}
+	}
+	return removed
+}
+
 // NewState creates a new empty State at the current schema version.
 func NewState() *State {
 	return &State{

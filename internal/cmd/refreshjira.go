@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
-	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/jiracache"
 )
 
@@ -25,14 +24,13 @@ func init() {
 	rootCmd.AddCommand(refreshJiraCmd)
 }
 
-// runRefreshJira does a synchronous cache-writing fetch for ticket.
+// runRefreshJira does a synchronous cache-writing fetch for ticket. The
+// synchronous path bypasses the TTL cache read, so no config is consulted here
+// (jiraTTL/config only govern the read-through hot path in jirasource.go).
 func runRefreshJira(ticket string) error {
 	if ticket == "" {
 		return nil
 	}
-	// config is only consulted for defaults elsewhere; a failure is non-fatal.
-	_ = config.Init()
-
 	_, _, err := jiracache.Resolve(jiraFetcherFn(), ticket, jiracache.Opts{Synchronous: true})
 	return err
 }

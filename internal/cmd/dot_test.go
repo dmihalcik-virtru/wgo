@@ -228,6 +228,20 @@ func TestRenderTextTicketLineNoSpec(t *testing.T) {
 	assert.NotContains(t, out, "jira:", "no assignee line without an assignee")
 }
 
+// TestRenderTextJiraLineNoStatus: an assignee with no live status renders a
+// clean "jira:   @name" rather than an orphaned "jira:    · @name".
+func TestRenderTextJiraLineNoStatus(t *testing.T) {
+	ctx := fixtureContext()
+	ctx.JiraStatus = ""
+	ctx.JiraAssignee = "Alice Dev"
+
+	var buf bytes.Buffer
+	renderText(&buf, ctx, false)
+	out := buf.String()
+	assert.Contains(t, out, "jira:   @Alice Dev")
+	assert.NotContains(t, out, "· @", "no dangling middot when status is empty")
+}
+
 const specSmokeContent = `---
 ticket: WGO-130
 title: Smoke

@@ -60,6 +60,39 @@ func TestNegativeCache(t *testing.T) {
 	assert.Equal(t, Info{}, info)
 }
 
+// TestReadCorruptEntryIsMiss: a garbage cache file reads as Miss (self-healing)
+// rather than panicking.
+func TestReadCorruptEntryIsMiss(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := filepath.Join(home, ".wgo", "cache", "jira")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "WGO-134.json"), []byte("{not json"), 0o644))
+
+	info, state := Read(testTicket, time.Hour)
+	assert.Equal(t, Miss, state, "a corrupt entry should read as Miss")
+	assert.Equal(t, Info{}, info)
+}
+
+// TestNegativeEntryShortTTL: a failed-fetch entry expires under negativeTTL even
+// when the caller passes a much longer ttl, so a broken acli is retried sooner
+// than a real status would go stale.
+func TestNegativeEntryShortTTL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Aged just past negativeTTL but well within the long read ttl → Stale.
+	require.NoError(t, writeEntry(testTicket, entry{FetchedAt: time.Now().Add(-negativeTTL - time.Second), Failed: true}))
+	_, state := Read(testTicket, time.Hour)
+	assert.Equal(t, Stale, state, "a negative entry past negativeTTL is Stale within the long ttl")
+
+	// A fresh negative entry is served (empty) without a refetch.
+	require.NoError(t, writeEntry(testTicket, entry{FetchedAt: time.Now(), Failed: true}))
+	info, state := Read(testTicket, time.Hour)
+	assert.Equal(t, Fresh, state)
+	assert.Equal(t, Info{}, info)
+}
+
 // TestWriteAtomicNoTemp ensures a completed write leaves no .tmp file behind.
 func TestWriteAtomicNoTemp(t *testing.T) {
 	home := t.TempDir()

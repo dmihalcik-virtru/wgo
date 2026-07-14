@@ -70,7 +70,7 @@ func init() {
 	statuslineCmd.Flags().BoolVar(&statuslineJSON, "json", false, "Emit the context as JSON (WGO-130 schema) instead of a line")
 	statuslineCmd.Flags().StringVar(&statuslineFormat, "format", "", "Render a Go text/template over the context (funcs: upper, lower, color, link)")
 	statuslineCmd.Flags().BoolVar(&statuslineNoColor, "no-color", false, "Disable ANSI color and hyperlinks (also honors NO_COLOR)")
-	statuslineCmd.Flags().BoolVar(&statuslineRefresh, "refresh", false, "Force a synchronous PR refresh and warm the cache (for a background warmer, not the hot path)")
+	statuslineCmd.Flags().BoolVar(&statuslineRefresh, "refresh", false, "Force a synchronous PR and Jira refresh and warm the caches (for a background warmer, not the hot path)")
 	statuslineCmd.Flags().BoolVar(&statuslineSiblings, "siblings", false, "Include sibling workspaces (adds a filesystem walk)")
 	statuslineCmd.MarkFlagsMutuallyExclusive("json", "format")
 }
