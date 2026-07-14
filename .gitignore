@@ -26,3 +26,6 @@ go.work.sum
 
 # generated binary
 wgo
+
+# Claude Code per-user local settings (not shared)
+.claude/settings.local.json

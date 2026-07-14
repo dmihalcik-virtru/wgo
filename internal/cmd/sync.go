@@ -9,6 +9,7 @@ import (
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/jj"
+	"github.com/virtru/wgo/internal/prcache"
 	"github.com/virtru/wgo/internal/store"
 	wgosync "github.com/virtru/wgo/internal/sync"
 )
@@ -85,6 +86,9 @@ func runSync(_ *cobra.Command, _ []string) error {
 			continue
 		}
 		printSyncResult(repo, result)
+		if !syncDryRunFlag {
+			invalidatePRCache(jjc, repo, result)
+		}
 	}
 
 	if exitWithErr {
@@ -104,6 +108,30 @@ func printSyncResult(repo string, r *wgosync.Result) {
 	}
 	for _, u := range r.MarkerUpdates {
 		fmt.Printf("  PR #%d (%s): marker refreshed\n", u.PR, u.Bookmark)
+	}
+}
+
+// invalidatePRCache drops the on-disk PR cache entries for every bookmark whose
+// PR base or marker changed, so the next `wgo .`/statusline reflects the new
+// state instead of serving stale review/merge data.
+func invalidatePRCache(jjc jj.Client, repo string, r *wgosync.Result) {
+	remoteURL := ""
+	if remotes, err := jjc.RemoteURLs(repo); err == nil {
+		remoteURL = remotes["origin"]
+	}
+	seen := map[string]bool{}
+	invalidate := func(bookmark string) {
+		if bookmark == "" || seen[bookmark] {
+			return
+		}
+		seen[bookmark] = true
+		_ = prcache.Invalidate(remoteURL, repo, bookmark)
+	}
+	for _, c := range r.BaseChanges {
+		invalidate(c.Bookmark)
+	}
+	for _, u := range r.MarkerUpdates {
+		invalidate(u.Bookmark)
 	}
 }
 

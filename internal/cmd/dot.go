@@ -24,6 +24,7 @@ var (
 	dotJSON      bool
 	dotPorcelain bool
 	dotExitCode  bool
+	dotRefresh   bool
 )
 
 // dotCmd represents the `wgo .` command.
@@ -49,6 +50,7 @@ func init() {
 	dotCmd.Flags().BoolVar(&dotJSON, "json", false, "JSON output")
 	dotCmd.Flags().BoolVar(&dotPorcelain, "porcelain", false, "Print only the status word (clean, modified, staged, conflict)")
 	dotCmd.Flags().BoolVar(&dotExitCode, "exit-code", false, "Exit 1 if working tree is dirty")
+	dotCmd.Flags().BoolVar(&dotRefresh, "refresh", false, "Bypass the on-disk PR cache and fetch fresh PR status from GitHub")
 }
 
 // showContext resolves the current work context once and renders it in the
@@ -59,7 +61,9 @@ func showContext() (bool, error) {
 		return false, err
 	}
 
-	ctx, err := buildContext(cwd)
+	opts := defaultContextOptions()
+	opts.Refresh = dotRefresh
+	ctx, err := buildContextOpts(cwd, opts)
 	if err != nil {
 		return false, err
 	}
