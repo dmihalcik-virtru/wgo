@@ -1,0 +1,66 @@
+package models
+
+// ContextSchemaVersion is the version of the wgo . --json projection.
+//
+// Additive fields do not bump it; a breaking change (rename/removal/semantic
+// change) bumps it and is noted in the spec changelog (see spec/WGO-130.md).
+const ContextSchemaVersion = 1
+
+// Context is the single strongly-typed value that `wgo .` resolves and renders
+// as both human (text) and machine (--json) output. Both renderers are pure
+// projections of this value, so the two outputs can never drift.
+type Context struct {
+	SchemaVersion  int          `json:"schema_version"`
+	Repo           string       `json:"repo"`
+	RepoURL        string       `json:"repo_url"`
+	Branch         string       `json:"branch"`
+	Status         string       `json:"status"`  // clean|modified|staged|conflict
+	Changes        GitStatus    `json:"changes"` // detailed counts behind the status word
+	Dirty          bool         `json:"dirty"`
+	Ahead          int          `json:"ahead"`
+	Behind         int          `json:"behind"`
+	SyncUnknown    bool         `json:"sync_unknown,omitempty"` // ahead/behind could not be determined
+	Remote         string       `json:"remote"`
+	BranchURL      string       `json:"branch_url"`
+	Commit         CommitInfo   `json:"commit"`
+	Ticket         string       `json:"ticket,omitempty"`
+	Spec           *SpecRef     `json:"spec,omitempty"`
+	SpecMissing    bool         `json:"spec_missing,omitempty"`    // ticket present but no spec file
+	SpecUnreadable bool         `json:"spec_unreadable,omitempty"` // spec file present but unparseable
+	Tasks          []TaskRef    `json:"tasks,omitempty"`
+	PRs            []PRRef      `json:"prs,omitempty"`
+	Siblings       []SiblingRef `json:"siblings,omitempty"`
+	// SiblingsOverflow counts jj repos beyond the display cap of 10.
+	SiblingsOverflow int `json:"siblings_overflow,omitempty"`
+}
+
+// SpecRef references the spec file associated with the current ticket branch.
+type SpecRef struct {
+	Path    string `json:"path"`
+	Status  string `json:"status"`
+	Updated string `json:"updated"` // YYYY-MM-DD
+}
+
+// TaskRef is a plan task linked to the current branch.
+type TaskRef struct {
+	Bullet string `json:"bullet"`
+	Text   string `json:"text"`
+}
+
+// PRRef is a pull request associated with the current branch.
+type PRRef struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	URL    string `json:"url"`
+}
+
+// SiblingRef is a sibling workspace/repo in the parent directory.
+type SiblingRef struct {
+	Name   string `json:"name"`
+	Branch string `json:"branch"`
+	// Status is a human-readable summary phrase (e.g. "clean" or
+	// "2 modified, 1 added"), not the Context.Status enum. It is keyed
+	// separately in JSON to avoid colliding with that enum's value space.
+	Status string `json:"status_summary"`
+}
