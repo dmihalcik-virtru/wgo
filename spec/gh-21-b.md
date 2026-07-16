@@ -21,11 +21,19 @@ pre-existing `internal/pilot` failures are addressed in Task 10).
 ## Constraints (unchanged from gh-21)
 
 - No `git` CLI dependency anywhere after Task 11. The final `exec.Command("git", ...)`
-  call leaves the tree in this PR.
+  call leaves the tree in this PR. **Superseded (narrowly):** `internal/lfs`
+  reintroduces optional `git`/`git-lfs` shell-outs for `wgo lfs sync`/`wgo lfs
+  status`, gated on `lfs.Available()` — jj has no git-lfs support to fall
+  back on. This is scoped to LFS hydration only; nothing else in wgo shells
+  out to `git`.
 - No `gh` CLI shell-out except `gh auth token` in `internal/github/auth.go`
   (credential bootstrap only).
 - Pure jj only — never `--colocate`. `jj.GitInit` and `jj.GitClone` already
-  enforce this.
+  enforce this. **Superseded:** colocation is now the default for main
+  checkouts (`jj.GitInit`/`GitClone` pass `--colocate`; `jj.EnsureColocated`
+  retrofits pre-existing repos before a workspace is added). Secondary
+  workspaces remain plain jj — jj only allows colocation on the main
+  workspace.
 - Tests use real `jj` (no mocks). The `internal/jjtest` helpers handle setup.
 - `internal/git/` must not exist on disk after Task 11.
 
@@ -398,4 +406,5 @@ issue #21 can be closed.
 - Restoring the deleted `wgo stack {new,push,restack,rm,adopt,sync}`
   subcommands. `wgo sync` (top-level) and `jj`'s native DAG cover the
   use cases.
-- Colocated jj repos (pure jj only, per `gh-21`).
+- Colocated jj repos (pure jj only, per `gh-21`). **Superseded:** see the
+  constraints section above.

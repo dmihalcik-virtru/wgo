@@ -17,7 +17,7 @@ func setupJJRepo(t *testing.T, dir string) {
 	if _, err := exec.LookPath("jj"); err != nil {
 		t.Skip("jj binary not found on PATH; skipping discovery test")
 	}
-	cmd := exec.Command("jj", "git", "init", "--no-colocate")
+	cmd := exec.Command("jj", "git", "init", "--colocate")
 	cmd.Dir = dir
 	require.NoError(t, cmd.Run(), "failed to initialize jj repo")
 }

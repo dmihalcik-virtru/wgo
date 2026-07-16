@@ -117,9 +117,9 @@ type PushResult struct {
 	Failed map[string]string
 }
 
-// InitOpts configures `jj git init`. There is intentionally no Colocate
-// field; wgo only supports pure jj repos. When GitRepo is set, jj will use
-// the supplied git directory as the backing store and colocation stays off.
+// InitOpts configures `jj git init`. By default the repo is colocated with
+// Git (see GitInit). When GitRepo is set, jj will use the supplied git
+// directory as the backing store instead, and colocation stays off.
 type InitOpts struct {
 	// GitRepo, when non-empty, is passed as --git-repo and points at an
 	// existing git repository to use as backing store.
