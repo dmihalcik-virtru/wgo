@@ -90,11 +90,16 @@ func TestColorize(t *testing.T) {
 }
 
 // TestTicketURL resolves GitHub-issue tickets against the remote; non-numeric
-// GH tickets yield no link.
+// GH tickets yield no link. A Jira ticket falls back to the acli-detected
+// autoSite when config (unset here, so config.Get() is nil) supplies none.
 func TestTicketURL(t *testing.T) {
 	assert.Equal(t, "https://github.com/acme/widgets/issues/9",
-		ticketURL("GH-9", "https://github.com/acme/widgets.git"))
-	assert.Equal(t, "", ticketURL("GH-x", "https://github.com/acme/widgets.git"))
+		ticketURL("GH-9", "https://github.com/acme/widgets.git", ""))
+	assert.Equal(t, "", ticketURL("GH-x", "https://github.com/acme/widgets.git", ""))
+
+	assert.Equal(t, "https://acme.atlassian.net/browse/WGO-1",
+		ticketURL("WGO-1", "https://github.com/acme/widgets.git", "acme.atlassian.net"))
+	assert.Equal(t, "", ticketURL("WGO-1", "https://github.com/acme/widgets.git", ""))
 }
 
 // TestResolveCwd covers the -C/--repo flag resolution.

@@ -220,8 +220,9 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 	// so `wgo .` finds spec/<TICKET>.md when run from a subdirectory.
 	if ticket := spec.ParseTicketFromBranch(branch); ticket != "" {
 		ctx.Ticket = ticket
-		ctx.TicketURL = ticketURL(ticket, remoteURL)
-		ctx.JiraStatus, ctx.JiraAssignee = resolveJiraStatus(ticket, opts)
+		var autoSite string
+		ctx.JiraStatus, ctx.JiraAssignee, autoSite = resolveJiraStatus(ticket, opts)
+		ctx.TicketURL = ticketURL(ticket, remoteURL, autoSite)
 		specPath, err := spec.FindByTicket(wsRoot, ticket)
 		switch {
 		case err != nil:
@@ -257,18 +258,21 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 // ticketURL returns a browse/issue link for a ticket id, or "" when it can't
 // be resolved. A GH-<n> ticket (from a gh-<n> branch) links to a GitHub issue
 // on the repo's remote; any other key ([A-Z]+-<n>) links to the configured
-// Jira site (config.Jira.Site). Nil-safe when config is not initialized.
-func ticketURL(ticket, remoteURL string) string {
+// Jira site (config.Jira.Site), falling back to autoSite (the acli-detected
+// host cached alongside the ticket's status by resolveJiraStatus) when the
+// config doesn't set one. Nil-safe when config is not initialized.
+func ticketURL(ticket, remoteURL, autoSite string) string {
 	if num, ok := strings.CutPrefix(ticket, "GH-"); ok {
 		if n, err := strconv.Atoi(num); err == nil {
 			return links.IssueURL(remoteURL, n)
 		}
 		return ""
 	}
-	if cfg := config.Get(); cfg != nil {
-		return links.JiraIssueURL(cfg.Jira.Site, ticket)
+	site := autoSite
+	if cfg := config.Get(); cfg != nil && cfg.Jira.Site != "" {
+		site = cfg.Jira.Site
 	}
-	return ""
+	return links.JiraIssueURL(site, ticket)
 }
 
 // prBracket builds the "[OPEN ✓ CI:green]" annotation for a PR line: the state

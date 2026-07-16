@@ -36,13 +36,15 @@ func installJiraFetcher(t *testing.T, f jiracache.Fetcher) {
 // TestResolveJiraStatusSkipsNonJira: empty and GitHub-issue tickets never touch
 // the cache or acli — they return empty immediately.
 func TestResolveJiraStatusSkipsNonJira(t *testing.T) {
-	status, assignee := resolveJiraStatus("", contextOptions{LocalOnly: true})
+	status, assignee, site := resolveJiraStatus("", contextOptions{LocalOnly: true})
 	assert.Empty(t, status)
 	assert.Empty(t, assignee)
+	assert.Empty(t, site)
 
-	status, assignee = resolveJiraStatus("GH-9", contextOptions{LocalOnly: true})
+	status, assignee, site = resolveJiraStatus("GH-9", contextOptions{LocalOnly: true})
 	assert.Empty(t, status)
 	assert.Empty(t, assignee)
+	assert.Empty(t, site)
 }
 
 // TestJiraCacheOpts maps context options onto cache behavior, mirroring the PR
@@ -74,8 +76,9 @@ func TestResolveJiraStatusDegradesOnFetchError(t *testing.T) {
 	installJiraFetcher(t, f)
 
 	// Default opts fetch synchronously on a cold miss, exercising the error path.
-	status, assignee := resolveJiraStatus("WGO-1", contextOptions{})
+	status, assignee, site := resolveJiraStatus("WGO-1", contextOptions{})
 	assert.Empty(t, status)
 	assert.Empty(t, assignee)
+	assert.Empty(t, site)
 	assert.Equal(t, 1, f.count(), "the fetcher should have been consulted once")
 }

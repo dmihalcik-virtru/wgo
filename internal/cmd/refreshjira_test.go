@@ -20,7 +20,7 @@ func TestRunRefreshJiraWarmsCache(t *testing.T) {
 	require.Equal(t, 1, f.count(), "warmer should fetch exactly once")
 
 	// LocalOnly never fetches synchronously; a warmed entry is served from cache.
-	status, assignee := resolveJiraStatus("WGO-1", contextOptions{LocalOnly: true})
+	status, assignee, _ := resolveJiraStatus("WGO-1", contextOptions{LocalOnly: true})
 	assert.Equal(t, "In Review", status)
 	assert.Equal(t, "Dana", assignee)
 	assert.Equal(t, 1, f.count(), "the cached read must not trigger another fetch")
