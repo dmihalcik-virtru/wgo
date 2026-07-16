@@ -56,6 +56,10 @@ const (
 type Info struct {
 	Status   string `json:"status"`             // status name, e.g. "In Review"
 	Assignee string `json:"assignee,omitempty"` // assignee display name, if any
+	// Site is the Jira host (e.g. "acme.atlassian.net") auto-detected from acli
+	// when jira.site is not configured. Cached alongside the status so the
+	// browse-link build never shells out to acli on the statusline hot path.
+	Site string `json:"site,omitempty"`
 }
 
 // entry is the on-disk representation of a cached Jira lookup. Failed marks a

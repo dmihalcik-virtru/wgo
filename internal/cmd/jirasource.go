@@ -42,12 +42,19 @@ func (jiraFetcher) FetchJira(ticket string) (jiracache.Info, error) {
 	if issue.Fields.Assignee != nil {
 		info.Assignee = issue.Fields.Assignee.DisplayName
 	}
+	// Best-effort: also cache the acli-detected site host so ticketURL can build
+	// a Jira browse link when jira.site isn't configured. A failure here (no
+	// acli, not authenticated) just leaves Site empty — it doesn't fail the
+	// status fetch.
+	if site, err := jira.SiteHost(); err == nil {
+		info.Site = site
+	}
 	return info, nil
 }
 
-// resolveJiraStatus returns the live Jira status and assignee for a ticket
-// according to opts, delegating the cache/network reconciliation to
-// jiracache.Resolve (mirroring resolvePRs):
+// resolveJiraStatus returns the live Jira status, assignee, and acli-detected
+// site host for a ticket according to opts, delegating the cache/network
+// reconciliation to jiracache.Resolve (mirroring resolvePRs):
 //
 //   - statusline hot path (LocalOnly): read-through only; a Stale/Miss serves
 //     whatever is cached and kicks a background refresh. Never blocks on acli.
@@ -55,13 +62,14 @@ func (jiraFetcher) FetchJira(ticket string) (jiracache.Info, error) {
 //   - --refresh (opts.Refresh): bypass the cache and fetch synchronously.
 //
 // It returns empty strings for non-Jira tickets (GH-<n> GitHub issues) and when
-// the status is unavailable (no acli / not authenticated).
-func resolveJiraStatus(ticket string, opts contextOptions) (status, assignee string) {
+// the status/site is unavailable (no acli / not authenticated). site is only
+// ever used by ticketURL as a fallback when jira.site isn't configured.
+func resolveJiraStatus(ticket string, opts contextOptions) (status, assignee, site string) {
 	if ticket == "" || strings.HasPrefix(ticket, "GH-") {
-		return "", ""
+		return "", "", ""
 	}
 	info, _, _ := jiracache.Resolve(jiraFetcherFn(), ticket, jiraCacheOpts(opts))
-	return info.Status, info.Assignee
+	return info.Status, info.Assignee, info.Site
 }
 
 // jiraCacheOpts maps the context resolver options onto jiracache.Opts.
