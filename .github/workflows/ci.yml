@@ -27,7 +27,7 @@ jobs:
         # directive: standard-library vulnerabilities (e.g. crypto/tls) are fixed
         # by newer toolchain patches, and govulncheck only clears them when run
         # against a patched toolchain. Dependabot does not bump the Go toolchain.
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: true
