@@ -30,7 +30,7 @@ func initPilotTestRepo(t *testing.T) (string, time.Time, time.Time) {
 	t.Setenv("JJ_USER", "Dave")
 	t.Setenv("JJ_EMAIL", "dave@example.com")
 
-	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "git", "init", "--no-colocate")
+	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "git", "init", "--colocate")
 	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "config", "set", "--repo", "user.name", "Dave")
 	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "config", "set", "--repo", "user.email", "dave@example.com")
 
@@ -145,7 +145,7 @@ func TestCollect_NoSpecDir_GracefulZero(t *testing.T) {
 	jjtest.RequireJJ(t)
 	dir := t.TempDir()
 
-	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "git", "init", "--no-colocate")
+	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "git", "init", "--colocate")
 	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "config", "set", "--repo", "user.name", "Test")
 	mustRunAt(t, dir, "2026-05-01T09:00:00Z", "jj", "config", "set", "--repo", "user.email", "test@example.com")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644))

@@ -281,6 +281,9 @@ func TestGitInitInteropAndRemotes(t *testing.T) {
 	if !c.IsRepo(dest) {
 		t.Fatalf("expected new dir to be a jj repo")
 	}
+	if !c.IsColocated(dest) {
+		t.Fatalf("expected GitInit to colocate by default")
+	}
 	// No remotes configured by default.
 	remotes, err := c.RemoteURLs(dest)
 	if err != nil {
@@ -288,6 +291,39 @@ func TestGitInitInteropAndRemotes(t *testing.T) {
 	}
 	if len(remotes) != 0 {
 		t.Fatalf("expected zero remotes on fresh init, got %+v", remotes)
+	}
+}
+
+func TestEnsureColocated(t *testing.T) {
+	jjtest.RequireJJ(t)
+	c := jj.NewCLI()
+
+	// Simulate a legacy repo created before colocation was the default.
+	repo := t.TempDir()
+	if _, err := runRaw(t, "", "jj", "git", "init", "--no-colocate", repo); err != nil {
+		t.Fatalf("git init --no-colocate: %v", err)
+	}
+	if c.IsColocated(repo) {
+		t.Fatalf("expected legacy repo to start non-colocated")
+	}
+
+	enabled, err := c.EnsureColocated(repo)
+	if err != nil {
+		t.Fatalf("EnsureColocated: %v", err)
+	}
+	if !enabled {
+		t.Fatalf("expected EnsureColocated to report a change on first call")
+	}
+	if !c.IsColocated(repo) {
+		t.Fatalf("expected repo to be colocated after EnsureColocated")
+	}
+
+	enabled, err = c.EnsureColocated(repo)
+	if err != nil {
+		t.Fatalf("EnsureColocated (idempotent call): %v", err)
+	}
+	if enabled {
+		t.Fatalf("expected EnsureColocated to no-op once already colocated")
 	}
 }
 
@@ -329,6 +365,9 @@ func TestGitCloneAndFetch(t *testing.T) {
 	}
 	if !c.IsRepo(dest) {
 		t.Fatalf("clone did not yield a jj repo")
+	}
+	if !c.IsColocated(dest) {
+		t.Fatalf("expected GitClone to colocate by default")
 	}
 	rem, err := c.RemoteURLs(dest)
 	if err != nil {

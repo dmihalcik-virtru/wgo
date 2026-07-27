@@ -19,6 +19,10 @@ type Client interface {
 	IsRepo(path string) bool
 	RemoteURLs(path string) (map[string]string, error)
 
+	// Colocation
+	IsColocated(repo string) bool
+	EnsureColocated(repo string) (bool, error)
+
 	// Workspaces
 	ListWorkspaces(repo string) ([]Workspace, error)
 	WorkspaceAdd(repo, name, dest, revset string) error
@@ -130,6 +134,28 @@ func (c *CLIClient) IsRepo(path string) bool {
 		}
 		cur = parent
 	}
+}
+
+// IsColocated reports whether repo's main workspace has been colocated
+// with Git (a .git directory exists at its root).
+func (c *CLIClient) IsColocated(repo string) bool {
+	info, err := os.Stat(filepath.Join(repo, ".git"))
+	return err == nil && info.IsDir()
+}
+
+// EnsureColocated colocates repo's main workspace with Git if it isn't
+// already, via `jj git colocation enable`. Only the main workspace can be
+// colocated (jj rejects the command from any other workspace), so repo
+// must be the main checkout path. Returns whether it changed anything, so
+// callers can log only when something actually happened.
+func (c *CLIClient) EnsureColocated(repo string) (bool, error) {
+	if c.IsColocated(repo) {
+		return false, nil
+	}
+	if _, err := c.runR(repo, "git", "colocation", "enable"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // RemoteURLs returns a map of remote name -> URL by parsing
@@ -708,9 +734,10 @@ func (c *CLIClient) EditChange(workspacePath, revset string) error {
 	return err
 }
 
-// GitInit runs `jj git init --no-colocate` at path. When opts.GitRepo is
-// set, --git-repo is forwarded (which itself disables colocation). The
-// resulting repo is strictly pure jj.
+// GitInit runs `jj git init --colocate` at path, so the resulting repo has
+// a real .git dir alongside .jj and both jj and git commands work in it.
+// When opts.GitRepo is set, --git-repo is forwarded instead (mutually
+// exclusive with --colocate; it disables colocation for that case).
 func (c *CLIClient) GitInit(path string, opts InitOpts) error {
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return fmt.Errorf("jj git init: mkdir %s: %w", path, err)
@@ -719,7 +746,7 @@ func (c *CLIClient) GitInit(path string, opts InitOpts) error {
 	if opts.GitRepo != "" {
 		args = append(args, "--git-repo", opts.GitRepo)
 	} else {
-		args = append(args, "--no-colocate")
+		args = append(args, "--colocate")
 	}
 	_, err := c.runIn(path, args...)
 	if err != nil {
@@ -736,14 +763,15 @@ func (c *CLIClient) GitInit(path string, opts InitOpts) error {
 	return nil
 }
 
-// GitClone clones url into dest using `jj git clone --no-colocate`. The
-// destination directory is created if missing.
+// GitClone clones url into dest using `jj git clone --colocate`, so the
+// clone has a real .git dir alongside .jj. The destination directory is
+// created if missing.
 func (c *CLIClient) GitClone(url, dest string) error {
 	parent := filepath.Dir(dest)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("jj git clone: mkdir parent %s: %w", parent, err)
 	}
-	_, err := c.runIn(parent, "git", "clone", "--no-colocate", url, dest)
+	_, err := c.runIn(parent, "git", "clone", "--colocate", url, dest)
 	return err
 }
 

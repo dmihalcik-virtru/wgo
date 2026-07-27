@@ -506,6 +506,12 @@ func findOrCloneRepo(jjc jj.Client, cfg *config.Config, owner, repo string) (str
 // The PR layout encodes both the PR number and the head ref so two PRs that
 // share a branch name can coexist on disk.
 func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *gh.ParsedURL, branch string) (string, error) {
+	if enabled, err := jjc.EnsureColocated(repoPath); err != nil {
+		logTo("warning: could not enable colocation for %s: %v", repoPath, err)
+	} else if enabled {
+		logTo("enabling colocation for %s...", repoPath)
+	}
+
 	var wtPath string
 	if parsed.Type == gh.URLTypePR {
 		wtPath = filepath.Join(cfg.Worktree.WorktreesDir,

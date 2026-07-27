@@ -219,6 +219,12 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(wtPath), err)
 		}
 
+		if enabled, err := jjc.EnsureColocated(repoPath); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not enable colocation for %s: %v\n", repoPath, err)
+		} else if enabled {
+			fmt.Fprintf(os.Stderr, "enabling colocation for %s...\n", repoPath)
+		}
+
 		if err := ensureWorkspaceAndBookmark(jjc, repoPath, branchName, wtPath, defaultBranch, spec.repo); err != nil {
 			return err
 		}

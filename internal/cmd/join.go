@@ -79,6 +79,12 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 		return fmt.Errorf("repo %s: %w", ownerRepo, err)
 	}
 
+	if enabled, err := jjc.EnsureColocated(repoPath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not enable colocation for %s: %v\n", repoPath, err)
+	} else if enabled {
+		fmt.Fprintf(os.Stderr, "enabling colocation for %s...\n", repoPath)
+	}
+
 	// 7. Fetch latest (best-effort).
 	fmt.Fprintf(os.Stderr, "fetching %s...\n", ownerRepo)
 	if err := jjc.GitFetch(repoPath, "", nil); err != nil {

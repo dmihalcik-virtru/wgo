@@ -30,8 +30,10 @@ type mockJJClient struct {
 	workspaces      map[string][]jj.Workspace // keyed by repo path
 }
 
-func (m *mockJJClient) Root(string) (string, error) { return "", nil }
-func (m *mockJJClient) IsRepo(string) bool          { return true }
+func (m *mockJJClient) Root(string) (string, error)          { return "", nil }
+func (m *mockJJClient) IsRepo(string) bool                   { return true }
+func (m *mockJJClient) IsColocated(string) bool              { return true }
+func (m *mockJJClient) EnsureColocated(string) (bool, error) { return false, nil }
 func (m *mockJJClient) RemoteURLs(string) (map[string]string, error) {
 	if m.remotes != nil {
 		return m.remotes, nil

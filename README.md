@@ -110,18 +110,51 @@ wgo ls   # repopulates state from on-disk discovery
 The schema bumped from v1 to v2 (drops the `Stacks` / `Parents` / `StackID`
 fields) and there is no in-place upgrade path.
 
-### Tradeoffs of pure jj
+### Tradeoffs of jj workspaces
 
-Workspaces created by `wgo add` and `wgo to` do not contain a `.git/`
-directory (jj's `--no-colocate` mode). External tools that look for git
-state will not work in those workspaces:
+The main checkout of a repo (the clone under `worktree.mains_dir`) is
+colocated with Git by default (`jj git init --colocate` / `jj git clone
+--colocate`), and `wgo` will retroactively colocate an existing main
+checkout the first time it adds a workspace to it. This gives the main
+checkout a real `.git/` directory so `git` commands, IDE plugins, and other
+git-aware tooling work there directly.
+
+Workspaces created by `wgo add` and `wgo to`, however, never get their own
+`.git/` — this is a jj limitation, not a wgo choice: `jj git colocation
+enable`/`disable` only operate on a repo's main workspace, and secondary
+workspaces added via `jj workspace add` are always plain jj. External tools
+that look for git state will not work inside those workspaces:
 
 - IDE / editor git plugins that rely on libgit2 or `.git/index`
 - The [`pre-commit`](https://pre-commit.com/) framework
 - `direnv`'s git-aware features
 
-If you need those tools, run them in a separate colocated checkout of
-the same repo (not managed by wgo) or upstream a jj-aware adapter.
+If you need those tools, run them against the (now-colocated) main checkout
+instead of a workspace, or upstream a jj-aware adapter.
+
+### git-lfs in jj workspaces
+
+jj never invokes git's clean/smudge filters, colocated or not, so files
+tracked by [git-lfs](https://git-lfs.com/) stay as raw pointer text
+(`version https://git-lfs.github.com/spec/v1...`) no matter how you check
+them out with jj.
+
+Running `git lfs checkout` yourself to fix this is risky: jj has no staging
+area, so the hydrated (potentially huge) file content gets snapshotted
+straight into your current change as ordinary content, defeating the point
+of LFS if that change is ever described or pushed without being reverted
+first.
+
+`wgo lfs sync [path]` does this safely instead: it fetches the objects your
+workspace needs into the main checkout's git-lfs cache (`git lfs fetch`,
+which never touches a working tree) and replaces each pointer file with a
+**symlink** into that cache. Reading the file works transparently for any
+tool, but the diff jj sees is a tiny "regular file became symlink" change
+instead of the full blob — much safer if a workspace is accidentally
+committed or pushed while hydrated. Run `jj restore <path>` to revert a
+hydrated path back to its pointer before committing or pushing it. `wgo lfs
+status [path]` reports pointer vs. hydrated counts without changing
+anything. Both are no-ops if `git`/`git-lfs` aren't installed.
 
 ## Usage
 

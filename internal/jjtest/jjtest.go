@@ -35,14 +35,14 @@ func SetIdentity(t *testing.T) {
 	t.Setenv("JJ_EMAIL", "wgo-test@example.com")
 }
 
-// NewRepo creates a fresh non-colocated jj repo inside t.TempDir(), seeds an
+// NewRepo creates a fresh colocated jj repo inside t.TempDir(), seeds an
 // initial described commit, and returns the repo root plus a CLIClient
 // pointing at the system `jj` binary.
 func NewRepo(t *testing.T) (string, *jj.CLIClient) {
 	t.Helper()
 	RequireJJ(t)
 	repo := t.TempDir()
-	runJJ(t, repo, "git", "init", "--no-colocate")
+	runJJ(t, repo, "git", "init", "--colocate")
 	// jj reads user identity from XDG config / env; pin both so tests are
 	// deterministic without touching the contributor's global jj config.
 	SetIdentity(t)
