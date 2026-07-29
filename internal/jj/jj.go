@@ -55,6 +55,7 @@ type Client interface {
 	New(workspacePath, revset, msg string) error
 	Describe(workspacePath, msg string) error
 	EditChange(workspacePath, revset string) error
+	Restore(workspacePath string, paths []string) error
 
 	// Git interop
 	GitInit(path string, opts InitOpts) error
@@ -731,6 +732,17 @@ func (c *CLIClient) EditChange(workspacePath, revset string) error {
 		return fmt.Errorf("jj edit: empty revset")
 	}
 	_, err := c.runIn(workspacePath, "edit", revset)
+	return err
+}
+
+// Restore restores paths in the working copy at workspacePath from its parent
+// (@-), discarding the working copy's changes to those paths (`jj restore`).
+// Paths are interpreted relative to workspacePath. With no paths, jj restores
+// the entire working copy — callers that mean "only these files" must pass an
+// explicit, non-empty list.
+func (c *CLIClient) Restore(workspacePath string, paths []string) error {
+	args := append([]string{"restore"}, paths...)
+	_, err := c.runIn(workspacePath, args...)
 	return err
 }
 

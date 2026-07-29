@@ -106,6 +106,7 @@ func (m *mockJJClient) BookmarkDelete(string, string) error            { return 
 func (m *mockJJClient) New(string, string, string) error               { return nil }
 func (m *mockJJClient) Describe(string, string) error                  { return nil }
 func (m *mockJJClient) EditChange(string, string) error                { return nil }
+func (m *mockJJClient) Restore(string, []string) error                 { return nil }
 func (m *mockJJClient) GitInit(string, jj.InitOpts) error              { return nil }
 func (m *mockJJClient) GitClone(string, string) error                  { return nil }
 func (m *mockJJClient) GitFetch(string, string, []string) error        { return nil }

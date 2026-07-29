@@ -13,7 +13,10 @@ package lfs
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -155,6 +158,22 @@ func ObjectPath(mediaDir, oid string) string {
 	return filepath.Join(mediaDir, oid[:2], oid[2:4], oid)
 }
 
+// Mode selects how HydrateWorkspace materializes a resolved pointer.
+type Mode int
+
+const (
+	// ModeCopy replaces each pointer with the real object content, preferring a
+	// copy-on-write reflink and falling back to a plain copy. The result is a
+	// regular file that tools like `docker build` can read directly. jj will
+	// snapshot this content, so callers should `jj restore <path>` before
+	// committing or pushing.
+	ModeCopy Mode = iota
+	// ModeSymlink replaces each pointer with a relative symlink into the object
+	// cache. This keeps `jj diff` tiny, but the target lives outside the
+	// workspace so a plain `docker build` can't follow it.
+	ModeSymlink
+)
+
 // HydrateResult summarizes one HydrateWorkspace run. Paths are relative to
 // the workspace root that was scanned.
 type HydrateResult struct {
@@ -168,11 +187,12 @@ type HydrateResult struct {
 // HydrateWorkspace walks workspacePath for regular files <= MaxPointerSize
 // that parse as LFS pointers, fetches their objects into mainCheckout's
 // object cache (best-effort: a fetch failure doesn't abort hydration —
-// whatever is already cached still gets symlinked), and replaces each
-// resolvable pointer with a relative symlink into the cache. Re-running is
-// a no-op for paths already hydrated: a symlink is never treated as a
-// pointer candidate.
-func (c *Client) HydrateWorkspace(workspacePath, mainCheckout, remote, ref string) (HydrateResult, error) {
+// whatever is already cached still gets materialized), and replaces each
+// resolvable pointer according to mode (ModeCopy writes real content;
+// ModeSymlink links into the cache). Re-running is a no-op for paths already
+// hydrated: a symlink or real-content file is never treated as a pointer
+// candidate.
+func (c *Client) HydrateWorkspace(workspacePath, mainCheckout, remote, ref string, mode Mode) (HydrateResult, error) {
 	var result HydrateResult
 
 	mediaDir, err := c.MediaDir(mainCheckout)
@@ -233,15 +253,8 @@ func (c *Client) HydrateWorkspace(workspacePath, mainCheckout, remote, ref strin
 			return nil
 		}
 
-		target, relErr := filepath.Rel(filepath.Dir(path), objPath)
-		if relErr != nil {
-			target = objPath
-		}
-		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("remove %s: %w", path, err)
-		}
-		if err := os.Symlink(target, path); err != nil {
-			return fmt.Errorf("symlink %s: %w", path, err)
+		if err := materialize(path, objPath, mode, info.Mode().Perm()); err != nil {
+			return err
 		}
 		result.Hydrated = append(result.Hydrated, rel)
 		return nil
@@ -255,18 +268,68 @@ func (c *Client) HydrateWorkspace(workspacePath, mainCheckout, remote, ref strin
 	return result, nil
 }
 
+// materialize replaces the pointer file at path with objPath's content per
+// mode. ModeCopy reflinks-or-copies into a temp file in the same directory and
+// swaps it in atomically (a crash never leaves a half-written asset); perm is
+// applied to the result. ModeSymlink installs a relative symlink into the cache.
+func materialize(path, objPath string, mode Mode, perm fs.FileMode) error {
+	if mode == ModeSymlink {
+		target, err := filepath.Rel(filepath.Dir(path), objPath)
+		if err != nil {
+			target = objPath
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			return fmt.Errorf("symlink %s: %w", path, err)
+		}
+		return nil
+	}
+
+	dir := filepath.Dir(path)
+	tmpf, err := os.CreateTemp(dir, ".wgo-lfs-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp for %s: %w", path, err)
+	}
+	tmp := tmpf.Name()
+	tmpf.Close()
+	// clone()/copyFile need a non-existent dst; drop the placeholder CreateTemp
+	// made (it only reserved a unique name).
+	if err := os.Remove(tmp); err != nil {
+		return fmt.Errorf("prepare temp for %s: %w", path, err)
+	}
+	if err := cloneOrCopy(objPath, tmp); err != nil {
+		return fmt.Errorf("materialize %s: %w", path, err)
+	}
+	if err := os.Chmod(tmp, perm); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("swap %s: %w", path, err)
+	}
+	return nil
+}
+
 // ScanResult summarizes the LFS-relevant state of a workspace without
 // changing anything.
 type ScanResult struct {
 	// Pointers lists paths still containing raw pointer text.
 	Pointers []string
-	// Hydrated lists paths that are symlinks into an LFS object cache.
+	// Hydrated lists paths hydrated from the object cache — either a symlink
+	// into it (ModeSymlink) or real content matching a cached object (ModeCopy).
 	Hydrated []string
 }
 
 // Scan walks workspacePath and classifies every candidate path as a raw
-// pointer or an already-hydrated symlink, without modifying anything.
-func Scan(workspacePath string) (ScanResult, error) {
+// pointer or an already-hydrated file, without modifying anything. mediaDir is
+// the LFS object cache (from Client.MediaDir); when non-empty it enables
+// detection of ModeCopy hydration, where a regular file's content matches a
+// cached object. Pass "" to detect only ModeSymlink hydration.
+func Scan(workspacePath, mediaDir string) (ScanResult, error) {
+	cacheSizes := cacheObjectSizes(mediaDir)
 	var result ScanResult
 	err := filepath.WalkDir(workspacePath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -293,17 +356,59 @@ func Scan(workspacePath string) (ScanResult, error) {
 			return nil
 		}
 		info, err := d.Info()
-		if err != nil || info.Size() > MaxPointerSize {
-			return nil
-		}
-		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil
 		}
-		if _, ok := ParsePointer(data); ok {
-			result.Pointers = append(result.Pointers, rel)
+		if info.Size() <= MaxPointerSize {
+			if data, err := os.ReadFile(path); err == nil {
+				if _, ok := ParsePointer(data); ok {
+					result.Pointers = append(result.Pointers, rel)
+					return nil
+				}
+			}
+		}
+		// Not a pointer: a regular file whose size matches a cached object and
+		// whose content hashes to that object is ModeCopy-hydrated content.
+		if _, sized := cacheSizes[info.Size()]; sized && fileMatchesObject(path, mediaDir) {
+			result.Hydrated = append(result.Hydrated, rel)
 		}
 		return nil
 	})
 	return result, err
+}
+
+// cacheObjectSizes returns the set of object sizes present in mediaDir, used to
+// cheaply skip hashing workspace files that can't match any cached object.
+// Returns an empty set when mediaDir is "" or unreadable.
+func cacheObjectSizes(mediaDir string) map[int64]struct{} {
+	sizes := map[int64]struct{}{}
+	if mediaDir == "" {
+		return sizes
+	}
+	_ = filepath.WalkDir(mediaDir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			sizes[info.Size()] = struct{}{}
+		}
+		return nil
+	})
+	return sizes
+}
+
+// fileMatchesObject reports whether path's sha256 names an object present in
+// mediaDir — i.e. path holds real content hydrated from the LFS cache.
+func fileMatchesObject(path, mediaDir string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false
+	}
+	_, err = os.Stat(ObjectPath(mediaDir, hex.EncodeToString(h.Sum(nil))))
+	return err == nil
 }
