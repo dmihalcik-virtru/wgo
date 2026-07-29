@@ -16,20 +16,26 @@ var lfsCmd = &cobra.Command{
 	Short: "Git LFS helpers for jj workspaces",
 	Long: `jj never invokes git's clean/smudge filters, so files tracked by
 git-lfs stay as raw pointer text even in a colocated checkout. These
-commands fetch the real objects into the git-lfs cache and symlink tracked
-paths to them, which is safer than a raw "git lfs checkout": jj has no
-staging area, so hydrating a pointer to its full content in place would get
-snapshotted straight into your current change as ordinary (potentially
-huge) file content.
+commands fetch the real objects into the git-lfs cache and materialize
+tracked paths from it.
 
-Hydrated paths still show up as modified in "jj diff"/"jj status" (a small
-pointer-to-symlink-target diff, not the full blob). Run "jj restore <path>"
-to revert a path back to its pointer before committing or pushing it.`,
+By default "wgo lfs sync" writes the real object content (via a copy-on-write
+reflink where the filesystem supports it, otherwise a plain copy) so tools
+like "docker build" can read the files directly. Use --symlink to instead
+link into the object cache, which keeps "jj diff" tiny but can't be followed
+by a plain "docker build" (the target lives outside the build context).
+
+Either way, hydrated paths show up as modified in "jj diff"/"jj status", and
+jj will snapshot the content. Run "jj restore <path>" to revert a path back
+to its pointer before committing or pushing it — otherwise a push exports the
+raw blob to the LFS path, bypassing git-lfs on the remote.`,
 }
+
+var lfsSyncSymlink bool
 
 var lfsSyncCmd = &cobra.Command{
 	Use:   "sync [path]",
-	Short: "Hydrate LFS pointer files in a workspace via symlinks into the main checkout's object cache",
+	Short: "Hydrate LFS pointer files in a workspace from the main checkout's object cache",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		return runLFSSync(lfsArg(args))
@@ -45,10 +51,29 @@ var lfsStatusCmd = &cobra.Command{
 	},
 }
 
+var lfsRestoreCmd = &cobra.Command{
+	Use:   "restore [path]",
+	Short: "Revert hydrated LFS files back to their pointers (undo `wgo lfs sync`)",
+	Long: `Revert every hydrated LFS path in a workspace (real content or symlink)
+back to its pointer, via "jj restore" from the parent change. This undoes a
+"wgo lfs sync" so those paths no longer show as modified in "jj diff"/"jj
+status". Files that already contain pointer text are left untouched.
+
+The real object stays in the git-lfs cache, so a later "wgo lfs sync"
+re-hydrates instantly.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(_ *cobra.Command, args []string) error {
+		return runLFSRestore(lfsArg(args))
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(lfsCmd)
 	lfsCmd.AddCommand(lfsSyncCmd)
 	lfsCmd.AddCommand(lfsStatusCmd)
+	lfsCmd.AddCommand(lfsRestoreCmd)
+	lfsSyncCmd.Flags().BoolVar(&lfsSyncSymlink, "symlink", false,
+		"symlink into the object cache instead of writing real content (keeps `jj diff` tiny, but not readable by `docker build`)")
 }
 
 func lfsArg(args []string) string {
@@ -106,8 +131,13 @@ func runLFSSync(path string) error {
 		return fmt.Errorf("resolve current change: %w", err)
 	}
 
+	mode := lfs.ModeCopy
+	if lfsSyncSymlink {
+		mode = lfs.ModeSymlink
+	}
+
 	lc := lfs.NewClient()
-	result, hydrateErr := lc.HydrateWorkspace(wsRoot, mainRoot, "origin", cur.CommitID)
+	result, hydrateErr := lc.HydrateWorkspace(wsRoot, mainRoot, "origin", cur.CommitID, mode)
 	if hydrateErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", hydrateErr)
 	}
@@ -123,7 +153,11 @@ func runLFSSync(path string) error {
 		fmt.Printf("missing  %s (object not in cache; check the remote and try again)\n", p)
 	}
 	if len(result.Hydrated) > 0 {
-		fmt.Fprintln(os.Stderr, "\nhydrated paths will show as modified in `jj diff`/`jj status`; run `jj restore <path>` to revert before committing or pushing them.")
+		if mode == lfs.ModeSymlink {
+			fmt.Fprintln(os.Stderr, "\nhydrated paths are symlinks into the LFS cache and show as modified in `jj diff`/`jj status`; run `jj restore <path>` to revert before committing or pushing them.")
+		} else {
+			fmt.Fprintln(os.Stderr, "\nhydrated paths now hold real file content (readable by `docker build`) and show as modified in `jj diff`/`jj status`.\njj will snapshot this content, so run `jj restore <path>` before committing or pushing to avoid exporting raw blobs to the LFS path.")
+		}
 	}
 	return nil
 }
@@ -142,15 +176,65 @@ func runLFSStatus(path string) error {
 		return fmt.Errorf("failed to get workspace root: %w", err)
 	}
 
-	scan, err := lfs.Scan(wsRoot)
+	scan, err := lfs.Scan(wsRoot, resolveMediaDir(jjc, target))
 	if err != nil {
 		return err
 	}
 	fmt.Println(wsRoot)
-	fmt.Printf("  %d hydrated (symlinked)\n", len(scan.Hydrated))
+	fmt.Printf("  %d hydrated (real content or symlink)\n", len(scan.Hydrated))
 	fmt.Printf("  %d not hydrated (pointer)\n", len(scan.Pointers))
 	for _, p := range scan.Pointers {
 		fmt.Printf("    pointer  %s\n", p)
+	}
+	return nil
+}
+
+// resolveMediaDir best-effort resolves the LFS object cache for target so Scan
+// can recognize ModeCopy-hydrated real content, not just symlinks. Returns ""
+// (symlink-only detection) when git-lfs is absent or the main checkout / cache
+// can't be resolved.
+func resolveMediaDir(jjc *jj.CLIClient, target string) string {
+	if !lfs.Available() {
+		return ""
+	}
+	mainRoot, err := jjc.MainWorkspaceRoot(target)
+	if err != nil {
+		return ""
+	}
+	md, err := lfs.NewClient().MediaDir(mainRoot)
+	if err != nil {
+		return ""
+	}
+	return md
+}
+
+func runLFSRestore(path string) error {
+	target, err := lfsResolvePath(path)
+	if err != nil {
+		return err
+	}
+	jjc := jj.NewCLI()
+	if !jjc.IsRepo(target) {
+		return fmt.Errorf("not a jj repository: %s", target)
+	}
+	wsRoot, err := jjc.Root(target)
+	if err != nil {
+		return fmt.Errorf("failed to get workspace root: %w", err)
+	}
+
+	scan, err := lfs.Scan(wsRoot, resolveMediaDir(jjc, target))
+	if err != nil {
+		return err
+	}
+	if len(scan.Hydrated) == 0 {
+		fmt.Println("no hydrated LFS files to restore")
+		return nil
+	}
+	if err := jjc.Restore(wsRoot, scan.Hydrated); err != nil {
+		return fmt.Errorf("restore hydrated paths: %w", err)
+	}
+	for _, p := range scan.Hydrated {
+		fmt.Printf("restored %s\n", p)
 	}
 	return nil
 }

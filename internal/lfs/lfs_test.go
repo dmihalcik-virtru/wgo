@@ -95,12 +95,21 @@ func requireGitLFS(t *testing.T) {
 // runOK runs name with args in dir, failing the test on non-zero exit.
 func runOK(t *testing.T, dir, name string, args ...string) string {
 	t.Helper()
+	if name == "jj" {
+		// Drop commit signing so a developer's configured jj signing backend
+		// (e.g. SSH via a 1Password agent) can't break these hermetic fixtures.
+		args = append([]string{"--config", "signing.behavior=drop"}, args...)
+	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_AUTHOR_NAME=wgo-test", "GIT_AUTHOR_EMAIL=wgo-test@example.com",
 		"GIT_COMMITTER_NAME=wgo-test", "GIT_COMMITTER_EMAIL=wgo-test@example.com",
 		"JJ_USER=wgo-test", "JJ_EMAIL=wgo-test@example.com",
+		// Keep commits unsigned so a developer's global commit.gpgsign (e.g. a
+		// 1Password/GPG signing agent) can't break these hermetic fixtures.
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=commit.gpgsign", "GIT_CONFIG_VALUE_0=false",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -132,7 +141,19 @@ func seedLFSRemote(t *testing.T, root string) (remote, content string) {
 	return remote, content
 }
 
-func TestHydrateWorkspace(t *testing.T) {
+// hydrateFixture is a colocated jj main checkout with one LFS-tracked asset
+// still in pointer form, ready to hydrate.
+type hydrateFixture struct {
+	client    *lfs.Client
+	checkout  string
+	assetPath string
+	content   string
+	sha       string
+	mediaDir  string
+}
+
+func setupHydrateFixture(t *testing.T) hydrateFixture {
+	t.Helper()
 	requireGitLFS(t)
 	if _, err := exec.LookPath("jj"); err != nil {
 		t.Skip("jj binary not found on PATH; skipping LFS integration test")
@@ -154,9 +175,18 @@ func TestHydrateWorkspace(t *testing.T) {
 	}
 
 	sha := strings.TrimSpace(runOK(t, mainCheckout, "git", "rev-parse", "origin/main"))
-
 	c := lfs.NewClient()
-	result, err := c.HydrateWorkspace(mainCheckout, mainCheckout, "origin", sha)
+	mediaDir, err := c.MediaDir(mainCheckout)
+	if err != nil {
+		t.Fatalf("MediaDir: %v", err)
+	}
+	return hydrateFixture{c, mainCheckout, assetPath, content, sha, mediaDir}
+}
+
+func TestHydrateWorkspaceCopy(t *testing.T) {
+	f := setupHydrateFixture(t)
+
+	result, err := f.client.HydrateWorkspace(f.checkout, f.checkout, "origin", f.sha, lfs.ModeCopy)
 	if err != nil {
 		t.Fatalf("HydrateWorkspace: %v", err)
 	}
@@ -167,35 +197,76 @@ func TestHydrateWorkspace(t *testing.T) {
 		t.Fatalf("expected no missing objects, got %+v", result.Missing)
 	}
 
-	info, err := os.Lstat(assetPath)
+	// ModeCopy yields a real regular file (not a symlink) with the true content,
+	// so `docker build` can read it directly.
+	info, err := os.Lstat(f.assetPath)
+	if err != nil {
+		t.Fatalf("lstat asset.bin: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("expected asset.bin to be a real file, got a symlink")
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("expected asset.bin to be a regular file, got mode %v", info.Mode())
+	}
+	got, err := os.ReadFile(f.assetPath)
+	if err != nil {
+		t.Fatalf("read hydrated asset.bin: %v", err)
+	}
+	if string(got) != f.content {
+		t.Fatalf("hydrated content mismatch: got %q want %q", got, f.content)
+	}
+
+	scan, err := lfs.Scan(f.checkout, f.mediaDir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(scan.Pointers) != 0 || len(scan.Hydrated) != 1 || scan.Hydrated[0] != "asset.bin" {
+		t.Fatalf("expected Scan to report 1 hydrated file and 0 pointers, got %+v", scan)
+	}
+
+	// Idempotent: real content no longer parses as a pointer, so a second run
+	// finds nothing to hydrate.
+	result2, err := f.client.HydrateWorkspace(f.checkout, f.checkout, "origin", f.sha, lfs.ModeCopy)
+	if err != nil {
+		t.Fatalf("HydrateWorkspace (second run): %v", err)
+	}
+	if len(result2.Hydrated) != 0 {
+		t.Fatalf("expected second run to be a no-op, got %+v", result2)
+	}
+}
+
+func TestHydrateWorkspaceSymlink(t *testing.T) {
+	f := setupHydrateFixture(t)
+
+	result, err := f.client.HydrateWorkspace(f.checkout, f.checkout, "origin", f.sha, lfs.ModeSymlink)
+	if err != nil {
+		t.Fatalf("HydrateWorkspace: %v", err)
+	}
+	if len(result.Hydrated) != 1 || result.Hydrated[0] != "asset.bin" {
+		t.Fatalf("expected asset.bin to be hydrated, got %+v", result)
+	}
+
+	info, err := os.Lstat(f.assetPath)
 	if err != nil {
 		t.Fatalf("lstat asset.bin: %v", err)
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("expected asset.bin to become a symlink")
 	}
-	got, err := os.ReadFile(assetPath)
+	got, err := os.ReadFile(f.assetPath)
 	if err != nil {
 		t.Fatalf("read hydrated asset.bin: %v", err)
 	}
-	if string(got) != content {
-		t.Fatalf("hydrated content mismatch: got %q want %q", got, content)
+	if string(got) != f.content {
+		t.Fatalf("hydrated content mismatch: got %q want %q", got, f.content)
 	}
 
-	scan, err := lfs.Scan(mainCheckout)
+	scan, err := lfs.Scan(f.checkout, f.mediaDir)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
 	if len(scan.Pointers) != 0 || len(scan.Hydrated) != 1 {
 		t.Fatalf("expected Scan to report 1 hydrated file and 0 pointers, got %+v", scan)
-	}
-
-	// Idempotent: a second run finds nothing left to hydrate.
-	result2, err := c.HydrateWorkspace(mainCheckout, mainCheckout, "origin", sha)
-	if err != nil {
-		t.Fatalf("HydrateWorkspace (second run): %v", err)
-	}
-	if len(result2.Hydrated) != 0 {
-		t.Fatalf("expected second run to be a no-op, got %+v", result2)
 	}
 }

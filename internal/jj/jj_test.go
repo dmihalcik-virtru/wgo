@@ -270,6 +270,36 @@ func TestMutationsNewDescribeEdit(t *testing.T) {
 	}
 }
 
+func TestRestore(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	// Parent (@-) holds foo.txt="original"; @ starts empty on top of it.
+	jjtest.Commit(t, repo, "base", map[string]string{"foo.txt": "original"})
+
+	foo := filepath.Join(repo, "foo.txt")
+	if err := os.WriteFile(foo, []byte("changed"), 0o644); err != nil {
+		t.Fatalf("write foo.txt: %v", err)
+	}
+
+	if err := c.Restore(repo, []string{"foo.txt"}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := os.ReadFile(foo)
+	if err != nil {
+		t.Fatalf("read foo.txt: %v", err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("Restore did not revert foo.txt; got %q want %q", got, "original")
+	}
+	clean, changed, err := c.IsClean(repo)
+	if err != nil {
+		t.Fatalf("IsClean: %v", err)
+	}
+	if !clean {
+		t.Fatalf("expected clean working copy after restore, got changes %v", changed)
+	}
+}
+
 func TestGitInitInteropAndRemotes(t *testing.T) {
 	jjtest.RequireJJ(t)
 	c := jj.NewCLI()
