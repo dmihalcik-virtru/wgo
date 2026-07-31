@@ -143,7 +143,11 @@ func runLFSSync(path string) error {
 	}
 
 	if len(result.Hydrated) == 0 && len(result.Missing) == 0 {
-		fmt.Println("no LFS pointer files found")
+		if scan, scanErr := lfs.Scan(wsRoot, resolveMediaDir(jjc, target)); scanErr == nil && len(scan.Hydrated) > 0 {
+			fmt.Printf("no LFS pointer files to hydrate (%d already synced)\n", len(scan.Hydrated))
+		} else {
+			fmt.Println("no LFS pointer files found")
+		}
 		return nil
 	}
 	for _, p := range result.Hydrated {
