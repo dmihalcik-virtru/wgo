@@ -161,6 +161,15 @@ wgo agent status         # Show what AI agents are doing across worktrees
 - **GitHub HTTP API** — `internal/github` talks to `https://api.github.com` directly using `net/http`. The only `gh` CLI shell-out is `gh auth token` in `internal/github/auth.go`, used as a fallback when `GITHUB_TOKEN` is unset.
 - **Fuzzy finder** — follow gwq's pattern using `go-fuzzyfinder` for interactive selection with preview windows.
 - **Terminal** — tmux integration for session management, following gwq's approach.
+- **`gh stack` (native GitHub Stacks)** — `wgo sync` optionally publishes jj-derived stack topology to GitHub's native Stack via **`gh stack link`** (a stateless publishing call — it creates/updates the Stack without writing `.git/gh-stack` and without running git rebases). Gated by `sync.gh_stack` (`auto`/`on`/`off`) and `internal/sync.Linker.Available()`.
+
+### Stacked PRs with `gh stack` — agent safety
+
+`wgo` treats the stack as its unit of work and keeps jj authoritative for topology. When working in a wgo/jj workspace:
+
+- jj creates and rewrites changes; `wgo sync` derives the topology from the jj DAG and publishes it with `gh stack link`. `wgo sync --create-prs` opens draft PRs for bookmarks that lack one.
+- **Never run `gh stack {init,add,rebase,sync,modify,submit}`** in a wgo/jj workspace. Those commands write `.git/gh-stack` shadow state and drive `git rebase`/`git push`, which fights jj's automatic descendant restacking and creates a second, drifting source of truth. Only `gh stack link` is safe, and `wgo` invokes it for you.
+- To build on someone else's stack: `wgo to <PR-URL>` fetches the whole stack; `jj new <node>` forks atop a leaf or interior node; `wgo sync --create-prs` opens your PR based on the forked-from node.
 
 ### Data Flow
 

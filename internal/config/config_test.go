@@ -19,6 +19,24 @@ func TestCacheTTLDefaults(t *testing.T) {
 	assert.Equal(t, 600, cfg.Cache.JiraTTL)
 }
 
+// TestSyncDefaults verifies the [sync] section defaults.
+func TestSyncDefaults(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, Init())
+
+	cfg := Get()
+	require.NotNil(t, cfg)
+	assert.False(t, cfg.Sync.CreatePRs)
+	assert.Equal(t, "auto", cfg.Sync.GHStack)
+	assert.Equal(t, "auto", cfg.Sync.GHStackMode())
+}
+
+func TestGHStackModeDefault(t *testing.T) {
+	assert.Equal(t, "auto", SyncConfig{}.GHStackMode(), "empty defaults to auto")
+	assert.Equal(t, "off", SyncConfig{GHStack: "off"}.GHStackMode())
+	assert.Equal(t, "on", SyncConfig{GHStack: "on"}.GHStackMode())
+}
+
 func TestResolveProject(t *testing.T) {
 	rules := []JiraProjectRule{
 		{Repo: "virtru/*", Project: "DSPX", Type: "Story"},

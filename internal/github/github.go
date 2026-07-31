@@ -250,6 +250,10 @@ type PRInfo struct {
 	URL         string         `json:"url"`
 	Title       string         `json:"title"`
 	Author      string         `json:"author"`
+	// HeadRepoSlug is the "owner/repo" of the PR's head repository. It differs
+	// from the base repo for fork PRs and is empty when GitHub omits the head
+	// repo (e.g. a deleted fork). Used to fetch fork head branches on checkout.
+	HeadRepoSlug string `json:"headRepoSlug"`
 	// ReviewDecision is APPROVED, CHANGES_REQUESTED, or "" (see models.PRRef).
 	// Populated only by ListPRsForBranchEnriched.
 	ReviewDecision string `json:"reviewDecision"`
@@ -282,6 +286,19 @@ type Client interface {
 	UpdatePRBody(repoPath string, prNumber int, body string) error
 	// UpdatePRBase retargets the PR's base branch (e.g. when a parent has merged).
 	UpdatePRBase(repoPath string, prNumber int, baseBranch string) error
+	// CreatePR opens a pull request and returns the created PR.
+	CreatePR(repoPath string, opts CreatePROpts) (PRInfo, error)
+	// ListPRsByBase returns open PRs whose base branch matches (stack children).
+	ListPRsByBase(repoPath, base string) ([]PRInfo, error)
+}
+
+// CreatePROpts describes a pull request to open via CreatePR.
+type CreatePROpts struct {
+	Title string // PR title
+	Head  string // head bookmark; for cross-fork PRs use "owner:branch"
+	Base  string // base branch (parent bookmark or default branch)
+	Body  string // PR body markdown
+	Draft bool   // open as a draft
 }
 
 // CLIClient is the canonical GitHub Client implementation. The historical
@@ -429,6 +446,59 @@ func (c *CLIClient) firstOpenPRForBranch(slug, branch string) (*apiPullRequest, 
 		return nil, nil
 	}
 	return &list[0], nil
+}
+
+// CreatePR opens a pull request via POST /repos/{slug}/pulls and returns the
+// created PR. Unlike the read paths, this is a write, so it returns an error
+// (rather than degrading to a zero value) when no token is available.
+func (c *CLIClient) CreatePR(repoPath string, opts CreatePROpts) (PRInfo, error) {
+	if !c.Available() {
+		return PRInfo{}, fmt.Errorf("github: no token available to create PR")
+	}
+	if opts.Head == "" || opts.Base == "" {
+		return PRInfo{}, fmt.Errorf("github: create PR requires head and base")
+	}
+	slug, err := c.resolveSlug(repoPath)
+	if err != nil {
+		return PRInfo{}, err
+	}
+	endpoint := fmt.Sprintf("/repos/%s/pulls", slug)
+	payload := map[string]any{
+		"title": opts.Title,
+		"head":  opts.Head,
+		"base":  opts.Base,
+		"body":  opts.Body,
+		"draft": opts.Draft,
+	}
+	var pr apiPullRequest
+	if err := c.bodyJSON(http.MethodPost, endpoint, payload, &pr); err != nil {
+		return PRInfo{}, fmt.Errorf("create PR: %w", err)
+	}
+	return *pr.toPRInfo(), nil
+}
+
+// ListPRsByBase returns open PRs whose base branch matches. Used by stack
+// enumeration to find a node's children. Returns (nil, nil) on any error for
+// graceful degradation, mirroring ListPRsForBranch.
+func (c *CLIClient) ListPRsByBase(repoPath, base string) ([]PRInfo, error) {
+	if !c.Available() {
+		return nil, nil
+	}
+	slug, err := c.resolveSlug(repoPath)
+	if err != nil || slug == "" {
+		return nil, nil
+	}
+	endpoint := fmt.Sprintf("/repos/%s/pulls?base=%s&state=open&per_page=50",
+		slug, url.QueryEscape(base))
+	var list []apiPullRequest
+	if err := c.getJSON(endpoint, &list); err != nil {
+		return nil, nil
+	}
+	out := make([]PRInfo, 0, len(list))
+	for i := range list {
+		out = append(out, *list[i].toPRInfo())
+	}
+	return out, nil
 }
 
 // ListPRsForBranch returns all PRs (any state) whose head branch matches.
