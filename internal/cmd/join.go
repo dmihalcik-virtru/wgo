@@ -5,21 +5,30 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/plan"
+	specpkg "github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 )
 
-var joinNoPush bool
+var (
+	joinNoPush     bool
+	joinNoClaudeMD bool
+)
 
 var joinCmd = &cobra.Command{
 	Use:   "join <owner/repo>",
 	Short: "Add a repo to the current multi-repo workspace on the same branch",
 	Long: `Detects the current worktree's branch and shared root, creates a sibling
 worktree for the new repo on the same branch, and updates plan.md and state.json.
+
+For a workspace holding 2+ repos, regenerates a shared CLAUDE.md at the
+workspace root listing every repo. A CLAUDE.md that wgo did not generate is
+never overwritten; pass --no-claude-md to skip this entirely.
 
 Output goes to stdout so you can use it with cd:
   cd $(wgo join virtru/cli)`,
@@ -33,6 +42,7 @@ Output goes to stdout so you can use it with cd:
 func init() {
 	rootCmd.AddCommand(joinCmd)
 	joinCmd.Flags().BoolVar(&joinNoPush, "no-push", false, "Skip pushing when a new branch is created")
+	joinCmd.Flags().BoolVar(&joinNoClaudeMD, "no-claude-md", false, "Skip regenerating the shared CLAUDE.md for the workspace")
 }
 
 func runJoin(ownerRepo string, noPush bool) (retErr error) {
@@ -171,7 +181,61 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 		return fmt.Errorf("save plan: %w", err)
 	}
 
-	// 14. Print path to stdout for cd $(...) usage.
+	// 14. Regenerate the shared CLAUDE.md so a newly joined repo is reflected
+	// (see writeSharedClaudeMD). Only inside worktrees_dir: sharedRoot is
+	// inferred from the cwd, so outside our own tree it can name an arbitrary
+	// directory of the user's that we have no business writing into.
+	if !joinNoClaudeMD {
+		if !isManagedWorkspaceRoot(cfg.Worktree.WorktreesDir, sharedRoot) {
+			fmt.Fprintf(os.Stderr, "note: %s is outside worktrees_dir; skipping shared CLAUDE.md\n", sharedRoot)
+		} else if repos, derr := discoverSharedRepos(jjc, sharedRoot); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not scan workspace for shared CLAUDE.md: %v\n", derr)
+		} else {
+			ticket := specpkg.ParseTicketFromBranch(branch)
+			// Deliberately no fallback to `reason`: it defaults to the raw
+			// branch name, and a slug rendered as the goal reads like a real
+			// description. An empty desc renders a visible placeholder instead.
+			err := writeSharedClaudeMD(sharedClaudeMD{
+				Root:        sharedRoot,
+				Ticket:      ticket,
+				Description: planDescriptionForBranch(p, branch, ticket),
+				Repos:       repos,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not update shared CLAUDE.md: %v\n", err)
+			}
+		}
+	}
+
+	// 15. Print path to stdout for cd $(...) usage.
 	fmt.Println(newWtPath)
 	return nil
+}
+
+// planDescriptionForBranch recovers the human description for branch by
+// looking for a plan entry (in any repo already joined to this effort) whose
+// Reason follows add.go's "<ticket>: <description>" convention. The state
+// annotation `reason` resolved above doesn't reliably follow that format —
+// it falls back to the raw branch name when no annotation was ever set — so
+// trimming the ticket prefix off it directly can leave the branch slug in
+// place of a real description.
+//
+// Returns "" if no entry matches, and the caller deliberately does not fall
+// back to `reason`: no description at all is better than a slug that reads
+// like one. Note the search includes the entry this run just added, which is
+// harmless since non-matching entries are skipped.
+func planDescriptionForBranch(p *plan.Plan, branch, ticket string) string {
+	if ticket == "" {
+		return ""
+	}
+	prefix := ticket + ": "
+	for _, entry := range p.ActiveBranches {
+		if entry.Branch != branch {
+			continue
+		}
+		if trimmed, ok := strings.CutPrefix(entry.Reason, prefix); ok {
+			return trimmed
+		}
+	}
+	return ""
 }
