@@ -16,6 +16,7 @@ import (
 	"github.com/virtru/wgo/internal/discovery"
 	gh "github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/jj"
+	"github.com/virtru/wgo/internal/stack"
 )
 
 var toOnParent string
@@ -45,7 +46,7 @@ Output goes to stdout so you can use it with cd:
 func init() {
 	rootCmd.AddCommand(toCmd)
 	toCmd.Flags().StringVar(&toOnParent, "on", "",
-		"For new branches: base the new worktree on this in-flight branch (records it as the stack parent). Ignored when the target branch already exists.")
+		"Land the workspace on this node. For a PR checkout: an interior stack member (or any existing bookmark) to fork from. For a new issue branch: the in-flight parent to base on.")
 }
 
 // log prints to stderr so stdout stays clean for cd $(...).
@@ -570,60 +571,99 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 
 	case gh.URLTypePR:
 		num, _ := strconv.Atoi(parsed.Identifier)
-		logTo("looking up PR #%d head ref...", num)
-		info, err := gh.GetPRHeadRef(parsed.Owner+"/"+parsed.Repo, num)
+		baseSlug := parsed.Owner + "/" + parsed.Repo
+
+		// The stack is the unit of work: resolve the whole stack containing the
+		// target PR and fetch every member. A lone PR resolves to a one-entry
+		// stack, so the common single-PR case falls out of the same code path.
+		logTo("resolving stack for PR #%d...", num)
+		members, err := stack.ResolveStack(gh.NewClient(), repoPath, stack.PRRef{Number: num})
+		if err != nil || len(members) == 0 {
+			// Degrade to single-PR checkout when stack resolution is unavailable.
+			if err != nil {
+				logTo("stack resolution failed (%v); checking out PR #%d alone", err, num)
+			}
+			info, e := gh.GetPRHeadRef(baseSlug, num)
+			if e != nil {
+				return "", e
+			}
+			members = []stack.StackMember{{
+				Branch: info.Ref, PRNumber: num, HeadSlug: info.RepoSlug, HeadOID: info.OID,
+			}}
+		}
+
+		named := memberByPR(members, num)
+		if named == nil { // defensive: seed should always be present
+			named = &members[len(members)-1]
+		}
+
+		// (A) Fetch every head branch: batch same-repo refs into one fetch;
+		// each fork head comes from its own remote.
+		var sameRepoRefs []string
+		forkRemote := map[int]string{}
+		for i := range members {
+			m := &members[i]
+			if m.HeadSlug == "" || m.HeadSlug == baseSlug {
+				sameRepoRefs = append(sameRepoRefs, m.Branch)
+				continue
+			}
+			remote := fmt.Sprintf("pr-%d-fork", m.PRNumber)
+			forkRemote[m.PRNumber] = remote
+			forkURL := "https://github.com/" + m.HeadSlug + ".git"
+			logTo("PR #%d is from fork %s; adding remote %s...", m.PRNumber, m.HeadSlug, remote)
+			if err := jjc.GitRemoteAdd(repoPath, remote, forkURL); err != nil {
+				logTo("warning: add remote %s: %v", remote, err)
+			}
+			if err := jjc.GitFetch(repoPath, remote, []string{m.Branch}); err != nil {
+				return "", fmt.Errorf("fetch %s from %s: %w", m.Branch, remote, err)
+			}
+		}
+		if len(sameRepoRefs) > 0 {
+			logTo("fetching %d branch(es) from origin...", len(sameRepoRefs))
+			if err := jjc.GitFetch(repoPath, "origin", sameRepoRefs); err != nil {
+				return "", fmt.Errorf("fetch stack from origin: %w", err)
+			}
+		}
+
+		// (B) Track or pin a bookmark per member. Prefer a tracked local
+		// bookmark (mutable + pushable); fall back to a pinned pr-<N> bookmark
+		// for protected refs or divergent local collisions.
+		bmFor := map[int]string{}
+		for i := range members {
+			m := &members[i]
+			remote := "origin"
+			if r, ok := forkRemote[m.PRNumber]; ok {
+				remote = r
+			}
+			bm := m.Branch
+			if shouldTrack(cfg, m.Branch) && !localBookmarkConflicts(jjc, repoPath, m.Branch, m.HeadOID) {
+				logTo("tracking %s@%s...", m.Branch, remote)
+				if err := jjc.BookmarkTrack(repoPath, m.Branch, remote); err != nil {
+					logTo("warning: track %s@%s: %v", m.Branch, remote, err)
+				}
+			} else {
+				bm = fmt.Sprintf("pr-%d-%s", m.PRNumber, gh.SanitizeBranch(m.Branch))
+				logTo("not tracking %s; pinning bookmark %s to %s...", m.Branch, bm, m.HeadOID)
+				if err := jjc.BookmarkCreate(repoPath, bm, m.HeadOID); err != nil {
+					return "", fmt.Errorf("create bookmark %s at %s: %w", bm, m.HeadOID, err)
+				}
+			}
+			bmFor[m.PRNumber] = bm
+		}
+
+		// (C) Choose the landing node: the passed PR by default, or --on to land
+		// on an interior stack node (or any existing bookmark) for forking.
+		landOn, err := chooseLandingNode(members, bmFor, named, num, toOnParent,
+			func(name string) bool { return bookmarkExists(jjc, repoPath, name) })
 		if err != nil {
 			return "", err
 		}
-		baseSlug := parsed.Owner + "/" + parsed.Repo
-		// The workspace identity stays a stable, unique, slash-free id even
-		// though the bookmark below is the (possibly slashed) head ref.
-		wsName := fmt.Sprintf("pr-%d-%s", num, gh.SanitizeBranch(info.Ref))
 
-		// Fetch the head ref from whichever remote hosts it.
-		remote := "origin"
-		if info.RepoSlug == "" || info.RepoSlug == baseSlug {
-			// Same-repo PR: fetch from origin.
-			logTo("fetching origin/%s...", info.Ref)
-			if err := jjc.GitFetch(repoPath, "origin", []string{info.Ref}); err != nil {
-				return "", fmt.Errorf("fetch %s from origin: %w", info.Ref, err)
-			}
-		} else {
-			// Fork PR: add the fork as a remote, fetch, then leave the remote
-			// in place (it's harmless and lets the user re-fetch and push).
-			remote = "pr-" + parsed.Identifier + "-fork"
-			forkURL := "https://github.com/" + info.RepoSlug + ".git"
-			logTo("PR is from fork %s; adding remote %s...", info.RepoSlug, remote)
-			if err := jjc.GitRemoteAdd(repoPath, remote, forkURL); err != nil {
-				// Remote already exists is non-fatal; jj returns it as
-				// stderr text. Try to fetch anyway.
-				logTo("warning: add remote %s: %v", remote, err)
-			}
-			if err := jjc.GitFetch(repoPath, remote, []string{info.Ref}); err != nil {
-				return "", fmt.Errorf("fetch %s from %s: %w", info.Ref, remote, err)
-			}
-		}
-
-		// Prefer a tracked local bookmark named after the head ref: it is
-		// mutable (so you can rebase/amend to resume a stale PR) and pushable
-		// (`jj git push` updates the PR directly). Fall back to a pinned
-		// pr-<N> bookmark when the ref is protected or a divergent local
-		// bookmark of the same name already exists.
-		bookmark := info.Ref
-		if shouldTrack(cfg, info.Ref) && !localBookmarkConflicts(jjc, repoPath, info.Ref, info.OID) {
-			logTo("tracking %s@%s...", info.Ref, remote)
-			if err := jjc.BookmarkTrack(repoPath, info.Ref, remote); err != nil {
-				return "", fmt.Errorf("track %s@%s: %w", info.Ref, remote, err)
-			}
-		} else {
-			bookmark = wsName
-			logTo("not tracking %s; pinning bookmark %s to %s...", info.Ref, bookmark, info.OID)
-			if err := jjc.BookmarkCreate(repoPath, bookmark, info.OID); err != nil {
-				return "", fmt.Errorf("create bookmark %s at %s: %w", bookmark, info.OID, err)
-			}
-		}
-		logTo("creating workspace at bookmark %s...", bookmark)
-		if err := jjc.WorkspaceAdd(repoPath, wsName, wtPath, bookmark); err != nil {
+		// (D) One workspace, landed on the chosen node. The workspace id stays a
+		// stable, slash-free id even though bookmarks may carry slashes.
+		wsName := fmt.Sprintf("pr-%d-%s", num, gh.SanitizeBranch(named.Branch))
+		logTo("creating workspace at bookmark %s...", landOn)
+		if err := jjc.WorkspaceAdd(repoPath, wsName, wtPath, landOn); err != nil {
 			return "", fmt.Errorf("workspace add failed: %w", err)
 		}
 
@@ -740,6 +780,45 @@ func bookmarkExists(jjc jj.Client, repo, name string) bool {
 // the wgo annotation no longer carries Parents/StackID. This function is
 // now a no-op kept to preserve --on's call site; the parent linkage lives
 // in jj.
+// memberByPR returns the stack member with the given PR number, or nil.
+func memberByPR(members []stack.StackMember, pr int) *stack.StackMember {
+	for i := range members {
+		if members[i].PRNumber == pr {
+			return &members[i]
+		}
+	}
+	return nil
+}
+
+// memberByBranch returns the PR number of the stack member with the given head
+// branch, and whether one was found.
+func memberByBranch(members []stack.StackMember, branch string) (int, bool) {
+	for _, m := range members {
+		if m.Branch == branch {
+			return m.PRNumber, true
+		}
+	}
+	return 0, false
+}
+
+// chooseLandingNode resolves which bookmark the workspace should land on.
+// Default is the named PR's bookmark; --on selects an interior stack member (by
+// branch) or, failing that, any existing bmark. An --on that matches neither is
+// an error. bmFor maps PR number → local bookmark; bookmarkExistsFn tests for a
+// pre-existing bookmark.
+func chooseLandingNode(members []stack.StackMember, bmFor map[int]string, named *stack.StackMember, num int, onParent string, bookmarkExistsFn func(string) bool) (string, error) {
+	if onParent == "" {
+		return bmFor[named.PRNumber], nil
+	}
+	if pn, ok := memberByBranch(members, onParent); ok {
+		return bmFor[pn], nil
+	}
+	if bookmarkExistsFn(onParent) {
+		return onParent, nil
+	}
+	return "", fmt.Errorf("--on %q is not in PR #%d's stack nor an existing bookmark", onParent, num)
+}
+
 func recordStackParent(_, _, _ string) error {
 	return nil
 }

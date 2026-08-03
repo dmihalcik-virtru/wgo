@@ -22,6 +22,28 @@ type Config struct {
 	Pair      PairConfig      `mapstructure:"pair"`
 	Jira      JiraConfig      `mapstructure:"jira"`
 	Cache     CacheConfig     `mapstructure:"cache"`
+	Sync      SyncConfig      `mapstructure:"sync"`
+}
+
+// SyncConfig controls `wgo sync`: whether it opens PRs for un-PR'd bookmarks
+// and how it publishes stack topology to GitHub.
+type SyncConfig struct {
+	// CreatePRs causes sync to open draft PRs for bookmarked changes that lack
+	// one, basing each on the nearest ancestor with a PR (else the default base).
+	CreatePRs bool `mapstructure:"create_prs"`
+	// GHStack selects how stack topology is published: "auto" uses GitHub's
+	// native Stack (via `gh stack link`) whenever it is available and falls back
+	// to the wgo-stack marker otherwise; "off" always uses the marker; "on"
+	// requires native linking and errors when `gh stack` is unavailable.
+	GHStack string `mapstructure:"gh_stack"` // "auto" | "on" | "off"
+}
+
+// GHStackMode returns the configured gh_stack mode, defaulting to "auto".
+func (s SyncConfig) GHStackMode() string {
+	if s.GHStack == "" {
+		return "auto"
+	}
+	return s.GHStack
 }
 
 // CacheConfig controls the cross-invocation on-disk caches under ~/.wgo/cache.
@@ -233,6 +255,8 @@ func setDefaults() {
 	viper.SetDefault("doctor.spec_required", false)
 	viper.SetDefault("cache.pr_ttl", 120)
 	viper.SetDefault("cache.jira_ttl", 600)
+	viper.SetDefault("sync.create_prs", false)
+	viper.SetDefault("sync.gh_stack", "auto")
 }
 
 // createDefaultConfig creates a default config file.
@@ -281,6 +305,19 @@ pr_ttl = 120
 # How long (seconds) a cached Jira ticket status stays fresh. Jira status
 # changes slowly, so this defaults to 600s (10m). Used by ~/.wgo/cache/jira.
 jira_ttl = 600
+
+[sync]
+# Open draft PRs for bookmarked changes that lack one during "wgo sync"
+# (also available per-run via --create-prs). Each new PR is based on the
+# nearest ancestor with a PR, else the default base.
+create_prs = false
+
+# How stack topology is published to GitHub:
+#   "auto" - use GitHub's native Stack (via "gh stack link") when available,
+#            else fall back to the wgo-stack marker block in each PR body
+#   "off"  - always use the wgo-stack marker
+#   "on"   - require native linking; error if "gh stack" is unavailable
+gh_stack = "auto"
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)

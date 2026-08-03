@@ -3,6 +3,7 @@
 package sync
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -10,11 +11,19 @@ import (
 	"github.com/virtru/wgo/internal/jj"
 )
 
+// ErrGHStackUnavailable is returned when gh_stack="on" but native linking is
+// not available (missing gh, gh-stack extension, gh < 2.90, or a non-colocated
+// repo).
+var ErrGHStackUnavailable = errors.New(
+	"sync: gh_stack=on but `gh stack` is unavailable — install with `gh extension install github/gh-stack` " +
+		"(needs gh >= 2.90 and a colocated repo), or set sync.gh_stack to \"auto\"/\"off\"")
+
 // JJOps is the jj surface the sync algorithm needs. Mocked in tests.
 type JJOps interface {
 	GitFetch(repo, remote string, refs []string) error
 	Log(repo, revset string) ([]jj.LogEntry, error)
 	RemoteURLs(path string) (map[string]string, error)
+	GitPush(repo string, opts jj.PushOpts) (jj.PushResult, error)
 }
 
 // GitHubOps is the github surface the sync algorithm needs. Mocked in tests.
@@ -23,6 +32,7 @@ type GitHubOps interface {
 	UpdatePRBase(repoPath string, prNumber int, baseBranch string) error
 	GetPRBody(repoPath string, prNumber int) (string, error)
 	UpdatePRBody(repoPath string, prNumber int, body string) error
+	CreatePR(repoPath string, opts github.CreatePROpts) (github.PRInfo, error)
 }
 
 // Options controls a single Sync run.
@@ -36,13 +46,25 @@ type Options struct {
 	Fetch bool
 	// DryRun reports what would change without calling GitHub mutators.
 	DryRun bool
+	// CreatePRs opens draft PRs for bookmarked changes that lack one, basing
+	// each on the nearest ancestor with a PR (else DefaultBase).
+	CreatePRs bool
+	// GHStackMode selects how stack topology is published: "auto" (default),
+	// "on", or "off". See config.SyncConfig.GHStack.
+	GHStackMode string
+	// Linker publishes the stack to GitHub's native Stack. May be nil, which is
+	// treated as "unavailable".
+	Linker Linker
 }
 
 // Result describes the work sync performed (or would have performed in dry-run).
 type Result struct {
 	BaseChanges   []BaseChange
 	MarkerUpdates []MarkerUpdate
-	Skipped       []string // bookmarks with no open PR
+	Skipped       []string       // bookmarks with no open PR
+	Created       []PRCreation   // PRs opened by --create-prs
+	Linked        []string       // branches linked into the native Stack (bottom→top)
+	MarkerStrips  []MarkerUpdate // PRs whose wgo-stack marker was stripped (native migration)
 }
 
 // BaseChange records a PR base retarget.
@@ -57,6 +79,14 @@ type BaseChange struct {
 type MarkerUpdate struct {
 	Bookmark string
 	PR       int
+}
+
+// PRCreation records a PR opened during sync. PR is 0 in dry-run mode (nothing
+// was actually created).
+type PRCreation struct {
+	Bookmark string
+	PR       int
+	Base     string
 }
 
 // Sync runs the per-repo PR base alignment + marker regeneration algorithm
@@ -99,6 +129,41 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 		return nil, err
 	}
 
+	// Create PRs for bookmarked changes that lack one, bottom→top so each new
+	// PR's ancestor already has a PR to base on.
+	if opts.CreatePRs {
+		for _, bm := range order {
+			if _, ok := prs[bm]; ok {
+				continue
+			}
+			base := graph.NearestAncestorWith(bm, hasPR)
+			if base == "" {
+				base = opts.DefaultBase
+			}
+			if base == "" {
+				continue // no base to open against
+			}
+			if opts.DryRun {
+				result.Created = append(result.Created, PRCreation{Bookmark: bm, Base: base})
+				continue
+			}
+			// Publish the bookmark so GitHub sees a real head ref before opening.
+			if _, err := jjc.GitPush(repo, jj.PushOpts{Bookmarks: []string{bm}, AllowNew: true}); err != nil &&
+				!errors.Is(err, jj.ErrNothingToPush) {
+				return result, fmt.Errorf("push bookmark %s: %w", bm, err)
+			}
+			pr, err := ghc.CreatePR(repo, github.CreatePROpts{
+				Title: bm, Head: bm, Base: base, Draft: true,
+			})
+			if err != nil {
+				return result, fmt.Errorf("create PR for %s: %w", bm, err)
+			}
+			created := pr
+			prs[bm] = &created
+			result.Created = append(result.Created, PRCreation{Bookmark: bm, PR: pr.Number, Base: base})
+		}
+	}
+
 	for _, bm := range order {
 		pr := prs[bm]
 		if pr == nil {
@@ -122,6 +187,19 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 		}
 	}
 
+	// Decide how to publish topology: native GitHub Stack vs the wgo-stack
+	// marker block.
+	native, err := useNativeStack(opts, repo)
+	if err != nil {
+		return result, err
+	}
+	if native {
+		if err := publishNativeStack(ghc, repo, order, prs, opts, result); err != nil {
+			return result, err
+		}
+		return result, nil
+	}
+
 	for _, bm := range order {
 		pr := prs[bm]
 		if pr == nil {
@@ -143,6 +221,72 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 	}
 
 	return result, nil
+}
+
+// useNativeStack resolves the effective gh_stack mode against linker
+// availability. "off" never uses native linking; "on" requires it (erroring
+// otherwise); "auto" uses it when available.
+func useNativeStack(opts Options, repo string) (bool, error) {
+	mode := opts.GHStackMode
+	if mode == "" {
+		mode = "auto"
+	}
+	available := opts.Linker != nil && opts.Linker.Available(repo)
+	switch mode {
+	case "off":
+		return false, nil
+	case "on":
+		if !available {
+			return false, ErrGHStackUnavailable
+		}
+		return true, nil
+	case "auto":
+		return available, nil
+	default:
+		return false, fmt.Errorf("sync: invalid gh_stack mode %q", mode)
+	}
+}
+
+// publishNativeStack links the stack's PR branches into GitHub's native Stack
+// (when there are >= 2 PRs) and strips any lingering wgo-stack marker from
+// affected PR bodies — in the native path, wgo no longer writes marker blocks.
+func publishNativeStack(ghc GitHubOps, repo string, order []string, prs map[string]*github.PRInfo, opts Options, result *Result) error {
+	var linked []string
+	for _, bm := range order {
+		if _, ok := prs[bm]; ok {
+			linked = append(linked, bm)
+		}
+	}
+	if len(linked) >= 2 {
+		if !opts.DryRun {
+			if err := opts.Linker.Link(repo, linked); err != nil {
+				return fmt.Errorf("gh stack link: %w", err)
+			}
+		}
+		result.Linked = linked
+	}
+
+	for _, bm := range order {
+		pr := prs[bm]
+		if pr == nil {
+			continue
+		}
+		body, err := ghc.GetPRBody(repo, pr.Number)
+		if err != nil {
+			return fmt.Errorf("get PR #%d body: %w", pr.Number, err)
+		}
+		stripped := StripMarker(body)
+		if strings.TrimSpace(stripped) == strings.TrimSpace(body) {
+			continue // no marker to remove
+		}
+		result.MarkerStrips = append(result.MarkerStrips, MarkerUpdate{Bookmark: bm, PR: pr.Number})
+		if !opts.DryRun {
+			if err := ghc.UpdatePRBody(repo, pr.Number, stripped); err != nil {
+				return fmt.Errorf("update PR #%d body: %w", pr.Number, err)
+			}
+		}
+	}
+	return nil
 }
 
 // refreshMarker computes the new PR body for `bookmark` with an up-to-date

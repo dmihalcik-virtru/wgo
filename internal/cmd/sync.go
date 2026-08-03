@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
@@ -15,10 +16,11 @@ import (
 )
 
 var (
-	syncRepoFlag    string
-	syncDryRunFlag  bool
-	syncSkipFetch   bool
-	syncDefaultBase string
+	syncRepoFlag      string
+	syncDryRunFlag    bool
+	syncSkipFetch     bool
+	syncDefaultBase   string
+	syncCreatePRsFlag bool
 )
 
 var syncCmd = &cobra.Command{
@@ -42,6 +44,7 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncDryRunFlag, "dry-run", false, "report changes without mutating GitHub")
 	syncCmd.Flags().BoolVar(&syncSkipFetch, "no-fetch", false, "skip `jj git fetch` before reading the DAG")
 	syncCmd.Flags().StringVar(&syncDefaultBase, "default-base", "main", "fallback base bookmark for stack roots")
+	syncCmd.Flags().BoolVar(&syncCreatePRsFlag, "create-prs", false, "open draft PRs for bookmarked changes that lack one")
 	rootCmd.AddCommand(syncCmd)
 }
 
@@ -67,10 +70,14 @@ func runSync(_ *cobra.Command, _ []string) error {
 	}
 	sort.Strings(repos)
 
+	cfg := config.Get()
 	opts := wgosync.Options{
 		Fetch:       !syncSkipFetch,
 		DryRun:      syncDryRunFlag,
 		DefaultBase: syncDefaultBase,
+		CreatePRs:   syncCreatePRsFlag || cfg.Sync.CreatePRs,
+		GHStackMode: cfg.Sync.GHStackMode(),
+		Linker:      wgosync.NewCLILinker(),
 	}
 
 	exitWithErr := false
@@ -99,12 +106,26 @@ func runSync(_ *cobra.Command, _ []string) error {
 
 func printSyncResult(repo string, r *wgosync.Result) {
 	fmt.Printf("== %s ==\n", repo)
-	if len(r.BaseChanges) == 0 && len(r.MarkerUpdates) == 0 {
+	if len(r.BaseChanges) == 0 && len(r.MarkerUpdates) == 0 &&
+		len(r.Created) == 0 && len(r.Linked) == 0 && len(r.MarkerStrips) == 0 {
 		fmt.Println("  no changes")
 		return
 	}
+	for _, c := range r.Created {
+		if c.PR == 0 {
+			fmt.Printf("  (%s): would open draft PR based on %s\n", c.Bookmark, c.Base)
+		} else {
+			fmt.Printf("  PR #%d (%s): opened draft based on %s\n", c.PR, c.Bookmark, c.Base)
+		}
+	}
 	for _, c := range r.BaseChanges {
 		fmt.Printf("  PR #%d (%s): base %s → %s\n", c.PR, c.Bookmark, c.OldBase, c.NewBase)
+	}
+	if len(r.Linked) > 0 {
+		fmt.Printf("  linked native stack: %s\n", strings.Join(r.Linked, " → "))
+	}
+	for _, u := range r.MarkerStrips {
+		fmt.Printf("  PR #%d (%s): wgo-stack marker removed (native stack)\n", u.PR, u.Bookmark)
 	}
 	for _, u := range r.MarkerUpdates {
 		fmt.Printf("  PR #%d (%s): marker refreshed\n", u.PR, u.Bookmark)

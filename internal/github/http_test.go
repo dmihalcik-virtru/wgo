@@ -151,6 +151,78 @@ func TestListPRsForBranch_HappyPath(t *testing.T) {
 	assert.Equal(t, 2, prs[1].Number)
 }
 
+func TestCreatePR_SendsPost(t *testing.T) {
+	var called atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		assertCommonHeaders(t, r)
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/repos/o/r/pulls", r.URL.Path)
+		body, _ := io.ReadAll(r.Body)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(body, &got))
+		assert.Equal(t, "feat: add stuff", got["title"])
+		assert.Equal(t, "feature", got["head"])
+		assert.Equal(t, "main", got["base"])
+		assert.Equal(t, "the body", got["body"])
+		assert.Equal(t, true, got["draft"])
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"number": 11,
+			"state": "open",
+			"draft": true,
+			"title": "feat: add stuff",
+			"html_url": "https://github.com/o/r/pull/11",
+			"head": {"ref": "feature", "sha": "abc", "repo": {"full_name": "o/r"}},
+			"base": {"ref": "main"},
+			"user": {"login": "alice"}
+		}`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv, "o/r")
+
+	pr, err := c.CreatePR("/tmp", CreatePROpts{
+		Title: "feat: add stuff", Head: "feature", Base: "main", Body: "the body", Draft: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, called.Load())
+	assert.Equal(t, 11, pr.Number)
+	assert.Equal(t, "feature", pr.Branch)
+	assert.Equal(t, "main", pr.BaseRefName)
+	assert.True(t, pr.IsDraft)
+	assert.Equal(t, "o/r", pr.HeadRepoSlug)
+}
+
+func TestCreatePR_RejectsMissingHeadBase(t *testing.T) {
+	c := newTestClient(t, httptest.NewServer(http.NotFoundHandler()), "o/r")
+	_, err := c.CreatePR("/tmp", CreatePROpts{Title: "x", Base: "main"})
+	require.Error(t, err)
+	_, err = c.CreatePR("/tmp", CreatePROpts{Title: "x", Head: "feature"})
+	require.Error(t, err)
+}
+
+func TestListPRsByBase_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertCommonHeaders(t, r)
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "/repos/o/r/pulls", r.URL.Path)
+		assert.Equal(t, "parent", r.URL.Query().Get("base"))
+		assert.Equal(t, "open", r.URL.Query().Get("state"))
+		_, _ = w.Write([]byte(`[
+			{"number": 3, "state": "open", "title": "child", "head":{"ref":"child","sha":"s","repo":{"full_name":"o/r"}}, "base":{"ref":"parent"}, "user":{"login":"x"}}
+		]`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv, "o/r")
+
+	prs, err := c.ListPRsByBase("/tmp", "parent")
+	require.NoError(t, err)
+	require.Len(t, prs, 1)
+	assert.Equal(t, 3, prs[0].Number)
+	assert.Equal(t, "child", prs[0].Branch)
+	assert.Equal(t, "parent", prs[0].BaseRefName)
+}
+
 func TestClosePR_SendsPatch(t *testing.T) {
 	var called atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
