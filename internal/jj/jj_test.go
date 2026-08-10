@@ -515,20 +515,27 @@ func TestAheadBehindWithRemote(t *testing.T) {
 	if _, err := runRaw(t, seed, "jj", "git", "remote", "add", "origin", remote); err != nil {
 		t.Fatalf("remote add: %v", err)
 	}
-	// Seed one commit, bookmark it, push.
+	// Seed one commit and move @ off it before bookmarking, so the pushed
+	// bookmark points at a commit that is not the working copy. Pushing a
+	// bookmark that points at @ makes that commit immutable, and jj 0.44+
+	// then inserts a fresh empty commit on top — which would sit between the
+	// remote position and the local one and make this test measure 2.
 	if err := c.Describe(seed, "first"); err != nil {
 		t.Fatalf("Describe: %v", err)
 	}
-	if err := c.BookmarkCreate(seed, "main", "@"); err != nil {
+	if err := c.New(seed, "", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := c.BookmarkCreate(seed, "main", "@-"); err != nil {
 		t.Fatalf("BookmarkCreate main: %v", err)
 	}
 	if _, err := c.GitPush(seed, jj.PushOpts{Bookmarks: []string{"main"}, AllowNew: true}); err != nil {
 		t.Fatalf("GitPush main: %v", err)
 	}
-	// Add one more local commit and advance main onto it (do not push), so
-	// the local bookmark is one change ahead of its pushed remote position.
-	if err := c.New(seed, "", "second"); err != nil {
-		t.Fatalf("New: %v", err)
+	// Describe @ and advance main onto it (do not push), so the local
+	// bookmark is exactly one change ahead of its pushed remote position.
+	if err := c.Describe(seed, "second"); err != nil {
+		t.Fatalf("Describe second: %v", err)
 	}
 	if err := c.BookmarkSet(seed, "main", "@", false); err != nil {
 		t.Fatalf("BookmarkSet main: %v", err)
