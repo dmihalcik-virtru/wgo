@@ -7,10 +7,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
-	"strings"
 
 	"github.com/virtru/wgo/internal/claudemd"
+	"github.com/virtru/wgo/internal/discovery"
+	specpkg "github.com/virtru/wgo/internal/spec"
 )
 
 // sharedClaudeMD describes the CLAUDE.md to generate at a multi-repo
@@ -39,30 +41,13 @@ func writeSharedClaudeMD(req sharedClaudeMD) error {
 		return nil
 	}
 
-	sorted := append([]claudemd.RepoEntry(nil), req.Repos...)
+	sorted := slices.Clone(req.Repos)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Dir < sorted[j].Dir })
-
-	specPath := ""
-	if req.Ticket != "" {
-		for _, r := range specSearchOrder(sorted, req.SpecRepoDir) {
-			rel, err := findSpecRel(req.Root, r.Dir, req.Ticket)
-			if err == nil {
-				specPath = rel
-				break
-			}
-			// A missing spec/ dir or spec file is the normal case; anything
-			// else (unreadable dir, spec/ is a file) is worth surfacing, but
-			// keep scanning so one broken repo can't hide a sibling's spec.
-			if !errors.Is(err, fs.ErrNotExist) {
-				fmt.Fprintf(os.Stderr, "warning: could not check for spec in %s: %v\n", r.Dir, err)
-			}
-		}
-	}
 
 	data, err := claudemd.RenderTemplate(claudemd.TemplateData{
 		Ticket:      req.Ticket,
 		Description: req.Description,
-		SpecPath:    specPath,
+		SpecPath:    resolveSpecPath(req.Root, req.Ticket, req.SpecRepoDir, sorted),
 		Repos:       sorted,
 	})
 	if err != nil {
@@ -78,16 +63,57 @@ func writeSharedClaudeMD(req sharedClaudeMD) error {
 	case readErr != nil && !errors.Is(readErr, fs.ErrNotExist):
 		return fmt.Errorf("read %s: %w", path, readErr)
 	}
+	regenerating := readErr == nil
 
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	verb := "wrote"
-	if readErr == nil {
+	if regenerating {
 		verb = "regenerated"
 	}
 	fmt.Fprintf(os.Stderr, "%s shared CLAUDE.md (%d repos): %s\n", verb, len(sorted), path)
 	return nil
+}
+
+// resolveSpecPath finds the spec for ticket among repos and returns its path
+// relative to root, or "" when there is no ticket or no spec anywhere.
+func resolveSpecPath(root, ticket, specRepoDir string, repos []claudemd.RepoEntry) string {
+	if ticket == "" {
+		return ""
+	}
+	for _, r := range specSearchOrder(repos, specRepoDir) {
+		rel, err := findSpecRel(root, r.Dir, ticket)
+		if err == nil {
+			return rel
+		}
+		// A missing spec/ dir or spec file is the normal case; anything else
+		// (unreadable dir, spec/ is a file) is worth surfacing, but keep
+		// scanning so one broken repo can't hide a sibling's spec.
+		if !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "warning: could not check for spec in %s: %v\n", r.Dir, err)
+		}
+	}
+	return ""
+}
+
+// mergeRepoLabels unions the repos found on disk with the ones this `wgo add`
+// run was asked for. Discovery keeps repos that an earlier `wgo join` added, so
+// re-running `add` with a narrower -r list doesn't drop them; the -r specs
+// supply exact owner/repo labels and cover any repo discovery missed.
+func mergeRepoLabels(discovered []claudemd.RepoEntry, specs []repoSpec) []claudemd.RepoEntry {
+	labels := make(map[string]string, len(discovered)+len(specs))
+	for _, r := range discovered {
+		labels[r.Dir] = r.Label
+	}
+	for _, sp := range specs {
+		labels[sp.repo] = sp.String()
+	}
+	merged := make([]claudemd.RepoEntry, 0, len(labels))
+	for dir, label := range labels {
+		merged = append(merged, claudemd.RepoEntry{Dir: dir, Label: label})
+	}
+	return merged
 }
 
 // isManagedWorkspaceRoot reports whether root is a direct child of
@@ -117,48 +143,31 @@ func absResolved(p string) string {
 	return abs
 }
 
-// specSearchOrder returns repos with first at the front, so `add` links the
-// spec it just wrote rather than an identically-named one in a repo that
-// happens to sort earlier. A first of "" (or one not in repos) is a no-op.
+// specSearchOrder returns repos with first moved to the front, so `add` links
+// the spec it just wrote rather than an identically-named one in a repo that
+// happens to sort earlier. A first of "" — or one already leading, or absent
+// from repos — is a no-op.
 func specSearchOrder(repos []claudemd.RepoEntry, first string) []claudemd.RepoEntry {
-	if first == "" {
+	i := slices.IndexFunc(repos, func(r claudemd.RepoEntry) bool { return r.Dir == first })
+	if i <= 0 {
 		return repos
 	}
-	out := make([]claudemd.RepoEntry, 0, len(repos))
-	for _, r := range repos {
-		if r.Dir == first {
-			out = append(out, r)
-		}
-	}
-	for _, r := range repos {
-		if r.Dir != first {
-			out = append(out, r)
-		}
-	}
+	out := slices.Clone(repos)
+	copy(out[1:], out[:i])
+	out[0] = repos[i]
 	return out
 }
 
-// findSpecRel locates <root>/<dir>/spec/<ticket>.md and returns its path
-// relative to root, slash-separated.
-//
-// Matching is case-insensitive because tickets reach us uppercased (see
-// spec.ParseTicketFromBranch) while specs for GitHub issues are conventionally
-// lowercase on disk — spec/gh-9.md. The returned path uses the real on-disk
-// filename rather than the ticket, so the link resolves on case-sensitive
-// filesystems and on github.com even when the stat that found it succeeded
-// only because the local filesystem is case-insensitive.
+// findSpecRel locates the spec for ticket in <root>/<dir> and returns its path
+// relative to root, slash-separated for use in a markdown link. The on-disk
+// filename comes back verbatim from spec.FindByTicket, which is what keeps the
+// link resolving on case-sensitive filesystems and on github.com.
 func findSpecRel(root, dir, ticket string) (string, error) {
-	entries, err := os.ReadDir(filepath.Join(root, dir, "spec"))
+	abs, err := specpkg.FindByTicket(filepath.Join(root, dir), ticket)
 	if err != nil {
 		return "", err
 	}
-	want := ticket + ".md"
-	for _, e := range entries {
-		if !e.IsDir() && strings.EqualFold(e.Name(), want) {
-			return filepath.ToSlash(filepath.Join(dir, "spec", e.Name())), nil
-		}
-	}
-	return "", fs.ErrNotExist
+	return filepath.ToSlash(filepath.Join(dir, "spec", filepath.Base(abs))), nil
 }
 
 // repoDiscoveryClient is the narrow jj surface discoverSharedRepos needs.
@@ -172,10 +181,10 @@ type repoDiscoveryClient interface {
 // repo list in memory, `join` reconstructs it from the filesystem so repos
 // added by earlier runs survive regeneration.
 //
-// A subdirectory counts as a repo root only if it directly contains .jj/.
-// jj.Client.IsRepo is deliberately not used: it walks ancestors looking for
-// .jj/, so it answers "is this inside a repo" and would report true for every
-// subdirectory whenever sharedRoot is itself inside a repo.
+// A subdirectory counts as a repo only if it directly contains .jj/, which is
+// what discovery.IsRepo checks. jj.Client.IsRepo answers a different question —
+// it walks ancestors, so "is this inside a repo" — and would report true for
+// every subdirectory whenever sharedRoot is itself inside a repo.
 func discoverSharedRepos(jjc repoDiscoveryClient, sharedRoot string) ([]claudemd.RepoEntry, error) {
 	entries, err := os.ReadDir(sharedRoot)
 	if err != nil {
@@ -184,12 +193,8 @@ func discoverSharedRepos(jjc repoDiscoveryClient, sharedRoot string) ([]claudemd
 
 	var repos []claudemd.RepoEntry
 	for _, e := range entries {
-		// Stat rather than e.IsDir() so a symlinked repo checkout counts.
 		repoPath := filepath.Join(sharedRoot, e.Name())
-		if info, err := os.Stat(repoPath); err != nil || !info.IsDir() {
-			continue
-		}
-		if info, err := os.Stat(filepath.Join(repoPath, ".jj")); err != nil || !info.IsDir() {
+		if !discovery.IsRepo(repoPath) {
 			continue
 		}
 		repos = append(repos, claudemd.RepoEntry{
@@ -200,33 +205,15 @@ func discoverSharedRepos(jjc repoDiscoveryClient, sharedRoot string) ([]claudemd
 	return repos, nil
 }
 
-// repoLabel resolves repoPath to "owner/repo", preferring "origin" and then
-// trying every other remote in name order before giving up and using dir.
-// Each fallback warns: a label that quietly degrades to a bare directory name,
-// in a file whose job is to orient an agent, is worth a line of output.
+// repoLabel names repoPath as "owner/repo", falling back to dir when no remote
+// resolves. The fallback warns: a label that quietly degrades to a bare
+// directory name, in a file whose job is to orient an agent, is worth a line of
+// output.
 func repoLabel(jjc repoDiscoveryClient, repoPath, dir string) string {
-	remotes, err := jjc.RemoteURLs(repoPath)
+	ownerRepo, err := ownerRepoFor(jjc, repoPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not read remotes for %s, using directory name: %v\n", repoPath, err)
+		fmt.Fprintf(os.Stderr, "warning: %v; using directory name %q\n", err, dir)
 		return dir
 	}
-	if label := extractOwnerRepo(remotes["origin"]); label != "" {
-		return label
-	}
-
-	names := make([]string, 0, len(remotes))
-	for name := range remotes {
-		if name != "origin" {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		if label := extractOwnerRepo(remotes[name]); label != "" {
-			return label
-		}
-	}
-
-	fmt.Fprintf(os.Stderr, "warning: no remote for %s resolves to owner/repo, using directory name\n", repoPath)
-	return dir
+	return ownerRepo
 }

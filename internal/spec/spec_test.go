@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -134,4 +135,44 @@ func TestFindByTicket(t *testing.T) {
 
 	_, err = FindByTicket(tmpDir, "WGO-999")
 	assert.Error(t, err, "FindByTicket should return error for non-existent ticket")
+}
+
+// Tickets arrive uppercased from ParseTicketFromBranch, but specs for GitHub
+// issues live on disk lowercase (spec/gh-9.md). The lookup must find them, and
+// must hand back the on-disk name — callers render the result as a link, and
+// spec/GH-9.md 404s on github.com and on case-sensitive filesystems even though
+// the lookup itself would succeed on macOS.
+func TestFindByTicketUsesOnDiskCase(t *testing.T) {
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(tmpDir, "spec"), 0o755), "mkdir")
+	onDisk := filepath.Join(tmpDir, "spec", "gh-9.md")
+	require.NoError(t, os.WriteFile(onDisk, []byte("test"), 0o644), "write")
+
+	got, err := FindByTicket(tmpDir, "GH-9")
+	require.NoError(t, err, "FindByTicket")
+	assert.Equal(t, onDisk, got)
+}
+
+// writeSharedClaudeMD distinguishes "no spec here, keep looking" from "this
+// repo is broken, warn": a missing spec/ must be fs.ErrNotExist, an unreadable
+// one must not be.
+func TestFindByTicketErrorShape(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	_, err := FindByTicket(tmpDir, "WGO-1")
+	assert.ErrorIs(t, err, fs.ErrNotExist, "missing spec/ dir")
+
+	require.NoError(t, os.Mkdir(filepath.Join(tmpDir, "spec"), 0o755), "mkdir")
+	_, err = FindByTicket(tmpDir, "WGO-1")
+	assert.ErrorIs(t, err, fs.ErrNotExist, "empty spec/ dir")
+
+	_, err = FindByTicket(tmpDir, "")
+	assert.ErrorIs(t, err, fs.ErrNotExist, "empty ticket")
+
+	// spec/ is a file, not a directory: a real problem, not a missing spec.
+	fileRoot := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fileRoot, "spec"), nil, 0o644), "write")
+	_, err = FindByTicket(fileRoot, "WGO-1")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, fs.ErrNotExist, "unreadable spec/ must be distinguishable")
 }
