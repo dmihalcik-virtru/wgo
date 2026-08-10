@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/bujo"
-	"github.com/virtru/wgo/internal/claudemd"
 	"github.com/virtru/wgo/internal/config"
 	gh "github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/jira"
@@ -323,32 +323,16 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 
 	// Onboard a coding agent to the multi-repo workspace (see writeSharedClaudeMD).
 	if !addNoClaudeMD {
-		// Union of what's on disk and what this run created: discovery keeps
-		// repos that a previous `wgo join` added (so re-running `add` with a
-		// narrower -r list doesn't drop them), while this run's -r specs
-		// supply exact owner/repo labels and cover any repo discovery missed.
 		discovered, derr := discoverSharedRepos(jjc, sharedRoot)
 		if derr != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not scan workspace for shared CLAUDE.md: %v\n", derr)
 		}
-		labels := make(map[string]string, len(discovered)+len(specs))
-		for _, r := range discovered {
-			labels[r.Dir] = r.Label
-		}
-		for _, sp := range specs {
-			labels[sp.repo] = sp.owner + "/" + sp.repo
-		}
-		claudeRepos := make([]claudemd.RepoEntry, 0, len(labels))
-		for dir, label := range labels {
-			claudeRepos = append(claudeRepos, claudemd.RepoEntry{Dir: dir, Label: label})
-		}
-
 		err := writeSharedClaudeMD(sharedClaudeMD{
 			Root:        sharedRoot,
 			Ticket:      ticket,
 			Description: desc,
 			SpecRepoDir: specs[specRepoIdx].repo,
-			Repos:       claudeRepos,
+			Repos:       mergeRepoLabels(discovered, specs),
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not write shared CLAUDE.md: %v\n", err)
@@ -470,8 +454,34 @@ func fetchJiraEnrichment(ticket, fallback string) (title, description, priority 
 	return
 }
 
+// ownerRepoFor resolves repoPath to "owner/repo" from its remotes, preferring
+// "origin" and falling back to the remaining remotes in name order. Name order,
+// not map order, so repeated runs against the same repo agree with each other.
+func ownerRepoFor(jjc repoDiscoveryClient, repoPath string) (string, error) {
+	remotes, err := jjc.RemoteURLs(repoPath)
+	if err != nil {
+		return "", fmt.Errorf("read remotes for %s: %w", repoPath, err)
+	}
+	if ownerRepo := extractOwnerRepo(remotes["origin"]); ownerRepo != "" {
+		return ownerRepo, nil
+	}
+
+	names := make([]string, 0, len(remotes))
+	for name := range remotes {
+		if name != "origin" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if ownerRepo := extractOwnerRepo(remotes[name]); ownerRepo != "" {
+			return ownerRepo, nil
+		}
+	}
+	return "", fmt.Errorf("no remote in %s resolves to owner/repo", repoPath)
+}
+
 // detectCurrentJJRepo returns "owner/repo" for the jj repo containing the cwd.
-// Prefers the "origin" remote; falls back to the first remote found.
 func detectCurrentJJRepo(jjc jj.Client) (string, error) {
 	cwd, err := resolveCwd()
 	if err != nil {
@@ -481,27 +491,9 @@ func detectCurrentJJRepo(jjc jj.Client) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("jj root: %w", err)
 	}
-	remotes, err := jjc.RemoteURLs(root)
-	if err != nil || len(remotes) == 0 {
-		return "", fmt.Errorf("no remote URL found in %s", root)
-	}
-	url := remotes["origin"]
-	if url == "" {
-		for _, u := range remotes {
-			url = u
-			break
-		}
-	}
-	ownerRepo := extractOwnerRepo(url)
-	if ownerRepo == "" {
-		return "", fmt.Errorf("could not parse owner/repo from remote %s", url)
-	}
-	return ownerRepo, nil
+	return ownerRepoFor(jjc, root)
 }
 
-// defaultBranchFor returns the default branch of the GitHub repo backing
-// repoPath. Resolves owner/repo from jj's origin remote, then calls the
-// GitHub API.
 // workspaceBookmarkClient is the narrow slice of jj.Client that
 // ensureWorkspaceAndBookmark needs. Keeping it small makes the idempotency
 // logic easy to unit-test with a fake. jj.Client satisfies it.
@@ -538,24 +530,18 @@ func ensureWorkspaceAndBookmark(jjc workspaceBookmarkClient, repoPath, branchNam
 	return nil
 }
 
+// defaultBranchFor returns the default branch of the GitHub repo backing
+// repoPath, resolving owner/repo from its remotes and asking the GitHub API.
 func defaultBranchFor(jjc jj.Client, repoPath string) (string, error) {
-	remotes, err := jjc.RemoteURLs(repoPath)
+	ownerRepo, err := ownerRepoFor(jjc, repoPath)
 	if err != nil {
 		return "", err
 	}
-	url := remotes["origin"]
-	if url == "" {
-		return "", fmt.Errorf("no origin remote in %s", repoPath)
-	}
-	ownerRepo := extractOwnerRepo(url)
-	if ownerRepo == "" {
-		return "", fmt.Errorf("could not parse owner/repo from remote %s", url)
-	}
-	parts := strings.SplitN(ownerRepo, "/", 2)
-	if len(parts) != 2 {
+	owner, repo, ok := strings.Cut(ownerRepo, "/")
+	if !ok {
 		return "", fmt.Errorf("unexpected owner/repo %q", ownerRepo)
 	}
-	return gh.RepoDefaultBranch(parts[0], parts[1])
+	return gh.RepoDefaultBranch(owner, repo)
 }
 
 var jiraRe = regexp.MustCompile(`^[A-Z]+-\d+$`)
