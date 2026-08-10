@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/bujo"
+	"github.com/virtru/wgo/internal/claudemd"
 	"github.com/virtru/wgo/internal/config"
 	gh "github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/jira"
@@ -26,6 +27,7 @@ var (
 	addRepos       []string
 	addNoSpec      bool
 	addSpecRepo    string
+	addNoClaudeMD  bool
 	addJira        bool
 	addJiraProject string
 	addJiraType    string
@@ -69,6 +71,10 @@ The branches are pushed to origin. The shared root is printed to stdout
 so you can cd into it:
   cd $(wgo add DSPX-2674 my task)
 
+With 2+ repos, a shared CLAUDE.md is written at the shared root to orient a
+coding agent across them. A CLAUDE.md that wgo did not generate is never
+overwritten; pass --no-claude-md to skip this entirely.
+
 Plain task (no ticket):
   wgo add fix the login bug
   wgo add -p ship v2 release`,
@@ -95,6 +101,7 @@ func init() {
 	addCmd.Flags().StringArrayVarP(&addRepos, "repo", "r", nil, "owner/repo to create worktree for (repeatable)")
 	addCmd.Flags().BoolVar(&addNoSpec, "no-spec", false, "Skip spec scaffold commit")
 	addCmd.Flags().StringVar(&addSpecRepo, "spec-repo", "", "owner/repo to write spec into (default: first -r repo)")
+	addCmd.Flags().BoolVar(&addNoClaudeMD, "no-claude-md", false, "Skip generating the shared CLAUDE.md for multi-repo workspaces")
 	addCmd.Flags().BoolVar(&addJira, "jira", false, "Create a new Jira work item first, then proceed with the ticket")
 	addCmd.Flags().StringVar(&addJiraProject, "jira-project", "", "Jira project key for new ticket (default: jira.default_project in config)")
 	addCmd.Flags().StringVar(&addJiraType, "jira-type", "", "Jira issue type for new ticket (default: jira.default_type in config, e.g. \"Task\")")
@@ -311,6 +318,40 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 			if _, err := jjc.GitPush(specRepoPath, jj.PushOpts{Bookmarks: []string{branchName}, AllowNew: true}); err != nil && !errors.Is(err, jj.ErrNothingToPush) {
 				return fmt.Errorf("push spec: %w", err)
 			}
+		}
+	}
+
+	// Onboard a coding agent to the multi-repo workspace (see writeSharedClaudeMD).
+	if !addNoClaudeMD {
+		// Union of what's on disk and what this run created: discovery keeps
+		// repos that a previous `wgo join` added (so re-running `add` with a
+		// narrower -r list doesn't drop them), while this run's -r specs
+		// supply exact owner/repo labels and cover any repo discovery missed.
+		discovered, derr := discoverSharedRepos(jjc, sharedRoot)
+		if derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not scan workspace for shared CLAUDE.md: %v\n", derr)
+		}
+		labels := make(map[string]string, len(discovered)+len(specs))
+		for _, r := range discovered {
+			labels[r.Dir] = r.Label
+		}
+		for _, sp := range specs {
+			labels[sp.repo] = sp.owner + "/" + sp.repo
+		}
+		claudeRepos := make([]claudemd.RepoEntry, 0, len(labels))
+		for dir, label := range labels {
+			claudeRepos = append(claudeRepos, claudemd.RepoEntry{Dir: dir, Label: label})
+		}
+
+		err := writeSharedClaudeMD(sharedClaudeMD{
+			Root:        sharedRoot,
+			Ticket:      ticket,
+			Description: desc,
+			SpecRepoDir: specs[specRepoIdx].repo,
+			Repos:       claudeRepos,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write shared CLAUDE.md: %v\n", err)
 		}
 	}
 
