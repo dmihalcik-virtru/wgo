@@ -75,11 +75,17 @@ const BookmarkListTemplate = `"{\"name\":" ++ self.name().escape_json() ` +
 // Fields:
 //
 //	name       workspace name (e.g. "default")
-//	root       absolute path to the workspace's root
+//	root       absolute path to the workspace's root, "" when unavailable
 //	change_id  change id of the workspace's @
 //	commit_id  commit id of the workspace's @
+//
+// root goes through stringify() because jj 0.44 changed WorkspaceRef.root()
+// from String to Option<FsPath>, and FsPath has no escape_json method. The
+// if() guards the Option: a workspace whose root jj cannot resolve reports ""
+// rather than failing the whole listing. stringify() dates to jj 0.27, well
+// under the 0.42 floor this package targets.
 const WorkspaceListTemplate = `"{\"name\":" ++ self.name().escape_json() ` +
-	`++ ",\"root\":" ++ self.root().escape_json() ` +
+	`++ ",\"root\":" ++ if(self.root(), stringify(self.root()).escape_json(), "\"\"") ` +
 	`++ ",\"change_id\":" ++ self.target().change_id().short(32).escape_json() ` +
 	`++ ",\"commit_id\":" ++ self.target().commit_id().short(40).escape_json() ` +
 	`++ "}\n"`
