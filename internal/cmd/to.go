@@ -478,7 +478,9 @@ func findOrCloneRepo(jjc jj.Client, cfg *config.Config, owner, repo string) (str
 
 	// Check if destPath already exists as a repo (not found by discovery
 	// due to path structure, e.g. missing owner directory level)
-	if _, err := os.Stat(destPath); err == nil {
+	_, statErr := os.Stat(destPath)
+	preexisting := statErr == nil
+	if preexisting {
 		if jjc.IsRepo(destPath) {
 			logTo("using existing repo at: %s", destPath)
 			return destPath, nil
@@ -492,7 +494,27 @@ func findOrCloneRepo(jjc jj.Client, cfg *config.Config, owner, repo string) (str
 	cloneURL := gh.RepoCloneURL(owner, repo)
 	logTo("cloning %s...", cloneURL)
 	if err := jjc.GitClone(cloneURL, destPath); err != nil {
-		return "", fmt.Errorf("clone failed: %w", err)
+		// jj clones a commitless remote fine, so this is a fallback for the
+		// cases it does not cover — non-GitHub remotes, older jj, a transient
+		// failure. Reproduce what a successful clone of an empty repo yields:
+		// a colocated repo with origin wired up.
+		logTo("clone failed (%v); initialising an empty repo at %s", err, destPath)
+		if !preexisting {
+			// A failed clone can leave a partial destPath behind, which would
+			// make `jj git init` fail. Only ever remove a path this call
+			// created.
+			_ = os.RemoveAll(destPath)
+		}
+		if initErr := jjc.GitInit(destPath, jj.InitOpts{}); initErr != nil {
+			return "", fmt.Errorf("clone %s failed (%v) and `jj git init` fallback failed: %w; "+
+				"try `jj git clone %s %s` manually", cloneURL, err, initErr, cloneURL, destPath)
+		}
+		if remErr := jjc.GitRemoteAdd(destPath, "origin", cloneURL); remErr != nil {
+			return "", fmt.Errorf("init %s: add origin: %w", destPath, remErr)
+		}
+		if fetchErr := jjc.GitFetch(destPath, "origin", nil); fetchErr != nil {
+			logTo("warning: fetch after init failed (remote may be empty): %v", fetchErr)
+		}
 	}
 
 	return destPath, nil
@@ -546,6 +568,8 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 			if !bookmarkExists(jjc, repoPath, toOnParent) {
 				return "", fmt.Errorf("--on parent %q not found locally or on origin", toOnParent)
 			}
+			// An existing parent implies the repo already has commits, so there
+			// is no trunk to bootstrap.
 			startPoint = toOnParent
 			logTo("creating workspace with new bookmark %s on top of %s...", branch, toOnParent)
 		} else {
@@ -553,14 +577,14 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 			if err != nil {
 				defaultBranch = "main"
 			}
+			if err := ensureTrunk(jjc, repoPath, defaultBranch, parsed.Repo); err != nil {
+				return "", fmt.Errorf("bootstrap %s: %w", defaultBranch, err)
+			}
 			startPoint = defaultBranch + "@origin"
 			logTo("creating workspace with new bookmark %s from %s...", branch, startPoint)
 		}
-		if err := jjc.WorkspaceAdd(repoPath, branch, wtPath, startPoint); err != nil {
-			return "", fmt.Errorf("workspace add failed: %w", err)
-		}
-		if err := jjc.BookmarkCreate(repoPath, branch, startPoint); err != nil {
-			return "", fmt.Errorf("create bookmark %s: %w", branch, err)
+		if err := ensureWorkspaceAndBookmark(jjc, repoPath, branch, wtPath, startPoint, parsed.Repo); err != nil {
+			return "", err
 		}
 		if toOnParent != "" {
 			if err := recordStackParent(repoPath, branch, toOnParent); err != nil {
