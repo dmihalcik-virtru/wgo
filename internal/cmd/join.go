@@ -121,12 +121,14 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 			fmt.Fprintf(os.Stderr, "warning: could not detect default branch, assuming 'main': %v\n", err)
 			defaultBranch = "main"
 		}
-		fmt.Fprintf(os.Stderr, "creating workspace with new bookmark %s from origin/%s...\n", branch, defaultBranch)
-		if err := jjc.WorkspaceAdd(repoPath, branch, newWtPath, "origin/"+defaultBranch); err != nil {
-			return fmt.Errorf("workspace add: %w", err)
+		// A commitless remote has no trunk to branch from; seed one first.
+		if err := ensureTrunk(jjc, repoPath, defaultBranch, spec.repo); err != nil {
+			return fmt.Errorf("bootstrap %s: %w", defaultBranch, err)
 		}
-		if err := jjc.BookmarkCreate(repoPath, branch, "origin/"+defaultBranch); err != nil {
-			return fmt.Errorf("create bookmark %s: %w", branch, err)
+		startPoint := defaultBranch + "@origin"
+		fmt.Fprintf(os.Stderr, "creating workspace with new bookmark %s from %s...\n", branch, startPoint)
+		if err := ensureWorkspaceAndBookmark(jjc, repoPath, branch, newWtPath, startPoint, spec.repo); err != nil {
+			return err
 		}
 		defer func() {
 			if retErr != nil {

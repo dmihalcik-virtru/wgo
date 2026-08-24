@@ -232,7 +232,13 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 			fmt.Fprintf(os.Stderr, "enabling colocation for %s...\n", repoPath)
 		}
 
-		if err := ensureWorkspaceAndBookmark(jjc, repoPath, branchName, wtPath, defaultBranch, spec.repo); err != nil {
+		// A commitless remote has no <defaultBranch>@origin to branch from, so
+		// seed one before anything tries to resolve that revset.
+		if err := ensureTrunk(jjc, repoPath, defaultBranch, spec.repo); err != nil {
+			return fmt.Errorf("bootstrap %s in %s: %w", defaultBranch, spec.repo, err)
+		}
+
+		if err := ensureWorkspaceAndBookmark(jjc, repoPath, branchName, wtPath, defaultBranch+"@origin", spec.repo); err != nil {
 			return err
 		}
 
@@ -505,18 +511,22 @@ type workspaceBookmarkClient interface {
 }
 
 // ensureWorkspaceAndBookmark creates the workspace and bookmark for branchName
-// in repoPath, basing both at <defaultBranch>@origin. It is idempotent: if a
-// prior (possibly failed) run already registered the workspace or bookmark, the
-// corresponding step is skipped so `wgo add` can be safely re-run. An existing
-// bookmark is left where it points — it may already carry commits — rather than
-// being reset. repoLabel is used only for error messages.
-func ensureWorkspaceAndBookmark(jjc workspaceBookmarkClient, repoPath, branchName, wtPath, defaultBranch, repoLabel string) error {
+// in repoPath, basing both at startPoint (a full revset, e.g. "main@origin" or
+// the name of a stack parent). It is idempotent: if a prior (possibly failed)
+// run already registered the workspace or bookmark, the corresponding step is
+// skipped so the command can be safely re-run. An existing bookmark is left
+// where it points — it may already carry commits — rather than being reset.
+// repoLabel is used only for error messages.
+//
+// Callers basing work on trunk must call ensureTrunk first: startPoint has to
+// resolve, and on a commitless remote "<defaultBranch>@origin" does not.
+func ensureWorkspaceAndBookmark(jjc workspaceBookmarkClient, repoPath, branchName, wtPath, startPoint, repoLabel string) error {
 	wss, _ := jjc.ListWorkspaces(repoPath)
 	if slices.ContainsFunc(wss, func(w jj.Workspace) bool { return w.Name == branchName }) {
 		fmt.Fprintf(os.Stderr, "workspace %s exists, skipping\n", branchName)
 	} else {
 		fmt.Fprintf(os.Stderr, "creating workspace %s...\n", wtPath)
-		if err := jjc.WorkspaceAdd(repoPath, branchName, wtPath, defaultBranch+"@origin"); err != nil {
+		if err := jjc.WorkspaceAdd(repoPath, branchName, wtPath, startPoint); err != nil {
 			return fmt.Errorf("workspace add %s: %w", repoLabel, err)
 		}
 	}
@@ -524,8 +534,94 @@ func ensureWorkspaceAndBookmark(jjc workspaceBookmarkClient, repoPath, branchNam
 	bms, _ := jjc.BookmarkList(repoPath, jj.BookmarkListOpts{Local: true})
 	if slices.ContainsFunc(bms, func(b jj.Bookmark) bool { return b.Name == branchName }) {
 		fmt.Fprintf(os.Stderr, "bookmark %s exists, skipping\n", branchName)
-	} else if err := jjc.BookmarkCreate(repoPath, branchName, defaultBranch+"@origin"); err != nil {
+	} else if err := jjc.BookmarkCreate(repoPath, branchName, startPoint); err != nil {
 		return fmt.Errorf("create bookmark %s: %w", branchName, err)
+	}
+	return nil
+}
+
+// remoteBookmarkRevset builds a revset matching exactly <branch>@<remote>.
+// Unlike the bare "<branch>@<remote>" symbol, which errors with "Revision
+// doesn't exist" when the bookmark is absent, this yields the empty set — so
+// callers can distinguish "no such bookmark" from a genuine jj failure. It also
+// quotes names containing "/" safely, and mirrors jj's own definition of
+// trunk().
+func remoteBookmarkRevset(branch, remote string) string {
+	return fmt.Sprintf("remote_bookmarks(exact:%q, exact:%q)", branch, remote)
+}
+
+// trunkClient is the narrow slice of jj.Client that ensureTrunk needs. Keeping
+// it small makes the bootstrap sequence easy to unit-test with a fake.
+// jj.Client satisfies it.
+type trunkClient interface {
+	CountRevset(repo, revset string) (int, error)
+	IsClean(workspacePath string) (bool, []string, error)
+	Describe(workspacePath, msg string) error
+	CurrentChange(workspacePath string) (jj.Change, error)
+	New(workspacePath, revset, msg string) error
+	BookmarkSet(repo, name, revset string, allowBackwards bool) error
+	GitPush(repo string, opts jj.PushOpts) (jj.PushResult, error)
+}
+
+// trunkBootstrapMessage is the description given to the commit ensureTrunk
+// authors when it seeds an empty remote.
+const trunkBootstrapMessage = "chore: initialize repository"
+
+// ensureTrunk guarantees that <defaultBranch>@origin exists so callers can use
+// it as a start point. It is a no-op for any repo that already has commits.
+//
+// A brand-new GitHub repo has no refs at all, yet the API still reports a
+// default_branch — so defaultBranchFor happily returns "main" for a repo where
+// main@origin cannot resolve. Rather than fail there, seed the remote with an
+// initial commit on defaultBranch and push it. That also stops GitHub from
+// retargeting default_branch to the first feature branch pushed, which would
+// leave the repo with no trunk to open PRs against.
+func ensureTrunk(jjc trunkClient, repoPath, defaultBranch, repoLabel string) error {
+	n, err := jjc.CountRevset(repoPath, remoteBookmarkRevset(defaultBranch, "origin"))
+	if err != nil {
+		// The probe itself misbehaved. Say nothing and let the caller's normal
+		// path run, so jj's own diagnostic surfaces instead of being masked by
+		// an unexpected bootstrap.
+		return nil
+	}
+	if n > 0 {
+		return nil
+	}
+
+	// Never describe a working copy that has user edits in it.
+	if clean, _, err := jjc.IsClean(repoPath); err == nil && !clean {
+		return fmt.Errorf("%s has no commits on %s, but its working copy at %s is dirty; "+
+			"commit or `jj abandon` there first, then re-run",
+			repoLabel, defaultBranch, repoPath)
+	}
+
+	fmt.Fprintf(os.Stderr, "%s has no commits; creating initial commit on %s...\n", repoLabel, defaultBranch)
+
+	// @ in a freshly cloned or inited empty repo is an undescribed change whose
+	// only parent is root(), so describing it produces exactly an initial
+	// commit. Its tree is empty; git and GitHub both accept that.
+	if err := jjc.Describe(repoPath, trunkBootstrapMessage); err != nil {
+		return fmt.Errorf("describe initial commit: %w", err)
+	}
+	initial, err := jjc.CurrentChange(repoPath)
+	if err != nil {
+		return fmt.Errorf("read initial commit: %w", err)
+	}
+	// Start a fresh change so the working copy is left clean.
+	if err := jjc.New(repoPath, "", ""); err != nil {
+		return fmt.Errorf("new change after initial commit: %w", err)
+	}
+	// `jj bookmark set` creates the bookmark when it does not exist yet.
+	if err := jjc.BookmarkSet(repoPath, defaultBranch, initial.CommitID, false); err != nil {
+		return fmt.Errorf("set bookmark %s: %w", defaultBranch, err)
+	}
+	if _, err := jjc.GitPush(repoPath, jj.PushOpts{
+		Bookmarks: []string{defaultBranch},
+		AllowNew:  true,
+	}); err != nil && !errors.Is(err, jj.ErrNothingToPush) {
+		return fmt.Errorf("push %s: %w; the initial commit exists locally in %s, "+
+			"so `jj -R %s git push --bookmark %s` will retry it",
+			defaultBranch, err, repoPath, repoPath, defaultBranch)
 	}
 	return nil
 }

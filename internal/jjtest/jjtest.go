@@ -35,6 +35,38 @@ func SetIdentity(t *testing.T) {
 	t.Setenv("JJ_EMAIL", "wgo-test@example.com")
 }
 
+// NewBareRemote creates an empty bare git repo (zero commits, no refs) inside
+// t.TempDir() and returns its path. It stands in for a brand-new GitHub repo,
+// which reports a default_branch but has nothing to resolve it to.
+func NewBareRemote(t *testing.T) string {
+	t.Helper()
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatalf("mkdir bare remote: %v", err)
+	}
+	cmd := exec.Command("git", "init", "--bare", "-q", remote)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v: %s", err, out)
+	}
+	return remote
+}
+
+// NewEmptyRepo creates a colocated jj repo with zero commits — unlike NewRepo
+// it deliberately skips `jj describe`, so @ is an undescribed change whose only
+// parent is root() — with origin pointed at remote. Use it to exercise the
+// commitless-remote paths.
+func NewEmptyRepo(t *testing.T, remote string) (string, *jj.CLIClient) {
+	t.Helper()
+	RequireJJ(t)
+	repo := t.TempDir()
+	runJJ(t, repo, "git", "init", "--colocate")
+	SetIdentity(t)
+	runJJ(t, repo, "config", "set", "--repo", "user.name", "wgo-test")
+	runJJ(t, repo, "config", "set", "--repo", "user.email", "wgo-test@example.com")
+	runJJ(t, repo, "git", "remote", "add", "origin", remote)
+	return repo, jj.NewCLI()
+}
+
 // NewRepo creates a fresh colocated jj repo inside t.TempDir(), seeds an
 // initial described commit, and returns the repo root plus a CLIClient
 // pointing at the system `jj` binary.
