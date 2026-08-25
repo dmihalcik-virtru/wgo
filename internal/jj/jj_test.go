@@ -483,6 +483,110 @@ func TestMainWorkspaceRoot(t *testing.T) {
 	}
 }
 
+// TestWorkspaceAddCreatesChild pins the jj semantic `wgo park` is built on:
+// `jj workspace add -r X` does not check X out, it creates the new working-copy
+// commit as a *child* of X (jj's own wording: "as if you had run `jj new X`").
+// If a jj release ever changed that to a checkout, park's follow-up `jj edit`
+// would become a no-op-or-worse, so this failing is the signal to revisit it.
+func TestWorkspaceAddCreatesChild(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "work", map[string]string{"f.txt": "x"})
+	if err := c.BookmarkCreate(repo, "feat", "@-"); err != nil {
+		t.Fatalf("BookmarkCreate: %v", err)
+	}
+	target, err := c.Log(repo, "feat")
+	if err != nil || len(target) == 0 {
+		t.Fatalf("Log(feat): %v (%d entries)", err, len(target))
+	}
+
+	dest := filepath.Join(t.TempDir(), "ws")
+	if err := c.WorkspaceAdd(repo, "ws", dest, "feat"); err != nil {
+		t.Fatalf("WorkspaceAdd: %v", err)
+	}
+
+	head, err := c.CurrentChange(dest)
+	if err != nil {
+		t.Fatalf("CurrentChange(dest): %v", err)
+	}
+	if head.ChangeID == target[0].ChangeID {
+		t.Fatalf("@ in the new workspace is the target change %s; expected a child of it", head.ChangeID)
+	}
+	if !head.Empty {
+		t.Errorf("the new working-copy commit should be empty, got a non-empty change")
+	}
+	parents, err := c.Log(dest, "("+head.ChangeID+")-")
+	if err != nil {
+		t.Fatalf("Log(parents): %v", err)
+	}
+	if len(parents) != 1 || parents[0].ChangeID != target[0].ChangeID {
+		t.Fatalf("parents of the new @ = %v, want exactly the target change %s", parents, target[0].ChangeID)
+	}
+}
+
+// TestParkSequenceLandsWorkInDestination pins the whole M2→M3→M5 sequence
+// `wgo park` performs, so a jj upgrade that changes any step's semantics breaks
+// this focused test rather than the command.
+func TestParkSequenceLandsWorkInDestination(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "trunkish", map[string]string{"base.txt": "b"})
+	if err := c.BookmarkCreate(repo, "base", "@-"); err != nil {
+		t.Fatalf("BookmarkCreate(base): %v", err)
+	}
+	// The work to be parked: a described change on top of base.
+	if err := c.Describe(repo, "stranded work"); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	work, err := c.CurrentChange(repo)
+	if err != nil {
+		t.Fatalf("CurrentChange: %v", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "ws")
+	// M2: populate the destination before the source is cleared.
+	if err := c.WorkspaceAdd(repo, "parked", dest, work.ChangeID); err != nil {
+		t.Fatalf("WorkspaceAdd: %v", err)
+	}
+	// M3: return the source's @ to base. Must precede M5 — while both
+	// workspaces resolve @ to the same change, each snapshot rewrites the
+	// shared commit and stales the other.
+	if err := c.New(repo, "base", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_ = c.UpdateStale(dest) // M4: M3 advanced the op head.
+	// M5: make the destination's @ the work itself.
+	if err := c.EditChange(dest, work.ChangeID); err != nil {
+		t.Fatalf("EditChange: %v", err)
+	}
+
+	destHead, err := c.CurrentChange(dest)
+	if err != nil {
+		t.Fatalf("CurrentChange(dest): %v", err)
+	}
+	if destHead.ChangeID != work.ChangeID {
+		t.Fatalf("dest @ = %s, want the parked change %s", destHead.ChangeID, work.ChangeID)
+	}
+
+	// The source is left on a clean empty change with the work gone from it.
+	srcHead, err := c.CurrentChange(repo)
+	if err != nil {
+		t.Fatalf("CurrentChange(repo): %v", err)
+	}
+	if srcHead.ChangeID == work.ChangeID {
+		t.Fatalf("source @ is still the parked change %s", work.ChangeID)
+	}
+	if !srcHead.Empty {
+		t.Errorf("source @ should be an empty change after park")
+	}
+	// M2's empty child is auto-abandoned by M5, so the work is a lone head.
+	n, err := c.CountRevset(repo, "base..("+work.ChangeID+"::)")
+	if err != nil {
+		t.Fatalf("CountRevset: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("descendants of the parked work = %d, want 1 (M2's empty child should be abandoned)", n)
+	}
+}
+
 func TestAheadBehindNoRemote(t *testing.T) {
 	repo, c := jjtest.NewRepo(t)
 	jjtest.Commit(t, repo, "x", map[string]string{"f.txt": "x"})
@@ -716,4 +820,181 @@ func runRaw(t *testing.T, dir, name string, args ...string) (string, error) {
 	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// remoteBookmarkRevset mirrors the helper in internal/cmd. Duplicated here so
+// these tests pin jj's behaviour for the exact revset that code relies on.
+func remoteBookmarkRevset(branch, remote string) string {
+	return `remote_bookmarks(exact:"` + branch + `", exact:"` + remote + `")`
+}
+
+// The emptiness probe must distinguish "no such bookmark" from a jj failure.
+// remote_bookmarks(exact:...) yields the empty set; the bare "main@origin"
+// symbol errors instead, which is why the probe cannot use it.
+func TestCountRevsetAbsentRemoteBookmark(t *testing.T) {
+	jjtest.RequireJJ(t)
+	remote := jjtest.NewBareRemote(t)
+	repo, c := jjtest.NewEmptyRepo(t, remote)
+
+	n, err := c.CountRevset(repo, remoteBookmarkRevset("main", "origin"))
+	if err != nil {
+		t.Fatalf("CountRevset on empty repo: unexpected error: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("CountRevset on empty repo = %d, want 0", n)
+	}
+
+	// Seed the remote, then the same probe must find it.
+	if err := c.Describe(repo, "initial"); err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	ch, err := c.CurrentChange(repo)
+	if err != nil {
+		t.Fatalf("current change: %v", err)
+	}
+	if err := c.New(repo, "", ""); err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := c.BookmarkSet(repo, "main", ch.CommitID, false); err != nil {
+		t.Fatalf("bookmark set: %v", err)
+	}
+	if _, err := c.GitPush(repo, jj.PushOpts{Bookmarks: []string{"main"}, AllowNew: true}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	n, err = c.CountRevset(repo, remoteBookmarkRevset("main", "origin"))
+	if err != nil {
+		t.Fatalf("CountRevset after push: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("CountRevset after push = %d, want 1", n)
+	}
+}
+
+// Companion negative for TestCountRevsetAbsentRemoteBookmark: documents why the
+// obvious revset is unusable as a probe.
+func TestCountRevsetBareRemoteSymbolErrors(t *testing.T) {
+	jjtest.RequireJJ(t)
+	remote := jjtest.NewBareRemote(t)
+	repo, c := jjtest.NewEmptyRepo(t, remote)
+
+	if _, err := c.CountRevset(repo, "main@origin"); err == nil {
+		t.Fatal("CountRevset(main@origin) on an empty repo: want error, got nil")
+	}
+}
+
+// `jj bookmark set` creates the bookmark when absent, so the trunk bootstrap
+// needs no separate BookmarkCreate call.
+func TestBookmarkSetCreatesWhenAbsent(t *testing.T) {
+	jjtest.RequireJJ(t)
+	remote := jjtest.NewBareRemote(t)
+	repo, c := jjtest.NewEmptyRepo(t, remote)
+
+	if err := c.Describe(repo, "initial"); err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	ch, err := c.CurrentChange(repo)
+	if err != nil {
+		t.Fatalf("current change: %v", err)
+	}
+	if err := c.BookmarkSet(repo, "main", ch.CommitID, false); err != nil {
+		t.Fatalf("bookmark set on absent bookmark: %v", err)
+	}
+
+	bms, err := c.BookmarkList(repo, jj.BookmarkListOpts{Local: true})
+	if err != nil {
+		t.Fatalf("bookmark list: %v", err)
+	}
+	if !slices.ContainsFunc(bms, func(b jj.Bookmark) bool { return b.Name == "main" }) {
+		t.Fatalf("bookmark main not created; got %+v", bms)
+	}
+}
+
+// Characterization: jj clones a commitless remote successfully, leaving @ at
+// root with origin wired up. findOrCloneRepo's GitInit fallback exists for the
+// cases this does not cover, so record which branch is live.
+func TestGitCloneEmptyRemote(t *testing.T) {
+	jjtest.RequireJJ(t)
+	jjtest.SetIdentity(t)
+	remote := jjtest.NewBareRemote(t)
+	dest := filepath.Join(t.TempDir(), "clone")
+	c := jj.NewCLI()
+
+	if err := c.GitClone(remote, dest); err != nil {
+		t.Logf("GitClone rejects an empty remote (%v); findOrCloneRepo's init fallback carries this case", err)
+		if err := c.GitInit(dest, jj.InitOpts{}); err != nil {
+			t.Fatalf("GitInit fallback: %v", err)
+		}
+		if err := c.GitRemoteAdd(dest, "origin", remote); err != nil {
+			t.Fatalf("GitRemoteAdd fallback: %v", err)
+		}
+	} else {
+		t.Logf("GitClone accepts an empty remote; the init fallback is defensive only")
+	}
+
+	if !c.IsRepo(dest) {
+		t.Fatal("dest is not a jj repo")
+	}
+	remotes, err := c.RemoteURLs(dest)
+	if err != nil {
+		t.Fatalf("remote urls: %v", err)
+	}
+	if remotes["origin"] == "" {
+		t.Fatalf("origin not configured; got %+v", remotes)
+	}
+}
+
+// End-to-end at the jj layer: the exact sequence ensureTrunk performs against a
+// commitless remote must leave refs/heads/main on that remote.
+func TestEmptyRepoTrunkBootstrapPush(t *testing.T) {
+	jjtest.RequireJJ(t)
+	remote := jjtest.NewBareRemote(t)
+	repo, c := jjtest.NewEmptyRepo(t, remote)
+
+	clean, _, err := c.IsClean(repo)
+	if err != nil {
+		t.Fatalf("is clean: %v", err)
+	}
+	if !clean {
+		t.Fatal("freshly created empty repo should have a clean working copy")
+	}
+
+	if err := c.Describe(repo, "chore: initialize repository"); err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	initial, err := c.CurrentChange(repo)
+	if err != nil {
+		t.Fatalf("current change: %v", err)
+	}
+	if err := c.New(repo, "", ""); err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := c.BookmarkSet(repo, "main", initial.CommitID, false); err != nil {
+		t.Fatalf("bookmark set: %v", err)
+	}
+	if _, err := c.GitPush(repo, jj.PushOpts{Bookmarks: []string{"main"}, AllowNew: true}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	out, err := runRaw(t, "", "git", "--git-dir="+remote, "show-ref")
+	if err != nil {
+		t.Fatalf("show-ref on remote: %v", err)
+	}
+	if !strings.Contains(out, "refs/heads/main") {
+		t.Fatalf("remote missing refs/heads/main; show-ref = %q", out)
+	}
+
+	// The working copy is left clean and the probe now resolves, so the normal
+	// <defaultBranch>@origin start point works from here on.
+	clean, _, err = c.IsClean(repo)
+	if err != nil {
+		t.Fatalf("is clean after bootstrap: %v", err)
+	}
+	if !clean {
+		t.Fatal("working copy should be clean after bootstrap")
+	}
+	n, err := c.CountRevset(repo, remoteBookmarkRevset("main", "origin"))
+	if err != nil || n != 1 {
+		t.Fatalf("probe after bootstrap = (%d, %v), want (1, nil)", n, err)
+	}
 }

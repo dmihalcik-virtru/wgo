@@ -153,7 +153,19 @@ wgo plan add "reason"    # Annotate current branch with purpose
 wgo ls                   # List all known worktrees/branches across repos
 wgo track <path>         # Start tracking a repo/worktree
 wgo agent status         # Show what AI agents are doing across worktrees
+wgo park                 # Move work stranded on a main clone into its own workspace
+wgo doctor               # Report stranded work, redundant trunk workspaces, spec violations
 ```
+
+### Worktree layout
+
+`wgo to` resolves a target to exactly one of these:
+
+- `<mains_dir>/<owner>/<repo>` — the clone, checked out on trunk. A bare repo
+  URL or an explicit trunk URL resolves here; the clone already *is* the trunk
+  checkout, so wgo never creates a second copy of it under `worktrees_dir`.
+- `<worktrees_dir>/<slug>/<repo>` — one workspace per branch or issue.
+- `<worktrees_dir>/pr-<N>-<slug>/<owner>/<repo>` — one workspace per PR.
 
 ### Integration Points
 
@@ -235,5 +247,11 @@ pkg/
 - **Read-heavy, write-light** — most operations query state; `go-git` is sufficient (no merge support needed)
 - **Fast** — queries under 100ms; cache `gh` API calls with TTL
 - **Non-destructive** — never modify user's repos; only read git state and maintain separate `~/.wgo` storage
+  - `wgo park` is the one deliberate exception: it rewrites the jj DAG of a main
+    clone to relocate stranded work. It is opt-in (never triggered by a lookup),
+    preflight-gated (every check is read-only and runs before the first
+    mutation, so a rejected park leaves the operation log untouched),
+    `--dry-run`-able, and rolls back over completed steps on failure. `wgo to`
+    and `wgo doctor` only *report* the same condition — they never move anything.
 - **Human-editable plan** — the `.plan` file must remain readable and manually editable markdown; parse tolerantly
 - **Graceful degradation** — work without `gh`, without global hooks, without tmux; each integration is optional
