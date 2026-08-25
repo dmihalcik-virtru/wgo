@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/virtru/wgo/internal/config"
 )
 
 // DiscoveredRepo represents a discovered jj repository or workspace.
@@ -20,15 +22,54 @@ type Discovery struct {
 	baseDirs        []string
 	scanDepth       int
 	excludePatterns []string
+	excludeRoots    []string
+}
+
+// Option customises a Discovery.
+type Option func(*Discovery)
+
+// ExcludeRoots skips any directory at or beneath one of dirs.
+//
+// This is a whole-subtree exclusion keyed on the path, deliberately distinct
+// from excludePatterns, which is a substring match on a single path component:
+// excluding "rigs" that way would also hide a legitimate repo named
+// "mains/acme/rigsomething".
+func ExcludeRoots(dirs ...string) Option {
+	return func(d *Discovery) {
+		for _, dir := range dirs {
+			if dir = strings.TrimSpace(dir); dir != "" {
+				d.excludeRoots = append(d.excludeRoots, filepath.Clean(dir))
+			}
+		}
+	}
 }
 
 // New creates a new Discovery with the given parameters.
-func New(baseDirs []string, scanDepth int, excludePatterns []string) *Discovery {
-	return &Discovery{
+func New(baseDirs []string, scanDepth int, excludePatterns []string, opts ...Option) *Discovery {
+	d := &Discovery{
 		baseDirs:        baseDirs,
 		scanDepth:       scanDepth,
 		excludePatterns: excludePatterns,
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
+}
+
+// FromConfig builds the Discovery every wgo command should use.
+//
+// Going through one constructor is what keeps rigs invisible: a rig holds
+// many pinned, bookmark-less checkouts of the same repository, so any command
+// that walked into rig.dir would report them as a heap of stale, untracked
+// worktrees. Call this rather than New so no caller can forget the exclusion.
+func FromConfig(cfg *config.Config) *Discovery {
+	return New(
+		cfg.Discovery.BaseDirs,
+		cfg.Discovery.ScanDepth,
+		cfg.Discovery.ExcludePatterns,
+		ExcludeRoots(cfg.Rig.Dir),
+	)
 }
 
 // DiscoverAll discovers all repositories and workspaces.
@@ -36,6 +77,9 @@ func (d *Discovery) DiscoverAll() ([]DiscoveredRepo, error) {
 	var repos []DiscoveredRepo
 
 	for _, baseDir := range d.baseDirs {
+		if d.isExcludedRoot(baseDir) {
+			continue
+		}
 		found, err := d.discoverInDir(baseDir, 0)
 		if err != nil {
 			// Log but continue with other directories
@@ -74,6 +118,10 @@ func (d *Discovery) discoverInDir(dir string, depth int) ([]DiscoveredRepo, erro
 
 		fullPath := filepath.Join(dir, entry.Name())
 
+		if d.isExcludedRoot(fullPath) {
+			continue
+		}
+
 		// Check if it's a .jj directory (a jj repo or workspace).
 		if entry.Name() == ".jj" && entry.IsDir() {
 			isWorktree := d.isSecondaryWorkspace(fullPath)
@@ -110,6 +158,20 @@ func (d *Discovery) discoverInDir(dir string, depth int) ([]DiscoveredRepo, erro
 func (d *Discovery) isExcluded(path string) bool {
 	for _, pattern := range d.excludePatterns {
 		if pattern == path || strings.Contains(path, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// isExcludedRoot reports whether path is at or beneath an ExcludeRoots entry.
+func (d *Discovery) isExcludedRoot(path string) bool {
+	if len(d.excludeRoots) == 0 {
+		return false
+	}
+	clean := filepath.Clean(path)
+	for _, root := range d.excludeRoots {
+		if clean == root || strings.HasPrefix(clean, root+string(filepath.Separator)) {
 			return true
 		}
 	}

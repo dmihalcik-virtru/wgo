@@ -118,7 +118,7 @@ func showToday() error {
 	}
 
 	// Discover repos
-	d := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	d := discovery.FromConfig(cfg)
 	repos, err := d.DiscoverAll()
 	if err != nil {
 		return fmt.Errorf("failed to discover repositories: %w", err)
@@ -728,7 +728,7 @@ func showTodayPair(cfg *config.Config) error {
 		since = time.Date(y, m, d, 0, 0, 0, 0, now.Location())
 	}
 
-	d := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	d := discovery.FromConfig(cfg)
 	repos, err := d.DiscoverAll()
 	if err != nil {
 		return fmt.Errorf("failed to discover repositories: %w", err)

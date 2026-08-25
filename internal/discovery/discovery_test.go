@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/virtru/wgo/internal/config"
 )
 
 // setupJJRepo initializes a fresh jj repo in dir. Tests are skipped if jj is
@@ -90,6 +91,103 @@ func TestDiscoveryExcludePatterns(t *testing.T) {
 
 	require.Len(t, repos, 1, "expected 1 repo (excluded node_modules)")
 	assert.Equal(t, "included", repos[0].Name)
+}
+
+func TestExcludeRoots(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	repoDir := filepath.Join(tmpDir, "mains", "acme", "widget")
+	require.NoError(t, os.MkdirAll(repoDir, 0o755))
+	setupJJRepo(t, repoDir)
+
+	// A rig holds several pinned checkouts of the same repo. Every one of them
+	// is a jj workspace on disk, so without the exclusion they all show up.
+	rigDir := filepath.Join(tmpDir, "rigs")
+	for _, pin := range []string{"widget-v1.0.0", "widget-v2.0.0"} {
+		src := filepath.Join(rigDir, "acme-1.0", "src", pin)
+		require.NoError(t, os.MkdirAll(src, 0o755))
+		setupJJRepo(t, src)
+	}
+
+	repos, err := New([]string{tmpDir}, 6, nil).DiscoverAll()
+	require.NoError(t, err)
+	assert.Len(t, repos, 3, "without ExcludeRoots the rig checkouts are discovered")
+
+	repos, err = New([]string{tmpDir}, 6, nil, ExcludeRoots(rigDir)).DiscoverAll()
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	assert.Equal(t, repoDir, repos[0].Path)
+}
+
+// ExcludeRoots must not behave like excludePatterns, which is a substring match
+// on a path component and would also hide a repo merely named "rigsomething".
+func TestExcludeRootsIsNotASubstringMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	sibling := filepath.Join(tmpDir, "rigsomething")
+	require.NoError(t, os.MkdirAll(sibling, 0o755))
+	setupJJRepo(t, sibling)
+
+	rigDir := filepath.Join(tmpDir, "rigs")
+	require.NoError(t, os.MkdirAll(rigDir, 0o755))
+
+	repos, err := New([]string{tmpDir}, 3, nil, ExcludeRoots(rigDir)).DiscoverAll()
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	assert.Equal(t, "rigsomething", repos[0].Name)
+
+	// The substring-matching mechanism, for contrast.
+	repos, err = New([]string{tmpDir}, 3, []string{"rigs"}).DiscoverAll()
+	require.NoError(t, err)
+	assert.Empty(t, repos, "excludePatterns hides the sibling too; that is why ExcludeRoots exists")
+}
+
+// A base dir that is itself excluded must be skipped without being walked.
+func TestExcludeRootsCoversBaseDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	repoDir := filepath.Join(tmpDir, "repo")
+	require.NoError(t, os.MkdirAll(repoDir, 0o755))
+	setupJJRepo(t, repoDir)
+
+	repos, err := New([]string{tmpDir}, 3, nil, ExcludeRoots(tmpDir+string(filepath.Separator))).DiscoverAll()
+	require.NoError(t, err)
+	assert.Empty(t, repos)
+}
+
+func TestExcludeRootsIgnoresBlanks(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	repoDir := filepath.Join(tmpDir, "repo")
+	require.NoError(t, os.MkdirAll(repoDir, 0o755))
+	setupJJRepo(t, repoDir)
+
+	// An unset rig.dir must not be cleaned to "." and swallow everything.
+	repos, err := New([]string{tmpDir}, 3, nil, ExcludeRoots("", "  ")).DiscoverAll()
+	require.NoError(t, err)
+	assert.Len(t, repos, 1)
+}
+
+func TestFromConfigExcludesRigDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	repoDir := filepath.Join(tmpDir, "repo")
+	require.NoError(t, os.MkdirAll(repoDir, 0o755))
+	setupJJRepo(t, repoDir)
+
+	rigCheckout := filepath.Join(tmpDir, "rigs", "demo", "src", "repo-v1.0.0")
+	require.NoError(t, os.MkdirAll(rigCheckout, 0o755))
+	setupJJRepo(t, rigCheckout)
+
+	cfg := &config.Config{}
+	cfg.Discovery.BaseDirs = []string{tmpDir}
+	cfg.Discovery.ScanDepth = 6
+	cfg.Rig.Dir = filepath.Join(tmpDir, "rigs")
+
+	repos, err := FromConfig(cfg).DiscoverAll()
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	assert.Equal(t, repoDir, repos[0].Path)
 }
 
 func TestIsRepo(t *testing.T) {
