@@ -301,7 +301,20 @@ wgo to https://github.com/virtru/platform/tree/feature/auth
 wgo to https://github.com/virtru/platform/issues/42
 ```
 
+**The trunk lives in `mains_dir`, everything else in `worktrees_dir`.** A bare repo URL or an explicit trunk URL resolves to the clone itself — that clone already *is* the trunk checkout, so there is no second copy of it:
+
+```bash
+wgo to https://github.com/virtru/platform.git
+wgo to https://github.com/virtru/platform/tree/main
+# → ~/Documents/GitHub/mains/virtru/platform
+
+wgo to https://github.com/virtru/platform/tree/feature/auth
+# → ~/Documents/GitHub/worktrees/feature-auth/platform
+```
+
 If the repo isn't cloned locally, `wgo to` clones it first. If a worktree for the branch already exists, it returns the existing path.
+
+If the main clone has in-progress work on it, `wgo to` still prints the clone's path and warns on stderr — it never moves your work. Use [`wgo park`](#park-work-from-a-main-clone) when you want it relocated.
 
 Progress messages go to stderr, so you can wrap it with `cd`:
 
@@ -376,6 +389,31 @@ wgo track /path/to/repo  # Track specific path
 
 Manually registers a repository for tracking in `~/.wgo/state.json`.
 
+### Park work from a main clone
+
+A clone under `mains_dir` is the trunk checkout; wgo expects its `@` to be a clean empty change on trunk. When you start editing there instead of in a worktree, `wgo park` moves that work where it belongs:
+
+```bash
+cd ~/Documents/GitHub/mains/virtru/platform
+
+wgo park --dry-run
+# @ in ~/Documents/GitHub/mains/virtru/platform is not on main
+#   2 change(s), 3 uncommitted file(s), no bookmark
+#   qpvuntsm fix: handle expired refresh tokens
+#   zzzzzzzz (no description)
+#   will create bookmark fix-handle-expired-refresh-tokens
+#   destination: ~/Documents/GitHub/worktrees/fix-handle-expired-refresh-tokens/platform
+# dry run: nothing was changed
+
+cd $(wgo park)
+```
+
+Nothing is copied — jj workspaces share one repo store, so the work is claimed by a new workspace and the clone's `@` returns to trunk. The destination path is the only thing on stdout, so `cd $(wgo park)` works.
+
+The slug comes from an existing bookmark if the work has one, otherwise from the newest commit description, otherwise `wip-<change-id>`. Override it with `--name`. A bookmark is created by default so `wgo .`, `wgo status`, and `wgo sync` can see the work; `--no-bookmark` opts out.
+
+Every check runs before the first mutation, so a rejected park leaves the repo untouched, and any failure mid-move rolls back and tells you the `jj edit` that recovers your work.
+
 ## Configuration
 
 wgo automatically creates `~/.wgo/config.toml` on first run with sensible defaults:
@@ -391,6 +429,13 @@ scan_depth = 4
 # Patterns to exclude from discovery
 exclude_patterns = ["node_modules", ".cache", "vendor", "dist"]
 
+[worktree]
+# Where trunk checkouts live: <mains_dir>/<owner>/<repo>
+mains_dir = "/Users/you/Documents/GitHub/mains"
+
+# Where everything else lives: <worktrees_dir>/<slug>/<repo>
+worktrees_dir = "/Users/you/Documents/GitHub/worktrees"
+
 [ui]
 # Display icons in output
 icons = false
@@ -400,6 +445,14 @@ tilde_home = true
 ```
 
 Edit this file to customize discovery behavior.
+
+The two `[worktree]` paths encode wgo's layout contract:
+
+| Path | Holds |
+|------|-------|
+| `<mains_dir>/<owner>/<repo>` | The clone, checked out on trunk |
+| `<worktrees_dir>/<slug>/<repo>` | One workspace per branch or issue |
+| `<worktrees_dir>/pr-<N>-<slug>/<owner>/<repo>` | One workspace per PR |
 
 ## File Structure
 
@@ -602,6 +655,18 @@ wgo status --filter stale          # repos with no commits recently
 wgo contrib --weeks 4              # see which repos you haven't touched
 ```
 
+Check for trunk checkouts that have drifted — stranded work, or a leftover
+`<worktrees_dir>/<trunk>/<repo>` duplicate of the clone:
+
+```bash
+wgo doctor
+#   ~/Documents/GitHub/mains/virtru/platform
+#     work stranded on @ (2 change(s)); run `wgo park ~/Documents/GitHub/mains/virtru/platform`
+#     to move it to ~/Documents/GitHub/worktrees/fix-auth/platform
+```
+
+`wgo doctor` only reports. `wgo park` is what moves the work.
+
 Always preview before removing anything:
 
 ```bash
@@ -742,6 +807,10 @@ wgo stack rm <branch>                # refuses if it has unmerged children
 | `wgo clean --repos` | Remove unused fork checkouts |
 | `wgo clean --remote` | Close draft/stale PRs on GitHub |
 | `wgo track [path]` | Register a repository for tracking |
+| `wgo park [repo]` | Move work stranded on a main clone into its own workspace |
+| `wgo park --dry-run` | Preview the move without changing anything |
+| `wgo park --name <slug>` | Override the destination slug and bookmark name |
+| `wgo doctor` | Report stranded work, redundant trunk workspaces, spec violations |
 | `wgo to <url> --on <branch>` | New worktree based on `<branch>` instead of `origin/<default>` (records stack parent) |
 | `wgo stack new <name>` | Register the current branch as a stack root |
 | `wgo stack push <branch> --on <parent>` | Create a worktree/branch on top of a parent and (with `--draft`) open the PR |

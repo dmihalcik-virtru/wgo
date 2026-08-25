@@ -483,6 +483,110 @@ func TestMainWorkspaceRoot(t *testing.T) {
 	}
 }
 
+// TestWorkspaceAddCreatesChild pins the jj semantic `wgo park` is built on:
+// `jj workspace add -r X` does not check X out, it creates the new working-copy
+// commit as a *child* of X (jj's own wording: "as if you had run `jj new X`").
+// If a jj release ever changed that to a checkout, park's follow-up `jj edit`
+// would become a no-op-or-worse, so this failing is the signal to revisit it.
+func TestWorkspaceAddCreatesChild(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "work", map[string]string{"f.txt": "x"})
+	if err := c.BookmarkCreate(repo, "feat", "@-"); err != nil {
+		t.Fatalf("BookmarkCreate: %v", err)
+	}
+	target, err := c.Log(repo, "feat")
+	if err != nil || len(target) == 0 {
+		t.Fatalf("Log(feat): %v (%d entries)", err, len(target))
+	}
+
+	dest := filepath.Join(t.TempDir(), "ws")
+	if err := c.WorkspaceAdd(repo, "ws", dest, "feat"); err != nil {
+		t.Fatalf("WorkspaceAdd: %v", err)
+	}
+
+	head, err := c.CurrentChange(dest)
+	if err != nil {
+		t.Fatalf("CurrentChange(dest): %v", err)
+	}
+	if head.ChangeID == target[0].ChangeID {
+		t.Fatalf("@ in the new workspace is the target change %s; expected a child of it", head.ChangeID)
+	}
+	if !head.Empty {
+		t.Errorf("the new working-copy commit should be empty, got a non-empty change")
+	}
+	parents, err := c.Log(dest, "("+head.ChangeID+")-")
+	if err != nil {
+		t.Fatalf("Log(parents): %v", err)
+	}
+	if len(parents) != 1 || parents[0].ChangeID != target[0].ChangeID {
+		t.Fatalf("parents of the new @ = %v, want exactly the target change %s", parents, target[0].ChangeID)
+	}
+}
+
+// TestParkSequenceLandsWorkInDestination pins the whole M2→M3→M5 sequence
+// `wgo park` performs, so a jj upgrade that changes any step's semantics breaks
+// this focused test rather than the command.
+func TestParkSequenceLandsWorkInDestination(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "trunkish", map[string]string{"base.txt": "b"})
+	if err := c.BookmarkCreate(repo, "base", "@-"); err != nil {
+		t.Fatalf("BookmarkCreate(base): %v", err)
+	}
+	// The work to be parked: a described change on top of base.
+	if err := c.Describe(repo, "stranded work"); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	work, err := c.CurrentChange(repo)
+	if err != nil {
+		t.Fatalf("CurrentChange: %v", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "ws")
+	// M2: populate the destination before the source is cleared.
+	if err := c.WorkspaceAdd(repo, "parked", dest, work.ChangeID); err != nil {
+		t.Fatalf("WorkspaceAdd: %v", err)
+	}
+	// M3: return the source's @ to base. Must precede M5 — while both
+	// workspaces resolve @ to the same change, each snapshot rewrites the
+	// shared commit and stales the other.
+	if err := c.New(repo, "base", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_ = c.UpdateStale(dest) // M4: M3 advanced the op head.
+	// M5: make the destination's @ the work itself.
+	if err := c.EditChange(dest, work.ChangeID); err != nil {
+		t.Fatalf("EditChange: %v", err)
+	}
+
+	destHead, err := c.CurrentChange(dest)
+	if err != nil {
+		t.Fatalf("CurrentChange(dest): %v", err)
+	}
+	if destHead.ChangeID != work.ChangeID {
+		t.Fatalf("dest @ = %s, want the parked change %s", destHead.ChangeID, work.ChangeID)
+	}
+
+	// The source is left on a clean empty change with the work gone from it.
+	srcHead, err := c.CurrentChange(repo)
+	if err != nil {
+		t.Fatalf("CurrentChange(repo): %v", err)
+	}
+	if srcHead.ChangeID == work.ChangeID {
+		t.Fatalf("source @ is still the parked change %s", work.ChangeID)
+	}
+	if !srcHead.Empty {
+		t.Errorf("source @ should be an empty change after park")
+	}
+	// M2's empty child is auto-abandoned by M5, so the work is a lone head.
+	n, err := c.CountRevset(repo, "base..("+work.ChangeID+"::)")
+	if err != nil {
+		t.Fatalf("CountRevset: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("descendants of the parked work = %d, want 1 (M2's empty child should be abandoned)", n)
+	}
+}
+
 func TestAheadBehindNoRemote(t *testing.T) {
 	repo, c := jjtest.NewRepo(t)
 	jjtest.Commit(t, repo, "x", map[string]string{"f.txt": "x"})

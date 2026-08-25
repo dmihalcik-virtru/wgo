@@ -75,7 +75,7 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 			})
 			continue
 		}
-		findings = append(findings, checkRepo(client, state, &cfg.Doctor, repo)...)
+		findings = append(findings, checkRepo(client, state, cfg, repo)...)
 	}
 
 	for _, f := range findings {
@@ -93,13 +93,13 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func checkRepo(client jj.Client, state *store.State, cfg *config.DoctorConfig, repo string) []doctorFinding {
+func checkRepo(client jj.Client, state *store.State, cfg *config.Config, repo string) []doctorFinding {
 	workspaces, err := client.ListWorkspaces(repo)
 	if err != nil {
 		return []doctorFinding{{Repo: repo, Issue: fmt.Sprintf("listing workspaces failed: %v", err)}}
 	}
 
-	var out []doctorFinding
+	out := checkMainWorkspace(client, cfg, repo)
 	for _, ws := range workspaces {
 		current, err := client.CurrentChange(ws.Path)
 		if err != nil {
@@ -114,11 +114,47 @@ func checkRepo(client jj.Client, state *store.State, cfg *config.DoctorConfig, r
 		if bookmark == "" {
 			continue // anonymous working copy; nothing to enforce
 		}
-		if bookmarkExcluded(bookmark, cfg.ExcludeBookmarks) {
+		if bookmarkExcluded(bookmark, cfg.Doctor.ExcludeBookmarks) {
 			continue
 		}
-		out = append(out, checkBookmark(state, cfg, repo, ws, bookmark)...)
+		out = append(out, checkBookmark(state, &cfg.Doctor, repo, ws, bookmark)...)
 	}
+	return out
+}
+
+// checkMainWorkspace reports two conditions specific to a repo's main clone,
+// which wgo treats as the trunk checkout: work stranded on its @ (which belongs
+// in a feature workspace, and which `wgo to` will warn about every time), and a
+// redundant <worktrees_dir>/<trunk>/<repo> workspace left over from before
+// `wgo to` routed trunk URLs to the clone itself.
+//
+// Read-only, like the rest of doctor: it names the fix rather than applying it.
+func checkMainWorkspace(client jj.Client, cfg *config.Config, repo string) []doctorFinding {
+	main, err := client.MainWorkspaceRoot(repo)
+	if err != nil || absResolved(main) != absResolved(repo) {
+		// Not a main clone (or unreadable); neither check applies.
+		return nil
+	}
+
+	var out []doctorFinding
+
+	if p, ok, err := planPark(client, cfg, repo, parkOpts{}); err == nil && ok {
+		out = append(out, doctorFinding{
+			Repo: repo,
+			Issue: fmt.Sprintf("work stranded on @ (%d change(s)); run `wgo park %s` to move it to %s",
+				len(p.Work), repo, p.Dest),
+		})
+	}
+
+	if trunk := localTrunkBookmark(client, repo); trunk != "" {
+		if junk := redundantTrunkWorkspace(client, cfg, repo, trunk); junk != "" {
+			out = append(out, doctorFinding{
+				Repo:  repo,
+				Issue: fmt.Sprintf("redundant trunk workspace duplicates this clone: %s", junk),
+			})
+		}
+	}
+
 	return out
 }
 
