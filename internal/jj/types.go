@@ -93,6 +93,51 @@ type Status struct {
 	CurrentChange Change
 }
 
+// SparseMode selects how a new workspace's sparse patterns are initialised.
+type SparseMode string
+
+const (
+	// SparseInherit copies the sparse patterns of the workspace the command
+	// runs from. This is jj's default.
+	SparseInherit SparseMode = "copy"
+	// SparseFull materialises every file in the repo.
+	SparseFull SparseMode = "full"
+	// SparseEmpty materialises nothing, leaving the working copy empty.
+	// Combine with SparseSet to check out only the paths that are wanted —
+	// the cheap way to hold many checkouts of one large monorepo.
+	SparseEmpty SparseMode = "empty"
+)
+
+// WorkspaceAddOpts configures `jj workspace add`.
+type WorkspaceAddOpts struct {
+	// Name is passed via --name. Empty lets jj default to the basename of
+	// the destination directory.
+	Name string
+	// Revset, when non-empty, becomes the new working-copy commit's parent
+	// (-r). The working copy therefore *contains* that revision's content
+	// while edits land in a fresh child change, so a workspace can be pinned
+	// to a tag and still be editable.
+	Revset string
+	// Message is the description of the new working-copy commit (-m). Worth
+	// setting: a workspace created on a tag carries no bookmark, so without a
+	// description it shows up in `jj log` as an anonymous empty change.
+	Message string
+	// SparsePatterns selects the initial sparse mode. Empty means jj's
+	// default (SparseInherit).
+	SparsePatterns SparseMode
+}
+
+// SparseSetOpts configures `jj sparse set`.
+type SparseSetOpts struct {
+	// Clear empties the pattern set before applying Add, so the result is
+	// exactly Add rather than a union with what was there before.
+	Clear bool
+	// Add lists repo-relative paths to include.
+	Add []string
+	// Remove lists repo-relative paths to exclude.
+	Remove []string
+}
+
 // PushOpts configures a `jj git push` invocation.
 type PushOpts struct {
 	// Bookmarks names the bookmarks to push. Empty means push all tracked

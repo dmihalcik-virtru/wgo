@@ -49,11 +49,13 @@ func (m *mockJJClient) ListWorkspaces(repo string) ([]jj.Workspace, error) {
 	}
 	return []jj.Workspace{{Name: "default", Path: repo}}, nil
 }
-func (m *mockJJClient) WorkspaceAdd(string, string, string, string) error { return nil }
-func (m *mockJJClient) WorkspaceForget(string, string) error              { return nil }
-func (m *mockJJClient) WorkspaceRoot(p string) (string, error)            { return p, nil }
-func (m *mockJJClient) MainWorkspaceRoot(p string) (string, error)        { return p, nil }
-func (m *mockJJClient) UpdateStale(string) error                          { return nil }
+func (m *mockJJClient) WorkspaceAdd(string, string, jj.WorkspaceAddOpts) error { return nil }
+func (m *mockJJClient) WorkspaceForget(string, string) error                   { return nil }
+func (m *mockJJClient) WorkspaceRoot(p string) (string, error)                 { return p, nil }
+func (m *mockJJClient) MainWorkspaceRoot(p string) (string, error)             { return p, nil }
+func (m *mockJJClient) UpdateStale(string) error                               { return nil }
+func (m *mockJJClient) SparseSet(string, jj.SparseSetOpts) error               { return nil }
+func (m *mockJJClient) SparseList(string) ([]string, error)                    { return nil, nil }
 func (m *mockJJClient) Log(_, revset string) ([]jj.LogEntry, error) {
 	if m.logEntries != nil {
 		if entries, ok := m.logEntries[revset]; ok {
@@ -110,6 +112,7 @@ func (m *mockJJClient) Restore(string, []string) error                 { return 
 func (m *mockJJClient) GitInit(string, jj.InitOpts) error              { return nil }
 func (m *mockJJClient) GitClone(string, string) error                  { return nil }
 func (m *mockJJClient) GitFetch(string, string, []string) error        { return nil }
+func (m *mockJJClient) GitFetchTags(string, string, []string) error    { return nil }
 func (m *mockJJClient) GitPush(string, jj.PushOpts) (jj.PushResult, error) {
 	return jj.PushResult{}, nil
 }

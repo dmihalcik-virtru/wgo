@@ -112,7 +112,7 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 	// 10. Create workspace: attach existing bookmark or create new one.
 	if bookmarkExists(jjc, repoPath, branch) {
 		fmt.Fprintf(os.Stderr, "creating workspace for existing bookmark %s...\n", branch)
-		if err := jjc.WorkspaceAdd(repoPath, branch, newWtPath, branch); err != nil {
+		if err := jjc.WorkspaceAdd(repoPath, newWtPath, jj.WorkspaceAddOpts{Name: branch, Revset: branch}); err != nil {
 			return fmt.Errorf("workspace add: %w", err)
 		}
 	} else {

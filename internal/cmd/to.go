@@ -841,7 +841,7 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 		// stable, slash-free id even though bookmarks may carry slashes.
 		wsName := fmt.Sprintf("pr-%d-%s", num, gh.SanitizeBranch(named.Branch))
 		logTo("creating workspace at bookmark %s...", landOn)
-		if err := jjc.WorkspaceAdd(repoPath, wsName, wtPath, landOn); err != nil {
+		if err := jjc.WorkspaceAdd(repoPath, wtPath, jj.WorkspaceAddOpts{Name: wsName, Revset: landOn}); err != nil {
 			return "", fmt.Errorf("workspace add failed: %w", err)
 		}
 
@@ -859,7 +859,7 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 			}
 		}
 		logTo("creating workspace for branch %s...", branch)
-		if err := jjc.WorkspaceAdd(repoPath, branch, wtPath, branch); err != nil {
+		if err := jjc.WorkspaceAdd(repoPath, wtPath, jj.WorkspaceAddOpts{Name: branch, Revset: branch}); err != nil {
 			return "", fmt.Errorf("workspace add failed: %w", err)
 		}
 

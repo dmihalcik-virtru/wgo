@@ -505,7 +505,7 @@ func detectCurrentJJRepo(jjc jj.Client) (string, error) {
 // logic easy to unit-test with a fake. jj.Client satisfies it.
 type workspaceBookmarkClient interface {
 	ListWorkspaces(repo string) ([]jj.Workspace, error)
-	WorkspaceAdd(repo, name, dest, revset string) error
+	WorkspaceAdd(repo, dest string, opts jj.WorkspaceAddOpts) error
 	BookmarkList(repo string, opts jj.BookmarkListOpts) ([]jj.Bookmark, error)
 	BookmarkCreate(repo, name, revset string) error
 }
@@ -526,7 +526,7 @@ func ensureWorkspaceAndBookmark(jjc workspaceBookmarkClient, repoPath, branchNam
 		fmt.Fprintf(os.Stderr, "workspace %s exists, skipping\n", branchName)
 	} else {
 		fmt.Fprintf(os.Stderr, "creating workspace %s...\n", wtPath)
-		if err := jjc.WorkspaceAdd(repoPath, branchName, wtPath, startPoint); err != nil {
+		if err := jjc.WorkspaceAdd(repoPath, wtPath, jj.WorkspaceAddOpts{Name: branchName, Revset: startPoint}); err != nil {
 			return fmt.Errorf("workspace add %s: %w", repoLabel, err)
 		}
 	}

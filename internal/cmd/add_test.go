@@ -26,9 +26,9 @@ func (f *fakeWSClient) ListWorkspaces(string) ([]jj.Workspace, error) {
 	return f.workspaces, nil
 }
 
-func (f *fakeWSClient) WorkspaceAdd(_, name, dest, revset string) error {
-	f.workspaceAdds = append(f.workspaceAdds, wsAddCall{name: name, dest: dest, revset: revset})
-	f.workspaces = append(f.workspaces, jj.Workspace{Name: name, Path: dest})
+func (f *fakeWSClient) WorkspaceAdd(_, dest string, opts jj.WorkspaceAddOpts) error {
+	f.workspaceAdds = append(f.workspaceAdds, wsAddCall{name: opts.Name, dest: dest, revset: opts.Revset})
+	f.workspaces = append(f.workspaces, jj.Workspace{Name: opts.Name, Path: dest})
 	return nil
 }
 
