@@ -25,11 +25,14 @@ var specJiraFocusCmd = &cobra.Command{
 	},
 }
 
-var specJiraSyncPush bool
+var (
+	specJiraSyncPush         bool
+	specJiraSyncForceSummary bool
+)
 
 var specJiraSyncCmd = &cobra.Command{
 	Use:   "sync [TICKET]",
-	Short: "Update spec frontmatter (title, status, jira_priority) from Jira; --push writes back",
+	Short: "Update spec frontmatter (title, status, jira_priority) and ## Summary from Jira; --push writes back",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSpecJiraSync(args)
@@ -62,6 +65,7 @@ func init() {
 	specJiraCmd.AddCommand(specJiraUsersCmd)
 
 	specJiraSyncCmd.Flags().BoolVar(&specJiraSyncPush, "push", false, "Also write spec title and summary back to Jira; transition ticket if status is terminal")
+	specJiraSyncCmd.Flags().BoolVar(&specJiraSyncForceSummary, "force-summary", false, "Overwrite the ## Summary section even if it has been hand-edited")
 }
 
 // --- focus ---
@@ -153,9 +157,14 @@ func runSpecJiraSync(args []string) error {
 		newTitle    string
 		newStatus   spec.Status
 		newPriority string
+		// Captured before the overwrite below: the pre-sync title is what an
+		// unenriched `wgo add` scaffold also wrote into ## Summary, so it is the
+		// fingerprint syncSpecSummary matches against.
+		priorTitle string
 	)
 
 	if err := spec.UpdateFrontmatter(specPath, func(fm *spec.Frontmatter) error {
+		priorTitle = fm.Title
 		newTitle = issue.Fields.Summary
 		newPriority = issue.Fields.Priority.Name
 
@@ -177,8 +186,13 @@ func runSpecJiraSync(args []string) error {
 		return fmt.Errorf("update frontmatter: %w", err)
 	}
 
-	fmt.Printf("synced %s: title=%q status=%s priority=%s\n",
-		ticket, newTitle, newStatus, newPriority)
+	summaryNote, err := syncSpecSummary(specPath, priorTitle, issue.Fields.DescriptionText(), specJiraSyncForceSummary)
+	if err != nil {
+		return fmt.Errorf("update summary: %w", err)
+	}
+
+	fmt.Printf("synced %s: title=%q status=%s priority=%s (%s)\n",
+		ticket, newTitle, newStatus, newPriority, summaryNote)
 
 	if specJiraSyncPush {
 		if err := pushSpecToJira(specPath, ticket, string(newTitle), string(newStatus)); err != nil {
@@ -186,6 +200,40 @@ func runSpecJiraSync(args []string) error {
 		}
 	}
 	return nil
+}
+
+// syncSpecSummary refreshes the spec's ## Summary from the Jira description and
+// returns a short note describing what it did.
+//
+// A spec scaffolded by `wgo add` while Jira was unreachable gets the CLI
+// description written into both the frontmatter title and ## Summary, so those
+// two being equal is a reliable fingerprint for "nobody has written a real
+// summary yet". Anything else is prose a human wrote, and overwriting it would
+// destroy work — so it is left alone unless force is set. scaffoldTitle must be
+// the title as it stood *before* this sync overwrote it.
+func syncSpecSummary(specPath, scaffoldTitle, description string, force bool) (string, error) {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return "summary unchanged: Jira description is empty", nil
+	}
+
+	sf, err := spec.Parse(specPath)
+	if err != nil {
+		return "", fmt.Errorf("parse spec: %w", err)
+	}
+	current := strings.TrimSpace(extractSection(sf.Body, "## Summary"))
+
+	if current == description {
+		return "summary already current", nil
+	}
+	if !force && current != "" && current != strings.TrimSpace(scaffoldTitle) {
+		return "summary unchanged: hand-edited, pass --force-summary to overwrite", nil
+	}
+
+	if err := replaceSection(specPath, "## Summary", "## Summary\n"+description+"\n"); err != nil {
+		return "", err
+	}
+	return "summary updated", nil
 }
 
 // pushSpecToJira writes the spec title and ## Summary section body back to Jira,

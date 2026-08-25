@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/virtru/wgo/internal/jira"
 	"github.com/virtru/wgo/internal/jj"
 )
 
@@ -296,4 +299,111 @@ func TestRemoteBookmarkRevset(t *testing.T) {
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, remoteBookmarkRevset(tt.branch, tt.remote))
 	}
+}
+
+// --- Jira enrichment ---
+
+// withStubJiraGetIssue swaps the jiraGetIssue seam for the duration of a test.
+func withStubJiraGetIssue(t *testing.T, issue *jira.Issue, err error) {
+	t.Helper()
+	prev := jiraGetIssue
+	jiraGetIssue = func(string) (*jira.Issue, error) { return issue, err }
+	t.Cleanup(func() { jiraGetIssue = prev })
+}
+
+func jiraIssue(summary, description, priority string) *jira.Issue {
+	i := &jira.Issue{}
+	i.Fields.Summary = summary
+	i.Fields.Description = []byte(strconv.Quote(description))
+	i.Fields.Priority.Name = priority
+	return i
+}
+
+func TestFetchJiraEnrichmentUsesJiraFields(t *testing.T) {
+	withStubJiraGetIssue(t, jiraIssue("Streaming codec for NanoTDF", "Long ticket body.", "High"), nil)
+
+	title, desc, priority, enriched := fetchJiraEnrichment("DSPX-4499", "streaming codec", true)
+
+	assert.True(t, enriched)
+	assert.Equal(t, "Streaming codec for NanoTDF", title)
+	assert.Equal(t, "Long ticket body.", desc)
+	assert.Equal(t, "High", priority)
+}
+
+// The old code inferred success by comparing the result against the fallback,
+// so a ticket whose summary matched what the user typed was indistinguishable
+// from a failed fetch. enriched must report the fetch, not the values.
+func TestFetchJiraEnrichmentSucceedsWhenJiraMatchesFallback(t *testing.T) {
+	withStubJiraGetIssue(t, jiraIssue("streaming codec", "streaming codec", ""), nil)
+
+	title, desc, _, enriched := fetchJiraEnrichment("DSPX-4499", "streaming codec", true)
+
+	assert.True(t, enriched, "identical values are still a successful fetch")
+	assert.Equal(t, "streaming codec", title)
+	assert.Equal(t, "streaming codec", desc)
+}
+
+func TestFetchJiraEnrichmentFallsBackAndReportsFailure(t *testing.T) {
+	withStubJiraGetIssue(t, nil, errors.New("unauthorized"))
+
+	title, desc, priority, enriched := fetchJiraEnrichment("DSPX-4499", "streaming codec", true)
+
+	assert.False(t, enriched)
+	assert.Equal(t, "streaming codec", title)
+	assert.Equal(t, "streaming codec", desc)
+	assert.Empty(t, priority, "no priority should be invented on failure")
+}
+
+// An empty Jira summary or description must not blank out the spec.
+func TestFetchJiraEnrichmentFallsBackPerField(t *testing.T) {
+	withStubJiraGetIssue(t, jiraIssue("", "", "Low"), nil)
+
+	title, desc, priority, enriched := fetchJiraEnrichment("DSPX-4499", "streaming codec", true)
+
+	assert.True(t, enriched)
+	assert.Equal(t, "streaming codec", title)
+	assert.Equal(t, "streaming codec", desc)
+	assert.Equal(t, "Low", priority)
+}
+
+// --- Jira preflight ---
+
+func TestJiraPreflightReadyWhenAuthenticated(t *testing.T) {
+	called := false
+	ready, err := jiraPreflight("DSPX-4499", false, false, func() error { called = true; return nil })
+
+	assert.NoError(t, err)
+	assert.True(t, ready)
+	assert.True(t, called)
+}
+
+func TestJiraPreflightRequireJiraIsFatal(t *testing.T) {
+	ready, err := jiraPreflight("DSPX-4499", false, true, func() error {
+		return errors.New("acli jira not authenticated")
+	})
+
+	require.Error(t, err, "--require-jira must abort before any repo is touched")
+	assert.False(t, ready)
+	assert.Contains(t, err.Error(), "DSPX-4499")
+	assert.Contains(t, err.Error(), "not authenticated")
+}
+
+func TestJiraPreflightDegradesWithoutRequireJira(t *testing.T) {
+	ready, err := jiraPreflight("DSPX-4499", false, false, func() error {
+		return errors.New("acli jira not authenticated")
+	})
+
+	assert.NoError(t, err, "a Jira outage must not block worktree creation")
+	assert.False(t, ready, "a failed probe must suppress the duplicate enrichment warning")
+}
+
+// --no-spec has nothing to enrich, so the probe should not spend an acli call.
+func TestJiraPreflightSkippedWithNoSpec(t *testing.T) {
+	ready, err := jiraPreflight("DSPX-4499", true, true, func() error {
+		t.Fatal("auth check must not run when --no-spec is set")
+		return nil
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, ready)
 }

@@ -31,6 +31,15 @@ var (
 	addJira        bool
 	addJiraProject string
 	addJiraType    string
+	addRequireJira bool
+)
+
+// Seams for the acli-backed Jira calls made on the `wgo add` path, so the
+// enrichment and preflight behaviour can be unit-tested without acli. Mirrors
+// the jiraFetcherFn pattern in jirasource.go.
+var (
+	jiraGetIssue  = jira.GetIssue
+	jiraCheckAuth = jira.CheckAuth
 )
 
 type repoSpec struct {
@@ -75,6 +84,12 @@ With 2+ repos, a shared CLAUDE.md is written at the shared root to orient a
 coding agent across them. A CLAUDE.md that wgo did not generate is never
 overwritten; pass --no-claude-md to skip this entirely.
 
+The scaffolded spec is enriched with the ticket's title, description, and
+priority when acli is authenticated (acli jira auth login). Without it the spec
+falls back to the description you passed, and a warning says so. Pass
+--require-jira to make the fetch mandatory: the command then fails before any
+repo is cloned rather than scaffolding an unenriched spec.
+
 Plain task (no ticket):
   wgo add fix the login bug
   wgo add -p ship v2 release`,
@@ -105,6 +120,7 @@ func init() {
 	addCmd.Flags().BoolVar(&addJira, "jira", false, "Create a new Jira work item first, then proceed with the ticket")
 	addCmd.Flags().StringVar(&addJiraProject, "jira-project", "", "Jira project key for new ticket (default: jira.default_project in config)")
 	addCmd.Flags().StringVar(&addJiraType, "jira-type", "", "Jira issue type for new ticket (default: jira.default_type in config, e.g. \"Task\")")
+	addCmd.Flags().BoolVar(&addRequireJira, "require-jira", false, "Fail before creating any worktrees if the Jira ticket cannot be fetched")
 }
 
 func joinArgs(args []string) string {
@@ -154,6 +170,12 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 	if cfg.Worktree.WorktreesDir == "" {
 		return fmt.Errorf("worktree.worktrees_dir not configured; set it in ~/.wgo/config.toml")
 	}
+
+	jiraReady, err := jiraPreflight(ticket, addNoSpec, addRequireJira, jiraCheckAuth)
+	if err != nil {
+		return err
+	}
+
 	jjc := jj.NewCLI()
 
 	// Resolve repos: default to current repo if none specified.
@@ -262,9 +284,13 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 		}
 		specWritten := false
 		if _, statErr := os.Stat(specAbs); os.IsNotExist(statErr) {
-			specTitle, specDesc, specPriority := fetchJiraEnrichment(ticket, desc)
-			if specTitle != desc || specDesc != desc {
+			// The preflight already explained why enrichment is unavailable;
+			// don't make the user read the same warning twice.
+			specTitle, specDesc, specPriority, enriched := fetchJiraEnrichment(ticket, desc, jiraReady)
+			if enriched {
 				fmt.Fprintf(os.Stderr, "enriched spec from Jira: %s\n", ticket)
+			} else if addRequireJira {
+				return fmt.Errorf("--require-jira: could not fetch %s from Jira", ticket)
 			}
 
 			data, err := spec.RenderTemplate(spec.TemplateData{
@@ -441,12 +467,49 @@ func runAddWithJiraCreate(desc string, repos []string, priority bool) error {
 	return addWithWorktree(ticket, desc, repos, priority)
 }
 
-// fetchJiraEnrichment silently tries to fetch spec enrichment data from Jira.
-// Returns (fallback, fallback, "") on any error so the caller always gets usable values.
-func fetchJiraEnrichment(ticket, fallback string) (title, description, priority string) {
-	issue, err := jira.GetIssue(ticket)
+// jiraPreflight probes Jira before addWithWorktree touches any repo, and
+// reports whether enrichment is expected to work.
+//
+// Enrichment itself happens much later — after clones, workspaces, bookmarks,
+// and pushes. Discovering acli is unusable at that point leaves behind a set of
+// worktrees built around a spec that never got filled in, which is exactly the
+// failure this check exists to prevent. Under require the command stops here,
+// while the operation log is still untouched; otherwise it warns and continues,
+// per wgo's graceful-degradation constraint.
+//
+// skipSpec short-circuits the probe: with --no-spec there is nothing to enrich,
+// so paying for an acli round-trip would be waste.
+func jiraPreflight(ticket string, skipSpec, require bool, check func() error) (bool, error) {
+	if skipSpec {
+		return false, nil
+	}
+	err := check()
+	if err == nil {
+		return true, nil
+	}
+	if require {
+		return false, fmt.Errorf("--require-jira: cannot reach Jira for %s: %w", ticket, err)
+	}
+	fmt.Fprintf(os.Stderr, "warning: cannot reach Jira, spec for %s will use the description you passed: %v\n", ticket, err)
+	return false, nil
+}
+
+// fetchJiraEnrichment tries to fetch spec enrichment data from Jira. It always
+// returns usable values, degrading to (fallback, fallback, "") when the ticket
+// cannot be read, but reports that degradation through enriched rather than
+// leaving the caller to infer it from the returned strings — a Jira summary
+// that happens to equal fallback is a success, not a failure.
+//
+// warn suppresses the stderr message when the caller has already reported the
+// cause (see the preflight in addWithWorktree).
+func fetchJiraEnrichment(ticket, fallback string, warn bool) (title, description, priority string, enriched bool) {
+	issue, err := jiraGetIssue(ticket)
 	if err != nil {
-		return fallback, fallback, ""
+		if warn {
+			fmt.Fprintf(os.Stderr, "warning: could not fetch %s from Jira, "+
+				"scaffolding spec from the description you passed: %v\n", ticket, err)
+		}
+		return fallback, fallback, "", false
 	}
 	title = issue.Fields.Summary
 	if title == "" {
@@ -457,7 +520,7 @@ func fetchJiraEnrichment(ticket, fallback string) (title, description, priority 
 		description = fallback
 	}
 	priority = issue.Fields.Priority.Name
-	return
+	return title, description, priority, true
 }
 
 // ownerRepoFor resolves repoPath to "owner/repo" from its remotes, preferring

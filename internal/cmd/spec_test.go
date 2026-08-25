@@ -144,3 +144,94 @@ func TestSpecUpdateFrontmatterBumpsUpdated(t *testing.T) {
 	require.NoError(t, err, "Parse")
 	assert.True(t, sf.Frontmatter.Updated.Equal(today), "Updated = %v, want %v", sf.Frontmatter.Updated, today)
 }
+
+// --- syncSpecSummary ---
+
+// scaffoldSpec reproduces what `wgo add` writes when Jira is unreachable: the
+// CLI description lands in both the frontmatter title and ## Summary.
+func scaffoldSpec(title, summary string) string {
+	return `---
+ticket: DSPX-4499
+title: ` + title + `
+status: draft
+authors: [dmihalcik@virtru.com]
+branches: [opentdf/platform:DSPX-4499-streaming-codec]
+prs: []
+created: 2026-08-25
+updated: 2026-08-25
+---
+
+# ` + title + `
+
+## Summary
+` + summary + `
+
+## Problem / Motivation
+_Why does this work need to happen?_
+`
+}
+
+func TestSyncSpecSummaryFillsUnenrichedScaffold(t *testing.T) {
+	p := writeTestSpec(t, t.TempDir(), "DSPX-4499", scaffoldSpec("streaming codec", "streaming codec"))
+
+	note, err := syncSpecSummary(p, "streaming codec", "Implement a streaming codec for NanoTDF.", false)
+	require.NoError(t, err)
+	assert.Equal(t, "summary updated", note)
+
+	body := readFileString(t, p)
+	assert.Contains(t, body, "## Summary\nImplement a streaming codec for NanoTDF.\n")
+	assert.Contains(t, body, "## Problem / Motivation", "following sections must survive")
+	assert.NotContains(t, body, "## Summary\nstreaming codec")
+}
+
+func TestSyncSpecSummaryPreservesHandWrittenProse(t *testing.T) {
+	const prose = "We need chunked encryption so large files stream without buffering."
+	p := writeTestSpec(t, t.TempDir(), "DSPX-4499", scaffoldSpec("streaming codec", prose))
+
+	note, err := syncSpecSummary(p, "streaming codec", "Jira boilerplate.", false)
+	require.NoError(t, err)
+	assert.Contains(t, note, "hand-edited")
+
+	assert.Contains(t, readFileString(t, p), prose, "hand-written summary must not be destroyed")
+}
+
+func TestSyncSpecSummaryForceOverwritesProse(t *testing.T) {
+	p := writeTestSpec(t, t.TempDir(), "DSPX-4499", scaffoldSpec("streaming codec", "Hand written."))
+
+	note, err := syncSpecSummary(p, "streaming codec", "Jira description.", true)
+	require.NoError(t, err)
+	assert.Equal(t, "summary updated", note)
+
+	body := readFileString(t, p)
+	assert.Contains(t, body, "Jira description.")
+	assert.NotContains(t, body, "Hand written.")
+}
+
+// An empty Jira description must never blank out an existing summary.
+func TestSyncSpecSummaryIgnoresEmptyJiraDescription(t *testing.T) {
+	p := writeTestSpec(t, t.TempDir(), "DSPX-4499", scaffoldSpec("streaming codec", "streaming codec"))
+
+	note, err := syncSpecSummary(p, "streaming codec", "   \n  ", false)
+	require.NoError(t, err)
+	assert.Contains(t, note, "empty")
+
+	assert.Contains(t, readFileString(t, p), "## Summary\nstreaming codec")
+}
+
+func TestSyncSpecSummaryNoopWhenAlreadyCurrent(t *testing.T) {
+	const desc = "Implement a streaming codec."
+	p := writeTestSpec(t, t.TempDir(), "DSPX-4499", scaffoldSpec("streaming codec", desc))
+	before := readFileString(t, p)
+
+	note, err := syncSpecSummary(p, "streaming codec", desc, false)
+	require.NoError(t, err)
+	assert.Equal(t, "summary already current", note)
+	assert.Equal(t, before, readFileString(t, p), "file must be left byte-identical")
+}
+
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	require.NoError(t, err, "read %s", path)
+	return string(b)
+}
