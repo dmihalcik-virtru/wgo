@@ -254,21 +254,29 @@ func runTo(rawURL string) error {
 		return err
 	}
 
-	// 2. Resolve branch name
-	branch, err := resolveBranch(parsed)
-	if err != nil {
-		return err
-	}
-
-	logTo("resolved branch: %s", branch)
-
-	// 3. Load config for discovery
+	// 2. Load config for discovery
 	if err := config.Init(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 	cfg := config.Get()
 
 	jjc := jj.NewCLI()
+
+	// Branch and bare-repo URLs may name the trunk, in which case the mains
+	// clone already *is* that checkout and a <worktrees_dir>/<trunk>/<repo>
+	// workspace would be a redundant second copy of the same commit. PR and
+	// issue URLs can never name the trunk, so they keep the flow below.
+	if parsed.Type == gh.URLTypeBranch {
+		return runToBranch(jjc, cfg, parsed)
+	}
+
+	// 3. Resolve branch name
+	branch, err := resolveBranch(parsed)
+	if err != nil {
+		return err
+	}
+
+	logTo("resolved branch: %s", branch)
 
 	// 4. Search for existing checkout
 	existing, err := findExistingCheckout(jjc, cfg, parsed.Owner, parsed.Repo, branch)
@@ -298,6 +306,148 @@ func runTo(rawURL string) error {
 	return nil
 }
 
+// runToBranch resolves a branch or bare-repo GitHub URL.
+//
+// The step order differs from runTo's, and the difference is the point: the
+// repo is located *first* so trunk can be identified from local jj state, and
+// the trunk check runs *before* findExistingCheckout. That ordering matters
+// because findExistingCheckout matches any workspace whose @ carries the named
+// bookmark — including the redundant <worktrees_dir>/<trunk>/<repo> workspaces
+// earlier versions of wgo created for trunk URLs. Checking trunk first is what
+// stops those from being handed back.
+//
+// Hoisting findOrCloneRepo is safe: it and findExistingCheckout scan the same
+// DiscoverAll() with the same matchesRemote predicate, so anything the latter
+// would have found the former finds too, and no clone happens spuriously.
+func runToBranch(jjc jj.Client, cfg *config.Config, parsed *gh.ParsedURL) error {
+	repoPath, err := findOrCloneRepo(jjc, cfg, parsed.Owner, parsed.Repo)
+	if err != nil {
+		return err
+	}
+
+	localTrunk := localTrunkBookmark(jjc, repoPath)
+
+	branch := parsed.Identifier
+	if branch == "" {
+		branch, err = resolveDefaultBranch(jjc, repoPath, parsed.Owner, parsed.Repo)
+		if err != nil {
+			return err
+		}
+	}
+	logTo("resolved branch: %s", branch)
+
+	isTrunk := isTrunkTarget(branch, localTrunk, func() (string, error) {
+		return defaultBranchFor(jjc, repoPath)
+	})
+	if isTrunk {
+		if toOnParent != "" {
+			logTo("warning: --on is ignored for a trunk checkout")
+		}
+		logTo("fetching latest...")
+		_ = jjc.GitFetch(repoPath, "", nil)
+		return printMainsCheckout(jjc, cfg, repoPath, branch)
+	}
+
+	existing, err := findExistingCheckout(jjc, cfg, parsed.Owner, parsed.Repo, branch)
+	if err == nil && existing != "" {
+		logTo("found existing checkout")
+		fmt.Println(existing)
+		return nil
+	}
+
+	logTo("fetching latest...")
+	_ = jjc.GitFetch(repoPath, "", nil)
+
+	wtPath, err := createWorktree(jjc, repoPath, cfg, parsed, branch)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(wtPath)
+	return nil
+}
+
+// resolveDefaultBranch answers "what is owner/repo's default branch" for a URL
+// that named no ref.
+//
+// GitHub is the authority — a repo defaulting to "develop" while main@origin
+// also exists would otherwise be misrouted — but when the API is unreachable
+// the local jj trunk is a good enough answer, so a bare URL keeps working
+// offline instead of hard-failing the way resolveBranch does.
+func resolveDefaultBranch(jjc jj.Client, repoPath, owner, repo string) (string, error) {
+	logTo("no branch specified, querying GitHub for default branch...")
+	branch, err := gh.RepoDefaultBranch(owner, repo)
+	if err == nil {
+		return branch, nil
+	}
+	logTo("warning: could not reach GitHub (%v); falling back to local trunk", err)
+	if local := localTrunkBookmark(jjc, repoPath); local != "" {
+		return local, nil
+	}
+	return "", fmt.Errorf("could not determine default branch for %s/%s: GitHub said %w, "+
+		"and %s has no local trunk bookmark; pass an explicit branch or run `jj -R %s git fetch`",
+		owner, repo, err, repoPath, repoPath)
+}
+
+// printMainsCheckout prints repoPath — the repo's main workspace, which *is*
+// the trunk checkout — on stdout.
+//
+// Two conditions are reported on stderr without being acted on: work stranded
+// on the clone's @, and a leftover <worktrees_dir>/<trunk>/<repo> workspace
+// from before trunk URLs routed here. Both are the user's to resolve; wgo does
+// not modify their repos on a read-only lookup.
+func printMainsCheckout(jjc jj.Client, cfg *config.Config, repoPath, branch string) error {
+	// Preserved from createWorktree, which used to be the only caller: a legacy
+	// main checkout gets colocated the first time wgo touches it.
+	if enabled, err := jjc.EnsureColocated(repoPath); err != nil {
+		logTo("warning: could not enable colocation for %s: %v", repoPath, err)
+	} else if enabled {
+		logTo("enabling colocation for %s...", repoPath)
+	}
+
+	// Reusing the park planner keeps `wgo to` and `wgo park` from ever
+	// disagreeing about what counts as stranded work.
+	if p, ok, err := planPark(jjc, cfg, repoPath, parkOpts{}); err == nil && ok {
+		describeParkPlan(p, "warning: ")
+		logTo("hint: run `wgo park %s` to move that work to its own workspace", repoPath)
+	}
+
+	if junk := redundantTrunkWorkspace(jjc, cfg, repoPath, branch); junk != "" {
+		logTo("note: %s duplicates this checkout and is no longer used by `wgo to`", junk)
+		logTo("      remove it with: jj -R %s workspace forget %s && rm -rf %s",
+			repoPath, gh.SanitizeBranch(branch), junk)
+	}
+
+	fmt.Println(repoPath)
+	return nil
+}
+
+// redundantTrunkWorkspace returns the path of a secondary workspace sitting at
+// <worktrees_dir>/<sanitized-trunk>/<repo> — the layout pre-fix versions of
+// `wgo to` produced for trunk URLs — or "" when there is none.
+func redundantTrunkWorkspace(jjc jj.Client, cfg *config.Config, repoPath, trunk string) string {
+	if cfg.Worktree.WorktreesDir == "" || trunk == "" {
+		return ""
+	}
+	want := absResolved(filepath.Join(cfg.Worktree.WorktreesDir, gh.SanitizeBranch(trunk), filepath.Base(repoPath)))
+	if want == "" {
+		return ""
+	}
+	workspaces, err := jjc.ListWorkspaces(repoPath)
+	if err != nil {
+		return ""
+	}
+	for _, ws := range workspaces {
+		if absResolved(ws.Path) == want {
+			return ws.Path
+		}
+	}
+	return ""
+}
+
+// resolveBranch maps a parsed URL to a branch name. URLTypeBranch is handled by
+// runToBranch instead — it needs the local repo to identify trunk — so only the
+// PR and issue arms are reachable from runTo.
 func resolveBranch(parsed *gh.ParsedURL) (string, error) {
 	switch parsed.Type {
 	case gh.URLTypePR:
@@ -356,13 +506,10 @@ func runToLocal(short string) error {
 	jjc := jj.NewCLI()
 
 	if branch != "" {
-		existing, err := findExistingCheckout(jjc, cfg, owner, repo, branch)
-		if err == nil && existing != "" {
-			logTo("found existing checkout")
-			fmt.Println(existing)
-			return nil
-		}
-		// Fall back to constructing a GitHub URL
+		// Always delegate. Short-circuiting on findExistingCheckout here would
+		// hand back a <worktrees_dir>/<trunk>/<repo> workspace for
+		// `wgo to owner/repo@main`; runToBranch performs the same lookup after
+		// deciding whether the branch is trunk.
 		rawURL := fmt.Sprintf("https://github.com/%s/%s/tree/%s", owner, repo, branch)
 		return runTo(rawURL)
 	}
@@ -374,11 +521,18 @@ func runToLocal(short string) error {
 		return fmt.Errorf("discovery: %w", err)
 	}
 	for _, r := range repos {
-		if matchesRemote(jjc, r.Path, owner, repo) {
-			logTo("found existing checkout")
-			fmt.Println(r.Path)
-			return nil
+		if !matchesRemote(jjc, r.Path, owner, repo) {
+			continue
 		}
+		// Discovery walk order is arbitrary, so the first match is often a
+		// secondary workspace under worktrees_dir. "owner/repo" with no branch
+		// means the repo itself, which is the main clone.
+		mainPath := r.Path
+		if r.IsWorktree && r.MainRepoPath != "" {
+			mainPath = r.MainRepoPath
+		}
+		logTo("found existing checkout")
+		return printMainsCheckout(jjc, cfg, mainPath, localTrunkBookmark(jjc, mainPath))
 	}
 
 	// Not found locally; clone it
