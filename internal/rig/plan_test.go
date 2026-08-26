@@ -982,3 +982,134 @@ func TestResolvePrimaryFailsLoudly(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "jj git fetch")
 }
+
+func TestPlanSkipsUnpinnedModules(t *testing.T) {
+	req, p := dspRequest()
+	// What a go.work `use` sibling looks like in a build list: real module
+	// path, no release behind it.
+	req.BuildList = append(req.BuildList, gomod.Module{
+		Path: "github.com/opentdf/platform/lib/scratch", Version: gomod.DevelVersion,
+	})
+
+	m, err := p.Plan(req)
+	// A hard error here would be the old behaviour: the revset
+	// tags(exact:"(devel)") resolves to nothing, and resolveAll treats that as
+	// fatal. One unreleased sibling must not take the other nine checkouts
+	// down with it.
+	require.NoError(t, err)
+
+	skip := findSkip(m.Skipped, "github.com/opentdf/platform/lib/scratch")
+	require.NotNil(t, skip)
+	assert.Equal(t, SkipUnpinned, skip.Kind)
+	assert.Contains(t, skip.Detail, "names no release")
+
+	for _, c := range m.Checkouts {
+		assert.NotContains(t, c.Dir, "scratch")
+	}
+}
+
+func TestPlanRejectsAnUnpinnedPrimary(t *testing.T) {
+	req, p := dspRequest()
+	req.Primary.Version = gomod.DevelVersion
+	req.BuildList[0] = req.Primary
+
+	_, err := p.Plan(req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot check out the primary module")
+	assert.Contains(t, err.Error(), string(SkipUnpinned))
+}
+
+func TestResolvePrimaryCommit(t *testing.T) {
+	_, p := dspRequest()
+	p.Resolver = &fakeResolver{commits: map[string]string{
+		"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+	}}
+
+	c, err := p.ResolvePrimaryCommit("dsp-devel", "virtru-corp", "data-security-platform",
+		"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	require.NoError(t, err)
+
+	assert.Equal(t, "virtru-corp/data-security-platform", c.Repo)
+	assert.Equal(t, dspClone, c.MainClone)
+	// The commit is used as the revset directly: there is no tag to go through.
+	assert.Equal(t, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", c.Revset)
+	assert.Empty(t, c.Tag, "an untagged commit must not be given a tag")
+	assert.True(t, c.Full)
+	// With no tag the directory falls back to the short commit.
+	assert.Equal(t, "data-security-platform-deadbeef", c.Dir)
+	assert.Equal(t, "rig-dsp-devel-deadbeef", c.Workspace)
+}
+
+func TestResolvePrimaryCommitReportsAnUnknownCommit(t *testing.T) {
+	_, p := dspRequest()
+	_, err := p.ResolvePrimaryCommit("dsp-devel", "virtru-corp", "data-security-platform", "cafebabe")
+	require.Error(t, err)
+	// Fetching tags cannot conjure a commit, so the hint must not suggest it.
+	assert.Contains(t, err.Error(), "never seen")
+	assert.NotContains(t, err.Error(), "-t ")
+}
+
+// TestPlanAdoptsAnUnpinnedPrimaryCheckout is the --from-binary shape: the
+// artifact reports "(devel)", the caller pinned it to a vcs.revision commit and
+// checked it out, and the plan has to be built around that.
+func TestPlanAdoptsAnUnpinnedPrimaryCheckout(t *testing.T) {
+	req, p := dspRequest()
+	req.Primary.Version = gomod.DevelVersion
+	req.BuildList[0] = req.Primary
+	req.PrimaryCheckout = &Checkout{
+		Dir:       "data-security-platform-deadbeef",
+		Workspace: "rig-dsp-devel-deadbeef",
+		Repo:      "virtru-corp/data-security-platform",
+		MainClone: dspClone,
+		Revset:    "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		Commit:    "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		Full:      true,
+	}
+
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+
+	require.Len(t, m.Checkouts, 9)
+	assert.Equal(t, *req.PrimaryCheckout, m.Checkouts[0], "the adopted checkout must survive verbatim")
+	assert.Nil(t, findSkip(m.Skipped, req.Primary.Path), "the primary is already pinned; it must not be skipped")
+
+	// The primary's members are still attached to it, including the two `use`
+	// directories from the repo's own go.work.
+	var use []string
+	for _, mem := range m.Members {
+		if mem.Checkout == req.PrimaryCheckout.Dir {
+			use = append(use, mem.Subdir)
+		}
+	}
+	assert.ElementsMatch(t, []string{"", "sdk"}, use)
+}
+
+// TestPlanDoesNotReResolveAnAdoptedPrimary guards the reason adoption exists:
+// the version it would resolve through may not name anything.
+func TestPlanDoesNotReResolveAnAdoptedPrimary(t *testing.T) {
+	req, p := dspRequest()
+	loc := p.Locator.(*fakeLocator)
+	req.PrimaryCheckout = &Checkout{
+		Dir: "dsp-adopted", Workspace: "rig-dsp-2-7-1-dsp00000",
+		Repo: "virtru-corp/data-security-platform", MainClone: dspClone,
+		Revset: "x", Commit: "dsp0000000000000000000000000000000000000", Full: true,
+	}
+
+	_, err := p.Plan(req)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, loc.calls, "the dependencies still have to be located")
+	for _, slug := range loc.calls {
+		assert.NotEqual(t, "virtru-corp/data-security-platform", slug,
+			"the primary's repo was already located by the caller")
+	}
+}
+
+func findSkip(skips []Skip, path string) *Skip {
+	for i := range skips {
+		if skips[i].Path == path {
+			return &skips[i]
+		}
+	}
+	return nil
+}

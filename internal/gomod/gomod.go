@@ -30,6 +30,7 @@ import (
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 )
 
 var (
@@ -149,6 +150,51 @@ func PseudoCommit(version string) string {
 		return ""
 	}
 	return rev
+}
+
+// DevelVersion is the version Go records for a module that was not consumed
+// from the module proxy: one supplied by a go.work `use`, replaced by a
+// directory, or built straight from its own working tree.
+const DevelVersion = "(devel)"
+
+// CompareVersions orders two module versions the way MVS does, reporting
+// ok=false when they cannot be ordered at all.
+//
+// The distinction matters to drift detection. semver.Compare ranks an invalid
+// version below every valid one and calls two invalid ones equal, so on its own
+// it would report a garbage version as a downgrade, or silently pass a pair of
+// them off as unchanged. A difference that cannot be ordered is neither an
+// upgrade nor a downgrade, and saying so is more use than picking one.
+func CompareVersions(a, b string) (int, bool) {
+	ca, cb := canonicalVersion(strings.TrimSpace(a)), canonicalVersion(strings.TrimSpace(b))
+	if !semver.IsValid(ca) || !semver.IsValid(cb) {
+		return 0, false
+	}
+	return semver.Compare(ca, cb), true
+}
+
+// ToolchainVersion turns the toolchain string a binary records ("go1.27.0")
+// into a bare `go` directive version ("1.27.0"), or "" if it is not one.
+func ToolchainVersion(s string) string {
+	s = strings.TrimSpace(s)
+	// A toolchain may carry a suffix, as in "go1.27.0-custom"; the directive
+	// cannot, and MaxGoVersion drops what go/version rejects.
+	if before, _, ok := strings.Cut(s, "-"); ok {
+		s = before
+	}
+	return MaxGoVersion(strings.TrimPrefix(s, "go"))
+}
+
+// IsResolvableVersion reports whether a version can be mapped back to a commit.
+//
+// Not every entry in a build list names a release. A module supplied by a
+// go.work, replaced by a directory, or built from a working tree is recorded as
+// "(devel)"; a main module is recorded with no version at all. Neither is a tag
+// or a pseudo-version, so no revset resolves it, and attempting one produces
+// `tags(exact:"(devel)")` — an empty result whose error message blames a
+// missing tag for what is really an unpinnable module.
+func IsResolvableVersion(version string) bool {
+	return semver.IsValid(canonicalVersion(strings.TrimSpace(version)))
 }
 
 // InOrg reports whether modulePath falls under any of prefixes.

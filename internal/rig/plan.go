@@ -121,9 +121,19 @@ func (p *Planner) Plan(req Request) (*Manifest, error) {
 	mods, skips := p.selectModules(req)
 	m.Skipped = skips
 
+	// A primary the caller already materialised is already located and pinned;
+	// resolving it again would be wasted work at best and wrong at worst.
+	adopted, mods, err := adoptPrimary(req, mods)
+	if err != nil {
+		return nil, err
+	}
+
 	cands, moreSkips, err := p.resolveAll(mods)
 	if err != nil {
 		return nil, err
+	}
+	if adopted != nil {
+		cands = append(cands, *adopted)
 	}
 	m.Skipped = append(m.Skipped, moreSkips...)
 	sortSkips(m.Skipped)
@@ -197,6 +207,29 @@ func (p *Planner) selectModules(req Request) ([]gomod.Module, []Skip) {
 			})
 			return
 		}
+		// A "(devel)" version names no release, so no revset resolves it.
+		// Filtered here rather than in resolveAll because that treats an
+		// unresolvable revision as a hard error on the grounds that the repo is
+		// in hand and the pin still is not in it — which points at a broken
+		// module-to-repo mapping. This is not that: the mapping is fine and the
+		// module simply was never released. It is a build-list fact, and the
+		// build list is what this function filters.
+		//
+		// A primary the caller already checked out is exempt: it is pinned to a
+		// commit already, which is exactly the case a binary built outside a
+		// release produces — "(devel)" plus a `vcs.revision`. For any other
+		// primary the skip is not the end of it, because Plan turns a skipped
+		// primary into a hard error: a rig whose artifact has no checkout has
+		// nothing to debug.
+		preResolved := isPrimary && req.PrimaryCheckout != nil
+		if !preResolved && !gomod.IsResolvableVersion(mod.Version) {
+			skips = append(skips, Skip{
+				Path: mod.Path, Version: mod.Version,
+				Kind:   SkipUnpinned,
+				Detail: unpinnedDetail(mod.Version),
+			})
+			return
+		}
 		out = append(out, mod)
 	}
 
@@ -210,6 +243,55 @@ func (p *Planner) selectModules(req Request) ([]gomod.Module, []Skip) {
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, skips
+}
+
+// adoptPrimary turns a primary checkout the caller already materialised into a
+// resolved candidate, and drops the primary from the list still to resolve.
+//
+// Returns a nil candidate when there is nothing to adopt, either because the
+// caller supplied no checkout or because selectModules already dropped the
+// primary. The second case is left to Plan's own skipped-primary check, which
+// explains it far better than anything this function could say.
+func adoptPrimary(req Request, mods []gomod.Module) (*candidate, []gomod.Module, error) {
+	pc := req.PrimaryCheckout
+	if pc == nil {
+		return nil, mods, nil
+	}
+	rest := make([]gomod.Module, 0, len(mods))
+	var primary *gomod.Module
+	for i := range mods {
+		if mods[i].Path == req.Primary.Path {
+			primary = &mods[i]
+			continue
+		}
+		rest = append(rest, mods[i])
+	}
+	if primary == nil {
+		return nil, mods, nil
+	}
+	// The origin is still needed: it supplies the subdir every member of this
+	// checkout is keyed by, and the slug the grouping key is built from.
+	origin, err := gomod.ParseOrigin(req.Primary.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("rig: primary module %s: %w", req.Primary.Path, err)
+	}
+	return &candidate{
+		mod: *primary, origin: origin, mainClone: pc.MainClone,
+		revset: pc.Revset, commit: pc.Commit, tag: pc.Tag,
+	}, rest, nil
+}
+
+// unpinnedDetail explains an unresolvable version in the terms of whatever
+// produced it, since the fix differs.
+func unpinnedDetail(version string) string {
+	switch strings.TrimSpace(version) {
+	case gomod.DevelVersion:
+		return "built from a working copy or supplied by a go.work, so it names no release"
+	case "":
+		return "no version recorded"
+	default:
+		return fmt.Sprintf("version %q is not a release or pseudo-version", version)
+	}
 }
 
 // resolveAll maps each module to a repository and commit.
@@ -324,6 +406,44 @@ func (p *Planner) ResolvePrimaryRepo(rigName, owner, repo, ref string) (*Checkou
 		Revset:    revset,
 		Commit:    commit,
 		Tag:       ref,
+		Full:      true,
+	}
+	c.Workspace = workspaceName(rigName, commit)
+	return c, nil
+}
+
+// ResolvePrimaryCommit describes the primary's checkout from a bare commit id.
+//
+// This is what a binary built outside a release supplies: `go version -m`
+// records its main module as "(devel)" and the commit separately, under the
+// `vcs.revision` build setting. There is no tag to resolve through, so the
+// commit is used as the revset directly and Tag is left empty — which is also
+// what tells `rig show` to display a hash rather than invent a version.
+func (p *Planner) ResolvePrimaryCommit(rigName, owner, repo, rev string) (*Checkout, error) {
+	if owner == "" || repo == "" || rev == "" {
+		return nil, errors.New("rig: resolving the primary requires owner, repo and a commit")
+	}
+	clone, err := p.Locator.Locate(owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("rig: locating %s/%s: %w", owner, repo, err)
+	}
+	commit, err := p.Resolver.Resolve(clone, rev)
+	if err != nil {
+		return nil, fmt.Errorf("rig: resolving %s in %s/%s: %w", rev, owner, repo, err)
+	}
+	if commit == "" {
+		return nil, fmt.Errorf(
+			"rig: commit %s is not in %s/%s\n"+
+				"the binary was built from a commit this clone has never seen; try:\n"+
+				"  jj git fetch -R %s --remote origin",
+			rev, owner, repo, clone)
+	}
+	c := &Checkout{
+		Dir:       uniqueDir(nil, repo, "", commit),
+		Repo:      owner + "/" + repo,
+		MainClone: clone,
+		Revset:    rev,
+		Commit:    commit,
 		Full:      true,
 	}
 	c.Workspace = workspaceName(rigName, commit)
@@ -644,18 +764,22 @@ func repoRelativeReplace(target string) string {
 // useDirModulePath guesses the module path of a directory in the primary's
 // repo, for a `use` directory the build list has no entry for.
 //
-// It is only a guess. The primary's path may carry a major-version suffix
-// ("…/dsp/v2") that belongs to the root module and is not a directory on disk,
-// so joining onto it would invent "…/dsp/v2/sdk"; dropping it instead yields
-// "…/dsp/sdk", which is right only for a submodule still at v0/v1. The suffix a
-// submodule carries is its own and cannot be recovered from here — see
-// localReplacePaths for the case where it can.
+// dir is relative to the checkout root, not to the primary module, because a
+// go.work covering a subdirectory module lives above it: platform's names
+// ./otdfctl and ./sdk as siblings, so joining them onto the otdfctl primary
+// would invent github.com/opentdf/platform/otdfctl/sdk.
+//
+// Even so it is only a guess. The repository root is not a module path — a
+// submodule carries its own major-version suffix, independent of the root
+// module's, and nothing here can recover it: "sdk" under opentdf/platform may
+// be ".../platform/sdk" or ".../platform/sdk/v2". See localReplacePaths for the
+// case where the build list knows the answer.
 func useDirModulePath(origin gomod.Origin, primaryPath, dir string) string {
 	if origin.Host == "" {
 		return path.Join(primaryPath, dir) // unmappable host; best effort
 	}
 	repoRoot := path.Join(origin.Host, origin.Owner, origin.Repo)
-	return path.Join(repoRoot, origin.Subdir, dir)
+	return path.Join(repoRoot, dir)
 }
 
 // anchorFor picks the candidate a shared checkout is named after: the module

@@ -109,6 +109,10 @@ const (
 	// SkipEscapedReplace is a local replace pointing outside its repository,
 	// which no single checkout can satisfy.
 	SkipEscapedReplace SkipKind = "escaped-replace"
+	// SkipUnpinned is a module whose recorded version names no release —
+	// "(devel)" for one supplied by a go.work or built from a working tree — so
+	// there is no commit to pin a checkout to.
+	SkipUnpinned SkipKind = "unpinned"
 )
 
 // Skip records an in-org module that got no checkout, and why.
