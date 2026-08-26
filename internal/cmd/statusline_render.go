@@ -112,6 +112,10 @@ func ciStateColor(state string) string {
 func renderStatuslineLine(w io.Writer, c *models.Context, rich bool) error {
 	var parts []string
 
+	if c.Rig != nil {
+		parts = append(parts, colorize("⚓ "+rigRefLabel(*c.Rig), colYellow, rich))
+	}
+
 	if c.Repo != "" {
 		parts = append(parts, styleLink(c.RepoURL, c.Repo, colCyan, rich))
 	}

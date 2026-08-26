@@ -47,6 +47,13 @@ Developers with many branches, worktrees, and repos across multiple checkouts lo
 - Clones the repo if you don't have it, creates a worktree, and prints the path
 - Works with `cd $(wgo to ...)` or the `wto` shell alias (see [Shell Alias](#shell-alias) below)
 
+### Debug What Actually Shipped
+
+- **`wgo rig new <name> --from-binary ./dsp`** — Check out every in-org module a released artifact
+  depends on, each pinned to the commit it shipped from, wired together by a generated `go.work`
+- **`wgo rig verify`** — Prove the rig still resolves the versions the artifact recorded
+- See [Debugging a Shipped Artifact](#debugging-a-shipped-artifact-with-wgo-rig)
+
 ### Coming Soon
 
 - GitHub PR integration with cached status
@@ -436,6 +443,23 @@ mains_dir = "/Users/you/Documents/GitHub/mains"
 # Where everything else lives: <worktrees_dir>/<slug>/<repo>
 worktrees_dir = "/Users/you/Documents/GitHub/worktrees"
 
+[rig]
+# Where rigs are created: <dir>/<name>
+dir = "/Users/you/Documents/GitHub/rigs"
+
+# Module path prefixes to check out from source. Empty infers them from the
+# primary module's own path; everything else is left to the module cache.
+org_prefixes = []
+
+# Check out only each module's own subdirectory
+sparse = true
+
+# Run drift detection right after creating a rig
+verify_on_new = true
+
+# Pin drifted third-party versions back to the baseline automatically
+freeze = false
+
 [ui]
 # Display icons in output
 icons = false
@@ -446,13 +470,14 @@ tilde_home = true
 
 Edit this file to customize discovery behavior.
 
-The two `[worktree]` paths encode wgo's layout contract:
+The `[worktree]` and `[rig]` paths encode wgo's layout contract:
 
 | Path | Holds |
 |------|-------|
 | `<mains_dir>/<owner>/<repo>` | The clone, checked out on trunk |
 | `<worktrees_dir>/<slug>/<repo>` | One workspace per branch or issue |
 | `<worktrees_dir>/pr-<N>-<slug>/<owner>/<repo>` | One workspace per PR |
+| `<rig.dir>/<name>/src/<checkout>` | One pinned checkout per module of a [rig](#debugging-a-shipped-artifact-with-wgo-rig) |
 
 ## File Structure
 
@@ -773,6 +798,134 @@ wgo stack rm <branch>                # refuses if it has unmerged children
 
 ---
 
+## Debugging a Shipped Artifact with `wgo rig`
+
+A **rig** is a directory of jj workspaces, each pinned to the commit a released
+artifact shipped with, wired together by a generated `go.work`.
+
+It answers one question: *what was actually running in production?* You attach a
+debugger to the exact code that shipped, across every repo it came from, and step
+through it. Without a rig you are checking out nine repos by hand, guessing at
+which tag each one was on, and discovering three hours later that one of them was
+a pseudo-version.
+
+Rigs are deliberately **disposable and separate from your branch work**. They live
+under `rig.dir`, not `worktrees_dir`; `wgo ls`, `wgo status`, `wgo clean` and
+`wgo doctor`'s spec checks all skip them. Nothing in a rig is meant to be pushed.
+
+### Quick start
+
+```bash
+# From the shipped binary — best fidelity: build info records the versions that
+# were actually linked, rather than re-deriving them and risking a different
+# resolution.
+cd $(wgo rig new dsp-2.7.1 --from-binary ./dsp)
+
+# Or from the artifact's tagged source, whose dependency set is read with `go list`
+cd $(wgo rig new dsp-2.7.1 --from virtru-corp/data-security-platform@v2.7.1)
+```
+
+`wgo rig new` prints **only the rig path** to stdout, so it composes with `cd`.
+Everything else goes to stderr.
+
+Before running any `go` command in a rig, point `GOWORK` at the rig's `go.work` —
+the checkouts ship their own, and Go's upward search finds those first:
+
+```bash
+source env.sh                            # written into the rig
+eval "$(wgo rig show dsp-2.7.1 --env)"   # or, from anywhere
+```
+
+### What you get
+
+```
+~/Documents/GitHub/rigs/dsp-2.7.1/
+├── rig.toml     # the manifest: pins, members, sparse sets, baseline versions
+├── go.work      # binds every checkout together
+├── env.sh       # exports GOWORK
+└── src/
+    ├── data-security-platform-v2.7.1/
+    ├── platform-service-v0.11.6/      # sparse: only ./service is materialised
+    └── otdfctl-v0.26.2/
+```
+
+Checkouts are **sparse by default** — a monorepo checked out in full, once per
+pinned module, costs gigabytes and as many editor indexes. They carry **no
+bookmark**: they are pinned to tags, so there is nothing to push from them. Land
+fixes from a normal worktree instead.
+
+`rig.toml` is hand-editable. Abbreviated commit hashes pasted in from `jj log`
+work fine.
+
+### Checking a rig still reproduces the artifact
+
+A rig can be wrong in a way that nothing complains about: `go.work` still
+resolves, `go build` still succeeds, and the source under your debugger is
+quietly not what shipped. Two commands cover the two ways that happens.
+
+```bash
+# Third-party drift: does MVS across the rig still resolve every dependency to
+# the version the artifact recorded?
+wgo rig verify dsp-2.7.1
+wgo rig verify --all                    # every rig
+wgo rig verify --freeze                 # pin drifted versions back to baseline
+wgo rig verify --unfreeze golang.org/x/net
+wgo rig verify --format json            # for CI
+```
+
+```bash
+# Checkout drift: has someone run `jj new`/`jj edit`/`jj rebase` in a checkout,
+# moving it off its pin? doctor reports it and names the fix; it never moves
+# anything itself, because restoring a pin discards whatever you moved it to.
+wgo doctor
+
+#   ~/Documents/GitHub/rigs/dsp-2.7.1 [platform-service-v0.11.6]
+#     moved off its pin: opentdf/platform is pinned to service/v0.11.6 but sits on cccccccc5555.
+#     put it back with `jj -R .../src/platform-service-v0.11.6 edit 6a5827d70000`,
+#     or re-materialise it with `wgo rig sync dsp-2.7.1`
+```
+
+`wgo .` and `wgo statusline` both lead with a `⚓ <rig>@<pin>` segment inside a
+rig, because every other field reads misleadingly there — the checkout has no
+bookmark, nothing to be ahead or behind of, and no PR to find.
+
+### Keeping a rig current
+
+```bash
+wgo rig sync dsp-2.7.1              # re-resolve pins and bring checkouts back in line
+wgo rig sync --prune                # also drop checkouts no member needs
+wgo rig sync --dry-run              # preview
+
+wgo rig add dsp-2.7.1 -m github.com/opentdf/platform/sdk@v0.4.2   # by hand
+```
+
+### Managing rigs
+
+```bash
+wgo rig ls                          # table on a TTY, one path per line when piped
+wgo rig show dsp-2.7.1              # modules, pins, sparse sets
+wgo rig rm dsp-2.7.1                # forget the jj workspaces, then delete the tree
+```
+
+Use `wgo rig rm` rather than `rm -rf`: the rig registered a jj workspace in each
+module's main clone, and deleting the directory by hand leaves those workspaces
+registered with nothing on disk naming them.
+
+`rig rm` also clears a half-built rig — the directory an interrupted `rig new`
+left behind, with checkouts but no `rig.toml`. It traces each one back to its
+main clone and lists what it found; because there is no manifest to tell a clean
+checkout from a dirty one, removing it takes `--force`:
+
+```bash
+wgo rig rm repro-2.7.1-hsm --force
+```
+
+Interrupting `rig new` should not get you there in the first place: Ctrl-C rolls
+the partial rig back, and a second Ctrl-C abandons the rollback (exit 130) and
+leaves the rig in place for `rig rm --force`.
+
+---
+
 ## Commands Reference
 
 | Command | Description |
@@ -810,7 +963,16 @@ wgo stack rm <branch>                # refuses if it has unmerged children
 | `wgo park [repo]` | Move work stranded on a main clone into its own workspace |
 | `wgo park --dry-run` | Preview the move without changing anything |
 | `wgo park --name <slug>` | Override the destination slug and bookmark name |
-| `wgo doctor` | Report stranded work, redundant trunk workspaces, spec violations |
+| `wgo doctor` | Report stranded work, redundant trunk workspaces, drifted rig checkouts, spec violations |
+| `wgo rig new <name> --from-binary <path>` | Create a pinned workspace from a shipped binary's build info |
+| `wgo rig new <name> --from <owner/repo>@<ref>` | Create a pinned workspace from an artifact's tagged source |
+| `wgo rig ls` | List rigs |
+| `wgo rig show [name] [--env]` | Show a rig's modules and pins, or shell exports for `eval` |
+| `wgo rig verify [name] [--all]` | Check the rig still resolves the versions the artifact shipped with |
+| `wgo rig verify --freeze` | Pin drifted third-party versions back to the baseline |
+| `wgo rig sync [name] [--prune]` | Re-resolve pins and bring checkouts back in line |
+| `wgo rig add [name] -m <path>@<version>` | Add a module to a rig by hand |
+| `wgo rig rm <name>` | Forget the rig's jj workspaces and delete its tree |
 | `wgo to <url> --on <branch>` | New worktree based on `<branch>` instead of `origin/<default>` (records stack parent) |
 | `wgo stack new <name>` | Register the current branch as a stack root |
 | `wgo stack push <branch> --on <parent>` | Create a worktree/branch on top of a parent and (with `--draft`) open the PR |

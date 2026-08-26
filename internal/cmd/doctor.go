@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/jj"
+	"github.com/virtru/wgo/internal/rig"
 	"github.com/virtru/wgo/internal/store"
 )
 
@@ -77,6 +79,7 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 		}
 		findings = append(findings, checkRepo(client, state, cfg, repo)...)
 	}
+	findings = append(findings, checkRigs(client, cfg)...)
 
 	for _, f := range findings {
 		printFinding(f)
@@ -101,6 +104,13 @@ func checkRepo(client jj.Client, state *store.State, cfg *config.Config, repo st
 
 	out := checkMainWorkspace(client, cfg, repo)
 	for _, ws := range workspaces {
+		// A rig checkout is pinned to a released commit and carries no
+		// bookmark, so the spec policy below has nothing to say about it — and
+		// when someone does park a bookmark on the pinned commit, it would say
+		// the wrong thing. checkRigs judges them against their manifest.
+		if rig.IsWorkspace(cfg.Rig.Dir, ws.Path, ws.Name) {
+			continue
+		}
 		current, err := client.CurrentChange(ws.Path)
 		if err != nil {
 			out = append(out, doctorFinding{
@@ -156,6 +166,64 @@ func checkMainWorkspace(client jj.Client, cfg *config.Config, repo string) []doc
 	}
 
 	return out
+}
+
+// checkRigs reports rig checkouts that no longer sit on the commit their
+// manifest pins.
+//
+// This is the failure a rig cannot survive quietly. The go.work still resolves,
+// `go build` still succeeds and `wgo rig verify` still passes — it compares
+// dependency *versions*, and a checkout moved off its pin keeps the version it
+// was recorded with. The only thing that changed is that the source under the
+// debugger is no longer the source that shipped, which is the entire point of
+// the rig.
+//
+// Read-only, like the rest of doctor: it names `wgo rig sync` rather than
+// running one, because restoring the pin discards whatever the user moved the
+// checkout to.
+// The jj surface is narrowed to rig.Pinned rather than jj.Client so this is
+// testable against a fake without standing up nine workspaces.
+func checkRigs(p rig.Pinned, cfg *config.Config) []doctorFinding {
+	rigDir := strings.TrimSpace(cfg.Rig.Dir)
+	if rigDir == "" {
+		return nil
+	}
+	manifests, err := rig.List(rigDir)
+	if err != nil {
+		return []doctorFinding{{Repo: rigDir, Issue: fmt.Sprintf("listing rigs failed: %v", err)}}
+	}
+
+	var out []doctorFinding
+	for _, m := range manifests {
+		for _, cond := range rig.Inspect(p, m.Manifest, m.Root) {
+			if cond.OK() {
+				continue
+			}
+			out = append(out, doctorFinding{
+				Repo:      m.Root,
+				Workspace: cond.Checkout.Dir,
+				Issue:     rigConditionIssue(cond),
+			})
+		}
+	}
+	return out
+}
+
+// rigConditionIssue turns a drifted checkout into a line that names the fix.
+func rigConditionIssue(c rig.Condition) string {
+	switch c.Health {
+	case rig.HealthMissing:
+		return fmt.Sprintf("checkout directory is missing; restore it with `wgo rig sync %s`", c.Rig)
+	case rig.HealthMoved:
+		return fmt.Sprintf("moved off its pin: %s is pinned to %s but sits on %s.\n"+
+			"    put it back with `jj -R %s edit %s`, or re-materialise it with `wgo rig sync %s`",
+			c.Checkout.Repo, rigPin(c.Checkout), shortCommitID(c.At),
+			c.Path, shortCommitID(c.Checkout.Commit), c.Rig)
+	case rig.HealthUnreadable:
+		return fmt.Sprintf("could not read the checkout: %s", c.Detail)
+	default:
+		return string(c.Health)
+	}
 }
 
 func checkBookmark(state *store.State, cfg *config.DoctorConfig, repo string, ws jj.Workspace, bookmark string) []doctorFinding {

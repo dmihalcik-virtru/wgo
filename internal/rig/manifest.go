@@ -507,3 +507,32 @@ func List(rigDir string) ([]Listing, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
+
+// Names returns the name of every rig under rigDir, sorted.
+//
+// Deliberately not List: shell completion runs on every keystroke, so it must
+// not pay for a TOML parse per rig, and it must not emit the warnings List
+// prints for a broken manifest — stderr during completion lands in the middle
+// of the user's prompt. A rig too broken to load still has a name, and offering
+// it is right: `wgo rig rm` is how you get rid of it.
+func Names(rigDir string) ([]string, error) {
+	entries, err := os.ReadDir(rigDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("rig: reading %s: %w", rigDir, err)
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(ManifestPath(filepath.Join(rigDir, e.Name()))); err != nil {
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	sort.Strings(out)
+	return out, nil
+}

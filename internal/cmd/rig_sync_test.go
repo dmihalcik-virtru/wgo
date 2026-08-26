@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -135,7 +136,7 @@ func TestReusePrimaryAdoptsTheRecordedCheckout(t *testing.T) {
 		Commit: "aaaaaaaa11112222", Tag: "service/v0.9.0", Sparse: []string{"service", "sdk"},
 	}
 	ws := &countingWorkspaces{}
-	dest, err := reusePrimary(have, &rig.Materializer{JJ: ws}, rigRoot)(c)
+	dest, err := reusePrimary(context.Background(), have, &rig.Materializer{JJ: ws}, rigRoot)(c)
 	require.NoError(t, err)
 
 	assert.Zero(t, ws.adds, "the checkout is already on disk, with an editor possibly attached to it")
@@ -173,7 +174,7 @@ func TestReusePrimaryReCreatesAMissingCheckout(t *testing.T) {
 	}
 
 	ws := &countingWorkspaces{}
-	dest, err := reusePrimary(testManifest(), &rig.Materializer{JJ: ws}, rigRoot)(c)
+	dest, err := reusePrimary(context.Background(), testManifest(), &rig.Materializer{JJ: ws}, rigRoot)(c)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, ws.adds)
@@ -197,7 +198,7 @@ func TestReusePrimarySkipsADifferentCommit(t *testing.T) {
 		MainClone: "/mains/opentdf/platform", Commit: "ffffffff00000000", Full: true,
 	}
 	ws := &countingWorkspaces{}
-	_, err := reusePrimary(testManifest(), &rig.Materializer{JJ: ws}, rigRoot)(c)
+	_, err := reusePrimary(context.Background(), testManifest(), &rig.Materializer{JJ: ws}, rigRoot)(c)
 	require.NoError(t, err)
 	assert.Equal(t, 1, ws.adds, "a different commit is a different checkout, whatever the repo")
 }

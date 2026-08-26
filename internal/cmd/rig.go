@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +16,10 @@ import (
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/gomod"
 	"github.com/virtru/wgo/internal/gotool"
+	"github.com/virtru/wgo/internal/interrupt"
 	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/rig"
+	"github.com/virtru/wgo/models"
 	"golang.org/x/mod/modfile"
 )
 
@@ -130,6 +133,13 @@ func init() {
 	rootCmd.AddCommand(rigCmd)
 	rigCmd.AddCommand(rigNewCmd, rigLsCmd, rigShowCmd, rigRmCmd)
 
+	// `new` takes a name that does not exist yet, so there is nothing to
+	// complete; the rest take one that does.
+	rigNewCmd.ValidArgsFunction = cobra.NoFileCompletions
+	for _, c := range []*cobra.Command{rigShowCmd, rigRmCmd, rigVerifyCmd, rigSyncCmd, rigAddCmd} {
+		c.ValidArgsFunction = rigNameCompletions
+	}
+
 	rigNewCmd.Flags().StringVar(&rigNewFrom, "from", "", "Resolve pins from a tagged repo: <owner/repo>@<ref>")
 	rigNewCmd.Flags().StringVar(&rigNewFromBinary, "from-binary", "", "Resolve pins from a compiled binary's embedded build info")
 	rigNewCmd.Flags().StringArrayVarP(&rigNewModules, "module", "m", nil, "Add a module explicitly: <path>@<version> (repeatable)")
@@ -142,6 +152,92 @@ func init() {
 	rigLsCmd.Flags().StringVar(&rigLsFormat, "format", "", "Output format: table, path, json (default: table when TTY, path when piped)")
 	rigShowCmd.Flags().BoolVar(&rigShowEnv, "env", false, `Print shell exports for eval "$(wgo rig show <name> --env)"`)
 	rigRmCmd.Flags().BoolVar(&rigRmForce, "force", false, "Remove even if a checkout has uncommitted changes")
+}
+
+// rigNameCompletions completes the `[name]` argument of every rig subcommand
+// that acts on an existing rig.
+//
+// Every failure returns no completions rather than an error: a completion
+// function's output is spliced into the user's command line, so a config
+// problem must degrade to "no suggestions", never to a diagnostic appearing
+// mid-prompt. rig.Names is used rather than rig.List for the same reason — it
+// parses nothing and warns about nothing.
+func rigNameCompletions(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	_, rigDir, err := rigSetup()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	names, err := rig.Names(rigDir)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
+// resolveRigRef identifies the rig a workspace belongs to, for `wgo .` and the
+// statusline. Returns nil for ordinary branch work.
+//
+// Local-only and cheap enough for the statusline's hot path: a bounded walk up
+// to rig.dir looking for a rig.toml, then one TOML read to name the pin. Every
+// failure degrades to nil or to a ref without a pin — a prompt segment is not
+// worth an error.
+func resolveRigRef(wsRoot string) *models.RigRef {
+	cfg := config.Get()
+	if cfg == nil {
+		// `wgo .` and the statusline both tolerate an uninitialised config;
+		// without one there is no rig.dir, so there is no rig to be in.
+		return nil
+	}
+	return rigRefIn(cfg.Rig.Dir, wsRoot)
+}
+
+// rigRefIn is resolveRigRef against an explicit rig.dir.
+func rigRefIn(rigDir, wsRoot string) *models.RigRef {
+	root := rigRootContaining(rigDir, wsRoot)
+	if root == "" {
+		return nil
+	}
+	ref := &models.RigRef{Name: filepath.Base(root), Path: root}
+	m, err := rig.Load(root)
+	if err != nil {
+		return ref
+	}
+	ref.Name = m.Name
+	if c := rigCheckoutFor(m, root, wsRoot); c != nil {
+		ref.Pin = rigPin(*c)
+	}
+	return ref
+}
+
+// rigRefLabel renders a rig reference as "<name>@<pin>", or just the name when
+// the pin is unknown — a manifest too broken to load still tells us which rig
+// the user is standing in, which is the part that changes how to read the rest
+// of the line.
+func rigRefLabel(r models.RigRef) string {
+	if r.Pin == "" {
+		return r.Name
+	}
+	return r.Name + "@" + r.Pin
+}
+
+// rigCheckoutFor finds the manifest entry for the checkout containing dir.
+//
+// The checkout is the first path component under <rig>/src, so this works from
+// a subdirectory of a checkout as well as from its root.
+func rigCheckoutFor(m *rig.Manifest, rigRoot, dir string) *rig.Checkout {
+	rel, err := filepath.Rel(filepath.Join(rigRoot, rig.SrcDir), dir)
+	if err != nil {
+		return nil
+	}
+	name, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
+	if name == "" || name == "." || name == ".." {
+		// At the rig root, or above it: no one checkout to name.
+		return nil
+	}
+	return m.CheckoutByDir(name)
 }
 
 // rigLogf writes progress to stderr.
@@ -263,13 +359,29 @@ func runRigNew(name string) (retErr error) {
 		return err
 	}
 
-	jjc := jj.NewCLI()
+	// A rig build is the longest-running mutation wgo performs, and until the
+	// manifest lands an interrupted one strands both a directory and a
+	// workspace. Catch the signal so the rollback below actually runs.
+	g := interrupt.Listen()
+	defer g.Stop()
+	ctx := g.Context()
+	defer func() { retErr = g.Wrap(retErr) }()
+
+	base := jj.NewCLI()
+	jjc := base.WithContext(ctx)
 	planner := &rig.Planner{
 		Locator:  &cloneLocator{jjc: jjc, cfg: cfg},
 		Resolver: jjc,
 	}
 
-	mz := &rig.Materializer{JJ: jjc, Logf: rigLogf}
+	mz := &rig.Materializer{
+		JJ: jjc,
+		// Rollback outlives the cancellation that triggered it: forgetting a
+		// workspace with the cancelled client would fail on every one and
+		// leave exactly the mess rollback exists to clear.
+		Cleanup: base.WithContext(context.WithoutCancel(ctx)),
+		Logf:    rigLogf,
+	}
 	// From the first checkout until Materialize writes the manifest the rig is
 	// on disk with nothing recording it, so nothing but this can clean it up.
 	defer func() {
@@ -279,7 +391,7 @@ func runRigNew(name string) (retErr error) {
 	}()
 
 	pins, err := resolveRigPins(planner, func(c *rig.Checkout) (string, error) {
-		return mz.Checkout(rigRoot, c)
+		return mz.Checkout(ctx, rigRoot, c)
 	}, name, rigSource{
 		from:    rigNewFrom,
 		binary:  rigNewFromBinary,
@@ -295,7 +407,7 @@ func runRigNew(name string) (retErr error) {
 	// make a `sparse = false` config silently do nothing.
 	sparse := cfg.Rig.Sparse && !rigNewFull
 
-	m, err := planner.Plan(rig.Request{
+	m, err := planner.Plan(ctx, rig.Request{
 		Name:            name,
 		Source:          pins.source,
 		OrgPrefixes:     orgs,
@@ -323,7 +435,7 @@ func runRigNew(name string) (retErr error) {
 
 	gc := gotool.NewClient().In(rigRoot).WithWork(filepath.Join(rigRoot, rig.GoWorkName))
 	mz.Validate = gc
-	if err := mz.Materialize(m, rigRoot); err != nil {
+	if err := mz.Materialize(ctx, m, rigRoot); err != nil {
 		return err
 	}
 
@@ -1057,7 +1169,7 @@ func runRigRm(name string) error {
 	rigRoot := filepath.Join(rigDir, name)
 	m, err := rig.Load(rigRoot)
 	if errors.Is(err, rig.ErrNoManifest) {
-		return fmt.Errorf("no rig named %q in %s", name, rigDir)
+		return removeOrphanRig(jj.NewCLI(), rigDir, rigRoot, name)
 	}
 	if err != nil {
 		return err
@@ -1073,6 +1185,73 @@ func runRigRm(name string) error {
 		return err
 	}
 	rigLogf("removed rig %s (%d workspaces forgotten)", name, len(m.Checkouts))
+	return nil
+}
+
+// removeOrphanRig cleans up a rig directory that has no manifest.
+//
+// This is the wreckage of a `rig new` that died between its first checkout and
+// the manifest write — a kill, a crash, a full disk. The directory blocks
+// `rig new` and, without this, `rig rm` declined it too on the grounds that
+// Load found no rig there, which left the workspaces registered in the user's
+// main clones and no supported way to clear them.
+//
+// An empty directory is removed without ceremony. Anything else is reported
+// before it is touched: this path has no manifest to tell clean from dirty, so
+// the user is shown what was found and asked for --force rather than having it
+// deleted on their behalf.
+func removeOrphanRig(js rig.Orphans, rigDir, rigRoot, name string) error {
+	if _, err := os.Stat(rigRoot); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("no rig named %q in %s", name, rigDir)
+	} else if err != nil {
+		return fmt.Errorf("rig: checking %s: %w", rigRoot, err)
+	}
+
+	orphans, err := rig.FindOrphans(js, rigRoot)
+	if err != nil {
+		return err
+	}
+
+	registered := make([]rig.Orphan, 0, len(orphans))
+	for _, o := range orphans {
+		if o.Workspace != "" {
+			registered = append(registered, o)
+		}
+	}
+
+	if len(orphans) == 0 {
+		// Nothing under src/: an empty root, or a directory that only ever got
+		// as far as being created. Removing it is what unblocks `rig new`.
+		if err := os.RemoveAll(rigRoot); err != nil {
+			return fmt.Errorf("rig: removing %s: %w", rigRoot, err)
+		}
+		rigLogf("removed %s (no manifest, nothing checked out)", rigRoot)
+		return nil
+	}
+
+	if !rigRmForce {
+		var b strings.Builder
+		fmt.Fprintf(&b, "%s has no manifest — it is the remains of an interrupted or failed `wgo rig new`.\n", rigRoot)
+		fmt.Fprintf(&b, "found %d checkout(s), %d still registered as jj workspaces:\n", len(orphans), len(registered))
+		for _, o := range orphans {
+			switch {
+			case o.Workspace != "":
+				fmt.Fprintf(&b, "  %s → workspace %s in %s\n", filepath.Base(o.Dir), o.Workspace, o.MainClone)
+			case o.Err != nil:
+				fmt.Fprintf(&b, "  %s → not a readable jj workspace (%v)\n", filepath.Base(o.Dir), o.Err)
+			default:
+				fmt.Fprintf(&b, "  %s → no workspace registered\n", filepath.Base(o.Dir))
+			}
+		}
+		b.WriteString("these carry no bookmark, so anything edited in them is lost with the directory.\n")
+		fmt.Fprintf(&b, "forget the workspaces and delete the tree with: wgo rig rm %s --force", name)
+		return errors.New(b.String())
+	}
+
+	if err := rig.RemoveOrphans(js, orphans, rigRoot, rigLogf); err != nil {
+		return err
+	}
+	rigLogf("removed %s (%d workspace(s) forgotten)", rigRoot, len(registered))
 	return nil
 }
 

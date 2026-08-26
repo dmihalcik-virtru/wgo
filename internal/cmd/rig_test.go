@@ -672,3 +672,120 @@ func TestBinaryRigGoVersionFloorsOnTheToolchain(t *testing.T) {
 	// And the primary still wins when it is the higher of the two.
 	assert.Equal(t, "1.27.0", gomod.MaxGoVersion("1.27.0", gomod.ToolchainVersion("go1.24")))
 }
+
+// fakeOrphanJJ is the jj surface removeOrphanRig needs.
+type fakeOrphanJJ struct {
+	mainClone  map[string]string
+	registered map[string][]jj.Workspace
+	forgets    []string
+	forgetErr  error
+}
+
+func (f *fakeOrphanJJ) WorkspaceAdd(string, string, jj.WorkspaceAddOpts) error { return nil }
+func (f *fakeOrphanJJ) SparseSet(string, jj.SparseSetOpts) error               { return nil }
+
+func (f *fakeOrphanJJ) WorkspaceForget(repo, name string) error {
+	f.forgets = append(f.forgets, repo+":"+name)
+	return f.forgetErr
+}
+
+func (f *fakeOrphanJJ) MainWorkspaceRoot(path string) (string, error) {
+	clone, ok := f.mainClone[filepath.Base(path)]
+	if !ok {
+		return "", errors.New("not a jj workspace")
+	}
+	return clone, nil
+}
+
+func (f *fakeOrphanJJ) ListWorkspaces(repo string) ([]jj.Workspace, error) {
+	return f.registered[repo], nil
+}
+
+// orphanRigDir builds what an interrupted `rig new` leaves behind: checkouts
+// under src/ and no rig.toml.
+func orphanRigDir(t *testing.T, dirs ...string) (rigDir, rigRoot string) {
+	t.Helper()
+	rigDir = t.TempDir()
+	rigRoot = filepath.Join(rigDir, "dsp")
+	for _, d := range dirs {
+		require.NoError(t, os.MkdirAll(filepath.Join(rigRoot, "src", d), 0o755))
+	}
+	return rigDir, rigRoot
+}
+
+func TestRemoveOrphanRigStillReportsATrulyAbsentRig(t *testing.T) {
+	rigDir := t.TempDir()
+	err := removeOrphanRig(&fakeOrphanJJ{}, rigDir, filepath.Join(rigDir, "nope"), "nope")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `no rig named "nope"`)
+}
+
+// An empty root is the residue of a run that died before its first checkout.
+// There is nothing to lose, so removing it needs no confirmation.
+func TestRemoveOrphanRigDeletesAnEmptyRootWithoutForce(t *testing.T) {
+	rigDir, rigRoot := orphanRigDir(t)
+	require.NoError(t, os.MkdirAll(rigRoot, 0o755))
+
+	require.NoError(t, removeOrphanRig(&fakeOrphanJJ{}, rigDir, rigRoot, "dsp"))
+	assert.NoDirExists(t, rigRoot)
+}
+
+// Without --force the checkouts are described, not deleted: there is no
+// manifest here to tell clean from dirty.
+func TestRemoveOrphanRigRefusesWithoutForceAndNamesWhatItFound(t *testing.T) {
+	rigDir, rigRoot := orphanRigDir(t, "platform-v0.9.0")
+	js := &fakeOrphanJJ{
+		mainClone: map[string]string{"platform-v0.9.0": "/mains/opentdf/platform"},
+		registered: map[string][]jj.Workspace{
+			"/mains/opentdf/platform": {{Name: "rig-dsp-aaaaaaaa", Path: filepath.Join(rigRoot, "src", "platform-v0.9.0")}},
+		},
+	}
+	rigRmForce = false
+
+	err := removeOrphanRig(js, rigDir, rigRoot, "dsp")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has no manifest")
+	assert.Contains(t, err.Error(), "rig-dsp-aaaaaaaa")
+	assert.Contains(t, err.Error(), "/mains/opentdf/platform")
+	assert.Contains(t, err.Error(), "wgo rig rm dsp --force")
+	assert.DirExists(t, rigRoot, "nothing is removed until the user asks again")
+	assert.Empty(t, js.forgets)
+}
+
+// The whole point: --force clears the dead end that neither `rig new` nor the
+// old `rig rm` could.
+func TestRemoveOrphanRigWithForceForgetsAndDeletes(t *testing.T) {
+	rigDir, rigRoot := orphanRigDir(t, "platform-v0.9.0", "otdfctl-v0.3.0")
+	js := &fakeOrphanJJ{
+		mainClone: map[string]string{
+			"platform-v0.9.0": "/mains/opentdf/platform",
+			"otdfctl-v0.3.0":  "/mains/opentdf/otdfctl",
+		},
+		registered: map[string][]jj.Workspace{
+			"/mains/opentdf/platform": {{Name: "rig-dsp-aaaaaaaa", Path: filepath.Join(rigRoot, "src", "platform-v0.9.0")}},
+			"/mains/opentdf/otdfctl":  {{Name: "rig-dsp-bbbbbbbb", Path: filepath.Join(rigRoot, "src", "otdfctl-v0.3.0")}},
+		},
+	}
+	rigRmForce = true
+	t.Cleanup(func() { rigRmForce = false })
+
+	require.NoError(t, removeOrphanRig(js, rigDir, rigRoot, "dsp"))
+
+	assert.ElementsMatch(t, []string{
+		"/mains/opentdf/platform:rig-dsp-aaaaaaaa",
+		"/mains/opentdf/otdfctl:rig-dsp-bbbbbbbb",
+	}, js.forgets)
+	assert.NoDirExists(t, rigRoot)
+}
+
+// A directory with no traceable workspace is still in the way of `rig new`,
+// so --force must remove it rather than refusing over the missing clone.
+func TestRemoveOrphanRigWithForceRemovesUntraceableCheckouts(t *testing.T) {
+	rigDir, rigRoot := orphanRigDir(t, "half-written")
+	rigRmForce = true
+	t.Cleanup(func() { rigRmForce = false })
+
+	require.NoError(t, removeOrphanRig(&fakeOrphanJJ{}, rigDir, rigRoot, "dsp"))
+	assert.NoDirExists(t, rigRoot)
+}

@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -270,7 +271,7 @@ func widening(old, want Checkout) (Widening, bool) {
 // crash between the two leaves tombstones for checkouts that are already gone,
 // which the next --prune clears — the reverse order would leave live workspaces
 // with nothing recording them.
-func (mz *Materializer) ApplyDiff(m *Manifest, d *Diff, rigRoot string, opts PruneOpts) (retErr error) {
+func (mz *Materializer) ApplyDiff(ctx context.Context, m *Manifest, d *Diff, rigRoot string, opts PruneOpts) (retErr error) {
 	if !filepath.IsAbs(rigRoot) {
 		return fmt.Errorf("rig: rig root must be absolute, got %q", rigRoot)
 	}
@@ -289,6 +290,9 @@ func (mz *Materializer) ApplyDiff(m *Manifest, d *Diff, rigRoot string, opts Pru
 	srcRoot := filepath.Join(rigRoot, SrcDir)
 
 	for i := range d.Restore {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		c := &d.Restore[i]
 		// A checkout this Materializer already made — `rig sync` re-materialises
 		// the primary before it can re-read the build list — is on disk and on
@@ -310,6 +314,9 @@ func (mz *Materializer) ApplyDiff(m *Manifest, d *Diff, rigRoot string, opts Pru
 		}
 	}
 	for i := range d.Add {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		c := &d.Add[i]
 		if mz.alreadyMade(c.Workspace) {
 			continue
@@ -561,7 +568,7 @@ func dedupeSkips(skips []Skip) []Skip {
 // func assumes they all do. A module landing on a checkout whose directory has
 // been deleted is otherwise neither added nor restored, and materialisation
 // fails looking for a go.mod under a path that is not there.
-func (p *Planner) AddModules(m *Manifest, mods []gomod.Module, onDisk func(dir string) bool) (*Manifest, *Diff, error) {
+func (p *Planner) AddModules(ctx context.Context, m *Manifest, mods []gomod.Module, onDisk func(dir string) bool) (*Manifest, *Diff, error) {
 	if m == nil {
 		return nil, nil, errors.New("rig: add needs a rig to add to")
 	}
@@ -576,7 +583,7 @@ func (p *Planner) AddModules(m *Manifest, mods []gomod.Module, onDisk func(dir s
 		return m, &Diff{}, nil
 	}
 
-	cands, skips, err := p.resolveAll(wanted)
+	cands, skips, err := p.resolveAll(ctx, wanted)
 	if err != nil {
 		return nil, nil, err
 	}

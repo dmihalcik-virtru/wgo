@@ -2,12 +2,14 @@ package jj
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Client is the interface every jj-aware caller in wgo depends on. It is
@@ -80,6 +82,58 @@ type Client interface {
 type CLIClient struct {
 	// Binary is the path or name of the jj executable. Defaults to "jj".
 	Binary string
+
+	// ctx cancels in-flight jj subprocesses. Nil means uncancellable, which
+	// is what every read-only caller wants. Set it with WithContext.
+	ctx context.Context
+}
+
+// interruptGrace is how long a cancelled jj gets to exit on SIGINT before it
+// is killed outright.
+//
+// jj releases its working-copy and op-heads locks on the way out, and a repo
+// left locked needs a manual `jj workspace update-stale` to recover — so the
+// polite signal has to come first. The delay only matters for a jj that
+// ignores SIGINT entirely; a normal one is gone in milliseconds.
+const interruptGrace = 5 * time.Second
+
+// WithContext returns a shallow copy of c whose subprocesses are cancelled
+// when ctx is done.
+//
+// The context lives on the client rather than in every method signature
+// because Client has forty of them and two commands need cancellation; the
+// copy is request-scoped in the same way http.Request.WithContext is, so the
+// usual objection to storing a context in a struct does not apply. It also
+// keeps the SIGINT-then-kill handling below in one place instead of eight.
+//
+// Pass context.WithoutCancel(ctx) for cleanup work that must still run after
+// the cancellation it is cleaning up after.
+func (c *CLIClient) WithContext(ctx context.Context) *CLIClient {
+	clone := *c
+	clone.ctx = ctx
+	return &clone
+}
+
+// command builds the exec.Cmd for a jj invocation, wiring cancellation when
+// the client carries a context.
+func (c *CLIClient) command(dir string, args ...string) *exec.Cmd {
+	binary := c.Binary
+	if binary == "" {
+		binary = "jj"
+	}
+	var cmd *exec.Cmd
+	if c.ctx != nil {
+		cmd = exec.CommandContext(c.ctx, binary, args...)
+		// exec.CommandContext kills with SIGKILL by default, which denies jj
+		// the chance to unlock the repo. Interrupt first, kill only if it
+		// outstays interruptGrace.
+		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+		cmd.WaitDelay = interruptGrace
+	} else {
+		cmd = exec.Command(binary, args...)
+	}
+	cmd.Dir = dir
+	return cmd
 }
 
 // NewCLI returns a CLIClient using "jj" from PATH.
@@ -93,20 +147,28 @@ var _ Client = (*CLIClient)(nil)
 // runIn executes jj inside dir and returns stdout. On non-zero exit the
 // returned error wraps stderr verbatim plus the joined command.
 func (c *CLIClient) runIn(dir string, args ...string) (string, error) {
-	binary := c.Binary
-	if binary == "" {
-		binary = "jj"
-	}
-	cmd := exec.Command(binary, args...)
-	cmd.Dir = dir
+	cmd := c.command(dir, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// A cancelled jj reports whatever the signal did to it ("signal:
+		// interrupt"), which says nothing useful. Report the cancellation.
+		if ctxErr := c.ctxErr(); ctxErr != nil {
+			return stdout.String(), fmt.Errorf("jj %s: %w", strings.Join(args, " "), ctxErr)
+		}
 		return stdout.String(), fmt.Errorf("jj %s: %s: %w",
 			strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
 	}
 	return stdout.String(), nil
+}
+
+// ctxErr reports the client context's error, or nil when there is no context.
+func (c *CLIClient) ctxErr() error {
+	if c.ctx == nil {
+		return nil
+	}
+	return c.ctx.Err()
 }
 
 // runInWorkspace is runIn for commands that act on *the working copy jj finds
@@ -941,12 +1003,8 @@ func (c *CLIClient) GitPush(repo string, opts PushOpts) (PushResult, error) {
 		args = append(args, "--dry-run")
 	}
 
-	binary := c.Binary
-	if binary == "" {
-		binary = "jj"
-	}
 	full := append([]string{"-R", repo}, args...)
-	cmd := exec.Command(binary, full...)
+	cmd := c.command("", full...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -954,6 +1012,9 @@ func (c *CLIClient) GitPush(repo string, opts PushOpts) (PushResult, error) {
 
 	combined := stderr.String() + stdout.String()
 	if err != nil {
+		if ctxErr := c.ctxErr(); ctxErr != nil {
+			return PushResult{}, fmt.Errorf("jj %s: %w", strings.Join(full, " "), ctxErr)
+		}
 		if isLeaseFailure(combined) {
 			return PushResult{}, fmt.Errorf("%w: %s", ErrLeaseFailed, strings.TrimSpace(combined))
 		}

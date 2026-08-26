@@ -37,8 +37,9 @@ type RigConfig struct {
 	// Dir is the root under which rigs are created.
 	Dir string `mapstructure:"dir"`
 	// OrgPrefixes limits which module paths get a source checkout; everything
-	// else is left to the module cache. Empty means infer from the primary
-	// module's own path.
+	// else is left to the module cache. Required: an empty list would admit no
+	// dependency at all, so `wgo rig new` rejects it rather than building a rig
+	// holding nothing but the primary module. Override per-run with --org.
 	OrgPrefixes []string `mapstructure:"org_prefixes"`
 	// Sparse checks out only each module's own subdirectory. On by default:
 	// a monorepo checked out in full, once per pinned module, costs gigabytes
@@ -322,8 +323,10 @@ worktrees_dir = "~/Documents/GitHub/worktrees"
 # would otherwise look like a pile of stale worktrees.
 dir = "~/Documents/GitHub/rigs"
 
-# Module path prefixes to check out from source. Empty infers the primary
-# module's own organisation; add more to pull in sibling orgs.
+# Module path prefixes to check out from source; everything else is left to the
+# module cache. "wgo rig new" needs at least one, so fill this in (or pass --org)
+# before your first rig, e.g.:
+#   org_prefixes = ["github.com/your-org", "github.com/a-sibling-org"]
 org_prefixes = []
 
 # Check out only each module's own subdirectory rather than the whole repo.

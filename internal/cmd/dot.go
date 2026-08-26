@@ -248,6 +248,10 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 	heartbeatAgent(wsRoot, branch)
 	ctx.Agent = resolveAgent(wsRoot)
 
+	// A rig checkout is pinned, bookmark-less source, so most of the above
+	// reads as a workspace in a bad state rather than one working as intended.
+	ctx.Rig = resolveRigRef(wsRoot)
+
 	if opts.Siblings {
 		ctx.Siblings, ctx.SiblingsOverflow = gatherSiblings(jjc, cwd)
 	}
@@ -305,6 +309,11 @@ func ciWord(state string) string {
 
 // renderText writes the human-readable context. tty controls OSC8 hyperlinks.
 func renderText(w io.Writer, c *models.Context, tty bool) {
+	// First, because it reframes every line below it: in a rig there is no
+	// bookmark, nothing to be ahead or behind of, and no PR to look for.
+	if c.Rig != nil {
+		fmt.Fprintf(w, "rig:    ⚓ %s — pinned source, not branch work\n", rigRefLabel(*c.Rig))
+	}
 	fmt.Fprintf(w, "repo:   %s\n", links.Link(c.RepoURL, c.Repo, tty))
 	fmt.Fprintf(w, "branch: %s\n", links.Link(c.BranchURL, c.Branch, tty))
 	fmt.Fprintf(w, "status: %s\n", formatStatus(c.Changes))

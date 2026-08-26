@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -36,8 +37,16 @@ type GoWorkValidator interface {
 // the build list can be computed, and a failure while computing the build list
 // must still take the primary back down.
 type Materializer struct {
-	// JJ creates and forgets the workspaces.
+	// JJ creates the workspaces, and forgets them too unless Cleanup is set.
 	JJ Workspaces
+	// Cleanup forgets workspaces during Rollback. Optional; nil means use JJ.
+	//
+	// It exists so the caller can hand rollback a jj client that outlives the
+	// cancellation that triggered it — context.WithoutCancel of the one in JJ.
+	// Sharing JJ would mean every `jj workspace forget` in the rollback path
+	// returns "context canceled" without running, which is precisely the
+	// stranded state rollback is there to prevent.
+	Cleanup Workspaces
 	// Validate parses the rendered go.work. Optional: a nil validator skips
 	// the check, which is what --dry-run and unit tests want.
 	Validate GoWorkValidator
@@ -64,6 +73,14 @@ func (mz *Materializer) logf(format string, args ...any) {
 	}
 }
 
+// cleanup is the client Rollback forgets workspaces with.
+func (mz *Materializer) cleanup() Workspaces {
+	if mz.Cleanup != nil {
+		return mz.Cleanup
+	}
+	return mz.JJ
+}
+
 // created records one workspace this run made, so rollback can undo exactly
 // what it did and nothing else.
 type created struct {
@@ -79,7 +96,10 @@ type created struct {
 // run inside the primary's own checkout, so that checkout must exist before
 // there is a plan to materialise. The result is recorded for rollback and
 // Materialize will not create it a second time.
-func (mz *Materializer) Checkout(rigRoot string, c *Checkout) (string, error) {
+func (mz *Materializer) Checkout(ctx context.Context, rigRoot string, c *Checkout) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := mz.ensureRoot(rigRoot); err != nil {
 		return "", err
 	}
@@ -144,7 +164,7 @@ func (mz *Materializer) alreadyMade(workspace string) bool {
 //
 // m is mutated: WidenSparse extends the sparse sets and any escaped replaces
 // are appended to m.Skipped before the manifest is written.
-func (mz *Materializer) Materialize(m *Manifest, rigRoot string) (retErr error) {
+func (mz *Materializer) Materialize(ctx context.Context, m *Manifest, rigRoot string) (retErr error) {
 	if !filepath.IsAbs(rigRoot) {
 		return fmt.Errorf("rig: rig root must be absolute, got %q", rigRoot)
 	}
@@ -163,6 +183,13 @@ func (mz *Materializer) Materialize(m *Manifest, rigRoot string) (retErr error) 
 	srcRoot := filepath.Join(rigRoot, SrcDir)
 
 	for i := range m.Checkouts {
+		// Between checkouts is the one place a cancelled rig build can stop
+		// cleanly: a jj interrupted mid-`workspace add` surfaces its own error
+		// and lands here anyway, but the gaps — sparse writes, go.mod reads —
+		// would otherwise run to completion under a user who pressed Ctrl-C.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		c := &m.Checkouts[i]
 		dest := filepath.Join(srcRoot, c.Dir)
 
@@ -381,7 +408,7 @@ func (mz *Materializer) Rollback(rigRoot string) {
 	}
 	for i := len(done) - 1; i >= 0; i-- {
 		d := done[i]
-		if err := mz.JJ.WorkspaceForget(d.mainClone, d.workspace); err != nil {
+		if err := mz.cleanup().WorkspaceForget(d.mainClone, d.workspace); err != nil {
 			mz.logf("warning: could not forget workspace %s in %s: %v\n"+
 				"  run: jj -R %s workspace forget %s", d.workspace, d.mainClone, err, d.mainClone, d.workspace)
 		}
@@ -477,4 +504,138 @@ func Remove(ws Workspaces, m *Manifest, rigRoot string, logf func(string, ...any
 			rigRoot, len(failed), strings.Join(failed, "\n  "))
 	}
 	return nil
+}
+
+// Orphans is the jj surface orphan recovery needs: enough to work out which
+// workspaces a manifest-less rig directory registered.
+type Orphans interface {
+	Workspaces
+	MainWorkspaceRoot(path string) (string, error)
+	ListWorkspaces(repo string) ([]jj.Workspace, error)
+}
+
+// Orphan is one checkout found under a rig root that no manifest describes.
+type Orphan struct {
+	// Dir is the checkout directory under <rigRoot>/src.
+	Dir string
+	// MainClone is the repo the workspace is registered in. Empty when it
+	// could not be determined.
+	MainClone string
+	// Workspace is the registered workspace name. Empty when the checkout
+	// exists but no workspace in MainClone points at it — already forgotten,
+	// or never registered.
+	Workspace string
+	// Err records why this checkout could not be traced back to a clone.
+	Err error
+}
+
+// FindOrphans identifies the workspaces registered by a rig directory that has
+// no manifest.
+//
+// A rig build interrupted between its first checkout and the manifest write
+// leaves exactly this: real jj workspaces registered in real main clones, and
+// nothing on disk saying so. Load fails, so Remove cannot be told what to
+// forget, and the directory is left in a state `rig new` refuses to overwrite
+// and `rig rm` refuses to touch.
+//
+// Discovery runs backwards from each checkout rather than forwards from the
+// clones: a checkout knows its own main clone (jj records it in .jj), whereas
+// finding it from the other direction would mean scanning every repo on the
+// filesystem. The cost is that a checkout whose directory was already deleted
+// by hand cannot be found this way — its workspace is reported by
+// `jj workspace list` in the clone and has to be forgotten there.
+func FindOrphans(js Orphans, rigRoot string) ([]Orphan, error) {
+	srcRoot := filepath.Join(rigRoot, SrcDir)
+	entries, err := os.ReadDir(srcRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("rig: reading %s: %w", srcRoot, err)
+	}
+
+	var found []Orphan
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(srcRoot, e.Name())
+		o := Orphan{Dir: dir}
+
+		clone, err := js.MainWorkspaceRoot(dir)
+		if err != nil {
+			// Not a workspace, or an unreadable one. Either way there is
+			// nothing to forget; the tree deletion still applies.
+			o.Err = err
+			found = append(found, o)
+			continue
+		}
+		o.MainClone = clone
+
+		wss, err := js.ListWorkspaces(clone)
+		if err != nil {
+			o.Err = err
+			found = append(found, o)
+			continue
+		}
+		// Matched on path, not on the rig-<name>-<hash> naming convention:
+		// the path is what actually ties a registration to this rig, and it
+		// stays correct if the naming scheme ever changes.
+		for _, ws := range wss {
+			if sameDir(ws.Path, dir) {
+				o.Workspace = ws.Name
+				break
+			}
+		}
+		found = append(found, o)
+	}
+	return found, nil
+}
+
+// RemoveOrphans forgets every workspace FindOrphans traced, then deletes the
+// tree. It is Remove for a rig root with no manifest.
+func RemoveOrphans(js Orphans, orphans []Orphan, rigRoot string, logf func(string, ...any)) error {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	var failed []string
+	for _, o := range orphans {
+		if o.Workspace == "" {
+			if o.Err != nil {
+				logf("note: %s is not a readable jj workspace (%v); removing the directory only",
+					filepath.Base(o.Dir), o.Err)
+			}
+			continue
+		}
+		logf("forgetting workspace %s in %s", o.Workspace, o.MainClone)
+		if err := js.WorkspaceForget(o.MainClone, o.Workspace); err != nil {
+			logf("warning: could not forget workspace %s in %s: %v", o.Workspace, o.MainClone, err)
+			failed = append(failed, fmt.Sprintf("jj -R %s workspace forget %s", o.MainClone, o.Workspace))
+		}
+	}
+	if err := os.RemoveAll(rigRoot); err != nil {
+		return fmt.Errorf("rig: removing %s: %w", rigRoot, err)
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("rig: removed %s, but %d workspace(s) could not be forgotten; run:\n  %s",
+			rigRoot, len(failed), strings.Join(failed, "\n  "))
+	}
+	return nil
+}
+
+// sameDir compares two paths after resolving symlinks, so a checkout reached
+// through /var and recorded under /private/var still matches.
+func sameDir(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		return false
+	}
+	return ra == rb
 }
