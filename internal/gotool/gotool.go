@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,9 +103,12 @@ func (c *Client) In(dir string) *Client {
 }
 
 // WithWork returns a copy of c using goWork as its GOWORK. Pass WorkOff to
-// disable workspace mode. A relative path is made absolute against c.Dir,
-// because Go resolves GOWORK relative to the process working directory and
-// getting that wrong silently selects the wrong workspace.
+// disable workspace mode.
+//
+// A relative path is made absolute against c.Dir, falling back to the process
+// working directory when c.Dir is unset — Go rejects a relative GOWORK outright
+// ("invalid GOWORK: not an absolute path"), so a relative value would fail every
+// subsequent call. run enforces the same rule for clients built by other means.
 func (c *Client) WithWork(goWork string) *Client {
 	out := *c
 	if goWork == "" || goWork == WorkOff {
@@ -112,7 +116,11 @@ func (c *Client) WithWork(goWork string) *Client {
 		return &out
 	}
 	if !filepath.IsAbs(goWork) {
-		goWork = filepath.Join(c.Dir, goWork)
+		base := c.Dir
+		if base == "" {
+			base, _ = os.Getwd()
+		}
+		goWork = filepath.Join(base, goWork)
 	}
 	out.Work = resolve(goWork)
 	return &out
@@ -161,9 +169,25 @@ func (c *Client) work() string {
 	return c.Work
 }
 
+// workFile returns the go.work path for commands that take it as an argument
+// rather than reading it from the environment.
+//
+// WorkOff is a valid GOWORK value but not a filename: passing it through would
+// run `go work edit -fmt off` and report a missing file the caller never named.
+func (c *Client) workFile() (string, error) {
+	w := c.work()
+	if w == WorkOff {
+		return "", errors.New("gotool: this command needs a go.work; call Client.WithWork first")
+	}
+	return w, nil
+}
+
 // environ builds the child environment: the parent's, minus the variables this
-// package owns, plus our own settings. readOnly pins GOFLAGS to -mod=readonly
-// so a query can never rewrite a pinned checkout's go.mod as a side effect.
+// package owns, plus our own settings. readOnly pins GOFLAGS to -mod=readonly,
+// which every command here sets except WorkSync — it stops a query, and the
+// non-destructive `go work edit` forms, from rewriting a pinned checkout's
+// go.mod as a side effect. GOFLAGS is stripped from the parent environment
+// either way, so a user's setting cannot reintroduce -mod=mod.
 func (c *Client) environ(readOnly bool) []string {
 	env := stripEnv(os.Environ(), "GOWORK", "GOFLAGS")
 	env = append(env, "GOWORK="+c.work())
@@ -190,6 +214,13 @@ func stripEnv(env []string, names ...string) []string {
 }
 
 func (c *Client) run(readOnly bool, args ...string) (string, error) {
+	// Enforced here rather than in WithWork because Work is an exported field:
+	// this is the one point every invocation crosses. Go rejects a relative
+	// GOWORK outright, so catching it here names the offending value instead of
+	// letting the toolchain report it without context.
+	if w := c.work(); w != WorkOff && !filepath.IsAbs(w) {
+		return "", fmt.Errorf("gotool: GOWORK must be an absolute path, got %q", w)
+	}
 	cmd := exec.Command(c.binary(), args...)
 	cmd.Dir = c.Dir
 	cmd.Env = c.environ(readOnly)
@@ -311,8 +342,14 @@ func (c *Client) Build(outputDir string, patterns ...string) error {
 
 // WorkEditFmt reformats c.Work in place. This is a pure formatting pass: it
 // reads and rewrites only the go.work file, never the member modules.
+//
+// Requires WithWork.
 func (c *Client) WorkEditFmt() error {
-	_, err := c.run(true, "work", "edit", "-fmt", c.work())
+	work, err := c.workFile()
+	if err != nil {
+		return err
+	}
+	_, err = c.run(true, "work", "edit", "-fmt", work)
 	return err
 }
 
@@ -321,7 +358,13 @@ func (c *Client) WorkEditFmt() error {
 //
 // This is how drift is frozen: pinning a promoted module's dependency back to
 // the version the shipped artifact used.
+//
+// Requires WithWork.
 func (c *Client) WorkEditReplace(oldPath, oldVersion, newPath, newVersion string) error {
+	work, err := c.workFile()
+	if err != nil {
+		return err
+	}
 	old := oldPath
 	if oldVersion != "" {
 		old += "@" + oldVersion
@@ -330,24 +373,34 @@ func (c *Client) WorkEditReplace(oldPath, oldVersion, newPath, newVersion string
 	if newVersion != "" {
 		replacement += "@" + newVersion
 	}
-	_, err := c.run(true, "work", "edit", "-replace", old+"="+replacement, c.work())
+	_, err = c.run(true, "work", "edit", "-replace", old+"="+replacement, work)
 	return err
 }
 
 // WorkEditDropReplace removes a replace directive from c.Work.
+// Requires WithWork.
 func (c *Client) WorkEditDropReplace(oldPath, oldVersion string) error {
+	work, err := c.workFile()
+	if err != nil {
+		return err
+	}
 	old := oldPath
 	if oldVersion != "" {
 		old += "@" + oldVersion
 	}
-	_, err := c.run(true, "work", "edit", "-dropreplace", old, c.work())
+	_, err = c.run(true, "work", "edit", "-dropreplace", old, work)
 	return err
 }
 
-// WorkUse adds directories to c.Work's use list.
+// WorkUse adds directories to c.Work's use list. Requires WithWork: it takes
+// the target from GOWORK rather than an argument, so without one it would edit
+// whichever go.work Go finds by searching upward.
 func (c *Client) WorkUse(dirs ...string) error {
 	if len(dirs) == 0 {
 		return nil
+	}
+	if _, err := c.workFile(); err != nil {
+		return err
 	}
 	args := append([]string{"work", "use"}, dirs...)
 	_, err := c.run(true, args...)
@@ -361,8 +414,11 @@ func (c *Client) WorkUse(dirs ...string) error {
 // dirties all of them at once, replacing the versions the artifact shipped with
 // the workspace's MVS result — destroying the very thing the rig reproduces.
 // Never call it as part of a normal flow; it must stay behind an explicit
-// opt-in flag.
+// opt-in flag. Requires WithWork.
 func (c *Client) WorkSync() error {
+	if _, err := c.workFile(); err != nil {
+		return err
+	}
 	_, err := c.run(false, "work", "sync")
 	return err
 }
@@ -375,20 +431,28 @@ func (c *Client) WorkSync() error {
 // accidentally joined to an unrelated workspace. Both arguments should be
 // absolute and stopDir should be an ancestor of startDir; if it is not, the
 // walk terminates at the filesystem root.
-func FindWorkFile(startDir, stopDir string) string {
+//
+// Only a genuine absence continues the walk. A stat that fails for any other
+// reason — a directory the user cannot traverse, most likely — is reported
+// rather than read as "this repo ships no go.work", which would silently
+// compute the baseline build list against the wrong workspace.
+func FindWorkFile(startDir, stopDir string) (string, error) {
 	dir := filepath.Clean(startDir)
 	stop := filepath.Clean(stopDir)
 	for {
 		candidate := filepath.Join(dir, "go.work")
-		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-			return candidate
+		switch st, err := os.Stat(candidate); {
+		case err == nil && !st.IsDir():
+			return candidate, nil
+		case err != nil && !errors.Is(err, fs.ErrNotExist):
+			return "", fmt.Errorf("gotool: looking for go.work: %w", err)
 		}
 		if dir == stop {
-			return ""
+			return "", nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return ""
+			return "", nil
 		}
 		dir = parent
 	}

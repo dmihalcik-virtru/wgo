@@ -116,6 +116,47 @@ func TestWithWorkAbsolutizes(t *testing.T) {
 	assert.Equal(t, WorkOff, NewClient().In("/rigs/dsp").WithWork(WorkOff).Work)
 }
 
+func TestWithWorkFallsBackToCwd(t *testing.T) {
+	// With no Dir set the command runs in the process's working directory, so
+	// that — not the empty string — is what a relative go.work is relative to.
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(cwd, "go.work"), NewClient().WithWork("go.work").Work)
+}
+
+// Work is an exported field, so WithWork's absolutizing can be bypassed. run is
+// the chokepoint that catches it: go rejects a relative GOWORK outright, and
+// this turns that context-free toolchain error into one that names the value.
+func TestRunRejectsRelativeWork(t *testing.T) {
+	c := NewClient()
+	c.Work = "relative/go.work"
+
+	_, err := c.Version()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absolute")
+	assert.Contains(t, err.Error(), "relative/go.work")
+}
+
+// The Work* methods edit a specific file. Without one selected they would
+// otherwise run with GOWORK=off and fail far from the missing precondition.
+func TestWorkMethodsRequireWork(t *testing.T) {
+	c := NewClient().In(t.TempDir())
+
+	for name, call := range map[string]func() error{
+		"WorkEditFmt":         c.WorkEditFmt,
+		"WorkUse":             func() error { return c.WorkUse("./mod") },
+		"WorkEditReplace":     func() error { return c.WorkEditReplace("example.com/m", "", "./m", "") },
+		"WorkEditDropReplace": func() error { return c.WorkEditDropReplace("example.com/m", "") },
+		"WorkSync":            c.WorkSync,
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "WithWork")
+		})
+	}
+}
+
 func TestWithMethodsDoNotMutate(t *testing.T) {
 	base := NewClient().In("/a")
 	derived := base.In("/b").WithWork("/b/go.work").WithEnv("X=1")
@@ -126,6 +167,15 @@ func TestWithMethodsDoNotMutate(t *testing.T) {
 	assert.Equal(t, "/b", derived.Dir)
 }
 
+// findWork fails the test on a stat error, so the assertions below stay about
+// which go.work the walk selects.
+func findWork(t *testing.T, startDir, stopDir string) string {
+	t.Helper()
+	got, err := FindWorkFile(startDir, stopDir)
+	require.NoError(t, err)
+	return got
+}
+
 func TestFindWorkFile(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -134,38 +184,38 @@ func TestFindWorkFile(t *testing.T) {
 
 	// No go.work anywhere: the walk stops at the repo root and reports nothing,
 	// rather than continuing into the user's home directory the way `go` does.
-	assert.Equal(t, "", FindWorkFile(nested, repo))
+	assert.Equal(t, "", findWork(t, nested, repo))
 
 	// A go.work above the stop directory is out of bounds.
 	outside := filepath.Join(root, "go.work")
 	require.NoError(t, os.WriteFile(outside, []byte("go 1.24\n"), 0o644))
-	assert.Equal(t, "", FindWorkFile(nested, repo))
+	assert.Equal(t, "", findWork(t, nested, repo))
 
 	// One at the repo root is found from a nested module.
 	inside := filepath.Join(repo, "go.work")
 	require.NoError(t, os.WriteFile(inside, []byte("go 1.24\n"), 0o644))
-	assert.Equal(t, inside, FindWorkFile(nested, repo))
+	assert.Equal(t, inside, findWork(t, nested, repo))
 
 	// The nearest one wins.
 	nearer := filepath.Join(repo, "test", "go.work")
 	require.NoError(t, os.WriteFile(nearer, []byte("go 1.24\n"), 0o644))
-	assert.Equal(t, nearer, FindWorkFile(nested, repo))
+	assert.Equal(t, nearer, findWork(t, nested, repo))
 
 	// startDir == stopDir still checks that directory.
-	assert.Equal(t, inside, FindWorkFile(repo, repo))
+	assert.Equal(t, inside, findWork(t, repo, repo))
 }
 
 func TestFindWorkFileIgnoresDirectory(t *testing.T) {
 	repo := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(repo, "go.work"), 0o755))
-	assert.Equal(t, "", FindWorkFile(repo, repo))
+	assert.Equal(t, "", findWork(t, repo, repo))
 }
 
 func TestFindWorkFileUnrelatedStopDir(t *testing.T) {
 	// A stopDir that is not an ancestor must terminate at the filesystem root
 	// rather than loop forever.
 	dir := t.TempDir()
-	assert.Equal(t, "", FindWorkFile(dir, filepath.Join(dir, "not-an-ancestor")))
+	assert.Equal(t, "", findWork(t, dir, filepath.Join(dir, "not-an-ancestor")))
 }
 
 func TestExitErrorTruncatesButKeepsFullStderr(t *testing.T) {
