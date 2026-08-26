@@ -896,3 +896,78 @@ func mustCheckoutForRepo(t *testing.T, m *Manifest, repo string) Checkout {
 	t.Fatalf("no checkout for repo %q", repo)
 	return Checkout{}
 }
+
+func TestResolvePrimaryAgreesWithThePlanner(t *testing.T) {
+	req, p := dspRequest()
+
+	pc, err := p.ResolvePrimary(req.Name, req.Primary)
+	require.NoError(t, err)
+
+	// The whole two-phase scheme rests on this: `rig new` materialises the
+	// primary before it has a build list, so the name it picks then must be the
+	// name the planner would have picked afterwards. If these ever diverge the
+	// manifest describes a directory nobody created.
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+	require.NotEmpty(t, m.Checkouts)
+	planned := m.Checkouts[0]
+
+	assert.Equal(t, "data-security-platform-v2.7.1", pc.Dir)
+	assert.Equal(t, planned.Dir, pc.Dir)
+	assert.Equal(t, planned.Workspace, pc.Workspace)
+	assert.Equal(t, planned.Repo, pc.Repo)
+	assert.Equal(t, planned.MainClone, pc.MainClone)
+	assert.Equal(t, planned.Commit, pc.Commit)
+	assert.Equal(t, planned.Tag, pc.Tag)
+
+	// The primary is checked out in full: `go list` against the repo's own
+	// go.work needs every module that go.work names.
+	assert.True(t, pc.Full)
+}
+
+func TestPlanAdoptsThePreWarmedPrimary(t *testing.T) {
+	req, p := dspRequest()
+	pc, err := p.ResolvePrimary(req.Name, req.Primary)
+	require.NoError(t, err)
+
+	// Pretend the caller ended up somewhere else — a collision suffix, say.
+	pc.Dir = "dsp-prewarmed"
+	req.PrimaryCheckout = pc
+
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+
+	assert.Equal(t, "dsp-prewarmed", m.Checkouts[0].Dir)
+	assert.True(t, m.Checkouts[0].Full, "the adopted full/sparse decision survives planning")
+
+	// Members must point at the adopted directory, or go.work `use` paths name
+	// a directory that does not exist.
+	var seen int
+	for _, mem := range m.Members {
+		if mem.Checkout == "dsp-prewarmed" {
+			seen++
+		}
+	}
+	assert.Greater(t, seen, 0)
+	assert.NoError(t, m.Validate())
+}
+
+func TestResolvePrimaryFailsLoudly(t *testing.T) {
+	req, p := dspRequest()
+
+	// A dependency we cannot reach is a skip; the primary is the rig.
+	p.Locator = &fakeLocator{err: map[string]error{
+		"virtru-corp/data-security-platform": errors.New("no such repository"),
+	}}
+	_, err := p.ResolvePrimary(req.Name, req.Primary)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no such repository")
+
+	// An unfetched tag resolves to nothing rather than erroring.
+	_, unfetched := dspRequest()
+	unfetched.Resolver = &fakeResolver{}
+	_, err = unfetched.ResolvePrimary(req.Name, req.Primary)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves to nothing")
+	assert.Contains(t, err.Error(), "jj git fetch", "the error names the command that fixes it")
+}

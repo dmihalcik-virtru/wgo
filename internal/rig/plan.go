@@ -41,6 +41,17 @@ type Request struct {
 	Sparse bool
 	// Primary is the artifact's own module.
 	Primary gomod.Module
+	// PrimaryCheckout, when non-nil, is a checkout the caller has already
+	// materialised for the primary. The planner adopts it verbatim instead of
+	// deriving its own.
+	//
+	// `rig new --from` has to check the primary out before it can run `go list`
+	// to get the build list, so by the time planning happens the directory name
+	// and the full/sparse decision are already facts on disk. Re-deriving them
+	// would risk a plan that describes a directory nobody created: the derived
+	// name depends on the group's anchor module, and the group is empty but for
+	// the primary until the build list exists.
+	PrimaryCheckout *Checkout
 	// PrimaryUse mirrors the primary repository's own go.work `use` list as
 	// repo-relative directories. A repo that ships a go.work builds against a
 	// different build list than its root module alone, so the rig has to
@@ -274,6 +285,105 @@ func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
 	return cands, skips, nil
 }
 
+// ResolvePrimaryRepo describes the primary's checkout from a repository
+// reference rather than a module path, which is what `--from owner/repo@ref`
+// supplies.
+//
+// The module path is not knowable yet: it lives in the go.mod at that tag, and
+// reading it means checking the repository out first. Owner, repo and tag are
+// enough to do that, so the caller resolves the module path from the working
+// copy this describes.
+//
+// ref is used verbatim as the tag. A repo-root module's tag is its version, so
+// for the common case the two coincide.
+func (p *Planner) ResolvePrimaryRepo(rigName, owner, repo, ref string) (*Checkout, error) {
+	if owner == "" || repo == "" || ref == "" {
+		return nil, errors.New("rig: resolving the primary requires owner, repo and a ref")
+	}
+	clone, err := p.Locator.Locate(owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("rig: locating %s/%s: %w", owner, repo, err)
+	}
+	revset := fmt.Sprintf(`present(tags(exact:%q))`, ref)
+	commit, err := p.Resolver.Resolve(clone, revset)
+	if err != nil {
+		return nil, fmt.Errorf("rig: resolving %s in %s/%s: %w", ref, owner, repo, err)
+	}
+	if commit == "" {
+		return nil, fmt.Errorf(
+			"rig: %s resolves to nothing in %s/%s (revset %s)\n"+
+				"the tag may not have been fetched (jj does not fetch tags by default); try:\n"+
+				"  jj git fetch -R %s --remote origin -t %s",
+			ref, owner, repo, revset, clone, ref)
+	}
+	c := &Checkout{
+		Dir:       uniqueDir(nil, repo, ref, commit),
+		Repo:      owner + "/" + repo,
+		MainClone: clone,
+		Revset:    revset,
+		Commit:    commit,
+		Tag:       ref,
+		Full:      true,
+	}
+	c.Workspace = workspaceName(rigName, commit)
+	return c, nil
+}
+
+// ResolvePrimary describes the checkout for the primary module alone, so
+// `rig new` can materialise it before it has a build list to plan from.
+//
+// The result is meant to be handed straight back as Request.PrimaryCheckout;
+// the planner then adopts it rather than deriving a second, possibly different,
+// directory name.
+//
+// The checkout is always full. The build list is computed by running `go list`
+// inside it against the repository's own go.work, and that go.work names
+// sibling modules which `go list` fails on if they are missing — so there is
+// nothing useful to narrow to at this point.
+//
+// Unlike a dependency, an unreachable or unresolvable primary is fatal: there
+// is no rig to build without it.
+func (p *Planner) ResolvePrimary(rigName string, primary gomod.Module) (*Checkout, error) {
+	if primary.Path == "" {
+		return nil, errors.New("rig: resolving the primary requires a module path")
+	}
+	origin, err := gomod.ParseOrigin(primary.Path)
+	if err != nil {
+		return nil, fmt.Errorf("rig: primary module %s: %w", primary.Path, err)
+	}
+	clone, err := p.Locator.Locate(origin.Owner, origin.Repo)
+	if err != nil {
+		return nil, fmt.Errorf("rig: locating %s for primary %s: %w", origin.Slug(), primary.Path, err)
+	}
+	revset := origin.Revset(primary.Version)
+	commit, err := p.Resolver.Resolve(clone, revset)
+	if err != nil {
+		return nil, fmt.Errorf("rig: resolving %s@%s in %s: %w", primary.Path, primary.Version, origin.Slug(), err)
+	}
+	if commit == "" {
+		return nil, fmt.Errorf(
+			"rig: %s@%s resolves to nothing in %s (revset %s)\n%s",
+			primary.Path, primary.Version, origin.Slug(), revset,
+			resolveHint(origin, primary.Version, clone))
+	}
+
+	tag := ""
+	if gomod.PseudoCommit(primary.Version) == "" {
+		tag = origin.TagFor(primary.Version)
+	}
+	c := &Checkout{
+		Dir:       uniqueDir(nil, origin.Repo, tag, commit),
+		Repo:      origin.Slug(),
+		MainClone: clone,
+		Revset:    revset,
+		Commit:    commit,
+		Tag:       tag,
+		Full:      true,
+	}
+	c.Workspace = workspaceName(rigName, commit)
+	return c, nil
+}
+
 // resolveHint suggests the command most likely to fix an empty resolution.
 //
 // The two cases need different advice. A tag pin resolves through
@@ -372,15 +482,24 @@ func groupCheckouts(cands []candidate, req Request) ([]Checkout, []Member) {
 	for _, g := range order {
 		anchor := g.anchor
 
-		c := Checkout{
-			Dir:       uniqueDir(usedDirs, anchor.origin.Repo, anchor.tag, anchor.commit),
-			Repo:      anchor.origin.Slug(),
-			MainClone: anchor.mainClone,
-			Revset:    anchor.revset,
-			Commit:    anchor.commit,
-			Tag:       anchor.tag,
+		// An adopted primary checkout is already on disk; its directory name
+		// and full/sparse decision are facts, not choices left to make.
+		adopted := g.primary && req.PrimaryCheckout != nil
+
+		var c Checkout
+		if adopted {
+			c = *req.PrimaryCheckout
+		} else {
+			c = Checkout{
+				Dir:       uniqueDir(usedDirs, anchor.origin.Repo, anchor.tag, anchor.commit),
+				Repo:      anchor.origin.Slug(),
+				MainClone: anchor.mainClone,
+				Revset:    anchor.revset,
+				Commit:    anchor.commit,
+				Tag:       anchor.tag,
+			}
+			c.Workspace = workspaceName(req.Name, c.Commit)
 		}
-		c.Workspace = workspaceName(req.Name, c.Commit)
 		usedDirs[c.Dir] = true
 
 		sparse := map[string]bool{}
@@ -401,9 +520,15 @@ func groupCheckouts(cands []candidate, req Request) ([]Checkout, []Member) {
 				sparse[mem.origin.Subdir] = true
 			}
 		}
-		if full {
+		switch {
+		case adopted:
+			// The caller already narrowed (or did not narrow) this working
+			// copy. Recording a different decision here would put the manifest
+			// out of step with the disk, and the sparse set is what `rig
+			// verify` and the widening pass both read.
+		case full:
 			c.Full = true
-		} else {
+		default:
 			c.Sparse = sortedKeys(sparse)
 		}
 		checkouts = append(checkouts, c)
