@@ -404,7 +404,7 @@ func TestShortDate(t *testing.T) {
 func TestRigNewFlagsAreRegistered(t *testing.T) {
 	// The spec's documented surface; a flag silently missing turns a scripted
 	// invocation into an "unknown flag" failure.
-	for _, name := range []string{"from", "from-binary", "module", "org", "full", "dry-run"} {
+	for _, name := range []string{"from", "from-binary", "module", "org", "full", "no-verify", "dry-run"} {
 		assert.NotNil(t, rigNewCmd.Flags().Lookup(name), "wgo rig new --%s", name)
 	}
 	assert.NotNil(t, rigNewCmd.Flags().ShorthandLookup("m"))

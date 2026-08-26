@@ -204,6 +204,29 @@ func (m *Manifest) CheckoutByDir(dir string) *Checkout {
 // Root returns the rig's directory given the configured rig.dir.
 func (m *Manifest) Root(rigDir string) string { return filepath.Join(rigDir, m.Name) }
 
+// PackagePatterns returns the `go` command patterns covering every package the
+// rig's own modules contribute, for use from the rig root.
+//
+// Not "./...". In workspace mode a directory-prefix pattern has to name a
+// directory inside a module the go.work lists, and the rig root is not one —
+// the checkouts live under src/ — so `go list ./...` there fails with
+// "directory prefix . does not contain modules listed in go.work". "all" does
+// work, but it means the entire module graph and pulls its whole transitive
+// closure over the network to answer a question about the rig's own code.
+func (m *Manifest) PackagePatterns() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, mem := range m.Members {
+		p := mem.UseDir() + "/..."
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
 // MaxNameLen bounds a rig's name so that workspaceName's commit discriminator
 // survives sanitisation.
 //
