@@ -2,6 +2,7 @@ package jj_test
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -500,7 +501,7 @@ func TestWorkspaceAddCreatesChild(t *testing.T) {
 	}
 
 	dest := filepath.Join(t.TempDir(), "ws")
-	if err := c.WorkspaceAdd(repo, "ws", dest, "feat"); err != nil {
+	if err := c.WorkspaceAdd(repo, dest, jj.WorkspaceAddOpts{Name: "ws", Revset: "feat"}); err != nil {
 		t.Fatalf("WorkspaceAdd: %v", err)
 	}
 
@@ -543,7 +544,7 @@ func TestParkSequenceLandsWorkInDestination(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "ws")
 	// M2: populate the destination before the source is cleared.
-	if err := c.WorkspaceAdd(repo, "parked", dest, work.ChangeID); err != nil {
+	if err := c.WorkspaceAdd(repo, dest, jj.WorkspaceAddOpts{Name: "parked", Revset: work.ChangeID}); err != nil {
 		t.Fatalf("WorkspaceAdd: %v", err)
 	}
 	// M3: return the source's @ to base. Must precede M5 — while both
@@ -997,4 +998,189 @@ func TestEmptyRepoTrunkBootstrapPush(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("probe after bootstrap = (%d, %v), want (1, nil)", n, err)
 	}
+}
+
+// A rig holds many pinned checkouts of one large monorepo, so each workspace
+// must materialise only the module subdirectory it exists for. This pins the
+// two-step mechanism that makes that possible: create empty, then widen.
+func TestWorkspaceAddSparseEmptyThenSet(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "modules", map[string]string{
+		"service/main.go": "package main\n",
+		"sdk/sdk.go":      "package sdk\n",
+		"README.md":       "hi\n",
+	})
+
+	dest := filepath.Join(t.TempDir(), "ws")
+	if err := c.WorkspaceAdd(repo, dest, jj.WorkspaceAddOpts{
+		Name:           "rig-service",
+		Revset:         "@-",
+		SparsePatterns: jj.SparseEmpty,
+	}); err != nil {
+		t.Fatalf("WorkspaceAdd: %v", err)
+	}
+
+	if entries := workingCopyFiles(t, dest); len(entries) != 0 {
+		t.Fatalf("SparseEmpty workspace materialised %v; want nothing", entries)
+	}
+
+	if err := c.SparseSet(dest, jj.SparseSetOpts{Clear: true, Add: []string{"service"}}); err != nil {
+		t.Fatalf("SparseSet: %v", err)
+	}
+	got := workingCopyFiles(t, dest)
+	want := []string{"service/main.go"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("after SparseSet files = %v, want %v", got, want)
+	}
+
+	patterns, err := c.SparseList(dest)
+	if err != nil {
+		t.Fatalf("SparseList: %v", err)
+	}
+	if !slices.Equal(patterns, []string{"service"}) {
+		t.Fatalf("SparseList = %v, want [service]", patterns)
+	}
+}
+
+// Regression guard for the footgun documented on SparseSet: sparse patterns
+// belong to a working copy, so running the command against the repo (`-R`)
+// instead of inside the workspace would empty the user's main checkout.
+func TestSparseSetLeavesOtherWorkspacesAlone(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "modules", map[string]string{
+		"service/main.go": "package main\n",
+		"sdk/sdk.go":      "package sdk\n",
+	})
+	before := workingCopyFiles(t, repo)
+
+	dest := filepath.Join(t.TempDir(), "ws")
+	if err := c.WorkspaceAdd(repo, dest, jj.WorkspaceAddOpts{Name: "rig", Revset: "@-"}); err != nil {
+		t.Fatalf("WorkspaceAdd: %v", err)
+	}
+	if err := c.SparseSet(dest, jj.SparseSetOpts{Clear: true, Add: []string{"sdk"}}); err != nil {
+		t.Fatalf("SparseSet: %v", err)
+	}
+
+	if after := workingCopyFiles(t, repo); !slices.Equal(before, after) {
+		t.Fatalf("main checkout changed from %v to %v", before, after)
+	}
+	if got := workingCopyFiles(t, dest); !slices.Equal(got, []string{"sdk/sdk.go"}) {
+		t.Fatalf("secondary workspace files = %v, want [sdk/sdk.go]", got)
+	}
+}
+
+func TestSparseSetNoOp(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "work", map[string]string{"a.txt": "a\n"})
+	if err := c.SparseSet(repo, jj.SparseSetOpts{}); err != nil {
+		t.Fatalf("SparseSet with nothing to do: %v", err)
+	}
+	if got := workingCopyFiles(t, repo); !slices.Equal(got, []string{"a.txt"}) {
+		t.Fatalf("no-op SparseSet changed the working copy: %v", got)
+	}
+}
+
+// A rig workspace is parented at a tag and carries no bookmark, so without
+// -m it appears in `jj log` as an anonymous empty change.
+func TestWorkspaceAddMessage(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "work", map[string]string{"a.txt": "a\n"})
+
+	dest := filepath.Join(t.TempDir(), "ws")
+	if err := c.WorkspaceAdd(repo, dest, jj.WorkspaceAddOpts{
+		Name:    "rig-service",
+		Revset:  "@-",
+		Message: "wgo rig: opentdf/platform service/v0.11.6",
+	}); err != nil {
+		t.Fatalf("WorkspaceAdd: %v", err)
+	}
+
+	head, err := c.CurrentChange(dest)
+	if err != nil {
+		t.Fatalf("CurrentChange: %v", err)
+	}
+	if !strings.Contains(head.Description, "service/v0.11.6") {
+		t.Fatalf("description = %q, want it to mention the pin", head.Description)
+	}
+}
+
+// GitFetch's --branch restriction means a repo fetched that way has no tags,
+// and tags are exactly what pin a Go module version to a commit.
+func TestGitFetchTags(t *testing.T) {
+	source, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, source, "release", map[string]string{"service/main.go": "package main\n"})
+	jjtest.Bookmark(t, source, "main", "@-")
+	// jj cannot create tags; the colocated git repo is the only way to make
+	// one. update-ref rather than `git tag` because the latter honours a
+	// contributor's tag.gpgSign, which would demand a signature here.
+	if _, err := runRaw(t, source, "git", "update-ref", "refs/tags/service/v0.11.6", "HEAD"); err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+
+	dest := t.TempDir()
+	if err := c.GitInit(dest, jj.InitOpts{}); err != nil {
+		t.Fatalf("GitInit: %v", err)
+	}
+	if err := c.GitRemoteAdd(dest, "origin", source); err != nil {
+		t.Fatalf("GitRemoteAdd: %v", err)
+	}
+
+	const tagRevset = `present(tags(exact:"service/v0.11.6"))`
+
+	if err := c.GitFetch(dest, "origin", []string{"main"}); err != nil {
+		t.Fatalf("GitFetch: %v", err)
+	}
+	if n, err := c.CountRevset(dest, tagRevset); err != nil || n != 0 {
+		t.Fatalf("after branch-only fetch, tag count = (%d, %v); want (0, nil)", n, err)
+	}
+
+	if err := c.GitFetchTags(dest, "origin", nil); err != nil {
+		t.Fatalf("GitFetchTags: %v", err)
+	}
+	if n, err := c.CountRevset(dest, tagRevset); err != nil || n != 1 {
+		t.Fatalf("after tag fetch, tag count = (%d, %v); want (1, nil)", n, err)
+	}
+
+	// The whole rig premise: a workspace parented at the tag holds the tag's
+	// content while @ stays an editable child.
+	ws := filepath.Join(t.TempDir(), "ws")
+	if err := c.WorkspaceAdd(dest, ws, jj.WorkspaceAddOpts{Name: "rig", Revset: tagRevset}); err != nil {
+		t.Fatalf("WorkspaceAdd at tag: %v", err)
+	}
+	if got := workingCopyFiles(t, ws); !slices.Equal(got, []string{"service/main.go"}) {
+		t.Fatalf("workspace at tag has %v, want [service/main.go]", got)
+	}
+	clean, _, err := c.IsClean(ws)
+	if err != nil || !clean {
+		t.Fatalf("workspace at tag should start clean; got (%v, %v)", clean, err)
+	}
+}
+
+// workingCopyFiles lists the tracked-looking files in a workspace, sorted and
+// slash-separated, skipping VCS metadata.
+func workingCopyFiles(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == ".jj" || d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		out = append(out, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	slices.Sort(out)
+	return out
 }

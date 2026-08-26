@@ -11,6 +11,7 @@ import (
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/plan"
+	"github.com/virtru/wgo/internal/rig"
 	specpkg "github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
 )
@@ -67,6 +68,15 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 		return fmt.Errorf("worktree.worktrees_dir not configured; set it in ~/.wgo/config.toml")
 	}
 
+	// Refuse to join from inside a rig. Step 4 takes the parent directory as the
+	// shared root, which inside a rig is `<rig>/src` — the new workspace would
+	// land among the pinned checkouts, invisible to `wgo rig` and foreign to
+	// `wgo rig rm`. `wgo add` needs no such guard: it always builds its shared
+	// root under worktrees_dir.
+	if rig.UnderDir(cfg.Rig.Dir, currentWtPath) {
+		return fmt.Errorf("%s is inside the rig directory %s; rigs hold pinned checkouts, not branch workspaces.\nTo add a module to this rig: wgo rig add -m <module>@<version>\nTo start branch work: cd to a worktree under %s first", currentWtPath, cfg.Rig.Dir, cfg.Worktree.WorktreesDir)
+	}
+
 	// 3. Current bookmark (jj-side equivalent of "current branch").
 	branch := currentBookmark(jjc, currentWtPath)
 	if branch == "" {
@@ -112,7 +122,7 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 	// 10. Create workspace: attach existing bookmark or create new one.
 	if bookmarkExists(jjc, repoPath, branch) {
 		fmt.Fprintf(os.Stderr, "creating workspace for existing bookmark %s...\n", branch)
-		if err := jjc.WorkspaceAdd(repoPath, branch, newWtPath, branch); err != nil {
+		if err := jjc.WorkspaceAdd(repoPath, newWtPath, jj.WorkspaceAddOpts{Name: branch, Revset: branch}); err != nil {
 			return fmt.Errorf("workspace add: %w", err)
 		}
 	} else {

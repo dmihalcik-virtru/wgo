@@ -9,6 +9,7 @@ import (
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/jj"
+	"github.com/virtru/wgo/internal/rig"
 )
 
 // CandidateKind identifies what type of item is a cleanup candidate.
@@ -49,7 +50,7 @@ type Candidate struct {
 
 // FindCandidates discovers all cleanup candidates across tracked repos.
 func FindCandidates(cfg *config.Config, jjc jj.Client, ghClient github.Client) ([]Candidate, error) {
-	disc := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	disc := discovery.FromConfig(cfg)
 	repos, err := disc.DiscoverAll()
 	if err != nil {
 		return nil, fmt.Errorf("discovery failed: %w", err)
@@ -67,7 +68,7 @@ func FindCandidates(cfg *config.Config, jjc jj.Client, ghClient github.Client) (
 		}
 		seen[repo.Path] = true
 
-		found, err := findRepoCandidate(repo.Path, jjc, ghClient, cfg.Status.StaleDays)
+		found, err := findRepoCandidate(repo.Path, jjc, ghClient, cfg.Status.StaleDays, cfg.Rig.Dir)
 		if err != nil {
 			continue
 		}
@@ -122,7 +123,11 @@ func workspaceBookmark(jjc jj.Client, wsPath string) string {
 	return ch.Bookmarks[0]
 }
 
-func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, staleDays int) ([]Candidate, error) {
+// findRepoCandidate inspects one main repo. rigDir is needed here, and not just
+// in discovery, because workspaces are reached through ListWorkspaces on the
+// main clone rather than through a filesystem walk: keeping rig.dir out of
+// discovery hides the rig's directories but not its workspaces.
+func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, staleDays int, rigDir string) ([]Candidate, error) {
 	var candidates []Candidate
 
 	defaultBranch := repoDefaultBranch(jjc, repoPath)
@@ -132,6 +137,12 @@ func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, s
 	if err == nil {
 		for _, ws := range workspaces {
 			if ws.Name == "default" {
+				continue
+			}
+			// A rig workspace is pinned to a released tag and deliberately
+			// carries no bookmark, which is exactly the shape the checks below
+			// read as an abandoned worktree. Rigs are owned by `wgo rig rm`.
+			if rig.IsWorkspace(rigDir, ws.Path, ws.Name) {
 				continue
 			}
 			bookmark := workspaceBookmark(jjc, ws.Path)

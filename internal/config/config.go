@@ -23,6 +23,33 @@ type Config struct {
 	Jira      JiraConfig      `mapstructure:"jira"`
 	Cache     CacheConfig     `mapstructure:"cache"`
 	Sync      SyncConfig      `mapstructure:"sync"`
+	Rig       RigConfig       `mapstructure:"rig"`
+}
+
+// RigConfig controls `wgo rig`, which materialises one pinned checkout per
+// module of a Go build list and ties them together with a go.work.
+//
+// Rigs are a third layout alongside mains_dir and worktrees_dir: pinned rather
+// than branch-tracking, disposable, and deliberately holding several checkouts
+// of the same repository at once. Every other wgo command treats Dir as
+// off-limits, so rigs never pollute `wgo ls`, `wgo status` or `wgo clean`.
+type RigConfig struct {
+	// Dir is the root under which rigs are created.
+	Dir string `mapstructure:"dir"`
+	// OrgPrefixes limits which module paths get a source checkout; everything
+	// else is left to the module cache. Empty means infer from the primary
+	// module's own path.
+	OrgPrefixes []string `mapstructure:"org_prefixes"`
+	// Sparse checks out only each module's own subdirectory. On by default:
+	// a monorepo checked out in full, once per pinned module, costs gigabytes
+	// and as many editor indexes.
+	Sparse bool `mapstructure:"sparse"`
+	// VerifyOnNew runs drift detection immediately after creating a rig.
+	VerifyOnNew bool `mapstructure:"verify_on_new"`
+	// Freeze pins drifted third-party versions back to the baseline
+	// automatically. Off by default: forcing a version down can break a
+	// member module, so it is a decision worth making explicitly.
+	Freeze bool `mapstructure:"freeze"`
 }
 
 // SyncConfig controls `wgo sync`: whether it opens PRs for un-PR'd bookmarks
@@ -227,6 +254,7 @@ func Init() error {
 	cfg.Discovery.BaseDirs = expandPaths(cfg.Discovery.BaseDirs)
 	cfg.Worktree.MainsDir = expandPath(cfg.Worktree.MainsDir)
 	cfg.Worktree.WorktreesDir = expandPath(cfg.Worktree.WorktreesDir)
+	cfg.Rig.Dir = expandPath(cfg.Rig.Dir)
 
 	return nil
 }
@@ -257,6 +285,11 @@ func setDefaults() {
 	viper.SetDefault("cache.jira_ttl", 600)
 	viper.SetDefault("sync.create_prs", false)
 	viper.SetDefault("sync.gh_stack", "auto")
+	viper.SetDefault("rig.dir", filepath.Join(home, "Documents", "GitHub", "rigs"))
+	viper.SetDefault("rig.org_prefixes", []string{})
+	viper.SetDefault("rig.sparse", true)
+	viper.SetDefault("rig.verify_on_new", true)
+	viper.SetDefault("rig.freeze", false)
 }
 
 // createDefaultConfig creates a default config file.
@@ -281,6 +314,29 @@ mains_dir = "~/Documents/GitHub/mains"
 
 # Where to create feature worktrees (branch/repo layout)
 worktrees_dir = "~/Documents/GitHub/worktrees"
+
+[rig]
+# Where "wgo rig" materialises pinned multi-checkout Go workspaces. Rigs are
+# deliberately excluded from discovery, "wgo ls", "wgo status" and "wgo clean":
+# they hold several checkouts of the same repo pinned to released tags, which
+# would otherwise look like a pile of stale worktrees.
+dir = "~/Documents/GitHub/rigs"
+
+# Module path prefixes to check out from source. Empty infers the primary
+# module's own organisation; add more to pull in sibling orgs.
+org_prefixes = []
+
+# Check out only each module's own subdirectory rather than the whole repo.
+sparse = true
+
+# Run drift detection right after creating a rig. Promoting modules to the
+# workspace can only raise third-party versions, so a rig can quietly build
+# against different dependencies than the artifact it reproduces.
+verify_on_new = true
+
+# Automatically pin drifted dependencies back to the baseline. Off by default:
+# forcing a version down can break a member module.
+freeze = false
 
 [ui]
 # Display icons in output

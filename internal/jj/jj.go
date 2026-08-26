@@ -25,11 +25,13 @@ type Client interface {
 
 	// Workspaces
 	ListWorkspaces(repo string) ([]Workspace, error)
-	WorkspaceAdd(repo, name, dest, revset string) error
+	WorkspaceAdd(repo, dest string, opts WorkspaceAddOpts) error
 	WorkspaceForget(repo, name string) error
 	WorkspaceRoot(path string) (string, error)
 	MainWorkspaceRoot(path string) (string, error)
 	UpdateStale(workspacePath string) error
+	SparseSet(workspacePath string, opts SparseSetOpts) error
+	SparseList(workspacePath string) ([]string, error)
 
 	// DAG / status
 	Log(repo, revset string) ([]LogEntry, error)
@@ -61,6 +63,7 @@ type Client interface {
 	GitInit(path string, opts InitOpts) error
 	GitClone(url, dest string) error
 	GitFetch(repo, remote string, refs []string) error
+	GitFetchTags(repo, remote string, patterns []string) error
 	GitPush(repo string, opts PushOpts) (PushResult, error)
 	GitRemoteAdd(repo, name, url string) error
 	GitRemoteRemove(repo, name string) error
@@ -190,20 +193,67 @@ func (c *CLIClient) ListWorkspaces(repo string) ([]Workspace, error) {
 	return ParseWorkspaces([]byte(out))
 }
 
-// WorkspaceAdd adds a workspace under dest. name is passed via --name when
-// non-empty; otherwise jj defaults to the basename of dest. revset, when
-// non-empty, becomes the new workspace's parent (-r).
-func (c *CLIClient) WorkspaceAdd(repo, name, dest, revset string) error {
+// WorkspaceAdd adds a workspace under dest, configured by opts.
+func (c *CLIClient) WorkspaceAdd(repo, dest string, opts WorkspaceAddOpts) error {
 	args := []string{"workspace", "add"}
-	if name != "" {
-		args = append(args, "--name", name)
+	if opts.Name != "" {
+		args = append(args, "--name", opts.Name)
 	}
-	if revset != "" {
-		args = append(args, "-r", revset)
+	if opts.Revset != "" {
+		args = append(args, "-r", opts.Revset)
+	}
+	if opts.Message != "" {
+		args = append(args, "-m", opts.Message)
+	}
+	if opts.SparsePatterns != "" {
+		args = append(args, "--sparse-patterns", string(opts.SparsePatterns))
 	}
 	args = append(args, dest)
 	_, err := c.runR(repo, args...)
 	return err
+}
+
+// SparseSet updates which paths are materialised in the working copy at
+// workspacePath (`jj sparse set`).
+//
+// This runs *in* the workspace, never via `-R <repo>`: sparse patterns belong
+// to a working copy, and jj picks the working copy from the current directory.
+// Invoking it with `-R` from an unrelated cwd would rewrite the main
+// workspace's patterns instead, silently emptying the user's main checkout.
+func (c *CLIClient) SparseSet(workspacePath string, opts SparseSetOpts) error {
+	args := []string{"sparse", "set"}
+	if opts.Clear {
+		args = append(args, "--clear")
+	}
+	for _, p := range opts.Add {
+		args = append(args, "--add", p)
+	}
+	for _, p := range opts.Remove {
+		args = append(args, "--remove", p)
+	}
+	if len(args) == 2 {
+		return nil // nothing to do
+	}
+	_, err := c.runIn(workspacePath, args...)
+	return err
+}
+
+// SparseList returns the sparse patterns currently in effect for the working
+// copy at workspacePath. A full checkout reports the single pattern ".".
+//
+// Like SparseSet, this must run inside the workspace rather than via `-R`.
+func (c *CLIClient) SparseList(workspacePath string) ([]string, error) {
+	out, err := c.runIn(workspacePath, "sparse", "list")
+	if err != nil {
+		return nil, err
+	}
+	var patterns []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			patterns = append(patterns, line)
+		}
+	}
+	return patterns, nil
 }
 
 // WorkspaceForget stops tracking the named workspace's working-copy commit.
@@ -808,6 +858,30 @@ func (c *CLIClient) GitFetch(repo, remote string, refs []string) error {
 	}
 	for _, r := range refs {
 		args = append(args, "--branch", r)
+	}
+	_, err := c.runR(repo, args...)
+	return err
+}
+
+// GitFetchTags fetches tags matching patterns (`jj git fetch --tag`), or all
+// tags when patterns is empty.
+//
+// This is separate from GitFetch because the two are mutually exclusive in
+// practice: `jj git fetch --branch X` restricts the fetch to bookmarks, so a
+// repo cloned or updated that way has no tags locally — and tags are precisely
+// what pins a Go module version to a commit.
+//
+// Patterns use jj's glob syntax, where only `*` is expanded.
+func (c *CLIClient) GitFetchTags(repo, remote string, patterns []string) error {
+	args := []string{"git", "fetch"}
+	if remote != "" {
+		args = append(args, "--remote", remote)
+	}
+	if len(patterns) == 0 {
+		patterns = []string{"glob:*"}
+	}
+	for _, p := range patterns {
+		args = append(args, "--tag", p)
 	}
 	_, err := c.runR(repo, args...)
 	return err

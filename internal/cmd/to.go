@@ -72,7 +72,7 @@ func toCompletions(_ *cobra.Command, args []string, toComplete string) ([]string
 	}
 	cfg := config.Get()
 
-	disc := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	disc := discovery.FromConfig(cfg)
 	repos, err := disc.DiscoverAll()
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -515,7 +515,7 @@ func runToLocal(short string) error {
 	}
 
 	// No branch: find any checkout of owner/repo
-	disc := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	disc := discovery.FromConfig(cfg)
 	repos, err := disc.DiscoverAll()
 	if err != nil {
 		return fmt.Errorf("discovery: %w", err)
@@ -556,7 +556,7 @@ func currentBookmark(jjc jj.Client, workspacePath string) string {
 // findExistingCheckout searches discovered repos for one whose origin
 // matches owner/repo and has a workspace whose @ carries the named bookmark.
 func findExistingCheckout(jjc jj.Client, cfg *config.Config, owner, repo, branch string) (string, error) {
-	disc := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	disc := discovery.FromConfig(cfg)
 	repos, err := disc.DiscoverAll()
 	if err != nil {
 		return "", err
@@ -608,7 +608,7 @@ func matchesRemote(jjc jj.Client, repoPath, owner, repo string) bool {
 // findOrCloneRepo locates an existing clone or creates one.
 func findOrCloneRepo(jjc jj.Client, cfg *config.Config, owner, repo string) (string, error) {
 	// Search existing repos
-	disc := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	disc := discovery.FromConfig(cfg)
 	repos, err := disc.DiscoverAll()
 	if err == nil {
 		for _, r := range repos {
@@ -841,7 +841,7 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 		// stable, slash-free id even though bookmarks may carry slashes.
 		wsName := fmt.Sprintf("pr-%d-%s", num, gh.SanitizeBranch(named.Branch))
 		logTo("creating workspace at bookmark %s...", landOn)
-		if err := jjc.WorkspaceAdd(repoPath, wsName, wtPath, landOn); err != nil {
+		if err := jjc.WorkspaceAdd(repoPath, wtPath, jj.WorkspaceAddOpts{Name: wsName, Revset: landOn}); err != nil {
 			return "", fmt.Errorf("workspace add failed: %w", err)
 		}
 
@@ -859,7 +859,7 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 			}
 		}
 		logTo("creating workspace for branch %s...", branch)
-		if err := jjc.WorkspaceAdd(repoPath, branch, wtPath, branch); err != nil {
+		if err := jjc.WorkspaceAdd(repoPath, wtPath, jj.WorkspaceAddOpts{Name: branch, Revset: branch}); err != nil {
 			return "", fmt.Errorf("workspace add failed: %w", err)
 		}
 

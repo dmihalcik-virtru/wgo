@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,6 +30,23 @@ func TestSyncDefaults(t *testing.T) {
 	assert.False(t, cfg.Sync.CreatePRs)
 	assert.Equal(t, "auto", cfg.Sync.GHStack)
 	assert.Equal(t, "auto", cfg.Sync.GHStackMode())
+}
+
+// TestRigDefaults verifies the [rig] section defaults, including that rig.dir
+// is tilde-expanded like the other path settings — discovery compares it
+// against absolute paths, so a literal "~" would silently exclude nothing.
+func TestRigDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, Init())
+
+	cfg := Get()
+	require.NotNil(t, cfg)
+	assert.Equal(t, filepath.Join(home, "Documents", "GitHub", "rigs"), cfg.Rig.Dir)
+	assert.Empty(t, cfg.Rig.OrgPrefixes)
+	assert.True(t, cfg.Rig.Sparse)
+	assert.True(t, cfg.Rig.VerifyOnNew)
+	assert.False(t, cfg.Rig.Freeze)
 }
 
 func TestGHStackModeDefault(t *testing.T) {

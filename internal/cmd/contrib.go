@@ -46,7 +46,7 @@ func showContrib(weeks int, author string) error {
 		author = cfg.Author
 	}
 
-	d := discovery.New(cfg.Discovery.BaseDirs, cfg.Discovery.ScanDepth, cfg.Discovery.ExcludePatterns)
+	d := discovery.FromConfig(cfg)
 	repos, err := d.DiscoverAll()
 	if err != nil {
 		return fmt.Errorf("failed to discover repositories: %w", err)

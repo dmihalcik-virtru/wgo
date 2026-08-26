@@ -427,7 +427,7 @@ func applyPark(jjc jj.Client, p *parkPlan) error {
 			return fmt.Errorf("create workspace parent %s: %w", filepath.Dir(p.Dest), err)
 		}
 		logPark("creating workspace %s at %s...", p.WorkspaceName, p.Dest)
-		if err := jjc.WorkspaceAdd(p.RepoPath, p.WorkspaceName, p.Dest, ref); err != nil {
+		if err := jjc.WorkspaceAdd(p.RepoPath, p.Dest, jj.WorkspaceAddOpts{Name: p.WorkspaceName, Revset: ref}); err != nil {
 			undoBookmark()
 			return fmt.Errorf("workspace add %s: %w%s", p.Dest, err, parkRecoveryHint(p))
 		}
