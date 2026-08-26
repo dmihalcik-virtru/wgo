@@ -89,15 +89,51 @@ func (m Member) UseDir() string {
 	return strings.TrimSuffix(p, "/")
 }
 
+// SkipKind classifies why a module got no checkout. Only SkipUnreachable and
+// SkipEscapedReplace represent something going wrong; the rest are expected
+// outcomes worth reporting in `wgo rig show`.
+type SkipKind string
+
+const (
+	// SkipOutOfOrg is a module left to the module cache by the in-org filter.
+	SkipOutOfOrg SkipKind = "out-of-org"
+	// SkipUnsupportedHost is a module whose path does not map to a repository
+	// we know how to check out (vanity imports, gopkg.in, golang.org/x).
+	SkipUnsupportedHost SkipKind = "unsupported-host"
+	// SkipLocalReplace is a module already served from another checkout by a
+	// local replace directive, so it needs no checkout of its own.
+	SkipLocalReplace SkipKind = "local-replace"
+	// SkipUnreachable is an in-org module whose repository could not be located
+	// or cloned — private, deleted, or moved.
+	SkipUnreachable SkipKind = "unreachable"
+	// SkipEscapedReplace is a local replace pointing outside its repository,
+	// which no single checkout can satisfy.
+	SkipEscapedReplace SkipKind = "escaped-replace"
+)
+
 // Skip records an in-org module that got no checkout, and why.
 //
 // Skips are warnings rather than failures: aborting a nine-checkout rig because
 // one module lives in a repository we cannot reach would be hostile, and the
 // rest of the rig is still useful for debugging.
+//
+// Kind and Detail are separate fields rather than one prose reason because
+// callers switch on the kind. Packing both into a string meant re-splitting it
+// on ":" to recover the kind, which any detail containing a colon — a URL, a
+// wrapped error — would have silently truncated.
 type Skip struct {
-	Path    string `toml:"path"`
-	Version string `toml:"version"`
-	Reason  string `toml:"reason"`
+	Path    string   `toml:"path"`
+	Version string   `toml:"version"`
+	Kind    SkipKind `toml:"kind"`
+	Detail  string   `toml:"detail,omitempty"`
+}
+
+// String renders a skip for display.
+func (s Skip) String() string {
+	if s.Detail == "" {
+		return string(s.Kind)
+	}
+	return string(s.Kind) + ": " + s.Detail
 }
 
 // Manifest is a rig's entire persistent state.
@@ -147,28 +183,54 @@ const SrcDir = "src"
 // GoWorkName is the generated workspace file.
 const GoWorkName = "go.work"
 
-// CheckoutByDir returns the checkout with the given directory name.
-func (m *Manifest) CheckoutByDir(dir string) (Checkout, bool) {
-	for _, c := range m.Checkouts {
-		if c.Dir == dir {
-			return c, true
+// CheckoutByDir returns the checkout with the given directory name, or nil.
+//
+// The pointer aliases the manifest's own slice element so callers that widen a
+// sparse set (see WidenSparse) mutate the manifest rather than a copy that is
+// then dropped on the floor.
+func (m *Manifest) CheckoutByDir(dir string) *Checkout {
+	for i := range m.Checkouts {
+		if m.Checkouts[i].Dir == dir {
+			return &m.Checkouts[i]
 		}
 	}
-	return Checkout{}, false
+	return nil
 }
 
 // Root returns the rig's directory given the configured rig.dir.
 func (m *Manifest) Root(rigDir string) string { return filepath.Join(rigDir, m.Name) }
 
+// MaxNameLen bounds a rig's name so that workspaceName's commit discriminator
+// survives sanitisation.
+//
+// gh.SanitizeBranch truncates at 60 characters. WorkspacePrefix ("rig-") plus a
+// separator plus an 8-character short commit costs 13, so a name longer than
+// this could push the discriminator past the cut and make two checkouts of the
+// same rig collide on one workspace name.
+const MaxNameLen = 60 - len(WorkspacePrefix) - 1 - 8
+
 // Validate reports structural problems that would make the manifest unusable.
 // A rig.toml is meant to be readable and hand-editable, so this favours a
 // specific complaint over a parse error.
+//
+// This is the one chokepoint every manifest crosses — Plan, Load and Save all
+// call it — so the uniqueness invariants live here rather than being re-checked
+// at each construction site.
 func (m *Manifest) Validate() error {
 	if strings.TrimSpace(m.Name) == "" {
 		return errors.New("rig: manifest has no name")
 	}
-	dirs := map[string]bool{}
+	if len(m.Name) > MaxNameLen {
+		return fmt.Errorf("rig: name %q is %d characters, limit is %d",
+			m.Name, len(m.Name), MaxNameLen)
+	}
+	var (
+		dirs       = map[string]bool{}
+		workspaces = map[string]bool{}
+		pins       = map[string]bool{}
+	)
 	for i, c := range m.Checkouts {
+		pin := c.Repo + "@" + c.Commit
 		switch {
 		case c.Dir == "":
 			return fmt.Errorf("rig: checkout %d has no dir", i)
@@ -176,17 +238,46 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("rig: checkout %q has no workspace name", c.Dir)
 		case c.MainClone == "":
 			return fmt.Errorf("rig: checkout %q has no main clone", c.Dir)
+		case c.Commit == "":
+			// The commit is the pin. Without it `wgo doctor` cannot tell a
+			// drifted checkout from an intact one, and there is nothing to
+			// create the workspace at.
+			return fmt.Errorf("rig: checkout %q has no commit", c.Dir)
 		case dirs[c.Dir]:
 			return fmt.Errorf("rig: duplicate checkout dir %q", c.Dir)
+		case workspaces[c.Workspace]:
+			// `jj workspace add --name` fails on a duplicate, which would abort
+			// materialisation partway through and strand the workspaces already
+			// created — `wgo rig rm` reads them from a manifest that was never
+			// written.
+			return fmt.Errorf("rig: duplicate workspace name %q", c.Workspace)
+		case pins[pin]:
+			// Two checkouts of one commit are two identical working copies, and
+			// two go.work entries for the same source. They should have been
+			// grouped.
+			return fmt.Errorf("rig: duplicate checkout of %s", pin)
+		case c.Full && len(c.Sparse) > 0:
+			return fmt.Errorf("rig: checkout %q is both full and sparse", c.Dir)
 		}
 		dirs[c.Dir] = true
+		workspaces[c.Workspace] = true
+		pins[pin] = true
 	}
+	served := map[string]bool{}
 	for _, mem := range m.Members {
 		if mem.Path == "" {
 			return errors.New("rig: member has no module path")
 		}
 		if !dirs[mem.Checkout] {
 			return fmt.Errorf("rig: member %q references unknown checkout %q", mem.Path, mem.Checkout)
+		}
+		served[mem.Checkout] = true
+	}
+	for _, c := range m.Checkouts {
+		// A checkout nothing is served from is a workspace that gets created,
+		// occupies disk, and never appears in go.work.
+		if !served[c.Dir] {
+			return fmt.Errorf("rig: checkout %q has no members", c.Dir)
 		}
 	}
 	return nil
@@ -266,8 +357,12 @@ func writeAll(f *os.File, parts ...string) error {
 
 // List returns the manifests of every rig under rigDir, sorted by name.
 //
-// Directories without a readable rig.toml are skipped rather than reported:
-// rig.dir is a directory the user owns and may hold anything.
+// A directory with no rig.toml is silently not a rig: rig.dir is a directory
+// the user owns and may hold anything. A rig.toml that exists but does not load
+// is different — it is a broken rig, and swallowing it would make `wgo rig ls`
+// report the rig as gone while its jj workspaces stay registered in the main
+// clone. Those are warned about and skipped, so one corrupt rig does not hide
+// the healthy ones.
 func List(rigDir string) ([]*Manifest, error) {
 	entries, err := os.ReadDir(rigDir)
 	if err != nil {
@@ -282,7 +377,11 @@ func List(rigDir string) ([]*Manifest, error) {
 			continue
 		}
 		m, err := Load(filepath.Join(rigDir, e.Name()))
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrNoManifest):
+			continue
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 			continue
 		}
 		out = append(out, m)

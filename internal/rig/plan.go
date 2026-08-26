@@ -12,25 +12,6 @@ import (
 	"golang.org/x/mod/modfile"
 )
 
-// Skip kinds. Only SkipUnreachable and SkipEscapedReplace represent something
-// going wrong; the rest are expected outcomes worth reporting in `wgo rig show`.
-const (
-	// SkipOutOfOrg is a module left to the module cache by the in-org filter.
-	SkipOutOfOrg = "out-of-org"
-	// SkipUnsupportedHost is a module whose path does not map to a repository
-	// we know how to check out (vanity imports, gopkg.in, golang.org/x).
-	SkipUnsupportedHost = "unsupported-host"
-	// SkipLocalReplace is a module already served from another checkout by a
-	// local replace directive, so it needs no checkout of its own.
-	SkipLocalReplace = "local-replace"
-	// SkipUnreachable is an in-org module whose repository could not be located
-	// or cloned — private, deleted, or moved.
-	SkipUnreachable = "unreachable"
-	// SkipEscapedReplace is a local replace pointing outside its repository,
-	// which no single checkout can satisfy.
-	SkipEscapedReplace = "escaped-replace"
-)
-
 // RepoLocator finds the main clone backing a repository, cloning it if needed.
 //
 // Narrow on purpose: planning is the part of `wgo rig` worth testing exhaustively,
@@ -106,6 +87,14 @@ func (p *Planner) Plan(req Request) (*Manifest, error) {
 	if req.Primary.Path == "" {
 		return nil, errors.New("rig: plan requires a primary module")
 	}
+	// With no prefixes the in-org filter admits nothing, so every dependency is
+	// skipped and the rig is the primary alone. That is a legal manifest and a
+	// useless rig, and it looks like success — so treat the empty filter as the
+	// misconfiguration it almost always is rather than silently honouring it.
+	if len(req.OrgPrefixes) == 0 {
+		return nil, errors.New("rig: plan requires at least one org prefix; " +
+			"set rig.org_prefixes in ~/.wgo/config.toml or pass --org-prefix")
+	}
 
 	m := &Manifest{
 		Name:       req.Name,
@@ -128,13 +117,33 @@ func (p *Planner) Plan(req Request) (*Manifest, error) {
 	m.Skipped = append(m.Skipped, moreSkips...)
 	sortSkips(m.Skipped)
 
+	// Every other skip degrades the rig; this one empties it of meaning. A rig
+	// exists to put the artifact's own source under a debugger, so if the
+	// primary got no checkout there is nothing to debug — and because skips are
+	// warnings, the rig would otherwise be built, validated and reported as a
+	// success with the one module that mattered quietly absent.
+	if skip := skipFor(m.Skipped, req.Primary.Path); skip != nil {
+		return nil, fmt.Errorf("rig: cannot check out the primary module %s: %s",
+			req.Primary.Path, skip)
+	}
+
 	m.Checkouts, m.Members = groupCheckouts(cands, req)
-	m.GoVersion = planGoVersion(req)
+	m.GoVersion = planGoVersion(req, m.Members)
 
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
 	return m, nil
+}
+
+// skipFor returns the skip recorded for a module path, or nil.
+func skipFor(skips []Skip, modulePath string) *Skip {
+	for i := range skips {
+		if skips[i].Path == modulePath {
+			return &skips[i]
+		}
+	}
+	return nil
 }
 
 // selectModules applies the in-org filter and drops modules that need no
@@ -156,10 +165,15 @@ func (p *Planner) selectModules(req Request) ([]gomod.Module, []Skip) {
 		// holds that directory — most often the primary's own tree. Giving it a
 		// second checkout would produce two copies of the same source and an
 		// ambiguous go.work.
+		//
+		// The detail names the directive, not a checkout, because at this point
+		// there are no checkouts to name: whether that directory actually lands
+		// inside one is only decidable once the layout exists. WidenSparse makes
+		// that call later and reports the misses as SkipEscapedReplace.
 		if mod.Replace != nil && mod.Replace.Version == "" {
 			skips = append(skips, Skip{
 				Path: mod.Path, Version: mod.Version,
-				Reason: skipReason(SkipLocalReplace, "served from "+mod.Replace.Path),
+				Kind: SkipLocalReplace, Detail: "replaced by " + mod.Replace.Path,
 			})
 			return
 		}
@@ -168,7 +182,7 @@ func (p *Planner) selectModules(req Request) ([]gomod.Module, []Skip) {
 		if !isPrimary && !gomod.InOrg(mod.Path, req.OrgPrefixes) {
 			skips = append(skips, Skip{
 				Path: mod.Path, Version: mod.Version,
-				Reason: skipReason(SkipOutOfOrg, "left to the module cache"),
+				Kind: SkipOutOfOrg, Detail: "left to the module cache",
 			})
 			return
 		}
@@ -189,11 +203,17 @@ func (p *Planner) selectModules(req Request) ([]gomod.Module, []Skip) {
 
 // resolveAll maps each module to a repository and commit.
 //
-// A repository we cannot locate yields a skip: aborting a nine-checkout rig
-// because one module lives in a repo we cannot reach would be hostile, and the
-// remaining checkouts are still worth having. A tag we cannot resolve inside a
-// repository we *can* reach is a hard error, because it means the pin is wrong
-// rather than merely unavailable.
+// The two failures are treated differently on purpose. A repository we cannot
+// *locate* yields a skip: aborting a nine-checkout rig because one module lives
+// in a repo we cannot reach would be hostile, and the remaining checkouts are
+// still worth having. A revision we cannot *resolve* inside a repository we can
+// reach is a hard error, because the repo is in hand and the pin still does not
+// exist in it — which usually means the module-to-repo mapping is wrong, and
+// every other checkout derived from that mapping is suspect too.
+//
+// The caller is responsible for the one skip that must not stay a skip: an
+// unreachable *primary* leaves the rig with no copy of the artifact it exists
+// to debug. Plan checks for that after this returns.
 func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
 	var (
 		cands []candidate
@@ -209,7 +229,7 @@ func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
 		if err != nil {
 			skips = append(skips, Skip{
 				Path: mod.Path, Version: mod.Version,
-				Reason: skipReason(SkipUnsupportedHost, err.Error()),
+				Kind: SkipUnsupportedHost, Detail: err.Error(),
 			})
 			continue
 		}
@@ -218,7 +238,7 @@ func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
 		if reason, bad := failed[slug]; bad {
 			skips = append(skips, Skip{
 				Path: mod.Path, Version: mod.Version,
-				Reason: skipReason(SkipUnreachable, reason),
+				Kind: SkipUnreachable, Detail: reason,
 			})
 			continue
 		}
@@ -229,7 +249,7 @@ func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
 				failed[slug] = err.Error()
 				skips = append(skips, Skip{
 					Path: mod.Path, Version: mod.Version,
-					Reason: skipReason(SkipUnreachable, err.Error()),
+					Kind: SkipUnreachable, Detail: err.Error(),
 				})
 				continue
 			}
@@ -243,9 +263,8 @@ func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
 		}
 		if commit == "" {
 			return nil, nil, fmt.Errorf(
-				"rig: %s@%s resolves to nothing in %s (revset %s)\n"+
-					"the tag may not have been fetched; try:\n  jj git fetch -R %s --remote origin",
-				mod.Path, mod.Version, slug, revset, clone)
+				"rig: %s@%s resolves to nothing in %s (revset %s)\n%s",
+				mod.Path, mod.Version, slug, revset, resolveHint(origin, mod.Version, clone))
 		}
 
 		tag := ""
@@ -258,6 +277,28 @@ func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
 		})
 	}
 	return cands, skips, nil
+}
+
+// resolveHint suggests the command most likely to fix an empty resolution.
+//
+// The two cases need different advice. A tag pin resolves through
+// `tags(exact:…)`, and the usual cause is simply that the tag was never
+// fetched — jj does not fetch tags by default, so `-t` is the fix. A
+// pseudo-version carries its own commit, and no amount of tag fetching
+// conjures a commit that is not in the repo; suggesting `-t` there sends the
+// user down a dead end when the real cause is a wrong repository.
+func resolveHint(origin gomod.Origin, version, clone string) string {
+	if gomod.PseudoCommit(version) != "" {
+		return fmt.Sprintf(
+			"a pseudo-version names a commit directly, so this is not a missing tag;\n"+
+				"check that %s is really published from %s, then:\n"+
+				"  jj git fetch -R %s --remote origin",
+			origin.Slug(), clone, clone)
+	}
+	return fmt.Sprintf(
+		"the tag may not have been fetched (jj does not fetch tags by default); try:\n"+
+			"  jj git fetch -R %s --remote origin -t %s",
+		clone, origin.TagFor(version))
 }
 
 // groupCheckouts collapses candidates onto one checkout per (repo, commit).
@@ -325,7 +366,7 @@ func groupCheckouts(cands []candidate, req Request) ([]Checkout, []Member) {
 			Commit:    anchor.commit,
 			Tag:       anchor.tag,
 		}
-		c.Workspace = workspaceName(req.Name, c.Dir)
+		c.Workspace = workspaceName(req.Name, c.Commit)
 		usedDirs[c.Dir] = true
 
 		sparse := map[string]bool{}
@@ -397,6 +438,15 @@ func primaryUseMembers(req Request, members []Member) []Member {
 			have[mem.Subdir] = true
 		}
 	}
+	// The primary's path may carry a major-version suffix ("…/dsp/v2"), which is
+	// part of the *root* module's path and not a directory on disk. Joining a
+	// use dir onto it invents "…/dsp/v2/sdk" for source that actually lives at
+	// "…/dsp/sdk/v2". Rebuild the path from the origin instead.
+	origin, err := gomod.ParseOrigin(req.Primary.Path)
+	if err != nil {
+		origin = gomod.Origin{}
+	}
+
 	var out []Member
 	for _, dir := range use {
 		if have[dir] {
@@ -404,13 +454,25 @@ func primaryUseMembers(req Request, members []Member) []Member {
 		}
 		have[dir] = true
 		out = append(out, Member{
-			Path:     path.Join(req.Primary.Path, dir),
-			Version:  req.Primary.Version,
+			Path: useDirModulePath(origin, req.Primary.Path, dir),
+			// No version: these directories come from the primary repo's
+			// go.work, not from the build list, so nothing pinned them. Copying
+			// the primary's version would assert a pin that does not exist and
+			// would put a bogus entry in front of `wgo rig verify`.
 			Checkout: primaryCheckout,
 			Subdir:   dir,
 		})
 	}
 	return out
+}
+
+// useDirModulePath is the module path of a directory in the primary's repo.
+func useDirModulePath(origin gomod.Origin, primaryPath, dir string) string {
+	if origin.Host == "" {
+		return path.Join(primaryPath, dir) // unmappable host; best effort
+	}
+	repoRoot := path.Join(origin.Host, origin.Owner, origin.Repo)
+	return path.Join(repoRoot, origin.Subdir, dir)
 }
 
 // anchorFor picks the candidate a shared checkout is named after: the module
@@ -452,8 +514,17 @@ func uniqueDir(used map[string]bool, repo, tag, commit string) string {
 // workspaceName is the jj workspace registered in the main clone. The rig
 // prefix is what lets `wgo clean` and `wgo doctor` recognise it from the repo
 // side, where the rig directory is not in view.
-func workspaceName(rigName, dir string) string {
-	return gh.SanitizeBranch(WorkspacePrefix + rigName + "-" + dir)
+//
+// The commit, not the checkout dir, is the discriminator, and it is appended
+// *after* sanitising: gh.SanitizeBranch truncates at 60 characters, so building
+// the whole name and sanitising it as one string let the truncation eat the
+// part that made it unique. Two checkouts of one rig would then be handed the
+// same workspace name, and `jj workspace add --name` fails on the second —
+// partway through materialisation, with the manifest not yet written and the
+// earlier workspaces stranded. Manifest.Validate caps Name so the suffix always
+// fits, and rejects a duplicate outright as a backstop.
+func workspaceName(rigName, commit string) string {
+	return gh.SanitizeBranch(WorkspacePrefix+rigName) + "-" + shortCommit(commit)
 }
 
 func shortCommit(commit string) string {
@@ -464,11 +535,23 @@ func shortCommit(commit string) string {
 }
 
 // planGoVersion is the `go` directive for the generated go.work: the highest
-// across every member, since a workspace cannot be older than what it contains.
-func planGoVersion(req Request) string {
-	versions := []string{req.GoVersion, req.Primary.GoVersion}
+// across the modules the workspace actually contains, since a workspace cannot
+// be older than its members.
+//
+// Members, not the whole build list. A `use` directive is what forces the
+// workspace's `go` version up; a dependency left to the module cache is
+// compiled under its own go.mod and constrains nothing. Folding the build list
+// in let one out-of-org dependency with a newer `go` directive raise the rig's
+// go.work above what any checked-out module needs — which then demands a newer
+// toolchain than the artifact was ever built with.
+func planGoVersion(req Request, members []Member) string {
+	byPath := make(map[string]string, len(req.BuildList))
 	for _, mod := range req.BuildList {
-		versions = append(versions, mod.GoVersion)
+		byPath[mod.Path] = mod.GoVersion
+	}
+	versions := []string{req.GoVersion, req.Primary.GoVersion}
+	for _, mem := range members {
+		versions = append(versions, byPath[mem.Path])
 	}
 	return gomod.MaxGoVersion(versions...)
 }
@@ -492,7 +575,10 @@ func WidenSparse(c *Checkout, members []Member, modFiles map[string]*modfile.Fil
 		widened[dir] = true
 	}
 
-	var skips []Skip
+	var (
+		skips []Skip
+		full  bool
+	)
 	for _, mem := range members {
 		if mem.Checkout != c.Dir {
 			continue
@@ -504,21 +590,28 @@ func WidenSparse(c *Checkout, members []Member, modFiles map[string]*modfile.Fil
 		inRepo, escaped := gomod.LocalReplaceTargets(f, mem.Subdir)
 		for _, target := range inRepo {
 			// A replace resolving to the repository root means the whole tree is
-			// needed; sparse cannot express less than that.
+			// needed; sparse cannot express less than that. Note it and keep
+			// scanning rather than returning: the escaped replaces of the
+			// members not yet visited are the ones that will break the build,
+			// and going full does not fix a single one of them.
 			if target == "" {
-				c.Full = true
-				c.Sparse = nil
-				return skips
+				full = true
+				continue
 			}
 			widened[target] = true
 		}
 		for _, target := range escaped {
 			skips = append(skips, Skip{
 				Path: mem.Path, Version: mem.Version,
-				Reason: skipReason(SkipEscapedReplace,
-					fmt.Sprintf("replace target %q leaves %s", target, c.Repo)),
+				Kind:   SkipEscapedReplace,
+				Detail: fmt.Sprintf("replace target %q leaves %s", target, c.Repo),
 			})
 		}
+	}
+	if full {
+		c.Full = true
+		c.Sparse = nil
+		return skips
 	}
 	c.Sparse = sortedKeys(widened)
 	return skips
@@ -549,25 +642,15 @@ func normaliseUse(dirs []string) []string {
 	return out
 }
 
-func skipReason(kind, detail string) string {
-	if detail == "" {
-		return kind
-	}
-	return kind + ": " + detail
-}
-
-// SkipKind returns the leading kind of a Skip's reason.
-func (s Skip) SkipKind() string {
-	kind, _, _ := strings.Cut(s.Reason, ":")
-	return kind
-}
-
 func sortSkips(skips []Skip) {
 	sort.Slice(skips, func(i, j int) bool {
 		if skips[i].Path != skips[j].Path {
 			return skips[i].Path < skips[j].Path
 		}
-		return skips[i].Reason < skips[j].Reason
+		if skips[i].Kind != skips[j].Kind {
+			return skips[i].Kind < skips[j].Kind
+		}
+		return skips[i].Detail < skips[j].Detail
 	})
 }
 
