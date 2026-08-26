@@ -30,6 +30,11 @@ type Client interface {
 	WorkspaceRoot(path string) (string, error)
 	MainWorkspaceRoot(path string) (string, error)
 	UpdateStale(workspacePath string) error
+	// SparseSet and SparseList take a workspacePath — the workspace's own
+	// directory — where the methods above take a repo root. The two coincide
+	// for the main workspace and diverge for every other one, and passing a
+	// repo root here reads or rewrites the main checkout's patterns instead.
+	// Both require an absolute path and reject anything else.
 	SparseSet(workspacePath string, opts SparseSetOpts) error
 	SparseList(workspacePath string) ([]string, error)
 
@@ -102,6 +107,22 @@ func (c *CLIClient) runIn(dir string, args ...string) (string, error) {
 			strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
 	}
 	return stdout.String(), nil
+}
+
+// runInWorkspace is runIn for commands that act on *the working copy jj finds
+// from the current directory* rather than on a repo named by `-R`.
+//
+// runIn treats an empty dir as "inherit the process cwd", which runR relies on.
+// For a working-copy command that default is the bug: an empty or relative
+// workspacePath silently retargets whichever workspace the wgo process happens
+// to be running in — the developer's own checkout — and the command succeeds,
+// so nothing surfaces the mistake.
+func (c *CLIClient) runInWorkspace(workspacePath string, args ...string) (string, error) {
+	if !filepath.IsAbs(workspacePath) {
+		return "", fmt.Errorf("jj %s: workspace path must be absolute, got %q",
+			strings.Join(args, " "), workspacePath)
+	}
+	return c.runIn(workspacePath, args...)
 }
 
 // runR runs `jj -R <repo> ...` from an arbitrary working directory, useful
@@ -216,10 +237,13 @@ func (c *CLIClient) WorkspaceAdd(repo, dest string, opts WorkspaceAddOpts) error
 // SparseSet updates which paths are materialised in the working copy at
 // workspacePath (`jj sparse set`).
 //
-// This runs *in* the workspace, never via `-R <repo>`: sparse patterns belong
-// to a working copy, and jj picks the working copy from the current directory.
-// Invoking it with `-R` from an unrelated cwd would rewrite the main
-// workspace's patterns instead, silently emptying the user's main checkout.
+// workspacePath is the workspace's own directory, not the repo root, and must
+// be absolute: sparse patterns belong to a working copy, and jj picks the
+// working copy from the current directory. Running this via `-R <repo>`, or
+// from the wrong cwd, rewrites some *other* workspace's patterns — typically
+// the main checkout, which a `--clear --add <subdir>` narrows down to that one
+// subdirectory. It does not empty the checkout, so it looks like a working
+// tree rather than a mistake, and the fix is a non-obvious `jj sparse reset`.
 func (c *CLIClient) SparseSet(workspacePath string, opts SparseSetOpts) error {
 	args := []string{"sparse", "set"}
 	if opts.Clear {
@@ -234,16 +258,20 @@ func (c *CLIClient) SparseSet(workspacePath string, opts SparseSetOpts) error {
 	if len(args) == 2 {
 		return nil // nothing to do
 	}
-	_, err := c.runIn(workspacePath, args...)
+	_, err := c.runInWorkspace(workspacePath, args...)
 	return err
 }
 
 // SparseList returns the sparse patterns currently in effect for the working
 // copy at workspacePath. A full checkout reports the single pattern ".".
 //
-// Like SparseSet, this must run inside the workspace rather than via `-R`.
+// Like SparseSet, this must run inside the workspace rather than via `-R`, so
+// workspacePath is subject to the same absolute-path requirement. Reading the
+// wrong workspace's patterns is not destructive on its own, but it feeds
+// decisions about what to widen, so a wrong answer here becomes a wrong
+// SparseSet later.
 func (c *CLIClient) SparseList(workspacePath string) ([]string, error) {
-	out, err := c.runIn(workspacePath, "sparse", "list")
+	out, err := c.runInWorkspace(workspacePath, "sparse", "list")
 	if err != nil {
 		return nil, err
 	}
