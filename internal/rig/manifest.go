@@ -209,6 +209,31 @@ func (m *Manifest) Root(rigDir string) string { return filepath.Join(rigDir, m.N
 // same rig collide on one workspace name.
 const MaxNameLen = 60 - len(WorkspacePrefix) - 1 - 8
 
+// ValidateName rejects a rig name that cannot be used as a directory or would
+// break the workspace naming scheme.
+//
+// Checked before anything is created rather than only at Save time: by then the
+// jj workspaces already exist, under names derived from the name being
+// rejected.
+//
+// The name is used verbatim as a directory under rig.dir, so a separator or a
+// relative-path element would silently put the rig somewhere else.
+func ValidateName(name string) error {
+	switch {
+	case strings.TrimSpace(name) == "":
+		return errors.New("rig: name is required")
+	case len(name) > MaxNameLen:
+		return fmt.Errorf("rig: name %q is %d characters, limit is %d\n"+
+			"the limit exists so the commit discriminator in workspace names survives truncation",
+			name, len(name), MaxNameLen)
+	case name != filepath.Base(name), name == "." || name == "..":
+		return fmt.Errorf("rig: name %q must be a single directory name, not a path", name)
+	case strings.HasPrefix(name, "."):
+		return fmt.Errorf("rig: name %q must not start with a dot", name)
+	}
+	return nil
+}
+
 // Validate reports structural problems that would make the manifest unusable.
 // A rig.toml is meant to be readable and hand-editable, so this favours a
 // specific complaint over a parse error.
