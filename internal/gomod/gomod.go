@@ -23,21 +23,26 @@ package gomod
 import (
 	"errors"
 	"fmt"
+	"go/version"
 	"path"
 	"sort"
 	"strings"
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
-	"golang.org/x/mod/semver"
 )
 
 var (
 	// ErrUnsupportedHost is returned for module paths whose host is not a code
-	// host we know how to map (vanity import paths, gopkg.in, golang.org/x, …).
+	// host we know how to map, e.g. "golang.org/x/mod" or "gopkg.in/square/go-jose.v2".
+	//
+	// The element-count check runs first, so a two-element vanity path such as
+	// "gopkg.in/yaml.v3" returns ErrNotRepoPath instead. Both mean "no checkout
+	// for this module"; do not switch on them to tell a vanity import from a
+	// malformed one.
 	ErrUnsupportedHost = errors.New("gomod: module host is not a supported code host")
 	// ErrNotRepoPath is returned for module paths with too few elements to name
-	// a repository, e.g. "github.com/opentdf".
+	// a repository, e.g. "github.com/opentdf" or "gopkg.in/yaml.v3".
 	ErrNotRepoPath = errors.New("gomod: module path has too few elements to name a repo")
 	// ErrMalformedPath is returned when a path cannot be split into a module
 	// prefix and major-version suffix at all.
@@ -96,12 +101,23 @@ func ParseOrigin(modulePath string) (Origin, error) {
 	}, nil
 }
 
+// canonicalVersion strips the +incompatible build tag.
+//
+// Go records it in go.mod for a v2+ module that has no /vN path suffix, but it
+// is metadata about the module, not part of the version: the git tag is plain
+// "v2.0.0". Leaving it on would produce a tag that cannot exist, and callers
+// read an unresolvable tag as a wrong module->repo mapping.
+func canonicalVersion(version string) string {
+	return strings.TrimSuffix(version, "+incompatible")
+}
+
 // TagFor returns the VCS tag a module version is published under.
 //
 // The major-version element is not part of the tag — it lives in the module
 // path only — so a module at subdir "sdk" with path suffix /v2 releases
 // v2.7.1 as "sdk/v2.7.1", not "sdk/v2/v2.7.1".
 func (o Origin) TagFor(version string) string {
+	version = canonicalVersion(version)
 	if o.Subdir == "" {
 		return version
 	}
@@ -124,8 +140,7 @@ func (o Origin) Revset(version string) string {
 // PseudoCommit returns the commit a pseudo-version was minted from, or "" if
 // version is an ordinary tagged version.
 func PseudoCommit(version string) string {
-	// Strip a +incompatible suffix before asking x/mod, which rejects it.
-	v := strings.TrimSuffix(version, "+incompatible")
+	v := canonicalVersion(version)
 	if !module.IsPseudoVersion(v) {
 		return ""
 	}
@@ -154,15 +169,21 @@ func InOrg(modulePath string, prefixes []string) bool {
 }
 
 // MaxGoVersion returns the highest of the given `go` directive versions
-// ("1.24.5", "1.25"), or "" if none are usable.
+// ("1.24.5", "1.25", "1.25rc1"), or "" if none are usable.
+//
+// Comparison goes through go/version rather than semver: a `go` directive is
+// not semver, and semver rejects the prerelease forms Go allows, so "1.25rc1"
+// would lose to "1.24" and silently downgrade the generated go.work below what
+// a member module requires. Unparseable versions are dropped rather than
+// returned verbatim, which would write `go <garbage>` into go.work.
 func MaxGoVersion(versions ...string) string {
 	best := ""
 	for _, v := range versions {
 		v = strings.TrimSpace(v)
-		if v == "" {
+		if v == "" || !version.IsValid("go"+v) {
 			continue
 		}
-		if best == "" || semver.Compare("v"+v, "v"+best) > 0 {
+		if best == "" || version.Compare("go"+v, "go"+best) > 0 {
 			best = v
 		}
 	}
@@ -199,7 +220,7 @@ func LocalReplaceTargets(f *modfile.File, subdir string) (inRepo []string, escap
 		if target == "" {
 			continue
 		}
-		if path.IsAbs(target) || strings.HasPrefix(target, "/") {
+		if path.IsAbs(target) {
 			escaped = append(escaped, target)
 			continue
 		}
