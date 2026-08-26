@@ -175,7 +175,10 @@ func TestCheckRigRootFreeRecognisesAnExistingRig(t *testing.T) {
 	err := checkRigRootFree(root, "dsp")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
-	// Errors name the command that resolves them.
+	// Errors name the commands that resolve them. Both, because `rig new`
+	// carries flags — --full, --org, --module — that a sync does not honour, so
+	// quietly running one instead would ignore half of what was typed.
+	assert.Contains(t, err.Error(), "wgo rig sync dsp")
 	assert.Contains(t, err.Error(), "wgo rig rm dsp")
 }
 

@@ -682,18 +682,7 @@ func groupCheckouts(cands []candidate, req Request) ([]Checkout, []Member) {
 	// them to the primary's checkout as members with no version of their own.
 	members = append(members, primaryUseMembers(req, members)...)
 
-	// Members follow their checkout's order so rig.toml reads top-to-bottom the
-	// same way go.work does.
-	pos := make(map[string]int, len(checkouts))
-	for i, c := range checkouts {
-		pos[c.Dir] = i
-	}
-	sort.Slice(members, func(i, j int) bool {
-		if pos[members[i].Checkout] != pos[members[j].Checkout] {
-			return pos[members[i].Checkout] < pos[members[j].Checkout]
-		}
-		return members[i].UseDir() < members[j].UseDir()
-	})
+	sortMembers(checkouts, members)
 	return checkouts, members
 }
 
