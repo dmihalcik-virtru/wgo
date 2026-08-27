@@ -104,7 +104,7 @@ func (p *Planner) Plan(req Request) (*Manifest, error) {
 	// misconfiguration it almost always is rather than silently honouring it.
 	if len(req.OrgPrefixes) == 0 {
 		return nil, errors.New("rig: plan requires at least one org prefix; " +
-			"set rig.org_prefixes in ~/.wgo/config.toml or pass --org-prefix")
+			"set rig.org_prefixes in ~/.wgo/config.toml or pass --org")
 	}
 
 	m := &Manifest{
@@ -306,15 +306,16 @@ func (p *Planner) ResolvePrimaryRepo(rigName, owner, repo, ref string) (*Checkou
 	}
 	revset := fmt.Sprintf(`present(tags(exact:%q))`, ref)
 	commit, err := p.Resolver.Resolve(clone, revset)
-	if err != nil {
-		return nil, fmt.Errorf("rig: resolving %s in %s/%s: %w", ref, owner, repo, err)
-	}
-	if commit == "" {
+	if err != nil || commit == "" {
+		detail := "resolved to nothing"
+		if err != nil {
+			detail = err.Error()
+		}
 		return nil, fmt.Errorf(
-			"rig: %s resolves to nothing in %s/%s (revset %s)\n"+
+			"rig: resolving %s in %s/%s (revset %s): %s\n"+
 				"the tag may not have been fetched (jj does not fetch tags by default); try:\n"+
 				"  jj git fetch -R %s --remote origin -t %s",
-			ref, owner, repo, revset, clone, ref)
+			ref, owner, repo, revset, detail, clone, ref)
 	}
 	c := &Checkout{
 		Dir:       uniqueDir(nil, repo, ref, commit),
@@ -357,14 +358,8 @@ func (p *Planner) ResolvePrimary(rigName string, primary gomod.Module) (*Checkou
 	}
 	revset := origin.Revset(primary.Version)
 	commit, err := p.Resolver.Resolve(clone, revset)
-	if err != nil {
-		return nil, fmt.Errorf("rig: resolving %s@%s in %s: %w", primary.Path, primary.Version, origin.Slug(), err)
-	}
-	if commit == "" {
-		return nil, fmt.Errorf(
-			"rig: %s@%s resolves to nothing in %s (revset %s)\n%s",
-			primary.Path, primary.Version, origin.Slug(), revset,
-			resolveHint(origin, primary.Version, clone))
+	if err != nil || commit == "" {
+		return nil, resolveFailure(origin, primary.Path, primary.Version, clone, revset, err)
 	}
 
 	tag := ""

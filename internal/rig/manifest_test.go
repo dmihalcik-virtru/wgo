@@ -288,6 +288,23 @@ func TestList(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, "abc-1.0.0", got[0].Name, "rigs are sorted by name")
 	assert.Equal(t, "dsp-2.7.1", got[1].Name)
+	assert.Equal(t, filepath.Join(rigDir, "abc-1.0.0"), got[0].Root)
+}
+
+// A rig directory renamed behind wgo's back still has to be reachable: the
+// manifest name is what go.work and the jj workspaces use, but the directory is
+// the only thing `wgo rig ls --format=path` can usefully print.
+func TestListRootIsTheDirectoryNotTheManifestName(t *testing.T) {
+	rigDir := t.TempDir()
+	m := sampleManifest()
+	m.Name = "dsp-2.7.1"
+	require.NoError(t, Save(filepath.Join(rigDir, "renamed-by-hand"), m))
+
+	got, err := List(rigDir)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "dsp-2.7.1", got[0].Name)
+	assert.Equal(t, filepath.Join(rigDir, "renamed-by-hand"), got[0].Root)
 }
 
 // `wgo rig ls` before the first rig exists must print an empty list, not an

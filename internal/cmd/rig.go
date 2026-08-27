@@ -166,7 +166,11 @@ type cloneLocator struct {
 }
 
 func (l *cloneLocator) Locate(owner, repo string) (string, error) {
-	clone, err := findOrCloneRepo(l.jjc, l.cfg, owner, repo)
+	// NoInit: a rig needs history. `wgo to`'s empty-repo fallback would hand
+	// back a commitless repo here, whose pins then fail to resolve as "no such
+	// tag" — aborting the whole rig over what is really an unreachable
+	// repository, which the planner knows how to skip.
+	clone, err := findOrCloneRepoNoInit(l.jjc, l.cfg, owner, repo)
 	if err != nil {
 		return "", err
 	}
@@ -253,6 +257,10 @@ func runRigNew(name string) (retErr error) {
 	}
 	buildList = append(buildList, extra...)
 
+	// rig.sparse decides; --full is the override. Reading only the flag would
+	// make a `sparse = false` config silently do nothing.
+	sparse := cfg.Rig.Sparse && !rigNewFull
+
 	m, err := planner.Plan(rig.Request{
 		Name: name,
 		Source: rig.Source{
@@ -262,7 +270,7 @@ func runRigNew(name string) (retErr error) {
 			OrgPrefixes: orgs,
 		},
 		OrgPrefixes:     orgs,
-		Sparse:          !rigNewFull,
+		Sparse:          sparse,
 		Primary:         primary,
 		PrimaryUse:      primaryUse,
 		PrimaryCheckout: primaryCheckout,
@@ -418,13 +426,23 @@ func readWorkUse(dest string) ([]string, error) {
 
 // baselineOf records the version of every module in the build list, so a later
 // `wgo rig verify` can tell what the artifact shipped with.
+//
+// The recorded version is the *effective* one — what a `replace` redirected the
+// module to, not what its own go.mod asked for. Those differ often enough to
+// matter: a `replace ... => ../sibling` leaves the declared version as a stale
+// pseudo-version nothing was ever built from, and a fork replace pins a version
+// from a different module path entirely. Recording the declared version would
+// make every replaced module read as drift on the first `rig verify`, since
+// verification measures what the build actually resolves to.
 func baselineOf(buildList []gomod.Module) map[string]string {
 	out := map[string]string{}
 	for _, mod := range buildList {
-		if mod.Path == "" || mod.Version == "" {
-			continue
+		// A directory replace has no version at all; there is nothing to
+		// compare a later build against, so record nothing rather than
+		// something false.
+		if eff := mod.Effective(); mod.Path != "" && eff.Version != "" {
+			out[mod.Path] = eff.Version
 		}
-		out[mod.Path] = mod.Version
 	}
 	return out
 }
@@ -497,8 +515,11 @@ func runRigLs() error {
 	rows := make([]rigRow, 0, len(manifests))
 	for _, m := range manifests {
 		rows = append(rows, rigRow{
-			Name:      m.Name,
-			Path:      filepath.Join(rigDir, m.Name),
+			Name: m.Name,
+			// m.Root, not rigDir/m.Name: `--format=path` is meant to be piped
+			// into cd or xargs, and a renamed rig directory would send it
+			// somewhere that does not exist.
+			Path:      m.Root,
 			Source:    m.Source.Ref,
 			Checkouts: len(m.Checkouts),
 			Modules:   len(m.Members),
@@ -613,6 +634,12 @@ func runRigRm(name string) error {
 	if err != nil {
 		return err
 	}
+	// A rig name is a directory name, never a path. Without this the join below
+	// happily resolves "../notes" to a sibling of rig.dir, and this function
+	// ends in a workspace-forgetting RemoveAll.
+	if err := rig.ValidateName(name); err != nil {
+		return err
+	}
 	rigRoot := filepath.Join(rigDir, name)
 	m, err := rig.Load(rigRoot)
 	if errors.Is(err, rig.ErrNoManifest) {
@@ -671,6 +698,9 @@ func checkRigCheckoutsClean(jjc jj.Client, m *rig.Manifest, rigRoot string) erro
 // the current directory.
 func resolveRigRoot(rigDir string, args []string) (string, error) {
 	if len(args) == 1 {
+		if err := rig.ValidateName(args[0]); err != nil {
+			return "", err
+		}
 		root := filepath.Join(rigDir, args[0])
 		if _, err := os.Stat(rig.ManifestPath(root)); err != nil {
 			return "", fmt.Errorf("no rig named %q in %s\nlist them with: wgo rig ls", args[0], rigDir)

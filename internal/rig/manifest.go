@@ -380,7 +380,22 @@ func writeAll(f *os.File, parts ...string) error {
 	return nil
 }
 
-// List returns the manifests of every rig under rigDir, sorted by name.
+// Listing is a manifest together with the directory it was loaded from.
+//
+// The two can disagree. Nothing stops a rig directory from being renamed, and
+// the manifest's Name is what the generated go.work, env.sh and every jj
+// workspace already call it — rewriting it to match the directory would strand
+// those. So a listing carries both: Name to identify the rig, Root to reach it
+// on disk. Reconstructing Root from Name is the bug this type exists to make
+// unrepresentable.
+type Listing struct {
+	*Manifest
+
+	// Root is the directory the manifest was read from.
+	Root string
+}
+
+// List returns every rig under rigDir, sorted by manifest name.
 //
 // A directory with no rig.toml is silently not a rig: rig.dir is a directory
 // the user owns and may hold anything. A rig.toml that exists but does not load
@@ -388,7 +403,7 @@ func writeAll(f *os.File, parts ...string) error {
 // report the rig as gone while its jj workspaces stay registered in the main
 // clone. Those are warned about and skipped, so one corrupt rig does not hide
 // the healthy ones.
-func List(rigDir string) ([]*Manifest, error) {
+func List(rigDir string) ([]Listing, error) {
 	entries, err := os.ReadDir(rigDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -396,12 +411,13 @@ func List(rigDir string) ([]*Manifest, error) {
 		}
 		return nil, fmt.Errorf("rig: reading %s: %w", rigDir, err)
 	}
-	var out []*Manifest
+	var out []Listing
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		m, err := Load(filepath.Join(rigDir, e.Name()))
+		root := filepath.Join(rigDir, e.Name())
+		m, err := Load(root)
 		switch {
 		case errors.Is(err, ErrNoManifest):
 			continue
@@ -409,7 +425,7 @@ func List(rigDir string) ([]*Manifest, error) {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 			continue
 		}
-		out = append(out, m)
+		out = append(out, Listing{Manifest: m, Root: root})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil

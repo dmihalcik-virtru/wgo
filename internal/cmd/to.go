@@ -605,8 +605,28 @@ func matchesRemote(jjc jj.Client, repoPath, owner, repo string) bool {
 	return false
 }
 
-// findOrCloneRepo locates an existing clone or creates one.
+// findOrCloneRepo locates an existing clone or creates one, falling back to an
+// empty local repo when the clone fails.
 func findOrCloneRepo(jjc jj.Client, cfg *config.Config, owner, repo string) (string, error) {
+	return findOrCloneRepoOpt(jjc, cfg, owner, repo, true)
+}
+
+// findOrCloneRepoNoInit is findOrCloneRepo for callers that need a repository
+// with real history behind it.
+//
+// `wgo to`, `add` and `join` want the empty-repo fallback: starting work
+// against a GitHub repo that has no commits yet is a supported flow. A rig is
+// the opposite. Every pin resolves through a tag revset, so an empty repo
+// resolves nothing, and the planner cannot tell "this repo is unreachable"
+// from "this tag was never fetched" — it reports the second and aborts the
+// whole rig. The initialised repo also outlives the failure: `IsRepo(destPath)`
+// short-circuits every later lookup for that slug, so the real clone never
+// happens. Fail here instead, and let the caller record a skip.
+func findOrCloneRepoNoInit(jjc jj.Client, cfg *config.Config, owner, repo string) (string, error) {
+	return findOrCloneRepoOpt(jjc, cfg, owner, repo, false)
+}
+
+func findOrCloneRepoOpt(jjc jj.Client, cfg *config.Config, owner, repo string, initOnCloneFailure bool) (string, error) {
 	// Search existing repos
 	disc := discovery.FromConfig(cfg)
 	repos, err := disc.DiscoverAll()
@@ -648,17 +668,21 @@ func findOrCloneRepo(jjc jj.Client, cfg *config.Config, owner, repo string) (str
 	cloneURL := gh.RepoCloneURL(owner, repo)
 	logTo("cloning %s...", cloneURL)
 	if err := jjc.GitClone(cloneURL, destPath); err != nil {
+		if !preexisting {
+			// A failed clone can leave a partial destPath behind, which would
+			// make `jj git init` fail — and would make the next lookup for this
+			// slug find a broken repo. Only ever remove a path this call
+			// created.
+			_ = os.RemoveAll(destPath)
+		}
+		if !initOnCloneFailure {
+			return "", fmt.Errorf("clone %s: %w", cloneURL, err)
+		}
 		// jj clones a commitless remote fine, so this is a fallback for the
 		// cases it does not cover — non-GitHub remotes, older jj, a transient
 		// failure. Reproduce what a successful clone of an empty repo yields:
 		// a colocated repo with origin wired up.
 		logTo("clone failed (%v); initialising an empty repo at %s", err, destPath)
-		if !preexisting {
-			// A failed clone can leave a partial destPath behind, which would
-			// make `jj git init` fail. Only ever remove a path this call
-			// created.
-			_ = os.RemoveAll(destPath)
-		}
 		if initErr := jjc.GitInit(destPath, jj.InitOpts{}); initErr != nil {
 			return "", fmt.Errorf("clone %s failed (%v) and `jj git init` fallback failed: %w; "+
 				"try `jj git clone %s %s` manually", cloneURL, err, initErr, cloneURL, destPath)

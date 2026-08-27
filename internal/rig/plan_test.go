@@ -963,11 +963,22 @@ func TestResolvePrimaryFailsLoudly(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no such repository")
 
-	// An unfetched tag resolves to nothing rather than erroring.
+	// An unfetched tag: the revset matches nothing, and the failure has to carry
+	// the fetch advice rather than just jj's own message.
 	_, unfetched := dspRequest()
 	unfetched.Resolver = &fakeResolver{}
 	_, err = unfetched.ResolvePrimary(req.Name, req.Primary)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "resolves to nothing")
+	assert.Contains(t, err.Error(), "no matching commit")
 	assert.Contains(t, err.Error(), "jj git fetch", "the error names the command that fixes it")
+
+	// A resolver that returns an empty commit without erroring is not what jj
+	// does, but the interface allows it and it must not read as success.
+	_, empty := dspRequest()
+	empty.Resolver = &fakeResolver{commits: map[string]string{
+		`present(tags(exact:"v2.7.1"))`: "",
+	}}
+	_, err = empty.ResolvePrimary(req.Name, req.Primary)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "jj git fetch")
 }

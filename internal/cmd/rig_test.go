@@ -9,10 +9,56 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/gomod"
 	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/rig"
 )
+
+// cloneFailClient is a jj.Client whose clone always fails — an unreachable,
+// renamed or unauthorised repository.
+type cloneFailClient struct {
+	jj.Client
+	inits []string
+}
+
+func (c *cloneFailClient) IsRepo(string) bool { return false }
+
+func (c *cloneFailClient) GitClone(string, string) error {
+	return errors.New("remote: Repository not found")
+}
+
+func (c *cloneFailClient) GitInit(dest string, _ jj.InitOpts) error {
+	c.inits = append(c.inits, dest)
+	return os.MkdirAll(dest, 0o755)
+}
+
+func (c *cloneFailClient) GitRemoteAdd(string, string, string) error { return nil }
+func (c *cloneFailClient) GitFetch(string, string, []string) error   { return nil }
+
+// A rig resolves every pin through a tag revset, so an empty repo is worse than
+// no repo: its pins fail as "no such tag", which reads as a bad --from rather
+// than an unreachable dependency, and the planner aborts instead of skipping.
+// The initialised directory also outlives the failure and short-circuits every
+// later lookup for the slug.
+func TestFindOrCloneRepoNoInitLeavesNothingBehind(t *testing.T) {
+	mains := t.TempDir()
+	cfg := &config.Config{}
+	cfg.Worktree.MainsDir = mains
+	c := &cloneFailClient{}
+
+	_, err := findOrCloneRepoNoInit(c, cfg, "acme", "private")
+	require.Error(t, err)
+	assert.Empty(t, c.inits, "no fallback repo for a caller that needs history")
+	assert.NoDirExists(t, filepath.Join(mains, "acme", "private"))
+
+	// The permissive caller keeps its fallback: `wgo to` against a GitHub repo
+	// with no commits yet is a supported flow.
+	dest, err := findOrCloneRepo(c, cfg, "acme", "brand-new")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(mains, "acme", "brand-new"), dest)
+	assert.Equal(t, []string{dest}, c.inits)
+}
 
 func TestParseRigFrom(t *testing.T) {
 	owner, repo, ref, err := parseRigFrom("virtru-corp/data-security-platform@v2.7.1")
@@ -69,6 +115,31 @@ func TestBaselineOfSkipsVersionlessModules(t *testing.T) {
 		{Path: "", Version: "v1.0.0"},
 	})
 	assert.Equal(t, map[string]string{"github.com/opentdf/platform/sdk": "v0.10.1"}, base)
+}
+
+// `rig verify` measures the build's *effective* versions, so the baseline has
+// to be recorded the same way. A declared version left behind by a replace was
+// never built from, and comparing against it makes every replaced module read
+// as drift on the very first verify.
+func TestBaselineOfRecordsEffectiveVersions(t *testing.T) {
+	base := baselineOf([]gomod.Module{
+		// A fork replace: what shipped is v0.10.2 from the fork, not v0.10.1.
+		{
+			Path: "github.com/opentdf/platform/sdk", Version: "v0.10.1",
+			Replace: &gomod.Module{Path: "github.com/virtru-corp/platform/sdk", Version: "v0.10.2"},
+		},
+		// A directory replace has no version at all. The stale pseudo-version
+		// on the left is not what was built.
+		{
+			Path: "github.com/virtru-corp/dsp/sdk/v2", Version: "v2.7.1-0.20260801120000-abcdefabcdef",
+			Replace: &gomod.Module{Path: "./sdk"},
+		},
+		{Path: "github.com/opentdf/otdfctl", Version: "v0.3.0"},
+	})
+	assert.Equal(t, map[string]string{
+		"github.com/opentdf/platform/sdk": "v0.10.2",
+		"github.com/opentdf/otdfctl":      "v0.3.0",
+	}, base)
 }
 
 func TestCheckRigRootFree(t *testing.T) {
@@ -143,6 +214,26 @@ func TestResolveRigRootByName(t *testing.T) {
 	_, err = resolveRigRoot(rigDir, []string{"nope"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wgo rig ls")
+}
+
+// A rig name is a directory name, never a path. Joining an unvalidated one onto
+// rig.dir puts `rig rm`'s RemoveAll — and every command that resolves a root —
+// anywhere on the filesystem.
+func TestResolveRigRootRejectsPathsDisguisedAsNames(t *testing.T) {
+	rigDir := t.TempDir()
+	outside := filepath.Join(filepath.Dir(rigDir), "not-a-rig")
+	require.NoError(t, os.MkdirAll(outside, 0o755))
+	require.NoError(t, rig.Save(outside, testManifest()))
+
+	for _, name := range []string{
+		"../" + filepath.Base(outside),
+		"nested/dsp",
+		"/etc",
+		".",
+	} {
+		_, err := resolveRigRoot(rigDir, []string{name})
+		assert.Error(t, err, "should reject %q", name)
+	}
 }
 
 func TestRigRootContaining(t *testing.T) {

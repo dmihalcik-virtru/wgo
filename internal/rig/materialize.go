@@ -51,6 +51,11 @@ type Materializer struct {
 	// madeRoot records that the rig root did not exist before this run, so
 	// Rollback knows whether removing it is ours to do.
 	madeRoot bool
+	// madeSrc is the same for src/, which is created inside a rig root that
+	// may well have existed already — `rig new` into a directory the user
+	// pre-made, say. Without it a rolled-back run leaves an empty src/ behind,
+	// and the next `rig new` sees a non-empty directory and refuses.
+	madeSrc bool
 }
 
 func (mz *Materializer) logf(format string, args ...any) {
@@ -108,8 +113,12 @@ func (mz *Materializer) ensureRoot(rigRoot string) error {
 	default:
 		return fmt.Errorf("rig: checking %s: %w", rigRoot, err)
 	}
-	if err := os.MkdirAll(filepath.Join(rigRoot, SrcDir), 0o755); err != nil {
-		return fmt.Errorf("rig: creating %s: %w", filepath.Join(rigRoot, SrcDir), err)
+	src := filepath.Join(rigRoot, SrcDir)
+	if _, err := os.Stat(src); errors.Is(err, os.ErrNotExist) {
+		mz.madeSrc = true
+	}
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		return fmt.Errorf("rig: creating %s: %w", src, err)
 	}
 	return nil
 }
@@ -362,10 +371,10 @@ func (mz *Materializer) writeGoWork(m *Manifest, rigRoot string) error {
 // hand. Only workspaces this Materializer created are touched — never one
 // merely present in a manifest, and never the rig root unless we made it.
 func (mz *Materializer) Rollback(rigRoot string) {
-	done, madeRoot := mz.done, mz.madeRoot
+	done, madeRoot, madeSrc := mz.done, mz.madeRoot, mz.madeSrc
 	// Cleared first so a second call — Materialize's defer after the caller
 	// already gave up, say — cannot forget the same workspaces twice.
-	mz.done, mz.madeRoot = nil, false
+	mz.done, mz.madeRoot, mz.madeSrc = nil, false, false
 
 	if len(done) > 0 {
 		mz.logf("rolling back %d workspace(s)", len(done))
@@ -381,6 +390,16 @@ func (mz *Materializer) Rollback(rigRoot string) {
 		}
 	}
 	if !madeRoot {
+		// The root was the user's; leave it, but do not leave our src/ inside
+		// it. os.Remove, not RemoveAll: it succeeds only if src/ is empty,
+		// which it is once the checkouts above are gone — and if something
+		// unexpected is still in there, refusing to delete it is the right
+		// answer.
+		if madeSrc {
+			if err := os.Remove(filepath.Join(rigRoot, SrcDir)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				mz.logf("warning: could not remove %s: %v", filepath.Join(rigRoot, SrcDir), err)
+			}
+		}
 		return
 	}
 	if err := os.RemoveAll(rigRoot); err != nil {

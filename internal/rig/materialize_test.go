@@ -310,6 +310,28 @@ func TestMaterializeRollbackKeepsPreexistingRoot(t *testing.T) {
 	require.Error(t, mz.Materialize(twoCheckoutManifest(), root))
 
 	assert.FileExists(t, keep, "rollback removes only what this run created")
+	// src/ is ours even when the root is not, and leaving it behind makes the
+	// retry fail: checkRigRootFree refuses a non-empty directory.
+	assert.NoDirExists(t, filepath.Join(root, SrcDir))
+}
+
+// A src/ that predates the run is the user's, and an unexpected file inside it
+// is a reason to stop rather than to delete harder.
+func TestMaterializeRollbackKeepsAPreexistingSrc(t *testing.T) {
+	root := t.TempDir()
+	keep := filepath.Join(root, SrcDir, "scratch.txt")
+	require.NoError(t, os.MkdirAll(filepath.Dir(keep), 0o755))
+	require.NoError(t, os.WriteFile(keep, []byte("mine"), 0o644))
+
+	ws := &fakeWorkspaces{
+		content: twoCheckoutContent(),
+		addErr:  map[string]error{"rig-dsp-aaaaaaaa": errors.New("boom")},
+	}
+	mz := &Materializer{JJ: ws}
+
+	require.Error(t, mz.Materialize(twoCheckoutManifest(), root))
+
+	assert.FileExists(t, keep)
 }
 
 func TestMaterializeRollsBackOnSparseFailure(t *testing.T) {
