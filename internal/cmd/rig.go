@@ -278,7 +278,14 @@ func runRigNew(name string) (retErr error) {
 		}
 	}()
 
-	pins, err := resolveRigPins(planner, mz, name, rigRoot, orgs)
+	pins, err := resolveRigPins(planner, func(c *rig.Checkout) (string, error) {
+		return mz.Checkout(rigRoot, c)
+	}, name, rigSource{
+		from:    rigNewFrom,
+		binary:  rigNewFromBinary,
+		modules: rigNewModules,
+		orgs:    orgs,
+	})
 	if err != nil {
 		return err
 	}
@@ -321,7 +328,7 @@ func runRigNew(name string) (retErr error) {
 	}
 
 	reportSkips(m)
-	rigLogf("rig %s: %d checkouts, %d modules", m.Name, len(m.Checkouts), len(m.Members))
+	rigLogf("rig %s: %d checkouts, %d modules", m.Name, len(m.LiveCheckouts()), len(m.Members))
 
 	if cfg.Rig.VerifyOnNew && !rigNewNoVerify {
 		verifyNewRig(gc, m, rigRoot, cfg.Rig.Freeze)
@@ -422,7 +429,13 @@ func checkRigRootFree(rigRoot, name string) error {
 		return nil
 	}
 	if _, err := rig.Load(rigRoot); err == nil {
-		return fmt.Errorf("rig %q already exists at %s\nremove it with: wgo rig rm %s", name, rigRoot, name)
+		// Deliberately an error rather than an implicit sync. `rig new` carries
+		// flags — --full, --org, --module — that a sync of an existing rig does
+		// not honour, so quietly running one instead would ignore half of what
+		// was typed and report success.
+		return fmt.Errorf("rig %q already exists at %s\n"+
+			"bring it up to date with: wgo rig sync %s\n"+
+			"or start over with:        wgo rig rm %s", name, rigRoot, name, name)
 	}
 	return fmt.Errorf("%s already exists and is not a rig; remove it or choose another name", rigRoot)
 }
@@ -489,17 +502,42 @@ type rigPins struct {
 	buildList []gomod.Module
 }
 
+// rigSource is the pin source a run was asked for.
+//
+// Lifted out of the command's flag variables because `wgo rig sync` re-resolves
+// the source recorded in an existing rig.toml rather than one typed on the
+// command line, and reading the flags directly would have made it re-resolve
+// whatever the last `rig new` happened to leave in them.
+type rigSource struct {
+	// from is "<owner>/<repo>@<ref>".
+	from string
+	// binary is the path to a compiled artifact.
+	binary string
+	// modules are the explicit `-m` pins, recorded on the manifest's Source.
+	modules []string
+	// orgs is the in-org filter in force.
+	orgs []string
+}
+
+// checkoutFunc materialises the primary's checkout and returns its path.
+//
+// `rig new` creates it. `rig sync` hands back the one the rig already has,
+// which is what keeps a sync from rebuilding a working copy the user may be
+// sitting in.
+type checkoutFunc func(*rig.Checkout) (string, error)
+
 // resolveRigPins materialises the primary checkout and reads the build list.
 //
 // Both sources need the primary on disk before they can finish: --from cannot
 // run `go list` without it, and --from-binary reads the repository's own
-// go.work `use` list from it. So both go through mz.Checkout, and everything
-// they create is on the Materializer's rollback list from that point on.
-func resolveRigPins(planner *rig.Planner, mz *rig.Materializer, name, rigRoot string, orgs []string) (*rigPins, error) {
-	if strings.TrimSpace(rigNewFromBinary) != "" {
-		return pinsFromBinary(planner, mz, name, rigRoot, rigNewFromBinary, orgs)
+// go.work `use` list from it. So both go through checkout, and for `rig new`
+// everything it creates is on the Materializer's rollback list from that point
+// on.
+func resolveRigPins(planner *rig.Planner, checkout checkoutFunc, name string, src rigSource) (*rigPins, error) {
+	if strings.TrimSpace(src.binary) != "" {
+		return pinsFromBinary(planner, checkout, name, src)
 	}
-	return pinsFromRepo(planner, mz, name, rigRoot, rigNewFrom, orgs)
+	return pinsFromRepo(planner, checkout, name, src)
 }
 
 // pinsFromRepo resolves pins by checking the artifact's source out at a tag and
@@ -508,8 +546,8 @@ func resolveRigPins(planner *rig.Planner, mz *rig.Materializer, name, rigRoot st
 // The build list comes from `go list` run with the repository's *own* go.work,
 // not the rig's — the rig's does not exist yet, and the point is to reproduce
 // the build list the artifact shipped with.
-func pinsFromRepo(planner *rig.Planner, mz *rig.Materializer, name, rigRoot, from string, orgs []string) (*rigPins, error) {
-	owner, repo, ref, err := parseRigFrom(from)
+func pinsFromRepo(planner *rig.Planner, checkout checkoutFunc, name string, src rigSource) (*rigPins, error) {
+	owner, repo, ref, err := parseRigFrom(src.from)
 	if err != nil {
 		return nil, err
 	}
@@ -517,7 +555,7 @@ func pinsFromRepo(planner *rig.Planner, mz *rig.Materializer, name, rigRoot, fro
 	if err != nil {
 		return nil, err
 	}
-	dest, err := mz.Checkout(rigRoot, pc)
+	dest, err := checkout(pc)
 	if err != nil {
 		return nil, err
 	}
@@ -546,8 +584,8 @@ func pinsFromRepo(planner *rig.Planner, mz *rig.Materializer, name, rigRoot, fro
 		source: rig.Source{
 			Kind:        "repo",
 			Ref:         owner + "/" + repo + "@" + ref,
-			Modules:     rigNewModules,
-			OrgPrefixes: orgs,
+			Modules:     src.modules,
+			OrgPrefixes: src.orgs,
 		},
 		checkout:  pc,
 		primary:   primary,
@@ -563,7 +601,8 @@ func pinsFromRepo(planner *rig.Planner, mz *rig.Materializer, name, rigRoot, fro
 // rather than by re-deriving a build list that MVS may resolve differently
 // today. It is also the only source that works when the artifact was built from
 // a commit that was never tagged.
-func pinsFromBinary(planner *rig.Planner, mz *rig.Materializer, name, rigRoot, binary string, orgs []string) (*rigPins, error) {
+func pinsFromBinary(planner *rig.Planner, checkout checkoutFunc, name string, src rigSource) (*rigPins, error) {
+	binary := src.binary
 	abs, err := filepath.Abs(strings.TrimSpace(binary))
 	if err != nil {
 		return nil, fmt.Errorf("rig: resolving %s: %w", binary, err)
@@ -593,7 +632,7 @@ func pinsFromBinary(planner *rig.Planner, mz *rig.Materializer, name, rigRoot, b
 	if err != nil {
 		return nil, err
 	}
-	dest, err := mz.Checkout(rigRoot, pc)
+	dest, err := checkout(pc)
 	if err != nil {
 		return nil, err
 	}
@@ -616,8 +655,8 @@ func pinsFromBinary(planner *rig.Planner, mz *rig.Materializer, name, rigRoot, b
 		source: rig.Source{
 			Kind:        "binary",
 			Binary:      abs,
-			Modules:     rigNewModules,
-			OrgPrefixes: orgs,
+			Modules:     src.modules,
+			OrgPrefixes: src.orgs,
 		},
 		checkout: pc,
 		primary: gomod.Module{
@@ -842,10 +881,10 @@ func printRigPlan(m *rig.Manifest, rigRoot string) {
 	fmt.Printf("rig %s (%s)\n\n", m.Name, rigRoot)
 	fmt.Printf("%-40s %-28s %s\n", "CHECKOUT", "PIN", "CONTENTS")
 	fmt.Println(strings.Repeat("-", 100))
-	for _, c := range m.Checkouts {
+	for _, c := range m.LiveCheckouts() {
 		fmt.Printf("%-40s %-28s %s\n", c.Dir, rigPin(c), rigContents(c))
 	}
-	fmt.Printf("\n%d checkouts, %d modules", len(m.Checkouts), len(m.Members))
+	fmt.Printf("\n%d checkouts, %d modules", len(m.LiveCheckouts()), len(m.Members))
 	if len(m.Skipped) > 0 {
 		fmt.Printf(", %d skipped", len(m.Skipped))
 	}
@@ -889,7 +928,7 @@ func runRigLs() error {
 			// somewhere that does not exist.
 			Path:      m.Root,
 			Source:    rigSourceLabel(m.Source),
-			Checkouts: len(m.Checkouts),
+			Checkouts: len(m.LiveCheckouts()),
 			Modules:   len(m.Members),
 			Created:   m.Created,
 			Frozen:    len(m.Frozen) > 0,
@@ -986,6 +1025,13 @@ func runRigShow(args []string) error {
 	fmt.Println(strings.Repeat("-", 120))
 	for _, c := range m.Checkouts {
 		fmt.Printf("%-40s %-28s %s\n", c.Dir, shortCommitID(c.Commit), rigContents(c))
+	}
+	// Listed with the rest rather than hidden: the directory is still on disk
+	// and the workspace is still registered, so a reader looking for either
+	// needs to find it here.
+	if obsolete := len(m.Checkouts) - len(m.LiveCheckouts()); obsolete > 0 {
+		fmt.Printf("\n%d checkout(s) are obsolete: nothing in %s uses them, but they are still on disk.\n"+
+			"remove them with: wgo rig sync %s --prune\n", obsolete, rig.GoWorkName, m.Name)
 	}
 
 	if len(m.Skipped) > 0 {
@@ -1128,10 +1174,14 @@ func rigPin(c rig.Checkout) string {
 
 // rigContents summarises how much of a repository a checkout materialises.
 func rigContents(c rig.Checkout) string {
-	if c.Full || len(c.Sparse) == 0 {
-		return "full"
+	label := "full"
+	if !c.Full && len(c.Sparse) > 0 {
+		label = "sparse: " + strings.Join(c.Sparse, " ")
 	}
-	return "sparse: " + strings.Join(c.Sparse, " ")
+	if c.Obsolete {
+		return "obsolete, " + label
+	}
+	return label
 }
 
 func shortCommitID(commit string) string {

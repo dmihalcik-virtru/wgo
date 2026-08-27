@@ -75,6 +75,24 @@ func (f *fakeWorkspaces) SparseSet(workspacePath string, opts jj.SparseSetOpts) 
 	return f.sparseErr[filepath.Base(workspacePath)]
 }
 
+// dirtyWorkspaces is a fakeWorkspaces that can also answer for a working copy,
+// which is what a prune consults before it removes one.
+type dirtyWorkspaces struct {
+	fakeWorkspaces
+	// dirty maps an absolute checkout path to its uncommitted entries.
+	dirty map[string][]string
+	// err maps an absolute checkout path to a status read that fails.
+	err map[string]error
+}
+
+func (d *dirtyWorkspaces) IsClean(workspacePath string) (bool, []string, error) {
+	if err := d.err[workspacePath]; err != nil {
+		return false, nil, err
+	}
+	changed := d.dirty[workspacePath]
+	return len(changed) == 0, changed, nil
+}
+
 // sparseFor returns every sparse set applied to the named checkout dir, in
 // order, so a test can assert both the initial narrowing and any widening.
 func (f *fakeWorkspaces) sparseFor(dir string) []jj.SparseSetOpts {

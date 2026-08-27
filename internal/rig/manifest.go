@@ -27,6 +27,16 @@ type Source struct {
 	Binary string `toml:"binary,omitempty"`
 	// Modules are the explicit `-m path@version` pins.
 	Modules []string `toml:"modules,omitempty"`
+	// Unfiltered are the module paths checked out despite falling outside
+	// OrgPrefixes. `wgo rig add` deliberately ignores the filter — naming the
+	// module is the request — so without a record of that decision the next
+	// `wgo rig sync` would re-apply the filter, plan the module away, and report
+	// the checkout the user just asked for as obsolete.
+	//
+	// A subset of Modules, by path. `wgo rig new -m` does not write it: there the
+	// extras join a build list that is filtered wholesale, and the filter is the
+	// point.
+	Unfiltered []string `toml:"unfiltered,omitempty"`
 	// OrgPrefixes is the in-org filter that was in force. Stored because the
 	// config default can change underneath an existing rig, and a sync that
 	// silently widened or narrowed the checkout set would be surprising.
@@ -66,6 +76,16 @@ type Checkout struct {
 	// Full records that this checkout is deliberately not sparse, so `show` can
 	// distinguish "full" from "sparse set not computed yet".
 	Full bool `toml:"full,omitempty"`
+	// Obsolete marks a checkout the current plan no longer wants but which is
+	// still on disk, because `wgo rig sync` deletes nothing without --prune.
+	//
+	// It stays in the manifest precisely because it is still real. The manifest
+	// is the only record of which jj workspaces belong to this rig — `wgo rig rm`
+	// reads it to forget them — so dropping the entry while leaving the workspace
+	// registered in the main clone would strand it permanently: invisible from
+	// the rig, and unattributable from the repo. It contributes no `use` line, so
+	// nothing builds against it; it is a tombstone that --prune can act on.
+	Obsolete bool `toml:"obsolete,omitempty"`
 }
 
 // Member is one module the rig promotes into the go.work.
@@ -211,6 +231,23 @@ func (m *Manifest) CheckoutByDir(dir string) *Checkout {
 // Root returns the rig's directory given the configured rig.dir.
 func (m *Manifest) Root(rigDir string) string { return filepath.Join(rigDir, m.Name) }
 
+// LiveCheckouts are the checkouts the rig actually builds against.
+//
+// Anything counting or listing "the rig's checkouts" for a human wants this.
+// An obsolete entry is a tombstone for a workspace still registered in a main
+// clone; it is in the manifest so `wgo rig rm` can forget it, not because the
+// rig has grown. Teardown — Remove, prune — wants the full slice instead, since
+// a tombstone is exactly what it is there to clean up.
+func (m *Manifest) LiveCheckouts() []Checkout {
+	out := make([]Checkout, 0, len(m.Checkouts))
+	for _, c := range m.Checkouts {
+		if !c.Obsolete {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // PackagePatterns returns the `go` command patterns covering every package the
 // rig's own modules contribute, for use from the rig root.
 //
@@ -333,9 +370,15 @@ func (m *Manifest) Validate() error {
 		served[mem.Checkout] = true
 	}
 	for _, c := range m.Checkouts {
-		// A checkout nothing is served from is a workspace that gets created,
-		// occupies disk, and never appears in go.work.
-		if !served[c.Dir] {
+		switch {
+		case served[c.Dir] && c.Obsolete:
+			// The whole point of the tombstone is that nothing builds against it.
+			// A member would put it back in go.work while --prune still stood
+			// ready to delete the directory underneath.
+			return fmt.Errorf("rig: checkout %q is marked obsolete but still serves members", c.Dir)
+		case !served[c.Dir] && !c.Obsolete:
+			// A checkout nothing is served from is a workspace that gets created,
+			// occupies disk, and never appears in go.work.
 			return fmt.Errorf("rig: checkout %q has no members", c.Dir)
 		}
 	}

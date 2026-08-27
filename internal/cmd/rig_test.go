@@ -175,7 +175,10 @@ func TestCheckRigRootFreeRecognisesAnExistingRig(t *testing.T) {
 	err := checkRigRootFree(root, "dsp")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
-	// Errors name the command that resolves them.
+	// Errors name the commands that resolve them. Both, because `rig new`
+	// carries flags — --full, --org, --module — that a sync does not honour, so
+	// quietly running one instead would ignore half of what was typed.
+	assert.Contains(t, err.Error(), "wgo rig sync dsp")
 	assert.Contains(t, err.Error(), "wgo rig rm dsp")
 }
 
@@ -599,15 +602,15 @@ func (f fakeRigResolver) Resolve(_, revset string) (string, error) { return f.co
 // clients suffice here.
 func TestPinsFromBinaryRejectsADirectory(t *testing.T) {
 	dir := t.TempDir()
-	_, err := pinsFromBinary(nil, nil, "app", filepath.Join(dir, "rig"), dir, []string{"github.com/acme"})
+	_, err := pinsFromBinary(nil, nil, "app", rigSource{binary: dir, orgs: []string{"github.com/acme"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a file")
 }
 
 func TestPinsFromBinaryReportsAMissingBinary(t *testing.T) {
 	dir := t.TempDir()
-	_, err := pinsFromBinary(nil, nil, "app", filepath.Join(dir, "rig"),
-		filepath.Join(dir, "nope"), []string{"github.com/acme"})
+	_, err := pinsFromBinary(nil, nil, "app",
+		rigSource{binary: filepath.Join(dir, "nope"), orgs: []string{"github.com/acme"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nope")
 }
