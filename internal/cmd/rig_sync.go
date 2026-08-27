@@ -18,6 +18,7 @@ import (
 
 var (
 	rigSyncPrune  bool
+	rigSyncForce  bool
 	rigSyncDryRun bool
 
 	rigAddModules []string
@@ -36,9 +37,11 @@ is a checkout someone deleted, a sparse set narrowed by hand, a go.work that
 got clobbered, and a source whose own dependency set moved under a tag that was
 re-pointed.
 
-Nothing is deleted by default. A checkout the plan no longer wants is reported
-and left alone, because a rig checkout is somewhere you may have uncommitted
-debugging edits; pass --prune to remove them.
+Nothing is deleted by default. A checkout the plan no longer wants is reported,
+left on disk, and kept in the manifest as an obsolete entry — that entry is the
+only record of the jj workspace still registered in its main clone, so dropping
+it would strand the workspace. Pass --prune to remove them; one with
+uncommitted changes is still kept unless you add --force.
 
 When the source cannot be read back — a --from-binary rig whose artifact is
 gone, or one assembled entirely by hand — sync falls back to reconciling the
@@ -85,6 +88,8 @@ func init() {
 
 	rigSyncCmd.Flags().BoolVar(&rigSyncPrune, "prune", false,
 		"Also remove checkouts the re-resolved plan no longer wants")
+	rigSyncCmd.Flags().BoolVar(&rigSyncForce, "force", false,
+		"With --prune, remove an obsolete checkout even if it has uncommitted changes")
 	rigSyncCmd.Flags().BoolVar(&rigSyncDryRun, "dry-run", false,
 		"Print what would change and exit without touching anything")
 
@@ -150,13 +155,13 @@ func runRigSync(args []string) (retErr error) {
 
 	gc := gotool.NewClient().In(rigRoot).WithWork(filepath.Join(rigRoot, rig.GoWorkName))
 	mz.Validate = gc
-	if err := mz.ApplyDiff(merged, diff, rigRoot, rigSyncPrune); err != nil {
+	if err := mz.ApplyDiff(merged, diff, rigRoot, rig.PruneOpts{Prune: rigSyncPrune, Force: rigSyncForce}); err != nil {
 		return err
 	}
 
 	reportSkips(merged)
 	rigLogf("rig %s: %s (%d checkouts, %d modules)",
-		merged.Name, diff.Summary(), len(merged.Checkouts), len(merged.Members))
+		merged.Name, diff.Summary(), len(merged.LiveCheckouts()), len(merged.Members))
 	if len(diff.Remove) > 0 && !rigSyncPrune {
 		reportObsolete(merged.Name, diff.Remove)
 	}
@@ -194,9 +199,12 @@ func resyncPlan(cfg *config.Config, jjc jj.Client, mz *rig.Materializer, have *r
 	buildList := append(pins.buildList, extra...)
 
 	return planner.Plan(rig.Request{
-		Name:            have.Name,
-		Source:          pins.source,
+		Name:   have.Name,
+		Source: pins.source,
+		// The filter is re-applied, so the pins that were admitted past it have
+		// to be named again or `wgo rig add`'s work is undone on the next sync.
 		OrgPrefixes:     src.orgs,
+		Unfiltered:      have.Source.Unfiltered,
 		Sparse:          have.Sparse,
 		Primary:         pins.primary,
 		PrimaryUse:      pins.use,
@@ -225,13 +233,25 @@ func reusePrimary(have *rig.Manifest, mz *rig.Materializer, rigRoot string) chec
 			}
 			dest := filepath.Join(rigRoot, rig.SrcDir, existing.Dir)
 			if _, err := os.Stat(dest); err != nil {
-				break // recorded but gone; fall through and re-create it
+				// Recorded but gone, so it has to be re-created — under the
+				// recorded names, since Reconcile keys on them and a second
+				// directory for the primary is the last thing a sync should
+				// make. The workspace is almost certainly still registered in the
+				// main clone (a deleted directory does not unregister it) and
+				// `jj workspace add --name` fails on a duplicate, so forget it
+				// first. A forget that fails is not worth stopping for: the add
+				// that follows reports the collision far more precisely.
+				c.Dir, c.Workspace = existing.Dir, existing.Workspace
+				if err := mz.JJ.WorkspaceForget(existing.MainClone, existing.Workspace); err != nil {
+					rigLogf("note: %s was not registered in %s (%v)", existing.Workspace, existing.MainClone, err)
+				}
+				break
 			}
 			c.Dir, c.Workspace = existing.Dir, existing.Workspace
 			c.Full, c.Sparse = existing.Full, existing.Sparse
 			return dest, nil
 		}
-		rigLogf("the primary is pinned to %s, which %s does not hold yet", rigPin(*c), have.Name)
+		rigLogf("the primary is pinned to %s, which %s does not hold on disk", rigPin(*c), have.Name)
 		return mz.Checkout(rigRoot, c)
 	}
 }
@@ -298,7 +318,7 @@ func runRigAdd(args []string) (retErr error) {
 		Locator:  &cloneLocator{jjc: jjc, cfg: cfg},
 		Resolver: jjc,
 	}
-	updated, diff, err := planner.AddModules(have, mods)
+	updated, diff, err := planner.AddModules(have, mods, checkoutOnDisk(rigRoot))
 	if err != nil {
 		return err
 	}
@@ -322,12 +342,12 @@ func runRigAdd(args []string) (retErr error) {
 	mz.Validate = gotool.NewClient().In(rigRoot).WithWork(filepath.Join(rigRoot, rig.GoWorkName))
 	// Never prune from add: the diff it produces only ever grows the rig, so
 	// there is nothing to remove and no way to ask for it.
-	if err := mz.ApplyDiff(updated, diff, rigRoot, false); err != nil {
+	if err := mz.ApplyDiff(updated, diff, rigRoot, rig.PruneOpts{}); err != nil {
 		return err
 	}
 
 	rigLogf("rig %s: %s (%d checkouts, %d modules)",
-		updated.Name, diff.Summary(), len(updated.Checkouts), len(updated.Members))
+		updated.Name, diff.Summary(), len(updated.LiveCheckouts()), len(updated.Members))
 	fmt.Println(rigRoot)
 	return nil
 }
@@ -362,14 +382,15 @@ func reportObsolete(name string, remove []rig.Checkout) {
 	for _, c := range remove {
 		rigLogf("  %s (%s @ %s)", c.Dir, c.Repo, rigPin(c))
 	}
-	rigLogf("they are not in %s any more, so nothing builds against them; remove them with: wgo rig sync %s --prune",
-		rig.GoWorkName, name)
+	rigLogf("they are not in %s any more, so nothing builds against them, but they stay in %s\n"+
+		"as obsolete entries so their jj workspaces can still be found; remove them with: wgo rig sync %s --prune",
+		rig.GoWorkName, rig.ManifestName, name)
 }
 
 func printRigDiff(m *rig.Manifest, d *rig.Diff, rigRoot string) {
 	fmt.Printf("rig %s (%s)\n", m.Name, rigRoot)
 	if d.Empty() {
-		fmt.Printf("\nno changes: %d checkouts, %d modules\n", len(m.Checkouts), len(m.Members))
+		fmt.Printf("\nno changes: %d checkouts, %d modules\n", len(m.LiveCheckouts()), len(m.Members))
 		return
 	}
 	fmt.Println()
@@ -386,7 +407,12 @@ func printRigDiff(m *rig.Manifest, d *rig.Diff, rigRoot string) {
 		fmt.Printf("  - %-40s %s @ %s (obsolete)\n", c.Dir, c.Repo, rigPin(c))
 	}
 	fmt.Printf("\n%s\n", d.Summary())
-	if len(d.Remove) > 0 && !rigSyncPrune {
-		fmt.Printf("obsolete checkouts are kept unless you pass --prune\n")
+	switch {
+	case len(d.Remove) == 0:
+	case !rigSyncPrune:
+		fmt.Printf("obsolete checkouts stay on disk, and in %s so their workspaces stay findable, "+
+			"unless you pass --prune\n", rig.ManifestName)
+	case !rigSyncForce:
+		fmt.Printf("one with uncommitted changes would still be kept; --force removes it anyway\n")
 	}
 }

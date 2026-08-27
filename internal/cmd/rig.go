@@ -328,7 +328,7 @@ func runRigNew(name string) (retErr error) {
 	}
 
 	reportSkips(m)
-	rigLogf("rig %s: %d checkouts, %d modules", m.Name, len(m.Checkouts), len(m.Members))
+	rigLogf("rig %s: %d checkouts, %d modules", m.Name, len(m.LiveCheckouts()), len(m.Members))
 
 	if cfg.Rig.VerifyOnNew && !rigNewNoVerify {
 		verifyNewRig(gc, m, rigRoot, cfg.Rig.Freeze)
@@ -881,10 +881,10 @@ func printRigPlan(m *rig.Manifest, rigRoot string) {
 	fmt.Printf("rig %s (%s)\n\n", m.Name, rigRoot)
 	fmt.Printf("%-40s %-28s %s\n", "CHECKOUT", "PIN", "CONTENTS")
 	fmt.Println(strings.Repeat("-", 100))
-	for _, c := range m.Checkouts {
+	for _, c := range m.LiveCheckouts() {
 		fmt.Printf("%-40s %-28s %s\n", c.Dir, rigPin(c), rigContents(c))
 	}
-	fmt.Printf("\n%d checkouts, %d modules", len(m.Checkouts), len(m.Members))
+	fmt.Printf("\n%d checkouts, %d modules", len(m.LiveCheckouts()), len(m.Members))
 	if len(m.Skipped) > 0 {
 		fmt.Printf(", %d skipped", len(m.Skipped))
 	}
@@ -928,7 +928,7 @@ func runRigLs() error {
 			// somewhere that does not exist.
 			Path:      m.Root,
 			Source:    rigSourceLabel(m.Source),
-			Checkouts: len(m.Checkouts),
+			Checkouts: len(m.LiveCheckouts()),
 			Modules:   len(m.Members),
 			Created:   m.Created,
 			Frozen:    len(m.Frozen) > 0,
@@ -1025,6 +1025,13 @@ func runRigShow(args []string) error {
 	fmt.Println(strings.Repeat("-", 120))
 	for _, c := range m.Checkouts {
 		fmt.Printf("%-40s %-28s %s\n", c.Dir, shortCommitID(c.Commit), rigContents(c))
+	}
+	// Listed with the rest rather than hidden: the directory is still on disk
+	// and the workspace is still registered, so a reader looking for either
+	// needs to find it here.
+	if obsolete := len(m.Checkouts) - len(m.LiveCheckouts()); obsolete > 0 {
+		fmt.Printf("\n%d checkout(s) are obsolete: nothing in %s uses them, but they are still on disk.\n"+
+			"remove them with: wgo rig sync %s --prune\n", obsolete, rig.GoWorkName, m.Name)
 	}
 
 	if len(m.Skipped) > 0 {
@@ -1167,10 +1174,14 @@ func rigPin(c rig.Checkout) string {
 
 // rigContents summarises how much of a repository a checkout materialises.
 func rigContents(c rig.Checkout) string {
-	if c.Full || len(c.Sparse) == 0 {
-		return "full"
+	label := "full"
+	if !c.Full && len(c.Sparse) > 0 {
+		label = "sparse: " + strings.Join(c.Sparse, " ")
 	}
-	return "sparse: " + strings.Join(c.Sparse, " ")
+	if c.Obsolete {
+		return "obsolete, " + label
+	}
+	return label
 }
 
 func shortCommitID(commit string) string {

@@ -49,6 +49,11 @@ type Request struct {
 	// OrgPrefixes limits which modules get a source checkout. The primary is
 	// always checked out regardless.
 	OrgPrefixes []string
+	// Unfiltered are module paths exempt from OrgPrefixes, from
+	// Source.Unfiltered. `wgo rig add` checks out a module the user names
+	// whether or not the filter admits it; re-planning has to honour that or the
+	// next sync reports the checkout it just made as obsolete.
+	Unfiltered []string
 	// Sparse requests partial checkouts. A repo-root module gains nothing from
 	// sparse and is materialised in full either way.
 	Sparse bool
@@ -188,6 +193,10 @@ func (p *Planner) selectModules(req Request) ([]gomod.Module, []Skip) {
 		skips []Skip
 		seen  = map[string]bool{}
 	)
+	exempt := make(map[string]bool, len(req.Unfiltered))
+	for _, p := range req.Unfiltered {
+		exempt[p] = true
+	}
 
 	consider := func(mod gomod.Module, isPrimary bool) {
 		if mod.Path == "" || seen[mod.Path] {
@@ -212,8 +221,9 @@ func (p *Planner) selectModules(req Request) ([]gomod.Module, []Skip) {
 			return
 		}
 		// The primary is what we are reproducing; it is checked out whether or
-		// not the org filter would have admitted it.
-		if !isPrimary && !gomod.InOrg(mod.Path, req.OrgPrefixes) {
+		// not the org filter would have admitted it. So is anything the user
+		// named by hand — see Request.Unfiltered.
+		if !isPrimary && !exempt[mod.Path] && !gomod.InOrg(mod.Path, req.OrgPrefixes) {
 			skips = append(skips, Skip{
 				Path: mod.Path, Version: mod.Version,
 				Kind: SkipOutOfOrg, Detail: "left to the module cache",
@@ -844,6 +854,19 @@ func uniqueDir(used map[string]bool, repo, tag, commit string) string {
 	if dir == "" {
 		dir = shortCommit(commit)
 	}
+	if !used[dir] {
+		return dir
+	}
+	return dir + "-" + shortCommit(commit)
+}
+
+// disambiguateDir gives an already-derived directory name a commit suffix when
+// something else has claimed it.
+//
+// uniqueDir cannot serve here: a sync compares a fresh plan against a rig that
+// already exists, so the names to avoid are not the ones the plan handed out,
+// and the tag the name came from is not the tag the *other* holder used.
+func disambiguateDir(used map[string]bool, dir, commit string) string {
 	if !used[dir] {
 		return dir
 	}

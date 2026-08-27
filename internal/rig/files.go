@@ -99,7 +99,7 @@ func renderReadme(m *Manifest, rigRoot string) string {
 		fmt.Fprintf(&b, "- **Reproducing:** `%s`\n", src)
 	}
 	fmt.Fprintf(&b, "- **Primary module:** `%s`\n", m.Primary)
-	fmt.Fprintf(&b, "- **Checkouts:** %d, serving %d modules\n", len(m.Checkouts), len(m.Members))
+	fmt.Fprintf(&b, "- **Checkouts:** %d, serving %d modules\n", len(m.LiveCheckouts()), len(m.Members))
 	if m.Created != "" {
 		fmt.Fprintf(&b, "- **Created:** %s\n", m.Created)
 	}
@@ -121,7 +121,7 @@ func renderReadme(m *Manifest, rigRoot string) string {
 
 	b.WriteString("\n## Checkouts\n\n")
 	b.WriteString("| Directory | Repo | Pin | Contents |\n|---|---|---|---|\n")
-	for _, c := range m.Checkouts {
+	for _, c := range m.LiveCheckouts() {
 		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %s |\n",
 			c.Dir, c.Repo, pinLabel(c), contentsLabel(c))
 	}

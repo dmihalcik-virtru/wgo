@@ -602,15 +602,15 @@ func (f fakeRigResolver) Resolve(_, revset string) (string, error) { return f.co
 // clients suffice here.
 func TestPinsFromBinaryRejectsADirectory(t *testing.T) {
 	dir := t.TempDir()
-	_, err := pinsFromBinary(nil, nil, "app", filepath.Join(dir, "rig"), dir, []string{"github.com/acme"})
+	_, err := pinsFromBinary(nil, nil, "app", rigSource{binary: dir, orgs: []string{"github.com/acme"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a file")
 }
 
 func TestPinsFromBinaryReportsAMissingBinary(t *testing.T) {
 	dir := t.TempDir()
-	_, err := pinsFromBinary(nil, nil, "app", filepath.Join(dir, "rig"),
-		filepath.Join(dir, "nope"), []string{"github.com/acme"})
+	_, err := pinsFromBinary(nil, nil, "app",
+		rigSource{binary: filepath.Join(dir, "nope"), orgs: []string{"github.com/acme"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nope")
 }

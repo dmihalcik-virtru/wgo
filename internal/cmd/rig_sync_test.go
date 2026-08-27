@@ -147,13 +147,19 @@ func TestReusePrimaryAdoptsTheRecordedCheckout(t *testing.T) {
 
 // countingWorkspaces records how many workspaces were created, which is what
 // separates "adopted the recorded checkout" from "made a new one".
-type countingWorkspaces struct{ adds int }
+type countingWorkspaces struct {
+	adds    int
+	forgets []string
+}
 
 func (c *countingWorkspaces) WorkspaceAdd(_, dest string, _ jj.WorkspaceAddOpts) error {
 	c.adds++
 	return os.MkdirAll(dest, 0o755)
 }
-func (c *countingWorkspaces) WorkspaceForget(string, string) error     { return nil }
+func (c *countingWorkspaces) WorkspaceForget(repo, name string) error {
+	c.forgets = append(c.forgets, repo+" "+name)
+	return nil
+}
 func (c *countingWorkspaces) SparseSet(string, jj.SparseSetOpts) error { return nil }
 
 // Recorded but missing: the pin matches, so this is still the rig's primary, but
@@ -171,8 +177,15 @@ func TestReusePrimaryReCreatesAMissingCheckout(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, ws.adds)
-	assert.Equal(t, filepath.Join(rigRoot, rig.SrcDir, "platform-service-v0.9.0"), dest)
-	assert.Equal(t, "platform-service-v0.9.0", c.Dir, "nothing to adopt, so the derived name stands")
+	// Re-created under the *recorded* names, not the freshly derived ones:
+	// Reconcile keys on them, so a second directory for the primary is exactly
+	// what a sync must not make.
+	assert.Equal(t, filepath.Join(rigRoot, rig.SrcDir, "platform-v0.9.0"), dest)
+	assert.Equal(t, "platform-v0.9.0", c.Dir)
+	assert.Equal(t, "rig-dsp-aaaaaaaa", c.Workspace)
+	// Deleting the directory did not unregister the workspace, and
+	// `jj workspace add --name` fails on a duplicate.
+	assert.Equal(t, []string{"/mains/opentdf/platform rig-dsp-aaaaaaaa"}, ws.forgets)
 }
 
 func TestReusePrimarySkipsADifferentCommit(t *testing.T) {
@@ -214,7 +227,8 @@ func TestPrintRigDiff(t *testing.T) {
 	assert.Contains(t, out, "- old-v0.1.0")
 	assert.Contains(t, out, "(obsolete)")
 	assert.Contains(t, out, "1 to add, 1 to restore, 1 to widen, 1 obsolete")
-	assert.Contains(t, out, "kept unless you pass --prune")
+	assert.Contains(t, out, "unless you pass --prune")
+	assert.Contains(t, out, "rig.toml", "the tombstone is why the workspace stays findable")
 }
 
 func TestPrintRigDiffWithNothingToDo(t *testing.T) {
