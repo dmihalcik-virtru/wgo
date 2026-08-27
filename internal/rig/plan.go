@@ -258,13 +258,8 @@ func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
 
 		revset := origin.Revset(mod.Version)
 		commit, err := p.Resolver.Resolve(clone, revset)
-		if err != nil {
-			return nil, nil, fmt.Errorf("rig: resolving %s@%s in %s: %w", mod.Path, mod.Version, slug, err)
-		}
-		if commit == "" {
-			return nil, nil, fmt.Errorf(
-				"rig: %s@%s resolves to nothing in %s (revset %s)\n%s",
-				mod.Path, mod.Version, slug, revset, resolveHint(origin, mod.Version, clone))
+		if err != nil || commit == "" {
+			return nil, nil, resolveFailure(origin, mod.Path, mod.Version, clone, revset, err)
 		}
 
 		tag := ""
@@ -287,6 +282,25 @@ func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
 // pseudo-version carries its own commit, and no amount of tag fetching
 // conjures a commit that is not in the repo; suggesting `-t` there sends the
 // user down a dead end when the real cause is a wrong repository.
+// resolveFailure explains a pin that did not resolve, whether the resolver
+// returned an error or an empty commit.
+//
+// The two used to be separate branches, and only one of them carried the hint —
+// the one that never fires. A RevResolver reports a revset matching nothing as
+// an error ("no matching commit"), so in production the empty-commit branch is
+// reachable only from a test double, and the advice that makes the failure
+// actionable never reached a user. The interface still permits an empty commit,
+// so both are funnelled here rather than one being deleted.
+func resolveFailure(origin gomod.Origin, modPath, version, clone, revset string, err error) error {
+	detail := "resolved to nothing"
+	if err != nil {
+		detail = err.Error()
+	}
+	return fmt.Errorf("rig: resolving %s@%s in %s (revset %s): %s\n%s",
+		modPath, version, origin.Slug(), revset, detail,
+		resolveHint(origin, version, clone))
+}
+
 func resolveHint(origin gomod.Origin, version, clone string) string {
 	if gomod.PseudoCommit(version) != "" {
 		return fmt.Sprintf(
@@ -438,10 +452,7 @@ func primaryUseMembers(req Request, members []Member) []Member {
 			have[mem.Subdir] = true
 		}
 	}
-	// The primary's path may carry a major-version suffix ("…/dsp/v2"), which is
-	// part of the *root* module's path and not a directory on disk. Joining a
-	// use dir onto it invents "…/dsp/v2/sdk" for source that actually lives at
-	// "…/dsp/sdk/v2". Rebuild the path from the origin instead.
+	byDir := localReplacePaths(req.BuildList)
 	origin, err := gomod.ParseOrigin(req.Primary.Path)
 	if err != nil {
 		origin = gomod.Origin{}
@@ -453,8 +464,12 @@ func primaryUseMembers(req Request, members []Member) []Member {
 			continue
 		}
 		have[dir] = true
+		modPath, ok := byDir[dir]
+		if !ok {
+			modPath = useDirModulePath(origin, req.Primary.Path, dir)
+		}
 		out = append(out, Member{
-			Path: useDirModulePath(origin, req.Primary.Path, dir),
+			Path: modPath,
 			// No version: these directories come from the primary repo's
 			// go.work, not from the build list, so nothing pinned them. Copying
 			// the primary's version would assert a pin that does not exist and
@@ -466,7 +481,55 @@ func primaryUseMembers(req Request, members []Member) []Member {
 	return out
 }
 
-// useDirModulePath is the module path of a directory in the primary's repo.
+// localReplacePaths maps a directory in the primary's repository to the module
+// path the build list records for it.
+//
+// A `use` directory the primary depends on is already in the build list, served
+// by a replace pointing at that very directory, and that entry carries the one
+// thing nothing else knows: the module's real path, major-version suffix and
+// all. `replace …/dsp/sdk/v2 => ./sdk` says the source under "sdk" is module
+// "…/dsp/sdk/v2" — a fact not derivable from the primary's own path, since the
+// two modules version independently.
+func localReplacePaths(buildList []gomod.Module) map[string]string {
+	out := map[string]string{}
+	for _, mod := range buildList {
+		// Version != "" is a replace onto another *module*, which says nothing
+		// about any directory in this repository.
+		if mod.Path == "" || mod.Replace == nil || mod.Replace.Version != "" {
+			continue
+		}
+		dir := repoRelativeReplace(mod.Replace.Path)
+		if dir == "" {
+			continue
+		}
+		out[dir] = mod.Path
+	}
+	return out
+}
+
+// repoRelativeReplace reduces a local replace target to a directory within the
+// repository, or "" when it is not one. The repository root is "" as well: that
+// is the primary itself, which is already a member.
+func repoRelativeReplace(target string) string {
+	if !strings.HasPrefix(target, "./") && !strings.HasPrefix(target, "../") {
+		return "" // a module path, or an absolute path we cannot place
+	}
+	dir := path.Clean(target)
+	if dir == "." || strings.HasPrefix(dir, "..") {
+		return ""
+	}
+	return dir
+}
+
+// useDirModulePath guesses the module path of a directory in the primary's
+// repo, for a `use` directory the build list has no entry for.
+//
+// It is only a guess. The primary's path may carry a major-version suffix
+// ("…/dsp/v2") that belongs to the root module and is not a directory on disk,
+// so joining onto it would invent "…/dsp/v2/sdk"; dropping it instead yields
+// "…/dsp/sdk", which is right only for a submodule still at v0/v1. The suffix a
+// submodule carries is its own and cannot be recovered from here — see
+// localReplacePaths for the case where it can.
 func useDirModulePath(origin gomod.Origin, primaryPath, dir string) string {
 	if origin.Host == "" {
 		return path.Join(primaryPath, dir) // unmappable host; best effort
@@ -544,6 +607,12 @@ func shortCommit(commit string) string {
 // in let one out-of-org dependency with a newer `go` directive raise the rig's
 // go.work above what any checked-out module needs — which then demands a newer
 // toolchain than the artifact was ever built with.
+//
+// The lookup is by module path, so it depends on members carrying the path the
+// build list uses: a synthesised one never matches and silently contributes
+// nothing, which is what localReplacePaths exists to prevent. A `use` directory
+// the primary does not depend on has no build-list entry at all and so cannot
+// be accounted for here; its go.mod is only readable once the checkout exists.
 func planGoVersion(req Request, members []Member) string {
 	byPath := make(map[string]string, len(req.BuildList))
 	for _, mod := range req.BuildList {
@@ -566,10 +635,13 @@ func planGoVersion(req Request, members []Member) string {
 //
 // modFiles is keyed by the module's subdir within the repository, matching
 // Member.Subdir, and may omit modules whose go.mod could not be read.
+//
+// A checkout that is already full has nothing to widen, but it is still
+// scanned: a replace target outside the repository is unsatisfiable no matter
+// how much of the repository is present, and the primary's checkout is always
+// full, so skipping the scan hid those targets from the one module most likely
+// to carry them.
 func WidenSparse(c *Checkout, members []Member, modFiles map[string]*modfile.File) []Skip {
-	if c.Full {
-		return nil
-	}
 	widened := map[string]bool{}
 	for _, dir := range c.Sparse {
 		widened[dir] = true
@@ -577,7 +649,7 @@ func WidenSparse(c *Checkout, members []Member, modFiles map[string]*modfile.Fil
 
 	var (
 		skips []Skip
-		full  bool
+		full  = c.Full
 	)
 	for _, mem := range members {
 		if mem.Checkout != c.Dir {

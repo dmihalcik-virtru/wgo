@@ -119,9 +119,14 @@ func TestWithWorkAbsolutizes(t *testing.T) {
 func TestWithWorkFallsBackToCwd(t *testing.T) {
 	// With no Dir set the command runs in the process's working directory, so
 	// that — not the empty string — is what a relative go.work is relative to.
+	//
+	// Compared after resolve: WithWork hands Go a symlink-free path, while
+	// os.Getwd reports the logical one. On a checkout under a symlinked root —
+	// anything in /tmp on macOS — the two differ, and comparing the raw join
+	// would fail for reasons that have nothing to do with the fallback.
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(cwd, "go.work"), NewClient().WithWork("go.work").Work)
+	assert.Equal(t, resolve(filepath.Join(cwd, "go.work")), NewClient().WithWork("go.work").Work)
 }
 
 // Work is an exported field, so WithWork's absolutizing can be bypassed. run is

@@ -2,6 +2,7 @@ package rig
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -31,8 +32,8 @@ func (f *fakeLocator) Locate(owner, repo string) (string, error) {
 	return p, nil
 }
 
-// fakeResolver maps a revset to a commit. A revset with no entry resolves to
-// the empty string, which is what jj returns for a tag that was never fetched.
+// fakeResolver maps a revset to a commit. A revset with no entry fails, which
+// is what jj does for a tag that was never fetched.
 type fakeResolver struct {
 	commits map[string]string
 	err     error
@@ -42,7 +43,14 @@ func (f *fakeResolver) Resolve(_, revset string) (string, error) {
 	if f.err != nil {
 		return "", f.err
 	}
-	return f.commits[revset], nil
+	commit, ok := f.commits[revset]
+	if !ok {
+		// Mirror jj: a revset that matches nothing is an error, not an empty
+		// string. A fake that returns ("", nil) sends every test down a branch
+		// production never takes.
+		return "", fmt.Errorf("jj resolve %q: no matching commit", revset)
+	}
+	return commit, nil
 }
 
 const (
@@ -631,9 +639,51 @@ func TestPlanPrimaryUseMemberIdentity(t *testing.T) {
 	}
 	require.NotNil(t, sdk, "the primary's go.work use of ./sdk must become a member")
 
-	assert.Equal(t, "github.com/virtru-corp/data-security-platform/sdk", sdk.Path)
-	assert.NotContains(t, sdk.Path, "/v2/", "the major suffix is not a directory")
+	// The build list serves this directory through `replace …/sdk/v2 => ./sdk`,
+	// and that entry is the only thing that knows the submodule's own major
+	// suffix: it is not "/v2/" spliced in from the primary, and it is not
+	// absent either.
+	assert.Equal(t, "github.com/virtru-corp/data-security-platform/sdk/v2", sdk.Path)
+	assert.NotContains(t, sdk.Path, "/v2/", "the primary's major suffix is not a directory")
 	assert.Empty(t, sdk.Version, "a use dir is not a pinned module")
+}
+
+// A use dir with no build-list entry — a sibling module the primary does not
+// import — has no recorded path to borrow, so the guess is all there is.
+func TestPlanPrimaryUseMemberFallsBackToTheGuessedPath(t *testing.T) {
+	req, p := dspRequest()
+	req.PrimaryUse = append(req.PrimaryUse, "./tools")
+
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+
+	var tools *Member
+	for i := range m.Members {
+		if m.Members[i].Subdir == "tools" {
+			tools = &m.Members[i]
+		}
+	}
+	require.NotNil(t, tools)
+	assert.Equal(t, "github.com/virtru-corp/data-security-platform/tools", tools.Path)
+}
+
+// The regression this guards: members are looked up in the build list by path,
+// so a member whose path was synthesised rather than resolved contributed
+// nothing, and a go.work that has to be 1.25 to build was written as 1.24.
+func TestPlanGoVersionCountsLocallyReplacedMembers(t *testing.T) {
+	req, p := dspRequest()
+	req.GoVersion = ""
+	req.Primary.GoVersion = "1.24.5"
+	for i := range req.BuildList {
+		if req.BuildList[i].Path == "github.com/virtru-corp/data-security-platform/sdk/v2" {
+			req.BuildList[i].GoVersion = "1.25.0"
+		}
+	}
+
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+	assert.Equal(t, "1.25.0", m.GoVersion,
+		"the primary's ./sdk is a workspace member; go.work cannot be older than it")
 }
 
 func TestPlanWithoutPrimaryGoWork(t *testing.T) {
@@ -658,7 +708,7 @@ func TestPlanUnresolvableRevisionHint(t *testing.T) {
 
 		_, err := p.Plan(req)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "resolves to nothing")
+		assert.Contains(t, err.Error(), "no matching commit")
 		assert.Contains(t, err.Error(), "-t service/v0.11.6")
 	})
 
@@ -793,6 +843,33 @@ func TestWidenSparseSkipsFullCheckouts(t *testing.T) {
 	c := Checkout{Dir: "repo-x", Full: true}
 	assert.Nil(t, WidenSparse(&c, nil, nil))
 	assert.True(t, c.Full)
+	assert.Empty(t, c.Sparse)
+}
+
+// A full checkout has nothing to widen, but an escaped replace is unsatisfiable
+// however much of the repo is present — and the primary's checkout is always
+// full, so returning early hid those from the likeliest module to carry them.
+func TestWidenSparseReportsEscapedReplacesOnFullCheckouts(t *testing.T) {
+	f, err := modfile.Parse("go.mod", []byte(`
+module github.com/acme/repo-x
+
+go 1.24
+
+require github.com/acme/other v1.0.0
+
+replace github.com/acme/other => ../../other-repo
+`), nil)
+	require.NoError(t, err)
+
+	c := Checkout{Dir: "repo-x", Repo: "acme/repo-x", Full: true}
+	members := []Member{{Path: "github.com/acme/repo-x", Version: "v1.0.0", Checkout: "repo-x"}}
+
+	skips := WidenSparse(&c, members, map[string]*modfile.File{"": f})
+
+	require.Len(t, skips, 1)
+	assert.Equal(t, SkipEscapedReplace, skips[0].Kind)
+	assert.Equal(t, "github.com/acme/repo-x", skips[0].Path)
+	assert.True(t, c.Full, "reporting must not narrow the checkout")
 	assert.Empty(t, c.Sparse)
 }
 
