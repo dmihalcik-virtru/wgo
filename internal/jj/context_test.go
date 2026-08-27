@@ -86,9 +86,17 @@ func TestCancelSendsInterruptRatherThanKill(t *testing.T) {
 	// The sleep also gives up the inherited stdout/stderr: a background child
 	// holding the write end of the command's pipe keeps Wait blocked until
 	// WaitDelay expires, which would make this test measure the wrong thing.
+	//
+	// The ready file is the handshake. Cancelling on a timer instead would race
+	// the shell to its `trap` line on a loaded machine, and a SIGINT that lands
+	// before the trap is installed kills the shell outright — the very outcome
+	// this test reports as a failure.
+	ready := filepath.Join(dir, "ready")
+	got := filepath.Join(dir, "got")
 	body := "#!/bin/sh\n" +
-		"trap 'echo INT >\"" + filepath.Join(dir, "got") + "\"; exit 0' INT\n" +
+		"trap 'echo INT >\"" + got + "\"; exit 0' INT\n" +
 		"sleep 10 >/dev/null 2>&1 &\n" +
+		": >\"" + ready + "\"\n" +
 		"wait\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
@@ -102,7 +110,17 @@ func TestCancelSendsInterruptRatherThanKill(t *testing.T) {
 		_, _ = c.WithContext(ctx).Root(dir)
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("the fake jj never reached its trap")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 	cancel()
 	select {
 	case <-done:
@@ -110,7 +128,7 @@ func TestCancelSendsInterruptRatherThanKill(t *testing.T) {
 		t.Fatal("cancel did not return")
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "got")); err != nil {
+	if _, err := os.Stat(got); err != nil {
 		t.Fatal("the child was killed outright; it must be interrupted so jj can unlock the repo")
 	}
 }

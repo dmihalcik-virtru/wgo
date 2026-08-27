@@ -1201,6 +1201,14 @@ func runRigRm(name string) error {
 // the user is shown what was found and asked for --force rather than having it
 // deleted on their behalf.
 func removeOrphanRig(js rig.Orphans, rigDir, rigRoot, name string) error {
+	// Defence in depth behind runRigRm's ValidateName. Everything below ends in
+	// os.RemoveAll, and this is the one rm path that does not first read a
+	// manifest confirming the directory is a rig — so the containment check is
+	// the only thing standing between a bad name and a tree the user cares
+	// about. Cheap enough to repeat; too expensive to omit.
+	if !rig.UnderDir(rigDir, rigRoot) {
+		return fmt.Errorf("refusing to remove %s: it is not inside the rig directory %s", rigRoot, rigDir)
+	}
 	if _, err := os.Stat(rigRoot); errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("no rig named %q in %s", name, rigDir)
 	} else if err != nil {

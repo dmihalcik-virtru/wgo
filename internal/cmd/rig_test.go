@@ -720,6 +720,23 @@ func TestRemoveOrphanRigStillReportsATrulyAbsentRig(t *testing.T) {
 	assert.Contains(t, err.Error(), `no rig named "nope"`)
 }
 
+// Defence in depth behind runRigRm's ValidateName: this path ends in
+// os.RemoveAll without a manifest to confirm the directory is a rig, so a root
+// outside rig.dir must be refused even with --force.
+func TestRemoveOrphanRigRefusesARootOutsideTheRigDir(t *testing.T) {
+	rigDir := t.TempDir()
+	outside := filepath.Join(filepath.Dir(rigDir), "important-notes")
+	require.NoError(t, os.MkdirAll(outside, 0o755))
+	rigRmForce = true
+	t.Cleanup(func() { rigRmForce = false })
+
+	err := removeOrphanRig(&fakeOrphanJJ{}, rigDir, outside, "../important-notes")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not inside the rig directory")
+	assert.DirExists(t, outside)
+}
+
 // An empty root is the residue of a run that died before its first checkout.
 // There is nothing to lose, so removing it needs no confirmation.
 func TestRemoveOrphanRigDeletesAnEmptyRootWithoutForce(t *testing.T) {

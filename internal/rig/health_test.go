@@ -11,14 +11,14 @@ import (
 	"github.com/virtru/wgo/internal/jj"
 )
 
-// fakePinned answers `@ | @-` per checkout directory. Anything not in log is a
-// directory the test did not set up, which must not read as healthy.
+// fakePinned answers Inspect's revset per checkout directory. Anything not in
+// log is a directory the test did not set up, which must not read as healthy.
 type fakePinned struct {
 	log  map[string][]jj.LogEntry
 	errs map[string]error
 	// asked records the revset each call used, so the test can assert the
-	// classification is reading the working copy and its parent rather than,
-	// say, the whole history.
+	// classification asks about descent from the pin rather than, say, walking
+	// the whole history.
 	asked map[string]string
 }
 
@@ -73,7 +73,10 @@ func TestInspectClassifiesAnIntactRig(t *testing.T) {
 		assert.Empty(t, c.At)
 	}
 	assert.Equal(t, filepath.Join(root, SrcDir, "platform-v0.9.0"), got[0].Path)
-	assert.Equal(t, "@ | @-", p.asked[got[0].Path])
+	assert.Equal(t,
+		"@ | @- | (::@ & present(aaaaaaaa1111))",
+		p.asked[got[0].Path],
+		"the pin is asked about as an ancestor of @, not just as @-")
 }
 
 // `jj edit` on the pinned commit makes @ the pin rather than its child. The
@@ -121,6 +124,73 @@ func TestInspectNamesTheWorkingCopyWhenItIsAllThereIs(t *testing.T) {
 	assert.Equal(t, "cccccccc3333", got[0].At)
 }
 
+// The workflow a rig exists for: the user committed twice on top of the pin, so
+// the pin is @-- and neither @ nor @- is it. jj still reports it as an ancestor,
+// and reporting that as drift would flag every rig anybody actually worked in.
+func TestInspectAcceptsCommitsStackedOnThePin(t *testing.T) {
+	root, m, p := healthyRig(t)
+	dest := filepath.Join(root, SrcDir, "platform-v0.9.0")
+	p.log[dest] = []jj.LogEntry{
+		{CommitID: "9999999999999999999999999999999999999999", Empty: true, CurrentWorkingCopy: true},
+		{CommitID: "dddddddd4444"},
+		{CommitID: m.Checkouts[0].Commit},
+	}
+
+	got := Inspect(p, m, root)
+
+	assert.True(t, got[0].OK(), "two commits of work on top of the pin is not drift")
+}
+
+// `jj edit <other commit>` leaves the user on a commit with content in it. That
+// commit is where they are; its parent is not, and naming the parent would send
+// them looking in the wrong place.
+func TestInspectNamesANonEmptyWorkingCopyOverItsParent(t *testing.T) {
+	root, m, p := healthyRig(t)
+	dest := filepath.Join(root, SrcDir, "platform-v0.9.0")
+	p.log[dest] = []jj.LogEntry{
+		{CommitID: "cccccccc3333", CurrentWorkingCopy: true},
+		{CommitID: "eeeeeeee5555"},
+	}
+
+	got := Inspect(p, m, root)
+
+	require.Equal(t, HealthMoved, got[0].Health)
+	assert.Equal(t, "cccccccc3333", got[0].At)
+}
+
+// A pin that is not a commit id never reaches jj's revset parser: rig.toml is
+// hand-editable, and a typo there must not turn into a revset syntax error.
+func TestInspectDoesNotSpliceANonCommitPinIntoTheRevset(t *testing.T) {
+	root, m, p := healthyRig(t)
+	dest := filepath.Join(root, SrcDir, "platform-v0.9.0")
+	m.Checkouts[0].Commit = `heads(all())`
+
+	got := Inspect(p, m, root)
+
+	assert.Equal(t, "@ | @-", p.asked[dest])
+	assert.Equal(t, HealthMoved, got[0].Health)
+}
+
+func TestIsCommitID(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"full hash", "aaaaaaaa1111222233334444555566667777", true},
+		{"abbreviation", "aaaaaaa", true},
+		{"too short", "aaaaaa", false},
+		{"not hex", "aaaaaaag", false},
+		{"a revset", "heads(all())", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isCommitID(tt.in))
+		})
+	}
+}
+
 func TestInspectReportsAMissingCheckout(t *testing.T) {
 	root, m, p := healthyRig(t)
 	dest := filepath.Join(root, SrcDir, "platform-v0.9.0")
@@ -157,6 +227,7 @@ func TestInspectReportsAnEmptyLogAsUnreadable(t *testing.T) {
 
 	assert.Equal(t, HealthUnreadable, got[0].Health)
 	assert.Contains(t, got[0].Detail, "@ | @-")
+	assert.Empty(t, got[0].At)
 }
 
 // rig.toml is documented as hand-editable, so a commit pasted in from `jj log`

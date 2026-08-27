@@ -447,9 +447,11 @@ worktrees_dir = "/Users/you/Documents/GitHub/worktrees"
 # Where rigs are created: <dir>/<name>
 dir = "/Users/you/Documents/GitHub/rigs"
 
-# Module path prefixes to check out from source. Empty infers them from the
-# primary module's own path; everything else is left to the module cache.
-org_prefixes = []
+# Module path prefixes to check out from source; everything else is left to the
+# module cache. Required — an empty list admits no dependency at all, so
+# `wgo rig new` rejects it rather than building a rig holding only the primary
+# module. Override per-run with --org.
+org_prefixes = ["github.com/opentdf"]
 
 # Check out only each module's own subdirectory
 sparse = true
@@ -867,7 +869,8 @@ quietly not what shipped. Two commands cover the two ways that happens.
 # Third-party drift: does MVS across the rig still resolve every dependency to
 # the version the artifact recorded?
 wgo rig verify dsp-2.7.1
-wgo rig verify --all                    # every rig
+wgo rig verify --all                    # the whole module graph, not just the
+                                        # modules contributing packages
 wgo rig verify --freeze                 # pin drifted versions back to baseline
 wgo rig verify --unfreeze golang.org/x/net
 wgo rig verify --format json            # for CI
