@@ -130,7 +130,6 @@ func Env(t *testing.T, proxyDir string) []string {
 		"GONOSUMDB=",
 		"GOPRIVATE=",
 		"GOSUMDB=off",
-		"GONOSUMCHECK=1",
 		// Never download a toolchain mid-test; the go on PATH is the one
 		// under test.
 		"GOTOOLCHAIN=local",

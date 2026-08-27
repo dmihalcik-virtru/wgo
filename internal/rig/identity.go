@@ -30,6 +30,12 @@ const ManifestName = "rig.toml"
 // so excluding rigDir from discovery does not hide them. A rig workspace is
 // pinned to a released tag and carries no bookmark, which is exactly the shape
 // clean reads as an abandoned worktree.
+//
+// The name check therefore over-matches on purpose: a hand-made workspace
+// called "rig-experiment" is reported as a rig even though no rig owns it. The
+// cost is that clean leaves it alone and the user removes it themselves; the
+// cost of the opposite error is clean deleting a real rig checkout, so the
+// asymmetry is the point rather than an oversight.
 func IsWorkspace(rigDir, wsPath, wsName string) bool {
 	if strings.HasPrefix(wsName, WorkspacePrefix) {
 		return true

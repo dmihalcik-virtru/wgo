@@ -3,6 +3,7 @@ package rig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -62,7 +63,7 @@ func sampleManifest() *Manifest {
 			},
 		},
 		Skipped: []Skip{
-			{Path: "github.com/opentdf/private", Version: "v0.1.0", Reason: "unreachable: no such repo"},
+			{Path: "github.com/opentdf/private", Version: "v0.1.0", Kind: SkipUnreachable, Detail: "no such repo"},
 		},
 		Baseline: map[string]string{
 			"google.golang.org/grpc": "v1.65.0",
@@ -166,6 +167,47 @@ func TestValidate(t *testing.T) {
 			func(m *Manifest) { m.Members[0].Checkout = "nope" },
 			"unknown checkout",
 		},
+		// `jj workspace add --name` rejects a duplicate, which would abort
+		// materialisation with earlier workspaces already created and no
+		// manifest recording them.
+		{
+			"duplicate workspace name",
+			func(m *Manifest) { m.Checkouts[1].Workspace = m.Checkouts[0].Workspace },
+			"duplicate workspace name",
+		},
+		// Two checkouts of one commit are two identical working copies and two
+		// go.work entries for the same source; they should have been grouped.
+		{
+			"duplicate repo and commit",
+			func(m *Manifest) {
+				m.Checkouts[1].Repo = m.Checkouts[0].Repo
+				m.Checkouts[1].Commit = m.Checkouts[0].Commit
+			},
+			"duplicate checkout of",
+		},
+		{"checkout without commit", func(m *Manifest) { m.Checkouts[0].Commit = "" }, "no commit"},
+		{
+			"full and sparse at once",
+			func(m *Manifest) { m.Checkouts[0].Sparse = []string{"service"} },
+			"both full and sparse",
+		},
+		// A checkout no member is served from is a workspace that gets created,
+		// occupies disk, and never appears in go.work.
+		{
+			"checkout with no members",
+			func(m *Manifest) { m.Members = m.Members[:1] },
+			"has no members",
+		},
+		{
+			"name longer than the cap",
+			func(m *Manifest) { m.Name = strings.Repeat("x", MaxNameLen+1) },
+			"limit is",
+		},
+		{
+			"name exactly at the cap",
+			func(m *Manifest) { m.Name = strings.Repeat("x", MaxNameLen) },
+			"",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -185,12 +227,17 @@ func TestValidate(t *testing.T) {
 func TestCheckoutByDir(t *testing.T) {
 	m := sampleManifest()
 
-	c, ok := m.CheckoutByDir("platform-service-v0.11.6")
-	require.True(t, ok)
+	c := m.CheckoutByDir("platform-service-v0.11.6")
+	require.NotNil(t, c)
 	assert.Equal(t, "opentdf/platform", c.Repo)
 
-	_, ok = m.CheckoutByDir("nope")
-	assert.False(t, ok)
+	// The pointer aliases the manifest, so callers such as WidenSparse mutate
+	// the real checkout rather than a copy that is then dropped.
+	require.False(t, m.Checkouts[1].Full, "precondition")
+	c.Full = true
+	assert.True(t, m.Checkouts[1].Full)
+
+	assert.Nil(t, m.CheckoutByDir("nope"))
 }
 
 func TestMemberUseDir(t *testing.T) {

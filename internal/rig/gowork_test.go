@@ -81,9 +81,13 @@ func TestRenderGoWorkWithoutPrimaryUse(t *testing.T) {
 	assert.NotContains(t, out, "./src/data-security-platform-v2.7.1/sdk")
 }
 
-// Every use path must be relative to the rig root: `go work use` does not
-// accept a path that leaves the workspace directory, and an absolute path would
-// make the rig unmovable.
+// Every use path must be relative to the rig root, and stay inside it.
+//
+// Not because the toolchain objects — `go work use ../outside` is perfectly
+// legal, and an absolute path is too. The requirement is that a rig be a
+// self-contained directory: `wgo rig rm` deletes the rig root and expects that
+// to be the whole rig, and the whole layout survives being moved or copied only
+// while nothing points outside it.
 func TestRenderGoWorkUsePathsAreRelative(t *testing.T) {
 	req, p := dspRequest()
 	m, err := p.Plan(req)
@@ -136,8 +140,15 @@ func TestRenderGoWorkIsToolchainFormatted(t *testing.T) {
 
 			// `go work edit -fmt` parses and rewrites the file without
 			// resolving the `use` directories, so the checkouts need not exist.
+			//
+			// GOWORK is set explicitly rather than left to the upward search:
+			// this command rewrites whatever go.work it finds, and the search
+			// does not stop at the temp dir. Naming the target keeps a test that
+			// misplaces its fixture failing instead of reformatting the
+			// developer's own workspace file.
 			cmd := exec.Command("go", "work", "edit", "-fmt")
 			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "GOWORK="+work)
 			out, err := cmd.CombinedOutput()
 			require.NoError(t, err, "generated go.work does not parse: %s", out)
 

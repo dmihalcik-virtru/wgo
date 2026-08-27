@@ -128,11 +128,17 @@ type WorkspaceAddOpts struct {
 }
 
 // SparseSetOpts configures `jj sparse set`.
+//
+// Note that the accompanying path argument is a workspacePath, not a repo
+// root: `jj sparse` acts on the working copy it finds from the current
+// directory, so these options are applied to whichever workspace that is.
 type SparseSetOpts struct {
 	// Clear empties the pattern set before applying Add, so the result is
 	// exactly Add rather than a union with what was there before.
 	Clear bool
-	// Add lists repo-relative paths to include.
+	// Add lists repo-relative paths to include. Paths are relative to the
+	// repository root, not to the workspace directory — the two differ for
+	// every workspace but the main one.
 	Add []string
 	// Remove lists repo-relative paths to exclude.
 	Remove []string

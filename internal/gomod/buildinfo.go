@@ -134,7 +134,12 @@ func ParseBuildInfo(out []byte) (*BuildInfo, error) {
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("gomod: reading build info: %w", err)
 	}
-	if !sawHeader && len(bi.Deps) == 0 {
+	// A header alone is not build info: `go version -m` prints one for any
+	// binary it recognises, including those stripped of module data. Requiring
+	// a main module or a dep keeps a zero-valued BuildInfo — which the caller
+	// cannot tell from a genuinely dependency-free binary — from being reported
+	// as success.
+	if !sawHeader || (bi.Main.Path == "" && len(bi.Deps) == 0) {
 		return nil, errors.New("gomod: no build info found; not a Go binary, or built without module support")
 	}
 	return bi, nil

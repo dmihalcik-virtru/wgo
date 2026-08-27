@@ -2,6 +2,8 @@ package rig
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,8 +32,8 @@ func (f *fakeLocator) Locate(owner, repo string) (string, error) {
 	return p, nil
 }
 
-// fakeResolver maps a revset to a commit. A revset with no entry resolves to
-// the empty string, which is what jj returns for a tag that was never fetched.
+// fakeResolver maps a revset to a commit. A revset with no entry fails, which
+// is what jj does for a tag that was never fetched.
 type fakeResolver struct {
 	commits map[string]string
 	err     error
@@ -41,7 +43,14 @@ func (f *fakeResolver) Resolve(_, revset string) (string, error) {
 	if f.err != nil {
 		return "", f.err
 	}
-	return f.commits[revset], nil
+	commit, ok := f.commits[revset]
+	if !ok {
+		// Mirror jj: a revset that matches nothing is an error, not an empty
+		// string. A fake that returns ("", nil) sends every test down a branch
+		// production never takes.
+		return "", fmt.Errorf("jj resolve %q: no matching commit", revset)
+	}
+	return commit, nil
 }
 
 const (
@@ -165,9 +174,38 @@ func TestPlanDSP(t *testing.T) {
 		"./src/platform-service-v0.11.6/service",
 	}, uses)
 
-	// The go directive is the highest across the workspace.
+	// The go directive is the highest across the workspace. Only weakly checked
+	// here — every input in this fixture is <= 1.24.5, so the assertion holds
+	// even if the maximum were computed wrongly. See TestPlanGoVersion.
 	assert.Equal(t, "1.24.5", m.GoVersion)
 	assert.True(t, m.Sparse)
+}
+
+// go.work's `go` directive is the maximum over the modules the workspace
+// actually contains — and only those.
+//
+// A `use` directive forces the workspace version up; a dependency left to the
+// module cache compiles under its own go.mod and constrains nothing. Letting
+// the whole build list in meant one out-of-org dependency could raise the rig
+// above what any checked-out module needs, demanding a newer toolchain than the
+// artifact was ever built with.
+func TestPlanGoVersion(t *testing.T) {
+	req, p := dspRequest()
+	req.GoVersion = ""
+	req.Primary.GoVersion = "1.22"
+
+	for i := range req.BuildList {
+		switch req.BuildList[i].Path {
+		case "github.com/opentdf/platform/service":
+			req.BuildList[i].GoVersion = "1.25rc1" // a member: must win
+		case "google.golang.org/grpc":
+			req.BuildList[i].GoVersion = "1.26" // out of org: must not count
+		}
+	}
+
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+	assert.Equal(t, "1.25rc1", m.GoVersion)
 }
 
 // Checkouts are ordered for someone reading go.work or rig.toml: the artifact
@@ -275,8 +313,45 @@ func TestPlanWorkspaceNames(t *testing.T) {
 		assert.False(t, seen[c.Workspace], "duplicate workspace %q", c.Workspace)
 		seen[c.Workspace] = true
 	}
-	assert.Equal(t, "rig-dsp-2.7.1-platform-service-v0.11.6",
-		mustCheckout(t, m, "platform-service-v0.11.6").Workspace)
+	// The name is rig + commit, not rig + checkout dir: the commit is short and
+	// fixed-width, so it cannot be pushed out by a long directory name.
+	c := mustCheckout(t, m, "platform-service-v0.11.6")
+	assert.Equal(t, "rig-dsp-2.7.1-"+c.Commit[:8], c.Workspace)
+}
+
+// Building the workspace name by sanitising rig+dir as one string let
+// SanitizeBranch's 60-character truncation cut off the part that made it
+// unique, so two checkouts were handed one name. `jj workspace add --name`
+// rejects the second, aborting materialisation with the manifest unwritten and
+// the workspaces already created stranded in the main clone.
+func TestPlanWorkspaceNamesSurviveTruncation(t *testing.T) {
+	req, p := dspRequest()
+	req.Name = strings.Repeat("x", MaxNameLen)
+
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+	require.Greater(t, len(m.Checkouts), 1)
+
+	seen := map[string]string{}
+	for _, c := range m.Checkouts {
+		if prev, dup := seen[c.Workspace]; dup {
+			t.Fatalf("checkouts %q and %q share workspace %q", prev, c.Dir, c.Workspace)
+		}
+		seen[c.Workspace] = c.Dir
+		assert.Truef(t, strings.HasSuffix(c.Workspace, "-"+c.Commit[:8]),
+			"workspace %q lost its commit discriminator", c.Workspace)
+	}
+}
+
+// The cap is what makes the guarantee above hold, so it is enforced rather
+// than documented.
+func TestPlanRejectsOverlongName(t *testing.T) {
+	req, p := dspRequest()
+	req.Name = strings.Repeat("x", MaxNameLen+1)
+
+	_, err := p.Plan(req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "limit is")
 }
 
 func TestPlanSkips(t *testing.T) {
@@ -284,9 +359,9 @@ func TestPlanSkips(t *testing.T) {
 	m, err := p.Plan(req)
 	require.NoError(t, err)
 
-	kinds := map[string][]string{}
+	kinds := map[SkipKind][]string{}
 	for _, s := range m.Skipped {
-		kinds[s.SkipKind()] = append(kinds[s.SkipKind()], s.Path)
+		kinds[s.Kind] = append(kinds[s.Kind], s.Path)
 	}
 	assert.ElementsMatch(t,
 		[]string{"google.golang.org/grpc", "github.com/stretchr/testify"},
@@ -310,12 +385,37 @@ func TestPlanUnreachableRepoIsSkipped(t *testing.T) {
 	assert.Len(t, m.Checkouts, 8, "the other eight checkouts still get planned")
 	var unreachable []string
 	for _, s := range m.Skipped {
-		if s.SkipKind() == SkipUnreachable {
+		if s.Kind == SkipUnreachable {
 			unreachable = append(unreachable, s.Path)
-			assert.Contains(t, s.Reason, "repository not found")
+			assert.Contains(t, s.Detail, "repository not found")
 		}
 	}
 	assert.Equal(t, []string{"github.com/opentdf/otdfctl"}, unreachable)
+}
+
+// The primary is the one module the rig exists to provide. Skipping it left
+// Plan returning a valid nine-checkout manifest with no copy of the artifact
+// under debug — Validate passed, because a manifest missing an *expected*
+// member is structurally indistinguishable from one that never wanted it.
+//
+// opentdf/platform rather than the primary's own repo is deliberate: it is the
+// repo whose Locate result is memoised across seven modules, so this also
+// covers the cached-failure path where the primary is not the first module to
+// hit it.
+func TestPlanUnreachablePrimaryIsFatal(t *testing.T) {
+	req, p := dspRequest()
+	req.Primary = gomod.Module{
+		Path: "github.com/opentdf/platform/service", Version: "v0.11.6", Main: true,
+	}
+	p.Locator.(*fakeLocator).err = map[string]error{
+		"opentdf/platform": errors.New("repository not found"),
+	}
+
+	_, err := p.Plan(req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "primary module")
+	assert.Contains(t, err.Error(), "github.com/opentdf/platform/service")
+	assert.Contains(t, err.Error(), "repository not found")
 }
 
 // Locate is expensive (it may clone), so a monorepo contributing seven modules
@@ -516,6 +616,76 @@ func TestPlanMirrorsPrimaryGoWork(t *testing.T) {
 	assert.ElementsMatch(t, []string{"", "sdk"}, subdirs)
 }
 
+// A use dir is a directory in the primary's repo, so its module path is built
+// from the repo root — not by joining the dir onto the primary's module path,
+// which carries a /vN suffix that is part of the path and not a directory.
+// Joining produced ".../data-security-platform/v2/sdk"; the source is at
+// ".../data-security-platform/sdk", published as ".../sdk/v2".
+//
+// Nor does it carry a version: nothing in the build list pinned it, and copying
+// the primary's version asserts a pin that does not exist.
+func TestPlanPrimaryUseMemberIdentity(t *testing.T) {
+	req, p := dspRequest()
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+
+	// Scoped to the primary's own checkout: opentdf/platform/sdk also sits at
+	// subdir "sdk", in a different one.
+	var sdk *Member
+	for i := range m.Members {
+		if m.Members[i].Subdir == "sdk" && m.Members[i].Checkout == "data-security-platform-v2.7.1" {
+			sdk = &m.Members[i]
+		}
+	}
+	require.NotNil(t, sdk, "the primary's go.work use of ./sdk must become a member")
+
+	// The build list serves this directory through `replace …/sdk/v2 => ./sdk`,
+	// and that entry is the only thing that knows the submodule's own major
+	// suffix: it is not "/v2/" spliced in from the primary, and it is not
+	// absent either.
+	assert.Equal(t, "github.com/virtru-corp/data-security-platform/sdk/v2", sdk.Path)
+	assert.NotContains(t, sdk.Path, "/v2/", "the primary's major suffix is not a directory")
+	assert.Empty(t, sdk.Version, "a use dir is not a pinned module")
+}
+
+// A use dir with no build-list entry — a sibling module the primary does not
+// import — has no recorded path to borrow, so the guess is all there is.
+func TestPlanPrimaryUseMemberFallsBackToTheGuessedPath(t *testing.T) {
+	req, p := dspRequest()
+	req.PrimaryUse = append(req.PrimaryUse, "./tools")
+
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+
+	var tools *Member
+	for i := range m.Members {
+		if m.Members[i].Subdir == "tools" {
+			tools = &m.Members[i]
+		}
+	}
+	require.NotNil(t, tools)
+	assert.Equal(t, "github.com/virtru-corp/data-security-platform/tools", tools.Path)
+}
+
+// The regression this guards: members are looked up in the build list by path,
+// so a member whose path was synthesised rather than resolved contributed
+// nothing, and a go.work that has to be 1.25 to build was written as 1.24.
+func TestPlanGoVersionCountsLocallyReplacedMembers(t *testing.T) {
+	req, p := dspRequest()
+	req.GoVersion = ""
+	req.Primary.GoVersion = "1.24.5"
+	for i := range req.BuildList {
+		if req.BuildList[i].Path == "github.com/virtru-corp/data-security-platform/sdk/v2" {
+			req.BuildList[i].GoVersion = "1.25.0"
+		}
+	}
+
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+	assert.Equal(t, "1.25.0", m.GoVersion,
+		"the primary's ./sdk is a workspace member; go.work cannot be older than it")
+}
+
 func TestPlanWithoutPrimaryGoWork(t *testing.T) {
 	req, p := dspRequest()
 	req.PrimaryUse = nil
@@ -525,6 +695,37 @@ func TestPlanWithoutPrimaryGoWork(t *testing.T) {
 	for _, mem := range m.Members {
 		assert.NotEqual(t, "./src/data-security-platform-v2.7.1/sdk", mem.UseDir())
 	}
+}
+
+// An unresolvable pin is a hard error, and the message has to point somewhere
+// useful. The two causes need different advice: a tag that was never fetched
+// (jj does not fetch tags by default) versus a pseudo-version, whose commit no
+// amount of tag fetching will produce.
+func TestPlanUnresolvableRevisionHint(t *testing.T) {
+	t.Run("missing tag names the tag to fetch", func(t *testing.T) {
+		req, p := dspRequest()
+		delete(p.Resolver.(*fakeResolver).commits, `present(tags(exact:"service/v0.11.6"))`)
+
+		_, err := p.Plan(req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no matching commit")
+		assert.Contains(t, err.Error(), "-t service/v0.11.6")
+	})
+
+	t.Run("pseudo-version does not suggest fetching a tag", func(t *testing.T) {
+		req, p := dspRequest()
+		// Same module, now pinned at a pseudo-version nothing resolves.
+		for i := range req.BuildList {
+			if req.BuildList[i].Path == "github.com/opentdf/platform/service" {
+				req.BuildList[i].Version = "v0.11.7-0.20260101000000-badc0ffee000"
+			}
+		}
+
+		_, err := p.Plan(req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "pseudo-version")
+		assert.NotContains(t, err.Error(), "-t ", "there is no tag to fetch")
+	})
 }
 
 func TestWidenSparse(t *testing.T) {
@@ -572,6 +773,46 @@ replace github.com/acme/repo => ../
 	assert.Empty(t, c.Sparse)
 }
 
+// Going full satisfies the root-widening member but does nothing for a later
+// member whose replace leaves the repository entirely — that one still breaks
+// the build. Returning as soon as the checkout went full dropped exactly those
+// skips, so the rig was reported clean and failed at compile time instead.
+func TestWidenSparseToRootStillReportsLaterEscapes(t *testing.T) {
+	root, err := modfile.Parse("go.mod", []byte(`
+module github.com/acme/repo/sub
+
+go 1.23
+
+replace github.com/acme/repo => ../
+`), nil)
+	require.NoError(t, err)
+
+	escapes, err := modfile.Parse("go.mod", []byte(`
+module github.com/acme/repo/other
+
+go 1.23
+
+replace github.com/acme/elsewhere => ../../elsewhere
+`), nil)
+	require.NoError(t, err)
+
+	c := Checkout{Dir: "repo-x", Repo: "acme/repo", Sparse: []string{"other", "sub"}}
+	members := []Member{
+		// "sub" first, so the root widening happens before "other" is visited.
+		{Path: "github.com/acme/repo/sub", Checkout: "repo-x", Subdir: "sub"},
+		{Path: "github.com/acme/repo/other", Checkout: "repo-x", Subdir: "other"},
+	}
+
+	skips := WidenSparse(&c, members, map[string]*modfile.File{"sub": root, "other": escapes})
+
+	assert.True(t, c.Full)
+	assert.Empty(t, c.Sparse)
+	require.Len(t, skips, 1)
+	assert.Equal(t, SkipEscapedReplace, skips[0].Kind)
+	assert.Equal(t, "github.com/acme/repo/other", skips[0].Path)
+	assert.Contains(t, skips[0].Detail, "leaves acme/repo")
+}
+
 // A replace pointing outside the repository cannot be satisfied by any single
 // checkout, so it is reported rather than silently producing a broken tree.
 func TestWidenSparseEscapingTarget(t *testing.T) {
@@ -592,8 +833,8 @@ replace github.com/other/abs => /opt/vendored
 	skips := WidenSparse(&c, members, map[string]*modfile.File{"sub": f})
 	require.Len(t, skips, 2)
 	for _, s := range skips {
-		assert.Equal(t, SkipEscapedReplace, s.SkipKind())
-		assert.Contains(t, s.Reason, "leaves acme/repo")
+		assert.Equal(t, SkipEscapedReplace, s.Kind)
+		assert.Contains(t, s.Detail, "leaves acme/repo")
 	}
 	assert.Equal(t, []string{"sub"}, c.Sparse, "the base set survives")
 }
@@ -605,6 +846,33 @@ func TestWidenSparseSkipsFullCheckouts(t *testing.T) {
 	assert.Empty(t, c.Sparse)
 }
 
+// A full checkout has nothing to widen, but an escaped replace is unsatisfiable
+// however much of the repo is present — and the primary's checkout is always
+// full, so returning early hid those from the likeliest module to carry them.
+func TestWidenSparseReportsEscapedReplacesOnFullCheckouts(t *testing.T) {
+	f, err := modfile.Parse("go.mod", []byte(`
+module github.com/acme/repo-x
+
+go 1.24
+
+require github.com/acme/other v1.0.0
+
+replace github.com/acme/other => ../../other-repo
+`), nil)
+	require.NoError(t, err)
+
+	c := Checkout{Dir: "repo-x", Repo: "acme/repo-x", Full: true}
+	members := []Member{{Path: "github.com/acme/repo-x", Version: "v1.0.0", Checkout: "repo-x"}}
+
+	skips := WidenSparse(&c, members, map[string]*modfile.File{"": f})
+
+	require.Len(t, skips, 1)
+	assert.Equal(t, SkipEscapedReplace, skips[0].Kind)
+	assert.Equal(t, "github.com/acme/repo-x", skips[0].Path)
+	assert.True(t, c.Full, "reporting must not narrow the checkout")
+	assert.Empty(t, c.Sparse)
+}
+
 func TestNormaliseUse(t *testing.T) {
 	assert.Equal(t, []string{"", "sdk"}, normaliseUse([]string{".", "./sdk"}))
 	assert.Equal(t, []string{"", "a/b"}, normaliseUse([]string{"./a/b", ".", "a/b", "  "}))
@@ -613,9 +881,9 @@ func TestNormaliseUse(t *testing.T) {
 
 func mustCheckout(t *testing.T, m *Manifest, dir string) Checkout {
 	t.Helper()
-	c, ok := m.CheckoutByDir(dir)
-	require.Truef(t, ok, "no checkout %q in %v", dir, m.Checkouts)
-	return c
+	c := m.CheckoutByDir(dir)
+	require.NotNilf(t, c, "no checkout %q in %v", dir, m.Checkouts)
+	return *c
 }
 
 func mustCheckoutForRepo(t *testing.T, m *Manifest, repo string) Checkout {

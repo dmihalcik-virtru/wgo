@@ -1069,6 +1069,35 @@ func TestSparseSetLeavesOtherWorkspacesAlone(t *testing.T) {
 	}
 }
 
+// The `-R` footgun above has a quieter twin: an empty or relative workspace
+// path makes jj resolve the working copy from the wgo process's own cwd, so
+// the command succeeds against the wrong checkout and reports nothing.
+func TestSparseRejectsNonAbsoluteWorkspacePath(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	jjtest.Commit(t, repo, "modules", map[string]string{
+		"service/main.go": "package main\n",
+		"sdk/sdk.go":      "package sdk\n",
+	})
+	before := workingCopyFiles(t, repo)
+
+	// Run from inside the repo, so an unguarded call would find *this*
+	// working copy and narrow it.
+	t.Chdir(repo)
+
+	for _, ws := range []string{"", "relative/ws", "."} {
+		if err := c.SparseSet(ws, jj.SparseSetOpts{Clear: true, Add: []string{"sdk"}}); err == nil {
+			t.Fatalf("SparseSet(%q) succeeded, want an error", ws)
+		}
+		if _, err := c.SparseList(ws); err == nil {
+			t.Fatalf("SparseList(%q) succeeded, want an error", ws)
+		}
+	}
+
+	if after := workingCopyFiles(t, repo); !slices.Equal(before, after) {
+		t.Fatalf("cwd checkout changed from %v to %v", before, after)
+	}
+}
+
 func TestSparseSetNoOp(t *testing.T) {
 	repo, c := jjtest.NewRepo(t)
 	jjtest.Commit(t, repo, "work", map[string]string{"a.txt": "a\n"})

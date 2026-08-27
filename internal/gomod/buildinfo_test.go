@@ -82,12 +82,21 @@ func TestParseBuildInfoErrors(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestParseBuildInfoStrippedBinary(t *testing.T) {
-	// A header with no records is still valid build info: a binary with no
-	// module dependencies at all.
-	bi, err := ParseBuildInfo([]byte("/tmp/hello: go1.24.5\n\tpath\tcommand-line-arguments\n"))
+func TestParseBuildInfoStrippedBinaryIsAnError(t *testing.T) {
+	// `go version -m` prints a header for any binary it recognises, so a header
+	// alone proves nothing. With neither a main module nor a dep there is no pin
+	// to resolve, and returning a zero-valued BuildInfo would send the caller on
+	// to fail somewhere further away with a less useful message.
+	_, err := ParseBuildInfo([]byte("/tmp/hello: go1.24.5\n\tpath\tcommand-line-arguments\n"))
+	require.Error(t, err)
+}
+
+func TestParseBuildInfoMainWithNoDeps(t *testing.T) {
+	// A real main module with zero dependencies is legitimate, and must not be
+	// caught by the stripped-binary check above.
+	bi, err := ParseBuildInfo([]byte("/tmp/hello: go1.24.5\n\tmod\tgithub.com/acme/hello\tv1.0.0\th1:abc=\n"))
 	require.NoError(t, err)
-	assert.Equal(t, "go1.24.5", bi.GoVersion)
+	assert.Equal(t, "github.com/acme/hello", bi.Main.Path)
 	assert.Empty(t, bi.Deps)
 }
 

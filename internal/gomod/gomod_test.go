@@ -119,6 +119,11 @@ func TestTagFor(t *testing.T) {
 		// "sdk/v2/v2.7.1" here would resolve to nothing.
 		{"subdir with major suffix", "github.com/virtru-corp/data-security-platform/sdk/v2", "v2.7.1", "sdk/v2.7.1"},
 		{"root with major suffix", "github.com/virtru-corp/data-security-platform/v2", "v2.7.1", "v2.7.1"},
+		// +incompatible is metadata about the module, not part of the version.
+		// No git tag ever carries it, and an unresolvable tag is read further up
+		// as a wrong module->repo mapping.
+		{"incompatible root", "github.com/opentdf/otdfctl", "v2.0.0+incompatible", "v2.0.0"},
+		{"incompatible subdir", "github.com/opentdf/platform/service", "v2.0.0+incompatible", "service/v2.0.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -169,6 +174,11 @@ func TestRevset(t *testing.T) {
 	dsp, err := ParseOrigin("github.com/virtru-corp/data-security-platform/sdk/v2")
 	require.NoError(t, err)
 	assert.Equal(t, "87305bdcc192", dsp.Revset("v2.7.1-0.20260108153148-87305bdcc192"))
+
+	// A +incompatible version must resolve through the plain tag. Leaving the
+	// suffix on yields a revset that matches nothing, which resolveAll reports
+	// as an unfetched tag — a misdiagnosis the user cannot act on.
+	assert.Equal(t, `present(tags(exact:"service/v2.0.0"))`, svc.Revset("v2.0.0+incompatible"))
 }
 
 func TestInOrg(t *testing.T) {
@@ -199,6 +209,17 @@ func TestMaxGoVersion(t *testing.T) {
 	assert.Equal(t, "", MaxGoVersion())
 	assert.Equal(t, "", MaxGoVersion("", "  "))
 	assert.Equal(t, "1.22.0", MaxGoVersion("", "1.22.0"))
+
+	// A `go` directive is not semver. Prereleases are legal in a real go.mod,
+	// and semver.Compare rejects them, which would let "1.24" win and write a
+	// go.work older than a member module requires.
+	assert.Equal(t, "1.25rc1", MaxGoVersion("1.24", "1.25rc1"))
+	assert.Equal(t, "1.25.0", MaxGoVersion("1.25rc1", "1.25.0"))
+
+	// Unusable versions are dropped, not returned verbatim: emitting
+	// `go <garbage>` into go.work fails far from the cause.
+	assert.Equal(t, "1.24", MaxGoVersion("junk", "1.24"))
+	assert.Equal(t, "", MaxGoVersion("junk", "also-junk"))
 }
 
 func TestLocalReplaceTargets(t *testing.T) {
