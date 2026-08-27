@@ -20,6 +20,19 @@ type RepoLocator interface {
 	Locate(owner, repo string) (mainClone string, err error)
 }
 
+// CommitFetcher is an optional RepoLocator extension for locators that can also
+// bring the clone's branch tips up to date.
+//
+// Tags are enough for every pin derived from a version, so Locate fetches only
+// those — it runs once per repository in a rig, and a full fetch on each would
+// be paid by every dependency to serve the one case that needs it.
+// ResolvePrimaryCommit is that case: a bare `vcs.revision` off an untagged CI
+// build is reachable from a branch and from nothing else. A locator that cannot
+// do this is still usable; resolution just reports the miss.
+type CommitFetcher interface {
+	FetchCommits(mainClone string) error
+}
+
 // RevResolver resolves a revset within a clone to a commit id. Implementations
 // are expected to fetch missing tags and retry before giving up.
 type RevResolver interface {
@@ -428,15 +441,30 @@ func (p *Planner) ResolvePrimaryCommit(rigName, owner, repo, rev string) (*Check
 		return nil, fmt.Errorf("rig: locating %s/%s: %w", owner, repo, err)
 	}
 	commit, err := p.Resolver.Resolve(clone, rev)
-	if err != nil {
-		return nil, fmt.Errorf("rig: resolving %s in %s/%s: %w", rev, owner, repo, err)
+	if err != nil || commit == "" {
+		// Every other pin resolves through a tag, and the locator fetches tags
+		// for exactly that reason — but `jj git fetch --tag glob:*` updates no
+		// bookmarks, so a commit that is only reachable from a branch tip is
+		// not in the clone even though the tags are current. That is the normal
+		// case here: a binary built by CI off an untagged commit. Fetch the
+		// branches once and retry before reporting a miss.
+		if f, ok := p.Locator.(CommitFetcher); ok {
+			if ferr := f.FetchCommits(clone); ferr == nil {
+				commit, err = p.Resolver.Resolve(clone, rev)
+			}
+		}
 	}
-	if commit == "" {
+	if err != nil || commit == "" {
+		detail := "resolved to nothing"
+		if err != nil {
+			detail = err.Error()
+		}
 		return nil, fmt.Errorf(
-			"rig: commit %s is not in %s/%s\n"+
-				"the binary was built from a commit this clone has never seen; try:\n"+
+			"rig: resolving commit %s in %s/%s: %s\n"+
+				"the binary may have been built from a commit this clone has never seen, "+
+				"or from one that was never pushed; try:\n"+
 				"  jj git fetch -R %s --remote origin",
-			rev, owner, repo, clone)
+			rev, owner, repo, detail, clone)
 	}
 	c := &Checkout{
 		Dir:       uniqueDir(nil, repo, "", commit),
@@ -686,11 +714,22 @@ func primaryUseMembers(req Request, members []Member) []Member {
 	if primaryCheckout == "" {
 		return nil
 	}
-	have := map[string]bool{}
+	haveDir := map[string]bool{}
+	havePath := map[string]bool{}
 	for _, mem := range members {
 		if mem.Checkout == primaryCheckout {
-			have[mem.Subdir] = true
+			haveDir[mem.Subdir] = true
 		}
+		// Across every checkout, not just the primary's. A monorepo module the
+		// primary's go.work uses from its own tree can also be in the build
+		// list under a released version, which gets a checkout of its own at a
+		// different commit — two directories, one module path. go.work rejects
+		// that outright ("module ... appears multiple times in workspace"), so
+		// the whole rig fails to build over a duplicate neither entry knows
+		// about. The build-list entry wins: it carries a version, so it is a
+		// real pin that `rig verify` can check, whereas a use directory is
+		// versionless by construction.
+		havePath[mem.Path] = true
 	}
 	byDir := localReplacePaths(req.BuildList)
 	origin, err := gomod.ParseOrigin(req.Primary.Path)
@@ -700,14 +739,18 @@ func primaryUseMembers(req Request, members []Member) []Member {
 
 	var out []Member
 	for _, dir := range use {
-		if have[dir] {
+		if haveDir[dir] {
 			continue
 		}
-		have[dir] = true
+		haveDir[dir] = true
 		modPath, ok := byDir[dir]
 		if !ok {
 			modPath = useDirModulePath(origin, req.Primary.Path, dir)
 		}
+		if havePath[modPath] {
+			continue
+		}
+		havePath[modPath] = true
 		out = append(out, Member{
 			Path: modPath,
 			// No version: these directories come from the primary repo's

@@ -587,6 +587,26 @@ type fakeRigResolver struct{ commits map[string]string }
 
 func (f fakeRigResolver) Resolve(_, revset string) (string, error) { return f.commits[revset], nil }
 
+// `go version -m` walks a directory and prints a record per binary under it, so
+// --from-binary ./dist/ would parse as one artifact with every binary's
+// dependencies merged into its build list — a rig reproducing nothing that ever
+// shipped. Rejected before anything is located or checked out, which is why nil
+// clients suffice here.
+func TestPinsFromBinaryRejectsADirectory(t *testing.T) {
+	dir := t.TempDir()
+	_, err := pinsFromBinary(nil, nil, "app", filepath.Join(dir, "rig"), dir, []string{"github.com/acme"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a file")
+}
+
+func TestPinsFromBinaryReportsAMissingBinary(t *testing.T) {
+	dir := t.TempDir()
+	_, err := pinsFromBinary(nil, nil, "app", filepath.Join(dir, "rig"),
+		filepath.Join(dir, "nope"), []string{"github.com/acme"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nope")
+}
+
 func TestResolveBinaryPrimaryPrefersAReleasedVersion(t *testing.T) {
 	p := &rig.Planner{
 		Locator: fakeRigLocator{clone: "/mains/acme/app"},

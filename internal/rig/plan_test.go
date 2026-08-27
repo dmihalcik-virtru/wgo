@@ -686,6 +686,49 @@ func TestPlanGoVersionCountsLocallyReplacedMembers(t *testing.T) {
 		"the primary's ./sdk is a workspace member; go.work cannot be older than it")
 }
 
+// A use dir and a build-list entry can name the same module: the primary's
+// go.work serves it from the primary's own tree, and something else in the
+// build list also depends on it at a released version, which earns it a
+// checkout of its own. Two directories for one module path is the one thing
+// go.work will not accept — "module ... appears multiple times in workspace" —
+// and it takes the whole rig down, not just that module.
+func TestPlanPrimaryUseDoesNotDuplicateABuildListModule(t *testing.T) {
+	const tools = "github.com/virtru-corp/data-security-platform/tools"
+
+	req, p := dspRequest()
+	// The primary's go.work uses ./tools from its own tree, and the build list
+	// also carries that module at an older release — an ordinary state for a
+	// monorepo whose consumers have not all moved forward yet. The older
+	// release is a different commit, so it earns a checkout of its own and the
+	// two entries land in different directories.
+	req.PrimaryUse = append(req.PrimaryUse, "./tools")
+	req.BuildList = append(req.BuildList, gomod.Module{Path: tools, Version: "v2.5.0"})
+	p.Resolver.(*fakeResolver).commits[`present(tags(exact:"tools/v2.5.0"))`] =
+		"7001000000000000000000000000000000000aa"
+
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+
+	byPath := map[string]int{}
+	for _, mem := range m.Members {
+		byPath[mem.Path]++
+	}
+	for path, n := range byPath {
+		assert.Equal(t, 1, n, "module %s appears %d times in go.work", path, n)
+	}
+
+	// The versioned entry is the survivor: it is a real pin, so `rig verify`
+	// can check it, while a use dir is versionless by construction.
+	var tooling *Member
+	for i := range m.Members {
+		if m.Members[i].Path == tools {
+			tooling = &m.Members[i]
+		}
+	}
+	require.NotNil(t, tooling)
+	assert.Equal(t, "v2.5.0", tooling.Version)
+}
+
 func TestPlanWithoutPrimaryGoWork(t *testing.T) {
 	req, p := dspRequest()
 	req.PrimaryUse = nil
@@ -1038,6 +1081,52 @@ func TestResolvePrimaryCommit(t *testing.T) {
 	// With no tag the directory falls back to the short commit.
 	assert.Equal(t, "data-security-platform-deadbeef", c.Dir)
 	assert.Equal(t, "rig-dsp-devel-deadbeef", c.Workspace)
+}
+
+// fetchLocator is a fakeLocator that can also bring branch tips down, and
+// learns one commit the first time it is asked to.
+type fetchLocator struct {
+	*fakeLocator
+	resolver *fakeResolver
+	rev      string
+	fetches  []string
+}
+
+func (f *fetchLocator) FetchCommits(clone string) error {
+	f.fetches = append(f.fetches, clone)
+	f.resolver.commits[f.rev] = f.rev
+	return nil
+}
+
+// A tag fetch updates no bookmarks, so a commit reachable only from a branch —
+// which is every untagged CI build, the case --from-binary exists to serve — is
+// missing from a clone the locator has just "fetched". Resolution has to ask
+// for the branches before it can call the commit unknown.
+func TestResolvePrimaryCommitFetchesBranchesBeforeGivingUp(t *testing.T) {
+	const rev = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	_, p := dspRequest()
+	resolver := &fakeResolver{commits: map[string]string{}}
+	loc := &fetchLocator{fakeLocator: p.Locator.(*fakeLocator), resolver: resolver, rev: rev}
+	p.Locator, p.Resolver = loc, resolver
+
+	c, err := p.ResolvePrimaryCommit("dsp-devel", "virtru-corp", "data-security-platform", rev)
+	require.NoError(t, err)
+	assert.Equal(t, rev, c.Commit)
+	assert.Equal(t, []string{dspClone}, loc.fetches)
+}
+
+// The fetch is a retry, not a precondition: a commit already in the clone must
+// not cost a network round trip.
+func TestResolvePrimaryCommitDoesNotFetchWhenTheCommitIsPresent(t *testing.T) {
+	const rev = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	_, p := dspRequest()
+	resolver := &fakeResolver{commits: map[string]string{rev: rev}}
+	loc := &fetchLocator{fakeLocator: p.Locator.(*fakeLocator), resolver: resolver, rev: rev}
+	p.Locator, p.Resolver = loc, resolver
+
+	_, err := p.ResolvePrimaryCommit("dsp-devel", "virtru-corp", "data-security-platform", rev)
+	require.NoError(t, err)
+	assert.Empty(t, loc.fetches)
 }
 
 func TestResolvePrimaryCommitReportsAnUnknownCommit(t *testing.T) {

@@ -174,9 +174,29 @@ func rigSetup() (*config.Config, string, error) {
 // revset. Without this the first `rig new` against a freshly cloned repo fails
 // on every module at once.
 type cloneLocator struct {
-	jjc     jj.Client
-	cfg     *config.Config
-	fetched map[string]bool
+	jjc      jj.Client
+	cfg      *config.Config
+	fetched  map[string]bool
+	fetchedC map[string]bool
+}
+
+// FetchCommits updates the clone's branch tips, once per repository.
+//
+// Locate fetches tags, which is all a version-derived pin ever needs. A commit
+// named directly — `--from-binary` on a CI build, where go records
+// `vcs.revision` and no version — is usually reachable only from a branch, so
+// the tag-only fetch leaves it missing. rig.Planner calls this only on that
+// path, and only after resolution has already failed once.
+func (l *cloneLocator) FetchCommits(clone string) error {
+	if l.fetchedC == nil {
+		l.fetchedC = map[string]bool{}
+	}
+	if l.fetchedC[clone] {
+		return nil
+	}
+	l.fetchedC[clone] = true
+	rigLogf("fetching branches for %s...", clone)
+	return l.jjc.GitFetch(clone, "origin", nil)
 }
 
 func (l *cloneLocator) Locate(owner, repo string) (string, error) {
@@ -464,8 +484,17 @@ func pinsFromBinary(planner *rig.Planner, mz *rig.Materializer, name, rigRoot, b
 	if err != nil {
 		return nil, fmt.Errorf("rig: resolving %s: %w", binary, err)
 	}
-	if _, err := os.Stat(abs); err != nil {
+	info, err := os.Stat(abs)
+	if err != nil {
 		return nil, fmt.Errorf("rig: reading %s: %w", abs, err)
+	}
+	// `go version -m` walks a directory and reports every binary under it, and
+	// BuildInfo parses that output as though it described one. A whole ./dist/
+	// would silently merge several artifacts' dependency sets into a single
+	// build list — a rig that reproduces nothing that was ever shipped. Stat
+	// follows symlinks, so a link to a binary is still a regular file here.
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("rig: %s is not a file; --from-binary takes one compiled artifact", abs)
 	}
 	bi, err := gotool.NewClient().BuildInfo(abs)
 	if err != nil {
@@ -688,10 +717,13 @@ func readWorkUse(dest, modDir string) ([]string, error) {
 func baselineOf(buildList []gomod.Module) map[string]string {
 	out := map[string]string{}
 	for _, mod := range buildList {
-		// A directory replace has no version at all; there is nothing to
-		// compare a later build against, so record nothing rather than
-		// something false.
-		if eff := mod.Effective(); mod.Path != "" && eff.Version != "" {
+		// A directory replace has no version at all, and a module a workspace
+		// build served from source is recorded as "(devel)". Neither names
+		// anything a later build can be compared against: "(devel)" would read
+		// as drift against every real version forever, and `rig verify
+		// --freeze` would write it into a go.work replace the toolchain then
+		// rejects. Record nothing rather than something false.
+		if eff := mod.Effective(); mod.Path != "" && gomod.IsResolvableVersion(eff.Version) {
 			out[mod.Path] = eff.Version
 		}
 	}
