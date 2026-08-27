@@ -191,11 +191,17 @@ type fakeFreezer struct {
 	patterns []string
 	buildErr error
 	editErr  error
+	// failAfter, when positive, lets that many replaces through and fails the
+	// next — a freeze interrupted partway.
+	failAfter int
 }
 
 func (f *fakeFreezer) WorkEditReplace(oldPath, oldVersion, newPath, newVersion string) error {
 	if f.editErr != nil {
 		return f.editErr
+	}
+	if f.failAfter > 0 && len(f.replaced) >= f.failAfter {
+		return errors.New("go.work became unwritable")
 	}
 	f.replaced = append(f.replaced, [4]string{oldPath, oldVersion, newPath, newVersion})
 	return nil
@@ -242,6 +248,96 @@ func TestFreezePinsFailingDriftsBackToTheBaseline(t *testing.T) {
 	}, f.patterns)
 	assert.NoError(t, res.BuildErr)
 	assert.Equal(t, []string{"google.golang.org/grpc"}, m.Frozen)
+}
+
+// forked is grpc served from a fork, the way `go list -m` reports it.
+func forked(path, version, forkPath, forkVersion string) gomod.Module {
+	return gomod.Module{
+		Path: path, Version: version,
+		Replace: &gomod.Module{Path: forkPath, Version: forkVersion},
+	}
+}
+
+// A version only means something alongside the module it versions. A fork's
+// v1.68.1 and the upstream's v1.68.0 are versions of different modules, so
+// neither ordering nor equality between them says anything — and the baseline
+// has to record which module the artifact actually built.
+func TestVerifyDoesNotCompareAcrossModulePaths(t *testing.T) {
+	const (
+		grpc = "google.golang.org/grpc"
+		fork = "github.com/virtru-corp/grpc-go"
+	)
+	m := verifyManifest()
+	m.Baseline[grpc] = BaselineEntry(forked(grpc, "v1.68.0", fork, "v1.68.1"))
+	require.Equal(t, fork+"@v1.68.1", m.Baseline[grpc], "the baseline names the module it versions")
+
+	// The fork is still in force: no drift, even though the versions on the two
+	// sides of the replace differ.
+	rep := Verify(m, []gomod.Module{forked(grpc, "v1.68.0", fork, "v1.68.1")})
+	assert.Empty(t, rep.Failing())
+	assert.Equal(t, 1, rep.Compared)
+
+	// The replace was dropped, so the build is now getting upstream code. That
+	// is drift, and it is not an ordering: reporting "v1.68.1 -> v1.68.0
+	// (downgraded)" would invite freezing the fork's version onto upstream.
+	rep = Verify(m, []gomod.Module{mod(grpc, "v1.68.0")})
+	d := driftFor(t, rep, grpc)
+	assert.Equal(t, DriftChanged, d.Kind)
+	assert.Equal(t, fork, d.BaselineFrom)
+	assert.Empty(t, d.ActualFrom)
+	assert.Contains(t, d.String(), fork+"@v1.68.1")
+}
+
+// Freezing a fork-served module back to its baseline means restoring the fork,
+// not pinning the upstream path to the fork's version — that second replace
+// would override the artifact's own and build code it never shipped.
+func TestFreezeRestoresTheModuleTheArtifactActuallyBuilt(t *testing.T) {
+	const (
+		grpc = "google.golang.org/grpc"
+		fork = "github.com/virtru-corp/grpc-go"
+	)
+	m := verifyManifest()
+	m.Baseline[grpc] = BaselineEntry(forked(grpc, "v1.68.0", fork, "v1.68.1"))
+	rep := Verify(m, []gomod.Module{mod(grpc, "v1.69.2")})
+	f := &fakeFreezer{}
+
+	res, err := Freeze(f, m, rep, "/dev/null")
+	require.NoError(t, err)
+	assert.Equal(t, []string{grpc}, res.Froze)
+	assert.Equal(t, [][4]string{{grpc, "", fork, "v1.68.1"}}, f.replaced)
+}
+
+func TestBaselineEntry(t *testing.T) {
+	tests := []struct {
+		name string
+		mod  gomod.Module
+		want string
+	}{
+		{"plain", mod("google.golang.org/grpc", "v1.68.0"), "v1.68.0"},
+		{
+			"fork replace names the module the version belongs to",
+			forked("google.golang.org/grpc", "v1.68.0", "github.com/virtru-corp/grpc-go", "v1.68.1"),
+			"github.com/virtru-corp/grpc-go@v1.68.1",
+		},
+		{
+			"a version replace of the same module is just a version",
+			forked("google.golang.org/grpc", "v1.68.0", "google.golang.org/grpc", "v1.68.2"),
+			"v1.68.2",
+		},
+		{
+			"a directory replace has nothing to compare against",
+			gomod.Module{Path: "golang.org/x/sync", Version: "v0.9.0",
+				Replace: &gomod.Module{Path: "../sync", Dir: "/tmp/sync"}},
+			"",
+		},
+		{"(devel) names no release", mod("golang.org/x/sync", gomod.DevelVersion), ""},
+		{"a main module has no version", gomod.Module{Path: "example.com/app", Main: true}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, BaselineEntry(tt.mod))
+		})
+	}
 }
 
 func TestPackagePatternsCoverEveryMemberOnce(t *testing.T) {
@@ -318,6 +414,50 @@ func TestFreezeSurfacesAFailedWorkEdit(t *testing.T) {
 	assert.Empty(t, m.Frozen, "a failed edit must not leave the manifest claiming the pin is in force")
 }
 
+// An edit that fails partway has already written the replaces before it. The
+// manifest is the only record of which modules are pinned — `--unfreeze` reads
+// it — so those have to be in it even though the freeze as a whole failed.
+func TestFreezeRecordsThePinsItManagedBeforeFailing(t *testing.T) {
+	m := verifyManifest()
+	rep := Verify(m, []gomod.Module{
+		mod("google.golang.org/grpc", "v1.69.2"),
+		mod("github.com/spf13/cobra", "v1.9.0"),
+		mod("golang.org/x/sync", "v0.9.0"),
+	})
+	require.Len(t, rep.Failing(), 2)
+	f := &fakeFreezer{failAfter: 1}
+
+	res, err := Freeze(f, m, rep, "/dev/null")
+	require.Error(t, err)
+	require.Len(t, res.Froze, 1)
+	assert.Equal(t, res.Froze, m.Frozen,
+		"go.work holds the pin either way; the manifest has to know which")
+	// No rebuild: the freeze is incomplete, so what it would prove is not the
+	// question the user asked.
+	assert.Empty(t, f.builds)
+}
+
+// A freeze that pins nothing is otherwise silent, and the second `--freeze` on
+// a rig whose pin is being overridden looks exactly like one that worked.
+func TestFreezeReportsWhatItCouldNotPin(t *testing.T) {
+	m := verifyManifest()
+	m.Frozen = []string{"google.golang.org/grpc"}
+	m.Baseline["github.com/kr/pretty"] = gomod.DevelVersion
+	rep := Verify(m, []gomod.Module{
+		mod("google.golang.org/grpc", "v1.69.2"),
+		mod("github.com/kr/pretty", "v0.3.1"),
+	})
+	f := &fakeFreezer{}
+
+	res, err := Freeze(f, m, rep, "/dev/null")
+	require.NoError(t, err)
+	assert.Empty(t, res.Froze)
+	assert.Equal(t, []string{"google.golang.org/grpc"}, res.Overridden)
+	assert.Equal(t, []string{"github.com/kr/pretty"}, res.Unpinnable,
+		"a baseline that names no version cannot become a go.work replace")
+	assert.Empty(t, f.replaced)
+}
+
 func TestUnfreezeDropsThePin(t *testing.T) {
 	m := verifyManifest()
 	m.Frozen = []string{"github.com/spf13/cobra", "google.golang.org/grpc"}
@@ -353,7 +493,7 @@ func TestRebaselineAcceptsTheWorkspaceAsTheNewBaseline(t *testing.T) {
 		mod("github.com/kr/pretty", "v0.3.1"),
 		{Path: "golang.org/x/sync", Version: "v0.9.0",
 			Replace: &gomod.Module{Path: "../sync", Dir: "/tmp/sync"}},
-	})
+	}, true)
 
 	assert.Equal(t, 2, n)
 	assert.Equal(t, map[string]string{
@@ -367,4 +507,20 @@ func TestRebaselineAcceptsTheWorkspaceAsTheNewBaseline(t *testing.T) {
 		mod("github.com/kr/pretty", "v0.3.1"),
 	})
 	assert.False(t, rep.Failed())
+}
+
+// `wgo rig verify --write-back` without --all measures only the modules that
+// contribute packages. Replacing the baseline with that subset would delete the
+// record for every module outside it — accepting drift the user was never shown
+// and could not have seen without --all.
+func TestRebaselineOnAPartialMeasurementKeepsWhatItDidNotSee(t *testing.T) {
+	m := verifyManifest()
+	n := Rebaseline(m, []gomod.Module{mod("google.golang.org/grpc", "v1.69.2")}, false)
+
+	assert.Equal(t, 3, n)
+	assert.Equal(t, map[string]string{
+		"google.golang.org/grpc": "v1.69.2", // measured, so updated
+		"github.com/spf13/cobra": "v1.8.1",  // not measured, so left alone
+		"golang.org/x/sync":      "v0.9.0",
+	}, m.Baseline)
 }

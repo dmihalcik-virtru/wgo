@@ -175,6 +175,13 @@ type Manifest struct {
 	// compares against. Stored rather than recomputed because the source (a
 	// binary, or a tag whose module cache entry may be evicted) need not still
 	// be available.
+	//
+	// A value is normally a version. Where a replace redirected the module to a
+	// different module path — a fork — it is "path@version" instead, naming the
+	// module the version belongs to: comparing a fork's version against the
+	// upstream's would order two unrelated release series, and a freeze has to
+	// restore the fork rather than pin the upstream to the fork's version. See
+	// BaselineEntry.
 	Baseline map[string]string `toml:"baseline,omitempty"`
 	// Frozen are the modules pinned back down to their baseline via a go.work
 	// replace.

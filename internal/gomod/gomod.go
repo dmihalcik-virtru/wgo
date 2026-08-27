@@ -157,6 +157,22 @@ func PseudoCommit(version string) string {
 // directory, or built straight from its own working tree.
 const DevelVersion = "(devel)"
 
+// CompareVersions orders two module versions the way MVS does, reporting
+// ok=false when they cannot be ordered at all.
+//
+// The distinction matters to drift detection. semver.Compare ranks an invalid
+// version below every valid one and calls two invalid ones equal, so on its own
+// it would report a garbage version as a downgrade, or silently pass a pair of
+// them off as unchanged. A difference that cannot be ordered is neither an
+// upgrade nor a downgrade, and saying so is more use than picking one.
+func CompareVersions(a, b string) (int, bool) {
+	ca, cb := canonicalVersion(strings.TrimSpace(a)), canonicalVersion(strings.TrimSpace(b))
+	if !semver.IsValid(ca) || !semver.IsValid(cb) {
+		return 0, false
+	}
+	return semver.Compare(ca, cb), true
+}
+
 // ToolchainVersion turns the toolchain string a binary records ("go1.27.0")
 // into a bare `go` directive version ("1.27.0"), or "" if it is not one.
 func ToolchainVersion(s string) string {

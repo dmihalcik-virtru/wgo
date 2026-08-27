@@ -129,7 +129,10 @@ func runRigVerify(args []string) error {
 	}
 
 	if rigVerifyWriteBack {
-		n := rig.Rebaseline(m, actual)
+		// rigVerifyAll: without it the measurement covers only the modules that
+		// contribute packages, and a baseline replaced by that subset loses its
+		// record of every other module.
+		n := rig.Rebaseline(m, actual, rigVerifyAll)
 		if err := rig.Save(rigRoot, m); err != nil {
 			return err
 		}
@@ -145,11 +148,11 @@ func runRigVerify(args []string) error {
 	if rigVerifyFreeze && rep.Failed() {
 		// os.DevNull as the output dir keeps the build check from littering the
 		// rig with compiled binaries; cmd/go special-cases it and discards them.
-		res, err := rig.Freeze(gc, m, rep, os.DevNull)
-		if err != nil {
-			return err
-		}
+		res, freezeErr := rig.Freeze(gc, m, rep, os.DevNull)
 		if len(res.Froze) > 0 {
+			// Saved before the error is returned: the replaces that were
+			// written are in go.work either way, and a manifest that does not
+			// record them leaves nothing for --unfreeze to find.
 			if err := rig.Save(rigRoot, m); err != nil {
 				return err
 			}
@@ -158,6 +161,10 @@ func runRigVerify(args []string) error {
 				rigLogf("  %s => %s", p, m.Baseline[p])
 			}
 		}
+		if freezeErr != nil {
+			return freezeErr
+		}
+		reportUnfrozen(res, m)
 		if res.BuildErr != nil {
 			return fmt.Errorf("the freeze was written to %s, but the workspace no longer builds:\n%w\n\n"+
 				"a member module requires a version the artifact did not ship with, so the two cannot both hold.\n"+
@@ -180,6 +187,22 @@ func runRigVerify(args []string) error {
 		os.Exit(1)
 	}
 	return nil
+}
+
+// reportUnfrozen explains the drifts a freeze could not address.
+//
+// A freeze that pins nothing is otherwise silent, so a second `--freeze` on a
+// rig that is still failing looks identical to one that worked: no output, exit
+// 1. Both causes here are actionable, and neither is guessable from the drift
+// report alone.
+func reportUnfrozen(res *rig.FreezeResult, m *rig.Manifest) {
+	for _, p := range res.Overridden {
+		rigLogf("%s is already pinned to %s but still resolves higher: something in %s overrides the pin",
+			p, m.Baseline[p], rig.GoWorkName)
+	}
+	for _, p := range res.Unpinnable {
+		rigLogf("%s cannot be pinned: the baseline records no version for it", p)
+	}
 }
 
 // rigBuildList reads the versions the workspace currently resolves.
@@ -230,7 +253,7 @@ func printRigVerify(rep *rig.Report, rigRoot string) error {
 		fmt.Printf("\n%-52s %-14s %-24s %s\n", "MODULE", "STATUS", "SHIPPED", "RESOLVED")
 		fmt.Println(strings.Repeat("-", 120))
 		for _, d := range failing {
-			fmt.Printf("%-52s %-14s %-24s %s\n", d.Path, d.Kind, orDash(d.Baseline), orDash(d.Actual))
+			fmt.Printf("%-52s %-14s %-24s %s\n", d.Path, d.Kind, orDash(d.Shipped()), orDash(d.Resolved()))
 		}
 	}
 	fmt.Printf("\n%d of %d compared modules moved\n", len(failing), rep.Compared)

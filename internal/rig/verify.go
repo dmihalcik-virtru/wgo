@@ -3,6 +3,7 @@ package rig
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/virtru/wgo/internal/gomod"
 )
@@ -51,18 +52,74 @@ type Drift struct {
 	Kind     DriftKind `json:"kind"`
 	Baseline string    `json:"baseline,omitempty"`
 	Actual   string    `json:"actual,omitempty"`
+	// BaselineFrom and ActualFrom are the module paths the versions belong to,
+	// set only when a replace redirected the module somewhere other than Path.
+	// A version is only meaningful alongside the module it versions: v0.10.2 of
+	// a fork and v0.10.1 of the upstream are not orderable, and calling the
+	// first an upgrade of the second is nonsense.
+	BaselineFrom string `json:"baseline_from,omitempty"`
+	ActualFrom   string `json:"actual_from,omitempty"`
 }
+
+// qualify renders a version alongside the module it came from, when that is not
+// the module being reported on.
+func qualify(from, version string) string {
+	if from == "" {
+		return version
+	}
+	return from + "@" + version
+}
+
+// Shipped and Resolved render the two sides of a drift, each qualified with the
+// module its version belongs to when a replace redirected it elsewhere. A bare
+// "v1.68.1 -> v1.68.0" reads as a downgrade of one module; naming the fork on
+// one side is what makes it a substitution.
+func (d Drift) Shipped() string  { return qualify(d.BaselineFrom, d.Baseline) }
+func (d Drift) Resolved() string { return qualify(d.ActualFrom, d.Actual) }
 
 // String renders a drift for a one-line report.
 func (d Drift) String() string {
 	switch d.Kind {
 	case DriftAdded:
-		return fmt.Sprintf("%s: added at %s", d.Path, d.Actual)
+		return fmt.Sprintf("%s: added at %s", d.Path, d.Resolved())
 	case DriftMissing:
-		return fmt.Sprintf("%s: gone, was %s", d.Path, d.Baseline)
+		return fmt.Sprintf("%s: gone, was %s", d.Path, d.Shipped())
 	default:
-		return fmt.Sprintf("%s: %s -> %s (%s)", d.Path, d.Baseline, d.Actual, d.Kind)
+		return fmt.Sprintf("%s: %s -> %s (%s)", d.Path, d.Shipped(), d.Resolved(), d.Kind)
 	}
+}
+
+// BaselineEntry encodes what a build list entry resolved to, for recording in a
+// manifest's Baseline.
+//
+// Usually just the version. A module a replace redirected to a different module
+// path — a fork — is recorded as "path@version", because the version alone
+// would be attributed to the module that was replaced rather than the one that
+// was built, and a later verify would compare two different modules' versions
+// and call the difference an upgrade. Returns "" for anything unpinnable: a
+// directory replace has no version, and "(devel)" names no release, so neither
+// gives a later build anything to be compared against.
+func BaselineEntry(mod gomod.Module) string {
+	eff := mod.Effective()
+	if !gomod.IsResolvableVersion(eff.Version) {
+		return ""
+	}
+	if eff.Path != "" && eff.Path != mod.Path {
+		return eff.Path + "@" + eff.Version
+	}
+	return eff.Version
+}
+
+// splitBaseline undoes BaselineEntry, returning the module path the version
+// belongs to (empty when it is the key's own) and the version.
+func splitBaseline(entry string) (from, version string) {
+	// A version never contains "@", so the last one separates the two. Module
+	// paths cannot contain "@" either, but splitting from the right costs
+	// nothing and cannot be confused by one.
+	if i := strings.LastIndex(entry, "@"); i >= 0 {
+		return entry[:i], entry[i+1:]
+	}
+	return "", entry
 }
 
 // Report is the outcome of comparing a rig's workspace against its baseline.
@@ -131,21 +188,44 @@ func Verify(m *Manifest, actual []gomod.Module) *Report {
 		// sweep below and report it as gone.
 		seen[mod.Path] = true
 		eff := mod.Effective()
-		if eff.Version == "" {
-			// Replaced by a directory. There is no version to compare, and the
-			// source is coming from disk rather than from a pin.
+		if eff.Version == "" || eff.Version == gomod.DevelVersion {
+			// Replaced by a directory, or served from source by the workspace
+			// and so recorded as "(devel)". There is no version to compare, and
+			// the source is coming from disk rather than from a pin.
+			//
+			// Only these two: any other unrecognisable version is reported as
+			// DriftChanged rather than passed over, since something that is not
+			// a version at all is not something the artifact shipped with.
 			continue
 		}
+		actualFrom := ""
+		if eff.Path != "" && eff.Path != mod.Path {
+			actualFrom = eff.Path
+		}
 
-		base, ok := m.Baseline[mod.Path]
+		entry, ok := m.Baseline[mod.Path]
 		if !ok {
 			rep.Drifts = append(rep.Drifts, Drift{
-				Path: mod.Path, Kind: DriftAdded, Actual: eff.Version,
+				Path: mod.Path, Kind: DriftAdded, Actual: eff.Version, ActualFrom: actualFrom,
 			})
 			continue
 		}
+		baseFrom, base := splitBaseline(entry)
 		rep.Compared++
-		if base == eff.Version {
+		if baseFrom == actualFrom && base == eff.Version {
+			continue
+		}
+		drift := Drift{
+			Path: mod.Path, Baseline: base, Actual: eff.Version,
+			BaselineFrom: baseFrom, ActualFrom: actualFrom,
+		}
+		if baseFrom != actualFrom {
+			// The module is being built from somewhere else than it shipped
+			// from — a fork replace was added, dropped, or re-pointed. The two
+			// versions belong to different modules, so there is no ordering
+			// between them to report.
+			drift.Kind = DriftChanged
+			rep.Drifts = append(rep.Drifts, drift)
 			continue
 		}
 		// Different strings can still be the same version: "v2.0.0" against
@@ -154,17 +234,17 @@ func Verify(m *Manifest, actual []gomod.Module) *Report {
 		if kind == "" {
 			continue
 		}
-		rep.Drifts = append(rep.Drifts, Drift{
-			Path: mod.Path, Kind: kind, Baseline: base, Actual: eff.Version,
-		})
+		drift.Kind = kind
+		rep.Drifts = append(rep.Drifts, drift)
 	}
 
-	for path, base := range m.Baseline {
+	for path, entry := range m.Baseline {
 		if seen[path] || served[path] {
 			continue
 		}
+		from, base := splitBaseline(entry)
 		rep.Drifts = append(rep.Drifts, Drift{
-			Path: path, Kind: DriftMissing, Baseline: base,
+			Path: path, Kind: DriftMissing, Baseline: base, BaselineFrom: from,
 		})
 	}
 
@@ -214,6 +294,14 @@ type Freezer interface {
 type FreezeResult struct {
 	// Froze are the modules newly pinned back to their baseline.
 	Froze []string
+	// Overridden are modules that were already pinned and are drifting anyway:
+	// the replace is in go.work but something is overriding it. Without this a
+	// second --freeze on the same rig would pin nothing, report nothing, and
+	// still fail — indistinguishable from the freeze silently not working.
+	Overridden []string
+	// Unpinnable are drifting modules whose baseline names no version to pin
+	// back to, so a freeze cannot address them.
+	Unpinnable []string
 	// BuildErr is the result of building after the freeze. Non-nil means the
 	// pins were applied but the workspace no longer compiles.
 	BuildErr error
@@ -229,25 +317,52 @@ type FreezeResult struct {
 // they still build would hand back a rig that is green and useless.
 //
 // The manifest is updated in memory only; the caller saves it, so a failed
-// build can be reported before anything is persisted.
+// build can be reported before anything is persisted. A non-nil error still
+// comes with a result: an edit that fails partway leaves the replaces written
+// before it in go.work, and unless the caller records those the manifest no
+// longer knows what is pinned and `--unfreeze` cannot find them.
 func Freeze(f Freezer, m *Manifest, rep *Report, buildDir string) (*FreezeResult, error) {
 	res := &FreezeResult{}
 	frozen := map[string]bool{}
 	for _, p := range m.Frozen {
 		frozen[p] = true
 	}
+	// Applied before every return: the caller saves the manifest on the error
+	// path too, so what is in go.work and what the manifest records stay the
+	// same set.
+	record := func() {
+		if len(res.Froze) > 0 {
+			m.Frozen = sortedKeys(frozen)
+		}
+	}
 
 	for _, d := range rep.Failing() {
 		if frozen[d.Path] {
 			// Already pinned and still drifting: the replace is being overridden
 			// by something else in go.work, and rewriting it changes nothing.
+			res.Overridden = append(res.Overridden, d.Path)
 			continue
 		}
-		if d.Baseline == "" {
+		if !gomod.IsResolvableVersion(d.Baseline) {
+			// Nothing to pin to. A baseline recorded before this was filtered
+			// out could still be "(devel)", and go.work rejects a replace whose
+			// target has no version — the freeze would fail on that module and
+			// abandon every module after it.
+			res.Unpinnable = append(res.Unpinnable, d.Path)
 			continue
 		}
-		if err := f.WorkEditReplace(d.Path, "", d.Path, d.Baseline); err != nil {
-			return nil, fmt.Errorf("rig: pinning %s back to %s: %w", d.Path, d.Baseline, err)
+		// The replacement target is the module the artifact actually built, not
+		// necessarily the one being replaced: a fork replace shipped
+		// upstream => fork@v, and pinning upstream => upstream@v would override
+		// the artifact's own replace and build code it never shipped.
+		target := d.BaselineFrom
+		if target == "" {
+			target = d.Path
+		}
+		if err := f.WorkEditReplace(d.Path, "", target, d.Baseline); err != nil {
+			record()
+			return res, fmt.Errorf("rig: pinning %s back to %s: %w",
+				d.Path, qualify(d.BaselineFrom, d.Baseline), err)
 		}
 		frozen[d.Path] = true
 		res.Froze = append(res.Froze, d.Path)
@@ -256,7 +371,7 @@ func Freeze(f Freezer, m *Manifest, rep *Report, buildDir string) (*FreezeResult
 		return res, nil
 	}
 
-	m.Frozen = sortedKeys(frozen)
+	record()
 	if patterns := m.PackagePatterns(); len(patterns) > 0 {
 		res.BuildErr = f.Build(buildDir, patterns...)
 	}
@@ -292,21 +407,31 @@ func Unfreeze(f Freezer, m *Manifest, modulePath string) (bool, error) {
 // the record of what the artifact actually shipped with is what makes a rig
 // trustworthy, and once overwritten it cannot be recovered from the rig. The
 // caller is expected to say so before calling.
-func Rebaseline(m *Manifest, actual []gomod.Module) int {
+//
+// whole says that actual is the entire module graph. It usually is not: verify
+// measures the modules that contribute packages, which is a subset, and
+// replacing the baseline with a subset silently deletes the record for every
+// module outside it — including the ones a later `--all` verify would have
+// checked. When actual is partial the recorded modules are updated and the rest
+// left alone, so a write-back accepts the drift it was shown and nothing more.
+func Rebaseline(m *Manifest, actual []gomod.Module, whole bool) int {
 	served := make(map[string]bool, len(m.Members))
 	for _, mem := range m.Members {
 		served[mem.Path] = true
 	}
 	base := map[string]string{}
+	if !whole {
+		for path, entry := range m.Baseline {
+			base[path] = entry
+		}
+	}
 	for _, mod := range actual {
 		if mod.Path == "" || mod.Main || served[mod.Path] {
 			continue
 		}
-		eff := mod.Effective()
-		if eff.Version == "" {
-			continue
+		if entry := BaselineEntry(mod); entry != "" {
+			base[mod.Path] = entry
 		}
-		base[mod.Path] = eff.Version
 	}
 	m.Baseline = base
 	return len(base)

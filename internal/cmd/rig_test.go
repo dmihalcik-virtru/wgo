@@ -121,6 +121,11 @@ func TestBaselineOfSkipsVersionlessModules(t *testing.T) {
 // to be recorded the same way. A declared version left behind by a replace was
 // never built from, and comparing against it makes every replaced module read
 // as drift on the very first verify.
+//
+// A fork replace records the module the version belongs to alongside it: a
+// bare "v0.10.2" under the key "github.com/opentdf/platform/sdk" would claim
+// upstream shipped a version it never tagged, and freezing would then pin the
+// artifact away from the fork it was actually built from.
 func TestBaselineOfRecordsEffectiveVersions(t *testing.T) {
 	base := baselineOf([]gomod.Module{
 		// A fork replace: what shipped is v0.10.2 from the fork, not v0.10.1.
@@ -137,7 +142,7 @@ func TestBaselineOfRecordsEffectiveVersions(t *testing.T) {
 		{Path: "github.com/opentdf/otdfctl", Version: "v0.3.0"},
 	})
 	assert.Equal(t, map[string]string{
-		"github.com/opentdf/platform/sdk": "v0.10.2",
+		"github.com/opentdf/platform/sdk": "github.com/virtru-corp/platform/sdk@v0.10.2",
 		"github.com/opentdf/otdfctl":      "v0.3.0",
 	}, base)
 }

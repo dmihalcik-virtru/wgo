@@ -366,25 +366,46 @@ func verifyNewRig(gc *gotool.Client, m *rig.Manifest, rigRoot string, freeze boo
 		return
 	}
 
-	res, err := rig.Freeze(gc, m, rep, os.DevNull)
-	if err != nil {
-		rigLogf("could not freeze: %v", err)
+	res, freezeErr := rig.Freeze(gc, m, rep, os.DevNull)
+	// Recorded before the error is reported: a freeze that fails partway has
+	// already written replaces into go.work, and a manifest that does not name
+	// them leaves nothing for `--unfreeze` to drop.
+	if len(res.Froze) > 0 {
+		if err := rig.Save(rigRoot, m); err != nil {
+			rigLogf("froze %d module(s) but could not record it: %v", len(res.Froze), err)
+			return
+		}
+		rigLogf("froze %d module(s) back to the baseline in %s", len(res.Froze), rig.GoWorkName)
+	}
+	if freezeErr != nil {
+		rigLogf("could not freeze: %v", freezeErr)
 		return
 	}
-	if len(res.Froze) == 0 {
-		return
-	}
-	if err := rig.Save(rigRoot, m); err != nil {
-		rigLogf("froze %d module(s) but could not record it: %v", len(res.Froze), err)
-		return
-	}
-	rigLogf("froze %d module(s) back to the baseline in %s", len(res.Froze), rig.GoWorkName)
+	reportUnfrozen(res, m)
 	if res.BuildErr != nil {
 		// The pins are in force and the rig no longer compiles: a member wants
 		// a version the artifact did not ship with. Say which way out exists
 		// rather than leaving a green-looking rig that cannot build.
 		rigLogf("but the rig no longer builds: %v", res.BuildErr)
 		rigLogf("drop the pin that broke it with: wgo rig verify %s --unfreeze <module>", m.Name)
+		return
+	}
+	if len(res.Froze) == 0 {
+		return
+	}
+	// A replace only takes effect if nothing else in the graph overrides it, so
+	// the freeze is not proof the drift is gone. Saying "froze 4 modules" and
+	// stopping there would report a fix that may not have held.
+	actual, err = gc.ListPackageModules(patterns...)
+	if err != nil {
+		rigLogf("could not confirm the freeze took: %v", err)
+		return
+	}
+	if left := rig.Verify(m, actual).Failing(); len(left) > 0 {
+		rigLogf("%d module(s) still do not match after the freeze:", len(left))
+		for _, d := range left {
+			rigLogf("  %s", d)
+		}
 	}
 }
 
@@ -780,14 +801,14 @@ func readWorkUse(dest, modDir string) ([]string, error) {
 func baselineOf(buildList []gomod.Module) map[string]string {
 	out := map[string]string{}
 	for _, mod := range buildList {
-		// A directory replace has no version at all, and a module a workspace
-		// build served from source is recorded as "(devel)". Neither names
-		// anything a later build can be compared against: "(devel)" would read
-		// as drift against every real version forever, and `rig verify
-		// --freeze` would write it into a go.work replace the toolchain then
-		// rejects. Record nothing rather than something false.
-		if eff := mod.Effective(); mod.Path != "" && gomod.IsResolvableVersion(eff.Version) {
-			out[mod.Path] = eff.Version
+		if mod.Path == "" {
+			continue
+		}
+		// BaselineEntry drops what cannot be compared later — a directory
+		// replace has no version, "(devel)" names no release — and qualifies a
+		// fork's version with the module path it belongs to.
+		if entry := rig.BaselineEntry(mod); entry != "" {
+			out[mod.Path] = entry
 		}
 	}
 	return out
