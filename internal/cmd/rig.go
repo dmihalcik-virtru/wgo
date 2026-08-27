@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,11 +21,12 @@ import (
 )
 
 var (
-	rigNewFrom    string
-	rigNewModules []string
-	rigNewOrgs    []string
-	rigNewFull    bool
-	rigNewDryRun  bool
+	rigNewFrom       string
+	rigNewFromBinary string
+	rigNewModules    []string
+	rigNewOrgs       []string
+	rigNewFull       bool
+	rigNewDryRun     bool
 
 	rigLsFormat string
 	rigShowEnv  bool
@@ -52,6 +54,17 @@ var rigNewCmd = &cobra.Command{
 	Long: `Resolves every in-org module a released artifact depends on to the commit it
 shipped from, checks each one out, and generates a go.work that binds them
 together.
+
+Pins come from one of two sources:
+
+  --from <owner/repo>@<ref>   the artifact's tagged source, whose dependency
+                              set is read with ` + "`go list`" + `
+  --from-binary <path>        the compiled artifact itself, whose dependency
+                              set is read from its embedded build info
+
+Prefer --from-binary when you have the shipped binary: build info records the
+versions that were actually linked, so the rig reproduces them exactly rather
+than re-deriving them and risking a different resolution.
 
 The rig path is the only thing printed to stdout, so it composes with cd:
   cd $(wgo rig new dsp-2.7.1 --from virtru-corp/data-security-platform@v2.7.1)
@@ -117,6 +130,7 @@ func init() {
 	rigCmd.AddCommand(rigNewCmd, rigLsCmd, rigShowCmd, rigRmCmd)
 
 	rigNewCmd.Flags().StringVar(&rigNewFrom, "from", "", "Resolve pins from a tagged repo: <owner/repo>@<ref>")
+	rigNewCmd.Flags().StringVar(&rigNewFromBinary, "from-binary", "", "Resolve pins from a compiled binary's embedded build info")
 	rigNewCmd.Flags().StringArrayVarP(&rigNewModules, "module", "m", nil, "Add a module explicitly: <path>@<version> (repeatable)")
 	rigNewCmd.Flags().StringArrayVar(&rigNewOrgs, "org", nil, "Treat this module path prefix as in-org (repeatable, overrides config)")
 	rigNewCmd.Flags().BoolVar(&rigNewFull, "full", false, "Use full checkouts instead of sparse ones")
@@ -160,9 +174,29 @@ func rigSetup() (*config.Config, string, error) {
 // revset. Without this the first `rig new` against a freshly cloned repo fails
 // on every module at once.
 type cloneLocator struct {
-	jjc     jj.Client
-	cfg     *config.Config
-	fetched map[string]bool
+	jjc      jj.Client
+	cfg      *config.Config
+	fetched  map[string]bool
+	fetchedC map[string]bool
+}
+
+// FetchCommits updates the clone's branch tips, once per repository.
+//
+// Locate fetches tags, which is all a version-derived pin ever needs. A commit
+// named directly — `--from-binary` on a CI build, where go records
+// `vcs.revision` and no version — is usually reachable only from a branch, so
+// the tag-only fetch leaves it missing. rig.Planner calls this only on that
+// path, and only after resolution has already failed once.
+func (l *cloneLocator) FetchCommits(clone string) error {
+	if l.fetchedC == nil {
+		l.fetchedC = map[string]bool{}
+	}
+	if l.fetchedC[clone] {
+		return nil
+	}
+	l.fetchedC[clone] = true
+	rigLogf("fetching branches for %s...", clone)
+	return l.jjc.GitFetch(clone, "origin", nil)
 }
 
 func (l *cloneLocator) Locate(owner, repo string) (string, error) {
@@ -196,15 +230,15 @@ func runRigNew(name string) (retErr error) {
 		return err
 	}
 	// Before touching the disk: the build list decides which checkouts exist,
-	// and there is no way to compute it without the toolchain.
+	// and neither source can produce one without the toolchain — `go list` for
+	// --from, `go version -m` for --from-binary.
 	if !gotool.Available() {
-		return errors.New("`go` is not on PATH; a rig's checkout set comes from `go list`, so it cannot be built without it")
+		return errors.New("`go` is not on PATH; a rig's checkout set is read with the go toolchain, so it cannot be built without it")
 	}
 	if err := rig.ValidateName(name); err != nil {
 		return err
 	}
-	owner, repo, ref, err := parseRigFrom(rigNewFrom)
-	if err != nil {
+	if err := checkRigSourceFlags(); err != nil {
 		return err
 	}
 	orgs := rigNewOrgs
@@ -232,50 +266,35 @@ func runRigNew(name string) (retErr error) {
 		Resolver: jjc,
 	}
 
-	primaryCheckout, err := planner.ResolvePrimaryRepo(name, owner, repo, ref)
-	if err != nil {
-		return err
-	}
-
 	mz := &rig.Materializer{JJ: jjc, Logf: rigLogf}
-	// Between here and Materialize the primary is on disk with no manifest
-	// recording it, so nothing but this can clean it up.
+	// From the first checkout until Materialize writes the manifest the rig is
+	// on disk with nothing recording it, so nothing but this can clean it up.
 	defer func() {
 		if retErr != nil {
 			mz.Rollback(rigRoot)
 		}
 	}()
 
-	dest, err := mz.Checkout(rigRoot, primaryCheckout)
+	pins, err := resolveRigPins(planner, mz, name, rigRoot, orgs)
 	if err != nil {
 		return err
 	}
-
-	primary, primaryUse, buildList, err := inspectPrimary(dest, ref)
-	if err != nil {
-		return err
-	}
-	buildList = append(buildList, extra...)
+	buildList := append(pins.buildList, extra...)
 
 	// rig.sparse decides; --full is the override. Reading only the flag would
 	// make a `sparse = false` config silently do nothing.
 	sparse := cfg.Rig.Sparse && !rigNewFull
 
 	m, err := planner.Plan(rig.Request{
-		Name: name,
-		Source: rig.Source{
-			Kind:        "repo",
-			Ref:         owner + "/" + repo + "@" + ref,
-			Modules:     rigNewModules,
-			OrgPrefixes: orgs,
-		},
+		Name:            name,
+		Source:          pins.source,
 		OrgPrefixes:     orgs,
 		Sparse:          sparse,
-		Primary:         primary,
-		PrimaryUse:      primaryUse,
-		PrimaryCheckout: primaryCheckout,
+		Primary:         pins.primary,
+		PrimaryUse:      pins.use,
+		PrimaryCheckout: pins.checkout,
 		BuildList:       buildList,
-		GoVersion:       primary.GoVersion,
+		GoVersion:       pins.primary.GoVersion,
 		Baseline:        baselineOf(buildList),
 		Created:         time.Now().UTC().Format(time.RFC3339),
 		WgoVersion:      getVersionString(),
@@ -300,6 +319,7 @@ func runRigNew(name string) (retErr error) {
 
 	reportSkips(m)
 	rigLogf("rig %s: %d checkouts, %d modules", m.Name, len(m.Checkouts), len(m.Members))
+
 	rigLogf("run `. %s` before any go command", filepath.Join(rigRoot, rig.EnvShName))
 	fmt.Println(rigRoot)
 	return nil
@@ -353,73 +373,333 @@ func parseModulePins(pins []string) ([]gomod.Module, error) {
 	return out, nil
 }
 
-// inspectPrimary reads the artifact's identity and dependency set out of its
-// freshly created checkout.
+// checkRigSourceFlags requires exactly one pin source.
 //
-// The build list comes from `go list -deps` run with the repository's *own*
-// go.work, not the rig's — the rig's does not exist yet, and the point is to
-// reproduce the build list the artifact shipped with.
-func inspectPrimary(dest, ref string) (gomod.Module, []string, []gomod.Module, error) {
-	var none gomod.Module
+// Checked before anything is resolved. Both sources produce a build list, and
+// silently preferring one would build a rig the user did not ask for out of
+// pins they did not expect.
+func checkRigSourceFlags() error {
+	from := strings.TrimSpace(rigNewFrom) != ""
+	binary := strings.TrimSpace(rigNewFromBinary) != ""
+	switch {
+	case from && binary:
+		return errors.New("--from and --from-binary are alternatives; pass one.\n" +
+			"--from-binary is the more faithful of the two: build info records what was linked, " +
+			"rather than what re-resolving the source would produce today")
+	case !from && !binary:
+		return errors.New("a source is required:\n" +
+			"  --from <owner/repo>@<ref>   resolve pins from the artifact's tagged source\n" +
+			"  --from-binary <path>        resolve pins from the compiled artifact")
+	}
+	return nil
+}
 
-	modPath := filepath.Join(dest, "go.mod")
-	data, err := os.ReadFile(modPath)
-	if err != nil {
-		return none, nil, nil, fmt.Errorf("rig: reading %s: %w\nthe ref may not point at a Go module's root", modPath, err)
-	}
-	f, err := modfile.Parse(modPath, data, nil)
-	if err != nil {
-		return none, nil, nil, fmt.Errorf("rig: parsing %s: %w", modPath, err)
-	}
-	if f.Module == nil || f.Module.Mod.Path == "" {
-		return none, nil, nil, fmt.Errorf("rig: %s declares no module path", modPath)
-	}
-	primary := gomod.Module{Path: f.Module.Mod.Path, Version: ref, Main: true}
-	if f.Go != nil {
-		primary.GoVersion = f.Go.Version
-	}
+// rigPins is everything a pin source contributes to a plan: where the pins came
+// from, the artifact's identity and dependency set, and a checkout of the
+// artifact's own source that already exists on disk.
+type rigPins struct {
+	source    rig.Source
+	checkout  *rig.Checkout
+	primary   gomod.Module
+	use       []string
+	buildList []gomod.Module
+}
 
-	primaryUse, err := readWorkUse(dest)
-	if err != nil {
-		return none, nil, nil, err
+// resolveRigPins materialises the primary checkout and reads the build list.
+//
+// Both sources need the primary on disk before they can finish: --from cannot
+// run `go list` without it, and --from-binary reads the repository's own
+// go.work `use` list from it. So both go through mz.Checkout, and everything
+// they create is on the Materializer's rollback list from that point on.
+func resolveRigPins(planner *rig.Planner, mz *rig.Materializer, name, rigRoot string, orgs []string) (*rigPins, error) {
+	if strings.TrimSpace(rigNewFromBinary) != "" {
+		return pinsFromBinary(planner, mz, name, rigRoot, rigNewFromBinary, orgs)
 	}
+	return pinsFromRepo(planner, mz, name, rigRoot, rigNewFrom, orgs)
+}
+
+// pinsFromRepo resolves pins by checking the artifact's source out at a tag and
+// running `go list -deps` inside it.
+//
+// The build list comes from `go list` run with the repository's *own* go.work,
+// not the rig's — the rig's does not exist yet, and the point is to reproduce
+// the build list the artifact shipped with.
+func pinsFromRepo(planner *rig.Planner, mz *rig.Materializer, name, rigRoot, from string, orgs []string) (*rigPins, error) {
+	owner, repo, ref, err := parseRigFrom(from)
+	if err != nil {
+		return nil, err
+	}
+	pc, err := planner.ResolvePrimaryRepo(name, owner, repo, ref)
+	if err != nil {
+		return nil, err
+	}
+	dest, err := mz.Checkout(rigRoot, pc)
+	if err != nil {
+		return nil, err
+	}
+	// No subdir: `--from <owner>/<repo>@<ref>` names a repository, so the
+	// artifact is its root module by construction.
+	mod, use, err := readPrimaryModule(dest, "", "")
+	if err != nil {
+		return nil, err
+	}
+	primary := gomod.Module{Path: mod.Path, Version: ref, Main: true, GoVersion: mod.GoVersion}
 
 	gc := gotool.NewClient().In(dest)
 	work, err := gotool.FindWorkFile(dest, dest)
 	if err != nil {
-		return none, nil, nil, err
+		return nil, err
 	}
 	if work != "" {
 		gc = gc.WithWork(work)
 	}
 	buildList, err := gc.ListPackageModules("./...")
 	if err != nil {
-		return none, nil, nil, fmt.Errorf("rig: listing dependencies of %s: %w", primary.Path, err)
+		return nil, fmt.Errorf("rig: listing dependencies of %s: %w", primary.Path, err)
 	}
-	return primary, primaryUse, buildList, nil
+
+	return &rigPins{
+		source: rig.Source{
+			Kind:        "repo",
+			Ref:         owner + "/" + repo + "@" + ref,
+			Modules:     rigNewModules,
+			OrgPrefixes: orgs,
+		},
+		checkout:  pc,
+		primary:   primary,
+		use:       use,
+		buildList: buildList,
+	}, nil
+}
+
+// pinsFromBinary resolves pins from a compiled artifact's embedded build info.
+//
+// This is the higher-fidelity source: `go version -m` reports the versions that
+// were actually linked, so the rig reproduces the artifact by construction
+// rather than by re-deriving a build list that MVS may resolve differently
+// today. It is also the only source that works when the artifact was built from
+// a commit that was never tagged.
+func pinsFromBinary(planner *rig.Planner, mz *rig.Materializer, name, rigRoot, binary string, orgs []string) (*rigPins, error) {
+	abs, err := filepath.Abs(strings.TrimSpace(binary))
+	if err != nil {
+		return nil, fmt.Errorf("rig: resolving %s: %w", binary, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, fmt.Errorf("rig: reading %s: %w", abs, err)
+	}
+	// `go version -m` walks a directory and reports every binary under it, and
+	// BuildInfo parses that output as though it described one. A whole ./dist/
+	// would silently merge several artifacts' dependency sets into a single
+	// build list — a rig that reproduces nothing that was ever shipped. Stat
+	// follows symlinks, so a link to a binary is still a regular file here.
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("rig: %s is not a file; --from-binary takes one compiled artifact", abs)
+	}
+	bi, err := gotool.NewClient().BuildInfo(abs)
+	if err != nil {
+		return nil, fmt.Errorf("rig: reading build info from %s: %w", abs, err)
+	}
+	if bi.Main.Path == "" {
+		return nil, fmt.Errorf("rig: %s records no main module\n"+
+			"it may have been built with -trimpath alone against GOFLAGS=-mod=vendor, or linked from a non-module build", abs)
+	}
+
+	pc, err := resolveBinaryPrimary(planner, name, abs, bi)
+	if err != nil {
+		return nil, err
+	}
+	dest, err := mz.Checkout(rigRoot, pc)
+	if err != nil {
+		return nil, err
+	}
+	// Read for the `go` directive and the repo's own go.work `use` list, both
+	// of which build info does not record. The module path is already known, so
+	// it is passed in as a cross-check on the module-to-repo mapping.
+	//
+	// The subdir matters here in a way it does not for --from: a binary's main
+	// module can be any module of a monorepo, not just its root.
+	origin, err := gomod.ParseOrigin(bi.Main.Path)
+	if err != nil {
+		return nil, fmt.Errorf("rig: main module %s of %s: %w", bi.Main.Path, abs, err)
+	}
+	mod, use, err := readPrimaryModule(dest, origin.Subdir, bi.Main.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	return &rigPins{
+		source: rig.Source{
+			Kind:        "binary",
+			Binary:      abs,
+			Modules:     rigNewModules,
+			OrgPrefixes: orgs,
+		},
+		checkout: pc,
+		primary: gomod.Module{
+			Path: bi.Main.Path, Version: bi.Main.Version, Main: true,
+			// Build info records no per-dependency `go` directives, unlike
+			// `go list`, so the usual "highest across the members" calculation
+			// has only the primary to go on and can land below what a member
+			// requires — which surfaces as `go build` refusing the workspace.
+			// The toolchain that linked the artifact is recorded, though, and
+			// it is by construction at least as high as every member needs.
+			GoVersion: gomod.MaxGoVersion(mod.GoVersion, gomod.ToolchainVersion(bi.GoVersion)),
+		},
+		use:       use,
+		buildList: buildInfoModules(bi),
+	}, nil
+}
+
+// resolveBinaryPrimary pins the artifact's own source.
+//
+// A binary built from a released tag carries that version and resolves like any
+// other module. One built by CI from an untagged commit carries "(devel)"
+// instead, with the commit recorded separately as the `vcs.revision` build
+// setting — which is exactly the case a rig is most wanted for, so it is
+// supported rather than rejected.
+func resolveBinaryPrimary(planner *rig.Planner, name, binary string, bi *gomod.BuildInfo) (*rig.Checkout, error) {
+	if gomod.IsResolvableVersion(bi.Main.Version) {
+		return planner.ResolvePrimary(name, gomod.Module{Path: bi.Main.Path, Version: bi.Main.Version})
+	}
+
+	rev := strings.TrimSpace(bi.Settings["vcs.revision"])
+	if rev == "" {
+		return nil, fmt.Errorf(
+			"rig: %s reports main module %s at %q and records no vcs.revision, so there is no commit to pin its source to\n"+
+				"binaries built with -buildvcs=false lose this; rebuild with build info, or use --from <owner/repo>@<ref>",
+			binary, bi.Main.Path, orDash(bi.Main.Version))
+	}
+	origin, err := gomod.ParseOrigin(bi.Main.Path)
+	if err != nil {
+		return nil, fmt.Errorf("rig: main module %s of %s: %w", bi.Main.Path, binary, err)
+	}
+	if bi.Settings["vcs.modified"] == "true" {
+		// The checkout will hold the commit, not the uncommitted edits that
+		// were compiled into the binary. Everything downstream — the baseline,
+		// `rig verify` — is still sound; only the primary's source may differ.
+		rigLogf("warning: %s was built from a modified working copy (vcs.modified=true)", binary)
+		rigLogf("         the primary checkout will hold commit %s, not the edits that were compiled", shortCommitID(rev))
+	}
+	rigLogf("%s has no released version; pinning its source to vcs.revision %s", filepath.Base(binary), shortCommitID(rev))
+	return planner.ResolvePrimaryCommit(name, origin.Owner, origin.Repo, rev)
+}
+
+// buildInfoModules turns `go version -m` dep records into build-list entries.
+//
+// The one transformation is on directory replacements. Build info spells those
+// as a "=>" record with version "(devel)", whereas `go list` — which the --from
+// path uses — spells them as a Replace with no version at all. The planner
+// recognises the latter and skips the module as served from another checkout,
+// so the two sources are normalised onto that shape here rather than having the
+// planner learn a second spelling of the same fact.
+//
+// Versioned replacements are passed through exactly as `go list` reports them,
+// which is to say the planner pins the original module path rather than the
+// fork. That is a pre-existing limitation shared by both sources, not something
+// this path introduces.
+func buildInfoModules(bi *gomod.BuildInfo) []gomod.Module {
+	out := make([]gomod.Module, 0, len(bi.Deps))
+	for _, dep := range bi.Deps {
+		if dep.Replace != nil && !gomod.IsResolvableVersion(dep.Replace.Version) {
+			replaced := *dep.Replace
+			replaced.Version = ""
+			dep.Replace = &replaced
+		}
+		out = append(out, dep)
+	}
+	return out
+}
+
+// readPrimaryModule reads the artifact's module path, `go` directive and
+// workspace `use` list out of its freshly created checkout.
+//
+// subdir is the primary module's directory within the repository, empty for a
+// root module. A monorepo publishes each of its modules separately, so the
+// artifact's own go.mod is not necessarily at the checkout root:
+// github.com/opentdf/platform/otdfctl lives at otdfctl/go.mod, and reading the
+// root would report the repo as holding no module at all.
+//
+// wantPath, when non-empty, is the module path the caller already believes the
+// checkout holds; a mismatch means the module-to-repo mapping put the primary
+// in the wrong repository, and every checkout derived from that mapping is
+// suspect. It is a warning rather than an error because a repo that moved its
+// module path between the pinned commit and today produces exactly this, and
+// the checkout is still the right source.
+func readPrimaryModule(dest, subdir, wantPath string) (gomod.Module, []string, error) {
+	var none gomod.Module
+
+	modDir := filepath.Join(dest, filepath.FromSlash(subdir))
+	modPath := filepath.Join(modDir, "go.mod")
+	data, err := os.ReadFile(modPath)
+	if err != nil {
+		return none, nil, fmt.Errorf("rig: reading %s: %w\nthe ref may not point at a Go module's root", modPath, err)
+	}
+	f, err := modfile.Parse(modPath, data, nil)
+	if err != nil {
+		return none, nil, fmt.Errorf("rig: parsing %s: %w", modPath, err)
+	}
+	if f.Module == nil || f.Module.Mod.Path == "" {
+		return none, nil, fmt.Errorf("rig: %s declares no module path", modPath)
+	}
+	mod := gomod.Module{Path: f.Module.Mod.Path, Main: true}
+	if f.Go != nil {
+		mod.GoVersion = f.Go.Version
+	}
+	if wantPath != "" && wantPath != mod.Path {
+		rigLogf("warning: %s declares module %s, but the artifact reports %s", modPath, mod.Path, wantPath)
+		rigLogf("         the module path may have moved, or the primary may be checked out of the wrong repository")
+	}
+
+	use, err := readWorkUse(dest, modDir)
+	if err != nil {
+		return none, nil, err
+	}
+	return mod, use, nil
 }
 
 // readWorkUse returns the `use` directives of the repository's own go.work as
-// repo-relative directories, or nil when it ships none.
+// checkout-relative directories, or nil when it ships none.
 //
 // A repo with a go.work builds against a different set of modules than its root
 // module alone, so a rig that ignored it would not reproduce the artifact.
-func readWorkUse(dest string) ([]string, error) {
-	path := filepath.Join(dest, rig.GoWorkName)
-	data, err := os.ReadFile(path)
+//
+// The search starts at the primary module and walks up to the checkout root,
+// which is Go's own rule — a subdirectory module can be covered by a go.work at
+// the repo root, as otdfctl is by platform's. Wherever it is found, the `use`
+// paths are rebased onto the checkout root so they line up with Member.Subdir.
+func readWorkUse(dest, modDir string) ([]string, error) {
+	work, err := gotool.FindWorkFile(modDir, dest)
+	if err != nil || work == "" {
+		return nil, err
+	}
+	data, err := os.ReadFile(work)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("rig: reading %s: %w", path, err)
+		return nil, fmt.Errorf("rig: reading %s: %w", work, err)
 	}
-	f, err := modfile.ParseWork(path, data, nil)
+	f, err := modfile.ParseWork(work, data, nil)
 	if err != nil {
-		return nil, fmt.Errorf("rig: parsing %s: %w", path, err)
+		return nil, fmt.Errorf("rig: parsing %s: %w", work, err)
 	}
+	base, err := filepath.Rel(dest, filepath.Dir(work))
+	if err != nil {
+		return nil, fmt.Errorf("rig: locating %s within %s: %w", work, dest, err)
+	}
+
 	var use []string
 	for _, u := range f.Use {
-		use = append(use, u.Path)
+		rel := path.Join(filepath.ToSlash(base), u.Path)
+		if rel == ".." || strings.HasPrefix(rel, "../") {
+			// A use directive pointing outside the checkout names source no
+			// single repository holds; the rig cannot supply it, and inventing
+			// a member for it would produce a go.work that does not resolve.
+			rigLogf("warning: %s uses %s, which is outside the checkout — ignoring it", work, u.Path)
+			continue
+		}
+		use = append(use, rel)
 	}
 	return use, nil
 }
@@ -437,10 +717,13 @@ func readWorkUse(dest string) ([]string, error) {
 func baselineOf(buildList []gomod.Module) map[string]string {
 	out := map[string]string{}
 	for _, mod := range buildList {
-		// A directory replace has no version at all; there is nothing to
-		// compare a later build against, so record nothing rather than
-		// something false.
-		if eff := mod.Effective(); mod.Path != "" && eff.Version != "" {
+		// A directory replace has no version at all, and a module a workspace
+		// build served from source is recorded as "(devel)". Neither names
+		// anything a later build can be compared against: "(devel)" would read
+		// as drift against every real version forever, and `rig verify
+		// --freeze` would write it into a go.work replace the toolchain then
+		// rejects. Record nothing rather than something false.
+		if eff := mod.Effective(); mod.Path != "" && gomod.IsResolvableVersion(eff.Version) {
 			out[mod.Path] = eff.Version
 		}
 	}
@@ -457,7 +740,8 @@ func reportSkips(m *rig.Manifest) {
 	counts := map[rig.SkipKind]int{}
 	for _, s := range m.Skipped {
 		counts[s.Kind]++
-		if s.Kind == rig.SkipUnreachable || s.Kind == rig.SkipEscapedReplace {
+		switch s.Kind {
+		case rig.SkipUnreachable, rig.SkipEscapedReplace, rig.SkipUnpinned:
 			notable = append(notable, s)
 		}
 	}
@@ -520,7 +804,7 @@ func runRigLs() error {
 			// into cd or xargs, and a renamed rig directory would send it
 			// somewhere that does not exist.
 			Path:      m.Root,
-			Source:    m.Source.Ref,
+			Source:    rigSourceLabel(m.Source),
 			Checkouts: len(m.Checkouts),
 			Modules:   len(m.Members),
 			Created:   m.Created,
@@ -733,6 +1017,21 @@ func rigRootContaining(rigDir, dir string) string {
 		}
 		dir = parent
 	}
+}
+
+// rigSourceLabel names where a rig's pins came from, in one column's worth.
+//
+// A binary-sourced rig has no Ref, and showing an empty source next to a rig
+// that plainly came from somewhere reads as missing data. The base name is
+// enough to recognise the artifact; `wgo rig show` prints the full path.
+func rigSourceLabel(s rig.Source) string {
+	if s.Ref != "" {
+		return s.Ref
+	}
+	if s.Binary != "" {
+		return filepath.Base(s.Binary)
+	}
+	return ""
 }
 
 // rigPin describes what a checkout is pinned to, preferring the tag.

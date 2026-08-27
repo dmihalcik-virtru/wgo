@@ -30,6 +30,7 @@ import (
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 )
 
 var (
@@ -149,6 +150,35 @@ func PseudoCommit(version string) string {
 		return ""
 	}
 	return rev
+}
+
+// DevelVersion is the version Go records for a module that was not consumed
+// from the module proxy: one supplied by a go.work `use`, replaced by a
+// directory, or built straight from its own working tree.
+const DevelVersion = "(devel)"
+
+// ToolchainVersion turns the toolchain string a binary records ("go1.27.0")
+// into a bare `go` directive version ("1.27.0"), or "" if it is not one.
+func ToolchainVersion(s string) string {
+	s = strings.TrimSpace(s)
+	// A toolchain may carry a suffix, as in "go1.27.0-custom"; the directive
+	// cannot, and MaxGoVersion drops what go/version rejects.
+	if before, _, ok := strings.Cut(s, "-"); ok {
+		s = before
+	}
+	return MaxGoVersion(strings.TrimPrefix(s, "go"))
+}
+
+// IsResolvableVersion reports whether a version can be mapped back to a commit.
+//
+// Not every entry in a build list names a release. A module supplied by a
+// go.work, replaced by a directory, or built from a working tree is recorded as
+// "(devel)"; a main module is recorded with no version at all. Neither is a tag
+// or a pseudo-version, so no revset resolves it, and attempting one produces
+// `tags(exact:"(devel)")` — an empty result whose error message blames a
+// missing tag for what is really an unpinnable module.
+func IsResolvableVersion(version string) bool {
+	return semver.IsValid(canonicalVersion(strings.TrimSpace(version)))
 }
 
 // InOrg reports whether modulePath falls under any of prefixes.

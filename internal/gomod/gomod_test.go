@@ -319,3 +319,35 @@ func TestLocalReplaceTargetsNilFile(t *testing.T) {
 	assert.Nil(t, inRepo)
 	assert.Nil(t, escaped)
 }
+
+func TestIsResolvableVersion(t *testing.T) {
+	for _, v := range []string{
+		"v1.2.3",
+		"v2.7.1+incompatible",
+		"v0.0.0-20260801120000-abcdefabcdef",
+		"v1.0.0-rc.1",
+	} {
+		assert.True(t, IsResolvableVersion(v), "%q names a release", v)
+	}
+	for _, v := range []string{
+		DevelVersion,
+		"",
+		"   ",
+		"1.2.3", // no v prefix: not a Go module version
+		"latest",
+	} {
+		assert.False(t, IsResolvableVersion(v), "%q names no release", v)
+	}
+}
+
+func TestToolchainVersion(t *testing.T) {
+	assert.Equal(t, "1.27.0", ToolchainVersion("go1.27.0"))
+	assert.Equal(t, "1.24", ToolchainVersion("go1.24"))
+	assert.Equal(t, "1.25rc1", ToolchainVersion("go1.25rc1"))
+	// A distributor's suffix is not part of a `go` directive.
+	assert.Equal(t, "1.22.1", ToolchainVersion("go1.22.1-custom"))
+	// Anything unrecognisable is dropped rather than written into go.work.
+	assert.Empty(t, ToolchainVersion(""))
+	assert.Empty(t, ToolchainVersion("devel"))
+	assert.Empty(t, ToolchainVersion("gotip"))
+}

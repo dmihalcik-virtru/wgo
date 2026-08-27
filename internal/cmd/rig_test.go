@@ -337,22 +337,52 @@ func TestReadWorkUse(t *testing.T) {
 	dir := t.TempDir()
 
 	// A repo with no go.work is the common case and not an error.
-	use, err := readWorkUse(dir)
+	use, err := readWorkUse(dir, dir)
 	require.NoError(t, err)
 	assert.Nil(t, use)
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, rig.GoWorkName),
 		[]byte("go 1.24.5\n\nuse (\n\t.\n\t./sdk\n)\n"), 0o644))
-	use, err = readWorkUse(dir)
+	use, err = readWorkUse(dir, dir)
 	require.NoError(t, err)
-	assert.Equal(t, []string{".", "./sdk"}, use)
+	assert.Equal(t, []string{".", "sdk"}, use)
+}
+
+func TestReadWorkUseFindsARepoRootWorkFileFromASubdirModule(t *testing.T) {
+	// What a monorepo primary looks like: the artifact is ./otdfctl, but the
+	// go.work covering it sits at the repo root and names its siblings
+	// relative to *that*. Rebasing is what keeps them lining up with
+	// Member.Subdir, which is checkout-relative.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "otdfctl"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, rig.GoWorkName),
+		[]byte("go 1.24.5\n\nuse (\n\t./otdfctl\n\t./sdk\n)\n"), 0o644))
+
+	use, err := readWorkUse(dir, filepath.Join(dir, "otdfctl"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"otdfctl", "sdk"}, use)
+}
+
+func TestReadWorkUseDropsAUseOutsideTheCheckout(t *testing.T) {
+	// A go.work in a subdirectory can name a sibling of the checkout itself.
+	// No single repository holds that source, so a member for it would render
+	// a go.work that does not resolve.
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, rig.GoWorkName),
+		[]byte("go 1.24.5\n\nuse (\n\t.\n\t../../elsewhere\n)\n"), 0o644))
+
+	use, err := readWorkUse(dir, sub)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sub"}, use)
 }
 
 func TestReadWorkUseReportsAnUnparseableWorkFile(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, rig.GoWorkName), []byte("this is not a go.work\n"), 0o644))
 
-	_, err := readWorkUse(dir)
+	_, err := readWorkUse(dir, dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), rig.GoWorkName)
 }
@@ -374,7 +404,7 @@ func TestShortDate(t *testing.T) {
 func TestRigNewFlagsAreRegistered(t *testing.T) {
 	// The spec's documented surface; a flag silently missing turns a scripted
 	// invocation into an "unknown flag" failure.
-	for _, name := range []string{"from", "module", "org", "full", "dry-run"} {
+	for _, name := range []string{"from", "from-binary", "module", "org", "full", "dry-run"} {
 		assert.NotNil(t, rigNewCmd.Flags().Lookup(name), "wgo rig new --%s", name)
 	}
 	assert.NotNil(t, rigNewCmd.Flags().ShorthandLookup("m"))
@@ -402,4 +432,235 @@ func TestRigShowEnvIsEvalable(t *testing.T) {
 	for _, line := range strings.Split(env, "\n") {
 		assert.False(t, strings.HasPrefix(line, "echo "), "env output must be pure exports: %q", line)
 	}
+}
+
+func TestCheckRigSourceFlags(t *testing.T) {
+	t.Cleanup(func() { rigNewFrom, rigNewFromBinary = "", "" })
+
+	rigNewFrom, rigNewFromBinary = "", ""
+	err := checkRigSourceFlags()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--from <owner/repo>@<ref>")
+	assert.Contains(t, err.Error(), "--from-binary <path>")
+
+	rigNewFrom, rigNewFromBinary = "owner/repo@v1.0.0", "/tmp/app"
+	err = checkRigSourceFlags()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "alternatives")
+
+	rigNewFrom, rigNewFromBinary = "owner/repo@v1.0.0", ""
+	assert.NoError(t, checkRigSourceFlags())
+
+	rigNewFrom, rigNewFromBinary = "", "/tmp/app"
+	assert.NoError(t, checkRigSourceFlags())
+
+	// Whitespace is not a source.
+	rigNewFrom, rigNewFromBinary = "   ", "  "
+	assert.Error(t, checkRigSourceFlags())
+}
+
+func TestBuildInfoModulesNormalisesDirectoryReplacements(t *testing.T) {
+	bi := &gomod.BuildInfo{
+		Main: gomod.Module{Path: "github.com/acme/app", Version: "v1.2.3", Main: true},
+		Deps: []gomod.Module{
+			{Path: "github.com/acme/lib", Version: "v0.4.0"},
+			// A directory replacement: build info spells the replacement
+			// "(devel)" where `go list` leaves the version empty.
+			{Path: "github.com/acme/sibling", Version: gomod.DevelVersion,
+				Replace: &gomod.Module{Path: "./sibling", Version: gomod.DevelVersion}},
+			// A module-to-module replacement keeps its version.
+			{Path: "github.com/other/pkg", Version: "v1.0.0",
+				Replace: &gomod.Module{Path: "github.com/other/fork", Version: "v1.0.1"}},
+		},
+	}
+
+	mods := buildInfoModules(bi)
+	require.Len(t, mods, 3)
+
+	assert.Nil(t, mods[0].Replace)
+
+	// The shape the planner recognises as "served from another checkout".
+	require.NotNil(t, mods[1].Replace)
+	assert.Equal(t, "./sibling", mods[1].Replace.Path)
+	assert.Empty(t, mods[1].Replace.Version)
+
+	require.NotNil(t, mods[2].Replace)
+	assert.Equal(t, "v1.0.1", mods[2].Replace.Version)
+}
+
+func TestBuildInfoModulesDoesNotMutateTheBuildInfo(t *testing.T) {
+	replaced := &gomod.Module{Path: "./sibling", Version: gomod.DevelVersion}
+	bi := &gomod.BuildInfo{Deps: []gomod.Module{
+		{Path: "github.com/acme/sibling", Version: gomod.DevelVersion, Replace: replaced},
+	}}
+
+	_ = buildInfoModules(bi)
+
+	// The caller still holds the parsed build info; rewriting it in place would
+	// make a second read of the same struct disagree with the first.
+	assert.Equal(t, gomod.DevelVersion, replaced.Version)
+	assert.Same(t, replaced, bi.Deps[0].Replace)
+}
+
+func TestRigSourceLabel(t *testing.T) {
+	assert.Equal(t, "opentdf/platform@v0.9.0",
+		rigSourceLabel(rig.Source{Kind: "repo", Ref: "opentdf/platform@v0.9.0"}))
+	// A binary rig has no ref; an empty column would read as missing data.
+	assert.Equal(t, "otdfctl",
+		rigSourceLabel(rig.Source{Kind: "binary", Binary: "/opt/dist/otdfctl"}))
+	assert.Empty(t, rigSourceLabel(rig.Source{Kind: "manual"}))
+}
+
+func TestReadPrimaryModule(t *testing.T) {
+	dest := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dest, "go.mod"),
+		[]byte("module github.com/acme/app/v2\n\ngo 1.24.5\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dest, rig.GoWorkName),
+		[]byte("go 1.24.5\n\nuse (\n\t.\n\t./sdk\n)\n"), 0o644))
+
+	mod, use, err := readPrimaryModule(dest, "", "github.com/acme/app/v2")
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/acme/app/v2", mod.Path)
+	assert.Equal(t, "1.24.5", mod.GoVersion)
+	assert.True(t, mod.Main)
+	assert.Equal(t, []string{".", "sdk"}, use)
+}
+
+func TestReadPrimaryModuleReadsASubdirModule(t *testing.T) {
+	// A monorepo publishes each of its modules separately, so a binary's main
+	// module need not be the repo root. Reading the root would report the
+	// checkout as holding no Go module at all.
+	dest := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dest, "otdfctl"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dest, "otdfctl", "go.mod"),
+		[]byte("module github.com/opentdf/platform/otdfctl\n\ngo 1.25.5\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dest, rig.GoWorkName),
+		[]byte("go 1.25.5\n\nuse (\n\t./otdfctl\n\t./sdk\n)\n"), 0o644))
+
+	mod, use, err := readPrimaryModule(dest, "otdfctl", "github.com/opentdf/platform/otdfctl")
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/opentdf/platform/otdfctl", mod.Path)
+	assert.Equal(t, "1.25.5", mod.GoVersion)
+	assert.Equal(t, []string{"otdfctl", "sdk"}, use)
+}
+
+func TestReadPrimaryModuleToleratesAMovedModulePath(t *testing.T) {
+	// A repo that renamed its module between the pinned commit and today. The
+	// checkout is still the right source, so this warns rather than failing.
+	dest := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dest, "go.mod"),
+		[]byte("module github.com/acme/app\n\ngo 1.24.5\n"), 0o644))
+
+	mod, _, err := readPrimaryModule(dest, "", "github.com/acme/app/v2")
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/acme/app", mod.Path)
+}
+
+func TestReadPrimaryModuleRejectsANonModuleCheckout(t *testing.T) {
+	dest := t.TempDir()
+	_, _, err := readPrimaryModule(dest, "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "may not point at a Go module's root")
+
+	require.NoError(t, os.WriteFile(filepath.Join(dest, "go.mod"), []byte("go 1.24.5\n"), 0o644))
+	_, _, err = readPrimaryModule(dest, "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "declares no module path")
+}
+
+func TestRigNewRegistersFromBinary(t *testing.T) {
+	assert.NotNil(t, rigNewCmd.Flags().Lookup("from-binary"))
+}
+
+// fakeRigLocator / fakeRigResolver stand in for the clone-and-fetch machinery
+// so the binary-source logic can be exercised without a repository.
+type fakeRigLocator struct{ clone string }
+
+func (f fakeRigLocator) Locate(owner, repo string) (string, error) {
+	if f.clone == "" {
+		return "", errors.New("no clone")
+	}
+	return f.clone, nil
+}
+
+type fakeRigResolver struct{ commits map[string]string }
+
+func (f fakeRigResolver) Resolve(_, revset string) (string, error) { return f.commits[revset], nil }
+
+// `go version -m` walks a directory and prints a record per binary under it, so
+// --from-binary ./dist/ would parse as one artifact with every binary's
+// dependencies merged into its build list — a rig reproducing nothing that ever
+// shipped. Rejected before anything is located or checked out, which is why nil
+// clients suffice here.
+func TestPinsFromBinaryRejectsADirectory(t *testing.T) {
+	dir := t.TempDir()
+	_, err := pinsFromBinary(nil, nil, "app", filepath.Join(dir, "rig"), dir, []string{"github.com/acme"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a file")
+}
+
+func TestPinsFromBinaryReportsAMissingBinary(t *testing.T) {
+	dir := t.TempDir()
+	_, err := pinsFromBinary(nil, nil, "app", filepath.Join(dir, "rig"),
+		filepath.Join(dir, "nope"), []string{"github.com/acme"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nope")
+}
+
+func TestResolveBinaryPrimaryPrefersAReleasedVersion(t *testing.T) {
+	p := &rig.Planner{
+		Locator: fakeRigLocator{clone: "/mains/acme/app"},
+		Resolver: fakeRigResolver{commits: map[string]string{
+			`present(tags(exact:"v1.2.3"))`: "1111111111111111111111111111111111111111",
+		}},
+	}
+	bi := &gomod.BuildInfo{Main: gomod.Module{Path: "github.com/acme/app", Version: "v1.2.3", Main: true}}
+
+	c, err := resolveBinaryPrimary(p, "app", "/opt/app", bi)
+	require.NoError(t, err)
+	assert.Equal(t, "v1.2.3", c.Tag)
+	assert.Equal(t, "1111111111111111111111111111111111111111", c.Commit)
+}
+
+func TestResolveBinaryPrimaryFallsBackToVCSRevision(t *testing.T) {
+	// The CI-built case: no release behind the binary, but the commit it came
+	// from is recorded — and that is precisely when a rig is most wanted.
+	const rev = "2222222222222222222222222222222222222222"
+	p := &rig.Planner{
+		Locator:  fakeRigLocator{clone: "/mains/acme/app"},
+		Resolver: fakeRigResolver{commits: map[string]string{rev: rev}},
+	}
+	bi := &gomod.BuildInfo{
+		Main:     gomod.Module{Path: "github.com/acme/app", Version: gomod.DevelVersion, Main: true},
+		Settings: map[string]string{"vcs.revision": rev, "vcs.modified": "false"},
+	}
+
+	c, err := resolveBinaryPrimary(p, "app", "/opt/app", bi)
+	require.NoError(t, err)
+	assert.Equal(t, rev, c.Commit)
+	assert.Equal(t, rev, c.Revset, "a commit resolves directly, not through a tag")
+	assert.Empty(t, c.Tag)
+}
+
+func TestResolveBinaryPrimaryWithoutAnyPin(t *testing.T) {
+	p := &rig.Planner{Locator: fakeRigLocator{clone: "/mains/acme/app"}, Resolver: fakeRigResolver{}}
+	bi := &gomod.BuildInfo{
+		Main:     gomod.Module{Path: "github.com/acme/app", Version: gomod.DevelVersion, Main: true},
+		Settings: map[string]string{},
+	}
+
+	_, err := resolveBinaryPrimary(p, "app", "/opt/app", bi)
+	require.Error(t, err)
+	// The two ways out, both named.
+	assert.Contains(t, err.Error(), "-buildvcs=false")
+	assert.Contains(t, err.Error(), "--from <owner/repo>@<ref>")
+}
+
+func TestBinaryRigGoVersionFloorsOnTheToolchain(t *testing.T) {
+	// The primary's own directive is old, but the artifact was linked with a
+	// newer toolchain — which is at least as high as every member requires.
+	// Build info carries no per-dependency directives to raise it otherwise.
+	assert.Equal(t, "1.27.0", gomod.MaxGoVersion("1.21", gomod.ToolchainVersion("go1.27.0")))
+	// And the primary still wins when it is the higher of the two.
+	assert.Equal(t, "1.27.0", gomod.MaxGoVersion("1.27.0", gomod.ToolchainVersion("go1.24")))
 }
