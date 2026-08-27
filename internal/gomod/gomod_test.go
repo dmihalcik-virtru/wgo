@@ -340,6 +340,44 @@ func TestIsResolvableVersion(t *testing.T) {
 	}
 }
 
+func TestCompareVersions(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+		ok   bool
+	}{
+		{"v1.2.4", "v1.2.3", 1, true},
+		{"v1.2.3", "v1.2.4", -1, true},
+		{"v1.2.3", "v1.2.3", 0, true},
+		// A pseudo-version sorts by its timestamp, below the release it
+		// precedes and above the one it follows.
+		{"v1.2.3-0.20260801120000-abcdefabcdef", "v1.2.3", -1, true},
+		// "+incompatible" is metadata, not a difference in version.
+		{"v2.0.0+incompatible", "v2.0.0", 0, true},
+		{"  v1.2.3  ", "v1.2.3", 0, true},
+	}
+	for _, tt := range tests {
+		got, ok := CompareVersions(tt.a, tt.b)
+		assert.True(t, ok, "%q vs %q", tt.a, tt.b)
+		assert.Equal(t, tt.want, got, "%q vs %q", tt.a, tt.b)
+	}
+
+	// Unorderable, and reported as such rather than ranked. semver.Compare puts
+	// an invalid version below every valid one and calls two invalid ones
+	// equal, which would report "(devel)" as a downgrade and two different
+	// garbage strings as no drift at all.
+	for _, tt := range [][2]string{
+		{DevelVersion, "v1.2.3"},
+		{"v1.2.3", DevelVersion},
+		{DevelVersion, DevelVersion},
+		{"", "v1.2.3"},
+		{"1.2.3", "v1.2.3"},
+	} {
+		_, ok := CompareVersions(tt[0], tt[1])
+		assert.False(t, ok, "%q vs %q is not an ordering", tt[0], tt[1])
+	}
+}
+
 func TestToolchainVersion(t *testing.T) {
 	assert.Equal(t, "1.27.0", ToolchainVersion("go1.27.0"))
 	assert.Equal(t, "1.24", ToolchainVersion("go1.24"))

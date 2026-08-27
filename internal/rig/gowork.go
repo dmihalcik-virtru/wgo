@@ -50,7 +50,7 @@ func RenderGoWork(m *Manifest) string {
 		b.WriteString("// --unfreeze <module>` removes one.\n")
 		b.WriteString("replace (\n")
 		for _, r := range replaces {
-			fmt.Fprintf(&b, "\t%s => %s %s\n", r.path, r.path, r.version)
+			fmt.Fprintf(&b, "\t%s => %s %s\n", r.path, r.target, r.version)
 		}
 		b.WriteString(")\n")
 	}
@@ -101,17 +101,28 @@ func useBlock(m *Manifest) []string {
 	return lines
 }
 
-type frozenReplace struct{ path, version string }
+type frozenReplace struct{ path, target, version string }
 
 // frozenReplaces resolves each frozen module against the stored baseline. A
 // frozen module with no baseline version cannot be pinned and is dropped: an
 // empty version would render a syntactically invalid replace.
+//
+// The replacement target is not always the module being replaced. A baseline
+// entry qualified with a module path records that the artifact built this
+// module from a fork, and the pin has to restore that fork — replacing the
+// module with a version of itself would override the artifact's own replace and
+// build source it never shipped.
 func frozenReplaces(m *Manifest) []frozenReplace {
 	var out []frozenReplace
 	for _, p := range m.Frozen {
-		if v := m.Baseline[p]; v != "" {
-			out = append(out, frozenReplace{path: p, version: v})
+		from, v := splitBaseline(m.Baseline[p])
+		if v == "" {
+			continue
 		}
+		if from == "" {
+			from = p
+		}
+		out = append(out, frozenReplace{path: p, target: from, version: v})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
 	return out

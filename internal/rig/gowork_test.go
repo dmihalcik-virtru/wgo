@@ -55,6 +55,23 @@ func TestRenderGoWorkFrozen(t *testing.T) {
 	assertGolden(t, "dsp-2.7.1-frozen.go.work", RenderGoWork(m))
 }
 
+// A module the artifact built from a fork is pinned back to the fork. Replacing
+// it with a version of itself would override the artifact's own replace, so the
+// rig would build upstream code the artifact never ran — the exact substitution
+// the freeze exists to prevent.
+func TestRenderGoWorkFrozenToAFork(t *testing.T) {
+	req, p := dspRequest()
+	req.Baseline = map[string]string{
+		"google.golang.org/grpc": "github.com/virtru-corp/grpc-go@v1.65.1",
+	}
+	m, err := p.Plan(req)
+	require.NoError(t, err)
+	m.Frozen = []string{"google.golang.org/grpc"}
+
+	assert.Contains(t, RenderGoWork(m),
+		"google.golang.org/grpc => github.com/virtru-corp/grpc-go v1.65.1")
+}
+
 // A frozen module with no baseline version cannot be pinned; rendering an empty
 // version would produce a go.work that does not parse.
 func TestRenderGoWorkFrozenWithoutBaseline(t *testing.T) {

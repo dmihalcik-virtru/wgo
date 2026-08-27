@@ -26,6 +26,7 @@ var (
 	rigNewModules    []string
 	rigNewOrgs       []string
 	rigNewFull       bool
+	rigNewNoVerify   bool
 	rigNewDryRun     bool
 
 	rigLsFormat string
@@ -134,6 +135,8 @@ func init() {
 	rigNewCmd.Flags().StringArrayVarP(&rigNewModules, "module", "m", nil, "Add a module explicitly: <path>@<version> (repeatable)")
 	rigNewCmd.Flags().StringArrayVar(&rigNewOrgs, "org", nil, "Treat this module path prefix as in-org (repeatable, overrides config)")
 	rigNewCmd.Flags().BoolVar(&rigNewFull, "full", false, "Use full checkouts instead of sparse ones")
+	rigNewCmd.Flags().BoolVar(&rigNewNoVerify, "no-verify", false,
+		"Skip the drift check that otherwise runs once the rig is built")
 	rigNewCmd.Flags().BoolVar(&rigNewDryRun, "dry-run", false, "Print the plan and exit without leaving a rig behind")
 
 	rigLsCmd.Flags().StringVar(&rigLsFormat, "format", "", "Output format: table, path, json (default: table when TTY, path when piped)")
@@ -320,9 +323,90 @@ func runRigNew(name string) (retErr error) {
 	reportSkips(m)
 	rigLogf("rig %s: %d checkouts, %d modules", m.Name, len(m.Checkouts), len(m.Members))
 
+	if cfg.Rig.VerifyOnNew && !rigNewNoVerify {
+		verifyNewRig(gc, m, rigRoot, cfg.Rig.Freeze)
+	}
+
 	rigLogf("run `. %s` before any go command", filepath.Join(rigRoot, rig.EnvShName))
 	fmt.Println(rigRoot)
 	return nil
+}
+
+// verifyNewRig runs the drift check straight after creation, because the moment
+// a rig is built is the moment its drift is cheapest to act on.
+//
+// Nothing here is fatal. The rig exists, its checkouts are pinned, and stdout
+// has to stay a usable `cd $(wgo rig new ...)` — reporting drift by deleting
+// the thing that would let you look at it would be absurd. Failures to measure
+// are reported and dropped for the same reason.
+func verifyNewRig(gc *gotool.Client, m *rig.Manifest, rigRoot string, freeze bool) {
+	patterns := m.PackagePatterns()
+	if len(patterns) == 0 {
+		return
+	}
+	actual, err := gc.ListPackageModules(patterns...)
+	if err != nil {
+		rigLogf("could not check for drift: %v", err)
+		rigLogf("check it later with: wgo rig verify %s", m.Name)
+		return
+	}
+	rep := rig.Verify(m, actual)
+	failing := rep.Failing()
+	if len(failing) == 0 {
+		rigLogf("no drift: all %d baseline modules resolve as the artifact shipped them", rep.Compared)
+		return
+	}
+
+	rigLogf("%d module(s) do not match what %s shipped with:", len(failing), m.Primary)
+	for _, d := range failing {
+		rigLogf("  %s", d)
+	}
+	if !freeze {
+		rigLogf("pin them back with: wgo rig verify %s --freeze", m.Name)
+		return
+	}
+
+	res, freezeErr := rig.Freeze(gc, m, rep, os.DevNull)
+	// Recorded before the error is reported: a freeze that fails partway has
+	// already written replaces into go.work, and a manifest that does not name
+	// them leaves nothing for `--unfreeze` to drop.
+	if len(res.Froze) > 0 {
+		if err := rig.Save(rigRoot, m); err != nil {
+			rigLogf("froze %d module(s) but could not record it: %v", len(res.Froze), err)
+			return
+		}
+		rigLogf("froze %d module(s) back to the baseline in %s", len(res.Froze), rig.GoWorkName)
+	}
+	if freezeErr != nil {
+		rigLogf("could not freeze: %v", freezeErr)
+		return
+	}
+	reportUnfrozen(res, m)
+	if res.BuildErr != nil {
+		// The pins are in force and the rig no longer compiles: a member wants
+		// a version the artifact did not ship with. Say which way out exists
+		// rather than leaving a green-looking rig that cannot build.
+		rigLogf("but the rig no longer builds: %v", res.BuildErr)
+		rigLogf("drop the pin that broke it with: wgo rig verify %s --unfreeze <module>", m.Name)
+		return
+	}
+	if len(res.Froze) == 0 {
+		return
+	}
+	// A replace only takes effect if nothing else in the graph overrides it, so
+	// the freeze is not proof the drift is gone. Saying "froze 4 modules" and
+	// stopping there would report a fix that may not have held.
+	actual, err = gc.ListPackageModules(patterns...)
+	if err != nil {
+		rigLogf("could not confirm the freeze took: %v", err)
+		return
+	}
+	if left := rig.Verify(m, actual).Failing(); len(left) > 0 {
+		rigLogf("%d module(s) still do not match after the freeze:", len(left))
+		for _, d := range left {
+			rigLogf("  %s", d)
+		}
+	}
 }
 
 // checkRigRootFree rejects a rig root that is already occupied.
@@ -717,14 +801,14 @@ func readWorkUse(dest, modDir string) ([]string, error) {
 func baselineOf(buildList []gomod.Module) map[string]string {
 	out := map[string]string{}
 	for _, mod := range buildList {
-		// A directory replace has no version at all, and a module a workspace
-		// build served from source is recorded as "(devel)". Neither names
-		// anything a later build can be compared against: "(devel)" would read
-		// as drift against every real version forever, and `rig verify
-		// --freeze` would write it into a go.work replace the toolchain then
-		// rejects. Record nothing rather than something false.
-		if eff := mod.Effective(); mod.Path != "" && gomod.IsResolvableVersion(eff.Version) {
-			out[mod.Path] = eff.Version
+		if mod.Path == "" {
+			continue
+		}
+		// BaselineEntry drops what cannot be compared later — a directory
+		// replace has no version, "(devel)" names no release — and qualifies a
+		// fork's version with the module path it belongs to.
+		if entry := rig.BaselineEntry(mod); entry != "" {
+			out[mod.Path] = entry
 		}
 	}
 	return out
