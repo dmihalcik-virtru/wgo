@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/gomod"
 	"github.com/virtru/wgo/internal/gotool"
+	"github.com/virtru/wgo/internal/interrupt"
 	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/rig"
 )
@@ -117,8 +119,18 @@ func runRigSync(args []string) (retErr error) {
 		return err
 	}
 
-	jjc := jj.NewCLI()
-	mz := &rig.Materializer{JJ: jjc, Logf: rigLogf}
+	g := interrupt.Listen()
+	defer g.Stop()
+	ctx := g.Context()
+	defer func() { retErr = g.Wrap(retErr) }()
+
+	base := jj.NewCLI()
+	jjc := base.WithContext(ctx)
+	mz := &rig.Materializer{
+		JJ:      jjc,
+		Cleanup: base.WithContext(context.WithoutCancel(ctx)),
+		Logf:    rigLogf,
+	}
 	// Re-resolving may materialise a primary at a commit the rig does not have
 	// yet. Until ApplyDiff writes the manifest, nothing else records it.
 	defer func() {
@@ -127,7 +139,7 @@ func runRigSync(args []string) (retErr error) {
 		}
 	}()
 
-	want, err := resyncPlan(cfg, jjc, mz, have, rigRoot)
+	want, err := resyncPlan(ctx, cfg, jjc, mz, have, rigRoot)
 	switch {
 	case errors.Is(err, errSourceGone):
 		rigLogf("%v", err)
@@ -155,7 +167,7 @@ func runRigSync(args []string) (retErr error) {
 
 	gc := gotool.NewClient().In(rigRoot).WithWork(filepath.Join(rigRoot, rig.GoWorkName))
 	mz.Validate = gc
-	if err := mz.ApplyDiff(merged, diff, rigRoot, rig.PruneOpts{Prune: rigSyncPrune, Force: rigSyncForce}); err != nil {
+	if err := mz.ApplyDiff(ctx, merged, diff, rigRoot, rig.PruneOpts{Prune: rigSyncPrune, Force: rigSyncForce}); err != nil {
 		return err
 	}
 
@@ -174,7 +186,7 @@ func runRigSync(args []string) (retErr error) {
 // The primary is not re-materialised when the rig already holds it: `go list`
 // and the go.mod read both need it on disk, and it is on disk — in a directory
 // the user may have an editor and a debugger attached to.
-func resyncPlan(cfg *config.Config, jjc jj.Client, mz *rig.Materializer, have *rig.Manifest, rigRoot string) (*rig.Manifest, error) {
+func resyncPlan(ctx context.Context, cfg *config.Config, jjc jj.Client, mz *rig.Materializer, have *rig.Manifest, rigRoot string) (*rig.Manifest, error) {
 	src, err := recordedSource(have)
 	if err != nil {
 		return nil, err
@@ -192,13 +204,13 @@ func resyncPlan(cfg *config.Config, jjc jj.Client, mz *rig.Materializer, have *r
 		return nil, fmt.Errorf("rig: the recorded -m pins of %s: %w", have.Name, err)
 	}
 
-	pins, err := resolveRigPins(planner, reusePrimary(have, mz, rigRoot), have.Name, src)
+	pins, err := resolveRigPins(planner, reusePrimary(ctx, have, mz, rigRoot), have.Name, src)
 	if err != nil {
 		return nil, err
 	}
 	buildList := append(pins.buildList, extra...)
 
-	return planner.Plan(rig.Request{
+	return planner.Plan(ctx, rig.Request{
 		Name:   have.Name,
 		Source: pins.source,
 		// The filter is re-applied, so the pins that were admitted past it have
@@ -225,7 +237,7 @@ func resyncPlan(cfg *config.Config, jjc jj.Client, mz *rig.Materializer, have *r
 // reason — they hold a collision suffix that depends on what else existed when
 // the rig was built — and leaving the derived ones in place would make Reconcile
 // see the rig's own primary as a stranger and plan to check it out again.
-func reusePrimary(have *rig.Manifest, mz *rig.Materializer, rigRoot string) checkoutFunc {
+func reusePrimary(ctx context.Context, have *rig.Manifest, mz *rig.Materializer, rigRoot string) checkoutFunc {
 	return func(c *rig.Checkout) (string, error) {
 		for _, existing := range have.Checkouts {
 			if existing.Repo != c.Repo || existing.Commit != c.Commit {
@@ -252,7 +264,7 @@ func reusePrimary(have *rig.Manifest, mz *rig.Materializer, rigRoot string) chec
 			return dest, nil
 		}
 		rigLogf("the primary is pinned to %s, which %s does not hold on disk", rigPin(*c), have.Name)
-		return mz.Checkout(rigRoot, c)
+		return mz.Checkout(ctx, rigRoot, c)
 	}
 }
 
@@ -313,12 +325,18 @@ func runRigAdd(args []string) (retErr error) {
 	}
 	warnOutOfOrg(have, mods)
 
-	jjc := jj.NewCLI()
+	g := interrupt.Listen()
+	defer g.Stop()
+	ctx := g.Context()
+	defer func() { retErr = g.Wrap(retErr) }()
+
+	base := jj.NewCLI()
+	jjc := base.WithContext(ctx)
 	planner := &rig.Planner{
 		Locator:  &cloneLocator{jjc: jjc, cfg: cfg},
 		Resolver: jjc,
 	}
-	updated, diff, err := planner.AddModules(have, mods, checkoutOnDisk(rigRoot))
+	updated, diff, err := planner.AddModules(ctx, have, mods, checkoutOnDisk(rigRoot))
 	if err != nil {
 		return err
 	}
@@ -333,7 +351,11 @@ func runRigAdd(args []string) (retErr error) {
 		return nil
 	}
 
-	mz := &rig.Materializer{JJ: jjc, Logf: rigLogf}
+	mz := &rig.Materializer{
+		JJ:      jjc,
+		Cleanup: base.WithContext(context.WithoutCancel(ctx)),
+		Logf:    rigLogf,
+	}
 	defer func() {
 		if retErr != nil {
 			mz.Rollback(rigRoot)
@@ -342,7 +364,7 @@ func runRigAdd(args []string) (retErr error) {
 	mz.Validate = gotool.NewClient().In(rigRoot).WithWork(filepath.Join(rigRoot, rig.GoWorkName))
 	// Never prune from add: the diff it produces only ever grows the rig, so
 	// there is nothing to remove and no way to ask for it.
-	if err := mz.ApplyDiff(updated, diff, rigRoot, rig.PruneOpts{}); err != nil {
+	if err := mz.ApplyDiff(ctx, updated, diff, rigRoot, rig.PruneOpts{}); err != nil {
 		return err
 	}
 

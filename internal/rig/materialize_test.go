@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -159,7 +160,7 @@ func TestMaterializeCreatesCheckoutsAndFiles(t *testing.T) {
 	m := twoCheckoutManifest()
 	root := filepath.Join(t.TempDir(), "dsp")
 
-	require.NoError(t, mz.Materialize(m, root))
+	require.NoError(t, mz.Materialize(context.Background(), m, root))
 
 	require.Len(t, ws.adds, 2)
 
@@ -221,7 +222,7 @@ func TestMaterializeWidensSparseForLocalReplace(t *testing.T) {
 	m := twoCheckoutManifest()
 	root := filepath.Join(t.TempDir(), "dsp")
 
-	require.NoError(t, mz.Materialize(m, root))
+	require.NoError(t, mz.Materialize(context.Background(), m, root))
 
 	sparse := ws.sparseFor("platform-v0.9.0")
 	require.Len(t, sparse, 2, "narrowed once, then widened once the go.mod was readable")
@@ -245,7 +246,7 @@ func TestMaterializeWidensToFullForRootReplace(t *testing.T) {
 	m := twoCheckoutManifest()
 	root := filepath.Join(t.TempDir(), "dsp")
 
-	require.NoError(t, mz.Materialize(m, root))
+	require.NoError(t, mz.Materialize(context.Background(), m, root))
 
 	sparse := ws.sparseFor("platform-v0.9.0")
 	require.Len(t, sparse, 2)
@@ -267,7 +268,7 @@ func TestMaterializeRecordsEscapedReplaceAsSkip(t *testing.T) {
 	m := twoCheckoutManifest()
 	root := filepath.Join(t.TempDir(), "dsp")
 
-	require.NoError(t, mz.Materialize(m, root), "an unsatisfiable replace warns, it does not abort the rig")
+	require.NoError(t, mz.Materialize(context.Background(), m, root), "an unsatisfiable replace warns, it does not abort the rig")
 
 	loaded, err := Load(root)
 	require.NoError(t, err)
@@ -286,7 +287,7 @@ func TestMaterializeMissingGoModIsFatal(t *testing.T) {
 	mz := &Materializer{JJ: ws}
 	root := filepath.Join(t.TempDir(), "dsp")
 
-	err := mz.Materialize(twoCheckoutManifest(), root)
+	err := mz.Materialize(context.Background(), twoCheckoutManifest(), root)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "github.com/opentdf/platform/lib/fixtures")
 	assert.Contains(t, err.Error(), "lib/fixtures")
@@ -303,7 +304,7 @@ func TestMaterializeRollsBackInReverseOrder(t *testing.T) {
 	mz := &Materializer{JJ: ws}
 	root := filepath.Join(t.TempDir(), "dsp")
 
-	err := mz.Materialize(twoCheckoutManifest(), root)
+	err := mz.Materialize(context.Background(), twoCheckoutManifest(), root)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "opentdf/otdfctl")
 
@@ -325,7 +326,7 @@ func TestMaterializeRollbackKeepsPreexistingRoot(t *testing.T) {
 	}
 	mz := &Materializer{JJ: ws}
 
-	require.Error(t, mz.Materialize(twoCheckoutManifest(), root))
+	require.Error(t, mz.Materialize(context.Background(), twoCheckoutManifest(), root))
 
 	assert.FileExists(t, keep, "rollback removes only what this run created")
 	// src/ is ours even when the root is not, and leaving it behind makes the
@@ -347,7 +348,7 @@ func TestMaterializeRollbackKeepsAPreexistingSrc(t *testing.T) {
 	}
 	mz := &Materializer{JJ: ws}
 
-	require.Error(t, mz.Materialize(twoCheckoutManifest(), root))
+	require.Error(t, mz.Materialize(context.Background(), twoCheckoutManifest(), root))
 
 	assert.FileExists(t, keep)
 }
@@ -360,7 +361,7 @@ func TestMaterializeRollsBackOnSparseFailure(t *testing.T) {
 	mz := &Materializer{JJ: ws}
 	root := filepath.Join(t.TempDir(), "dsp")
 
-	err := mz.Materialize(twoCheckoutManifest(), root)
+	err := mz.Materialize(context.Background(), twoCheckoutManifest(), root)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "lib/fixtures, service")
 
@@ -371,7 +372,7 @@ func TestMaterializeRollsBackOnSparseFailure(t *testing.T) {
 
 func TestMaterializeRejectsRelativeRoot(t *testing.T) {
 	mz := &Materializer{JJ: &fakeWorkspaces{content: twoCheckoutContent()}}
-	err := mz.Materialize(twoCheckoutManifest(), "rigs/dsp")
+	err := mz.Materialize(context.Background(), twoCheckoutManifest(), "rigs/dsp")
 	require.Error(t, err)
 	// GOWORK must be absolute or every go command in the rig fails.
 	assert.Contains(t, err.Error(), "must be absolute")
@@ -383,7 +384,7 @@ func TestMaterializeRejectsInvalidManifest(t *testing.T) {
 	m := twoCheckoutManifest()
 	m.Name = ""
 
-	require.Error(t, mz.Materialize(m, filepath.Join(t.TempDir(), "dsp")))
+	require.Error(t, mz.Materialize(context.Background(), m, filepath.Join(t.TempDir(), "dsp")))
 	assert.Empty(t, ws.adds, "validation runs before anything touches the disk")
 }
 
@@ -403,7 +404,7 @@ func TestMaterializeValidatesGoWork(t *testing.T) {
 	ws := &fakeWorkspaces{content: twoCheckoutContent()}
 	mz := &Materializer{JJ: ws, Validate: v}
 
-	require.NoError(t, mz.Materialize(twoCheckoutManifest(), filepath.Join(t.TempDir(), "dsp")))
+	require.NoError(t, mz.Materialize(context.Background(), twoCheckoutManifest(), filepath.Join(t.TempDir(), "dsp")))
 	assert.True(t, v.called)
 }
 
@@ -412,7 +413,7 @@ func TestMaterializeRollsBackWhenGoWorkIsRejected(t *testing.T) {
 	mz := &Materializer{JJ: ws, Validate: &stubValidator{err: errors.New("unknown directive")}}
 	root := filepath.Join(t.TempDir(), "dsp")
 
-	err := mz.Materialize(twoCheckoutManifest(), root)
+	err := mz.Materialize(context.Background(), twoCheckoutManifest(), root)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "go.work does not parse")
 	assert.Len(t, ws.forgets, 2, "both checkouts are undone")
@@ -424,7 +425,7 @@ func TestRemoveForgetsWorkspacesThenDeletesTree(t *testing.T) {
 	mz := &Materializer{JJ: ws}
 	m := twoCheckoutManifest()
 	root := filepath.Join(t.TempDir(), "dsp")
-	require.NoError(t, mz.Materialize(m, root))
+	require.NoError(t, mz.Materialize(context.Background(), m, root))
 
 	require.NoError(t, Remove(ws, m, root, nil))
 
@@ -440,7 +441,7 @@ func TestRemoveReportsUnforgettableWorkspaces(t *testing.T) {
 	mz := &Materializer{JJ: ws}
 	m := twoCheckoutManifest()
 	root := filepath.Join(t.TempDir(), "dsp")
-	require.NoError(t, mz.Materialize(m, root))
+	require.NoError(t, mz.Materialize(context.Background(), m, root))
 
 	ws.forgetErr = map[string]error{"rig-dsp-bbbbbbbb": errors.New("workspace is dirty")}
 
@@ -480,13 +481,13 @@ func TestCheckoutPreWarmsAndMaterializeAdoptsIt(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "dsp")
 
 	// Phase one: `rig new` needs the primary on disk to compute the build list.
-	dest, err := mz.Checkout(root, &m.Checkouts[0])
+	dest, err := mz.Checkout(context.Background(), root, &m.Checkouts[0])
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(root, SrcDir, "platform-v0.9.0"), dest)
 	assert.FileExists(t, filepath.Join(dest, "service", "go.mod"))
 
 	// Phase two: the rest of the rig, without touching the primary again.
-	require.NoError(t, mz.Materialize(m, root))
+	require.NoError(t, mz.Materialize(context.Background(), m, root))
 
 	require.Len(t, ws.adds, 2, "the pre-warmed checkout is not created twice")
 	assert.Equal(t, "rig-dsp-aaaaaaaa", ws.adds[0].opts.Name)
@@ -503,9 +504,9 @@ func TestMaterializeRollsBackThePreWarmedCheckoutToo(t *testing.T) {
 	m := twoCheckoutManifest()
 	root := filepath.Join(t.TempDir(), "dsp")
 
-	_, err := mz.Checkout(root, &m.Checkouts[0])
+	_, err := mz.Checkout(context.Background(), root, &m.Checkouts[0])
 	require.NoError(t, err)
-	require.Error(t, mz.Materialize(m, root))
+	require.Error(t, mz.Materialize(context.Background(), m, root))
 
 	// The primary was created in an earlier phase but is still ours to undo.
 	require.Len(t, ws.forgets, 1)
@@ -519,7 +520,7 @@ func TestRollbackIsCallableByTheCallerAndOnlyOnce(t *testing.T) {
 	m := twoCheckoutManifest()
 	root := filepath.Join(t.TempDir(), "dsp")
 
-	_, err := mz.Checkout(root, &m.Checkouts[0])
+	_, err := mz.Checkout(context.Background(), root, &m.Checkouts[0])
 	require.NoError(t, err)
 
 	// This is the window `rig new` fails in when `go list` fails: the primary
@@ -530,4 +531,220 @@ func TestRollbackIsCallableByTheCallerAndOnlyOnce(t *testing.T) {
 
 	mz.Rollback(root)
 	assert.Len(t, ws.forgets, 1, "a second rollback must not forget the same workspace again")
+}
+
+// fakeOrphans adds the two lookups orphan recovery needs to fakeWorkspaces:
+// which clone a checkout belongs to, and what that clone has registered.
+type fakeOrphans struct {
+	fakeWorkspaces
+	// mainClone maps a checkout directory to the clone backing it. A missing
+	// entry stands for a directory that is not a readable jj workspace.
+	mainClone map[string]string
+	// registered maps a clone to the workspaces it still lists.
+	registered map[string][]jj.Workspace
+	rootErr    error
+	listErr    error
+}
+
+func (f *fakeOrphans) MainWorkspaceRoot(path string) (string, error) {
+	if f.rootErr != nil {
+		return "", f.rootErr
+	}
+	clone, ok := f.mainClone[filepath.Base(path)]
+	if !ok {
+		return "", errors.New("not a jj workspace")
+	}
+	return clone, nil
+}
+
+func (f *fakeOrphans) ListWorkspaces(repo string) ([]jj.Workspace, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.registered[repo], nil
+}
+
+// orphanRig builds the state an interrupted `rig new` leaves: checkout
+// directories under src/ and no manifest.
+func orphanRig(t *testing.T, dirs ...string) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "dsp")
+	for _, d := range dirs {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, SrcDir, d), 0o755))
+	}
+	return root
+}
+
+func TestFindOrphansTracesCheckoutsBackToTheirClones(t *testing.T) {
+	root := orphanRig(t, "platform-v0.9.0", "otdfctl-v0.3.0")
+	js := &fakeOrphans{
+		mainClone: map[string]string{
+			"platform-v0.9.0": "/mains/opentdf/platform",
+			"otdfctl-v0.3.0":  "/mains/opentdf/otdfctl",
+		},
+		registered: map[string][]jj.Workspace{
+			"/mains/opentdf/platform": {
+				{Name: "default", Path: "/mains/opentdf/platform"},
+				{Name: "rig-dsp-aaaaaaaa", Path: filepath.Join(root, SrcDir, "platform-v0.9.0")},
+			},
+			"/mains/opentdf/otdfctl": {
+				{Name: "rig-dsp-bbbbbbbb", Path: filepath.Join(root, SrcDir, "otdfctl-v0.3.0")},
+			},
+		},
+	}
+
+	got, err := FindOrphans(js, root)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+
+	byDir := map[string]Orphan{}
+	for _, o := range got {
+		byDir[filepath.Base(o.Dir)] = o
+	}
+	assert.Equal(t, "rig-dsp-aaaaaaaa", byDir["platform-v0.9.0"].Workspace)
+	assert.Equal(t, "/mains/opentdf/platform", byDir["platform-v0.9.0"].MainClone)
+	assert.Equal(t, "rig-dsp-bbbbbbbb", byDir["otdfctl-v0.3.0"].Workspace)
+}
+
+// The match is on path, not on the rig-<name>-<hash> convention, so a rig
+// whose directory was renamed is still traced correctly.
+func TestFindOrphansMatchesOnPathNotWorkspaceName(t *testing.T) {
+	root := orphanRig(t, "platform-v0.9.0")
+	js := &fakeOrphans{
+		mainClone: map[string]string{"platform-v0.9.0": "/mains/opentdf/platform"},
+		registered: map[string][]jj.Workspace{
+			"/mains/opentdf/platform": {
+				{Name: "nothing-like-a-rig-name", Path: filepath.Join(root, SrcDir, "platform-v0.9.0")},
+			},
+		},
+	}
+
+	got, err := FindOrphans(js, root)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "nothing-like-a-rig-name", got[0].Workspace)
+}
+
+func TestFindOrphansReportsUntraceableCheckouts(t *testing.T) {
+	root := orphanRig(t, "half-written")
+	got, err := FindOrphans(&fakeOrphans{}, root)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Empty(t, got[0].Workspace, "nothing to forget")
+	assert.Error(t, got[0].Err, "but the reason is reported rather than swallowed")
+}
+
+// A checkout whose workspace the user already forgot by hand leaves a
+// directory with no registration. Removal still has to delete the tree.
+func TestFindOrphansHandlesAnAlreadyForgottenWorkspace(t *testing.T) {
+	root := orphanRig(t, "platform-v0.9.0")
+	js := &fakeOrphans{
+		mainClone:  map[string]string{"platform-v0.9.0": "/mains/opentdf/platform"},
+		registered: map[string][]jj.Workspace{"/mains/opentdf/platform": {{Name: "default", Path: "/mains/opentdf/platform"}}},
+	}
+
+	got, err := FindOrphans(js, root)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Empty(t, got[0].Workspace)
+	assert.NoError(t, got[0].Err, "a forgotten workspace is an expected state, not a failure")
+}
+
+func TestFindOrphansOnARootWithNoSrc(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "dsp")
+	require.NoError(t, os.MkdirAll(root, 0o755))
+	got, err := FindOrphans(&fakeOrphans{}, root)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestRemoveOrphansForgetsThenDeletes(t *testing.T) {
+	root := orphanRig(t, "platform-v0.9.0", "otdfctl-v0.3.0")
+	js := &fakeOrphans{}
+	orphans := []Orphan{
+		{Dir: filepath.Join(root, SrcDir, "platform-v0.9.0"), MainClone: "/mains/opentdf/platform", Workspace: "rig-dsp-aaaaaaaa"},
+		{Dir: filepath.Join(root, SrcDir, "otdfctl-v0.3.0"), MainClone: "/mains/opentdf/otdfctl", Workspace: "rig-dsp-bbbbbbbb"},
+	}
+
+	require.NoError(t, RemoveOrphans(js, orphans, root, nil))
+
+	assert.Equal(t, []forgetCall{
+		{repo: "/mains/opentdf/platform", name: "rig-dsp-aaaaaaaa"},
+		{repo: "/mains/opentdf/otdfctl", name: "rig-dsp-bbbbbbbb"},
+	}, js.forgets)
+	assert.NoDirExists(t, root)
+}
+
+// A clone that cannot be reached must not silently lose its registration to
+// the tree deletion: the user needs the command to run by hand.
+func TestRemoveOrphansReportsForgetFailuresButStillDeletes(t *testing.T) {
+	root := orphanRig(t, "platform-v0.9.0")
+	js := &fakeOrphans{fakeWorkspaces: fakeWorkspaces{
+		forgetErr: map[string]error{"rig-dsp-aaaaaaaa": errors.New("repo is locked")},
+	}}
+	orphans := []Orphan{
+		{Dir: filepath.Join(root, SrcDir, "platform-v0.9.0"), MainClone: "/mains/opentdf/platform", Workspace: "rig-dsp-aaaaaaaa"},
+	}
+
+	err := RemoveOrphans(js, orphans, root, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "jj -R /mains/opentdf/platform workspace forget rig-dsp-aaaaaaaa")
+	assert.NoDirExists(t, root, "the tree still goes; only the registration is left to the user")
+}
+
+// A cancelled build must roll back, not stop where it stands: the half-built
+// rig it would otherwise leave blocks `rig new` and strands workspaces.
+func TestMaterializeRollsBackWhenTheContextIsCancelled(t *testing.T) {
+	ws := &fakeWorkspaces{content: twoCheckoutContent()}
+	mz := &Materializer{JJ: ws}
+	root := filepath.Join(t.TempDir(), "dsp")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := mz.Materialize(ctx, twoCheckoutManifest(), root)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, ws.adds, "cancelled before the first checkout")
+	assert.NoDirExists(t, root)
+}
+
+// Cancelling between checkouts is the realistic case — the first is on disk
+// and registered by the time the user reaches for Ctrl-C.
+func TestMaterializeRollsBackAWorkspaceAlreadyCreated(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ws := &fakeWorkspaces{content: twoCheckoutContent()}
+	mz := &Materializer{JJ: ws}
+	root := filepath.Join(t.TempDir(), "dsp")
+
+	// Cancel once the primary is down, so the loop stops at the second.
+	dest, err := mz.Checkout(ctx, root, &twoCheckoutManifest().Checkouts[0])
+	require.NoError(t, err)
+	require.DirExists(t, dest)
+	cancel()
+
+	err = mz.Materialize(ctx, twoCheckoutManifest(), root)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, []forgetCall{{repo: "/mains/opentdf/platform", name: "rig-dsp-aaaaaaaa"}}, ws.forgets,
+		"the workspace registered before the cancellation is forgotten")
+	assert.NoDirExists(t, root, "and the tree this run created goes with it")
+}
+
+// Rollback runs after the cancellation that triggered it, so it must not use
+// the cancelled client — every forget would fail and strand the workspace.
+func TestRollbackUsesTheCleanupClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	work := &fakeWorkspaces{content: twoCheckoutContent()}
+	cleanup := &fakeWorkspaces{}
+	mz := &Materializer{JJ: work, Cleanup: cleanup}
+	root := filepath.Join(t.TempDir(), "dsp")
+
+	_, err := mz.Checkout(ctx, root, &twoCheckoutManifest().Checkouts[0])
+	require.NoError(t, err)
+	cancel()
+	require.Error(t, mz.Materialize(ctx, twoCheckoutManifest(), root))
+
+	assert.Empty(t, work.forgets, "the cancelled client is not used for cleanup")
+	assert.Equal(t, []forgetCall{{repo: "/mains/opentdf/platform", name: "rig-dsp-aaaaaaaa"}}, cleanup.forgets)
 }

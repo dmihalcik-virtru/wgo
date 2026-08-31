@@ -314,3 +314,41 @@ func TestListMissingDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, got)
 }
+
+func TestNames(t *testing.T) {
+	rigDir := t.TempDir()
+
+	for _, name := range []string{"dsp-2.7.1", "abc-1.0.0"} {
+		m := sampleManifest()
+		m.Name = name
+		require.NoError(t, Save(filepath.Join(rigDir, name), m))
+	}
+	require.NoError(t, os.MkdirAll(filepath.Join(rigDir, "not-a-rig"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rigDir, "notes.md"), []byte("hi"), 0o644))
+
+	// A manifest too broken to load still names a rig, and completion must
+	// offer it: `wgo rig rm` is how the user gets rid of it.
+	broken := filepath.Join(rigDir, "half-written")
+	require.NoError(t, os.MkdirAll(broken, 0o755))
+	require.NoError(t, os.WriteFile(ManifestPath(broken), []byte("name = \"half-written\"\n[[checkout]]\n"), 0o644))
+	if _, err := Load(broken); err == nil {
+		t.Fatal("the fixture is meant to be a rig List would reject")
+	}
+
+	// The wreckage of a `rig new` that died before the manifest write. It is
+	// the one name the user has to type — `wgo rig rm <name> --force` is the
+	// only way to clear it — so it is the one name completion must not omit.
+	orphan := filepath.Join(rigDir, "interrupted")
+	require.NoError(t, os.MkdirAll(filepath.Join(orphan, SrcDir, "platform-v0.9.0"), 0o755))
+
+	got, err := Names(rigDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"abc-1.0.0", "dsp-2.7.1", "half-written", "interrupted"}, got)
+	assert.NotContains(t, got, "not-a-rig", "rig.dir may hold directories that are not rigs")
+}
+
+func TestNamesMissingDir(t *testing.T) {
+	got, err := Names(filepath.Join(t.TempDir(), "nope"))
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}

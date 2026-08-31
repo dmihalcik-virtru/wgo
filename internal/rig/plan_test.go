@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -126,7 +127,7 @@ func dspRequest() (Request, *Planner) {
 
 func TestPlanDSP(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	// One dsp checkout, seven platform checkouts at seven distinct commits, one
@@ -203,7 +204,7 @@ func TestPlanGoVersion(t *testing.T) {
 		}
 	}
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 	assert.Equal(t, "1.25rc1", m.GoVersion)
 }
@@ -214,7 +215,7 @@ func TestPlanGoVersion(t *testing.T) {
 // interleaves the repos in an order that means nothing to a reader.
 func TestPlanOrdersCheckoutsForReading(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	var dirs []string
@@ -255,12 +256,12 @@ func TestPlanOrdersCheckoutsForReading(t *testing.T) {
 // The ordering must not depend on map iteration, which Go randomises per run.
 func TestPlanIsDeterministic(t *testing.T) {
 	req, p := dspRequest()
-	first, err := p.Plan(req)
+	first, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	for i := 0; i < 20; i++ {
 		req, p := dspRequest()
-		got, err := p.Plan(req)
+		got, err := p.Plan(context.Background(), req)
 		require.NoError(t, err)
 		require.Equal(t, first, got, "plan %d differs", i)
 	}
@@ -270,7 +271,7 @@ func TestPlanIsDeterministic(t *testing.T) {
 // materialises only its own subtree.
 func TestPlanSparseSets(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	for _, c := range m.Checkouts {
@@ -290,7 +291,7 @@ func TestPlanSparseSets(t *testing.T) {
 func TestPlanFullCheckouts(t *testing.T) {
 	req, p := dspRequest()
 	req.Sparse = false
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	for _, c := range m.Checkouts {
@@ -302,7 +303,7 @@ func TestPlanFullCheckouts(t *testing.T) {
 
 func TestPlanWorkspaceNames(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	seen := map[string]bool{}
@@ -328,7 +329,7 @@ func TestPlanWorkspaceNamesSurviveTruncation(t *testing.T) {
 	req, p := dspRequest()
 	req.Name = strings.Repeat("x", MaxNameLen)
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 	require.Greater(t, len(m.Checkouts), 1)
 
@@ -349,14 +350,14 @@ func TestPlanRejectsOverlongName(t *testing.T) {
 	req, p := dspRequest()
 	req.Name = strings.Repeat("x", MaxNameLen+1)
 
-	_, err := p.Plan(req)
+	_, err := p.Plan(context.Background(), req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "limit is")
 }
 
 func TestPlanSkips(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	kinds := map[SkipKind][]string{}
@@ -379,7 +380,7 @@ func TestPlanUnreachableRepoIsSkipped(t *testing.T) {
 		"opentdf/otdfctl": errors.New("repository not found"),
 	}
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	assert.Len(t, m.Checkouts, 8, "the other eight checkouts still get planned")
@@ -411,7 +412,7 @@ func TestPlanUnreachablePrimaryIsFatal(t *testing.T) {
 		"opentdf/platform": errors.New("repository not found"),
 	}
 
-	_, err := p.Plan(req)
+	_, err := p.Plan(context.Background(), req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "primary module")
 	assert.Contains(t, err.Error(), "github.com/opentdf/platform/service")
@@ -422,7 +423,7 @@ func TestPlanUnreachablePrimaryIsFatal(t *testing.T) {
 // must only be located once.
 func TestPlanLocatesEachRepoOnce(t *testing.T) {
 	req, p := dspRequest()
-	_, err := p.Plan(req)
+	_, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	counts := map[string]int{}
@@ -441,7 +442,7 @@ func TestPlanUnresolvableTagIsFatal(t *testing.T) {
 	req, p := dspRequest()
 	delete(p.Resolver.(*fakeResolver).commits, `present(tags(exact:"service/v0.11.6"))`)
 
-	_, err := p.Plan(req)
+	_, err := p.Plan(context.Background(), req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "github.com/opentdf/platform/service@v0.11.6")
 	assert.Contains(t, err.Error(), "jj git fetch", "the error names the fix")
@@ -451,7 +452,7 @@ func TestPlanResolverError(t *testing.T) {
 	req, p := dspRequest()
 	p.Resolver.(*fakeResolver).err = errors.New("jj exploded")
 
-	_, err := p.Plan(req)
+	_, err := p.Plan(context.Background(), req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "jj exploded")
 }
@@ -482,7 +483,7 @@ func TestPlanPseudoVersion(t *testing.T) {
 		}},
 	}
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	// Named after the commit, since there is no tag to name it after.
@@ -522,7 +523,7 @@ func TestPlanSharesCheckoutAcrossModulesAtOneCommit(t *testing.T) {
 		}},
 	}
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 	require.Len(t, m.Checkouts, 2, "app plus one shared mono checkout")
 
@@ -569,7 +570,7 @@ func TestPlanDirCollision(t *testing.T) {
 		"/mains/two/platform": "2222222200000000000000000000000000000000",
 	}}
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 	require.Len(t, m.Checkouts, 2)
 
@@ -588,10 +589,10 @@ func (r *perCloneResolver) Resolve(clone, _ string) (string, error) {
 func TestPlanRequiresNameAndPrimary(t *testing.T) {
 	p := &Planner{Locator: &fakeLocator{}, Resolver: &fakeResolver{}}
 
-	_, err := p.Plan(Request{Primary: gomod.Module{Path: "github.com/a/b"}})
+	_, err := p.Plan(context.Background(), Request{Primary: gomod.Module{Path: "github.com/a/b"}})
 	assert.ErrorContains(t, err, "requires a name")
 
-	_, err = p.Plan(Request{Name: "x"})
+	_, err = p.Plan(context.Background(), Request{Name: "x"})
 	assert.ErrorContains(t, err, "requires a primary module")
 }
 
@@ -601,7 +602,7 @@ func TestPlanRequiresNameAndPrimary(t *testing.T) {
 // different build list than the artifact.
 func TestPlanMirrorsPrimaryGoWork(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"", "sdk"}, m.PrimaryUse)
@@ -626,7 +627,7 @@ func TestPlanMirrorsPrimaryGoWork(t *testing.T) {
 // the primary's version asserts a pin that does not exist.
 func TestPlanPrimaryUseMemberIdentity(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	// Scoped to the primary's own checkout: opentdf/platform/sdk also sits at
@@ -654,7 +655,7 @@ func TestPlanPrimaryUseMemberFallsBackToTheGuessedPath(t *testing.T) {
 	req, p := dspRequest()
 	req.PrimaryUse = append(req.PrimaryUse, "./tools")
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	var tools *Member
@@ -680,7 +681,7 @@ func TestPlanGoVersionCountsLocallyReplacedMembers(t *testing.T) {
 		}
 	}
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 	assert.Equal(t, "1.25.0", m.GoVersion,
 		"the primary's ./sdk is a workspace member; go.work cannot be older than it")
@@ -706,7 +707,7 @@ func TestPlanPrimaryUseDoesNotDuplicateABuildListModule(t *testing.T) {
 	p.Resolver.(*fakeResolver).commits[`present(tags(exact:"tools/v2.5.0"))`] =
 		"7001000000000000000000000000000000000aa"
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	byPath := map[string]int{}
@@ -732,7 +733,7 @@ func TestPlanPrimaryUseDoesNotDuplicateABuildListModule(t *testing.T) {
 func TestPlanWithoutPrimaryGoWork(t *testing.T) {
 	req, p := dspRequest()
 	req.PrimaryUse = nil
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	for _, mem := range m.Members {
@@ -749,7 +750,7 @@ func TestPlanUnresolvableRevisionHint(t *testing.T) {
 		req, p := dspRequest()
 		delete(p.Resolver.(*fakeResolver).commits, `present(tags(exact:"service/v0.11.6"))`)
 
-		_, err := p.Plan(req)
+		_, err := p.Plan(context.Background(), req)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no matching commit")
 		assert.Contains(t, err.Error(), "-t service/v0.11.6")
@@ -764,7 +765,7 @@ func TestPlanUnresolvableRevisionHint(t *testing.T) {
 			}
 		}
 
-		_, err := p.Plan(req)
+		_, err := p.Plan(context.Background(), req)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "pseudo-version")
 		assert.NotContains(t, err.Error(), "-t ", "there is no tag to fetch")
@@ -950,7 +951,7 @@ func TestResolvePrimaryAgreesWithThePlanner(t *testing.T) {
 	// primary before it has a build list, so the name it picks then must be the
 	// name the planner would have picked afterwards. If these ever diverge the
 	// manifest describes a directory nobody created.
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 	require.NotEmpty(t, m.Checkouts)
 	planned := m.Checkouts[0]
@@ -977,7 +978,7 @@ func TestPlanAdoptsThePreWarmedPrimary(t *testing.T) {
 	pc.Dir = "dsp-prewarmed"
 	req.PrimaryCheckout = pc
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	assert.Equal(t, "dsp-prewarmed", m.Checkouts[0].Dir)
@@ -1034,7 +1035,7 @@ func TestPlanSkipsUnpinnedModules(t *testing.T) {
 		Path: "github.com/opentdf/platform/lib/scratch", Version: gomod.DevelVersion,
 	})
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	// A hard error here would be the old behaviour: the revset
 	// tags(exact:"(devel)") resolves to nothing, and resolveAll treats that as
 	// fatal. One unreleased sibling must not take the other nine checkouts
@@ -1056,7 +1057,7 @@ func TestPlanRejectsAnUnpinnedPrimary(t *testing.T) {
 	req.Primary.Version = gomod.DevelVersion
 	req.BuildList[0] = req.Primary
 
-	_, err := p.Plan(req)
+	_, err := p.Plan(context.Background(), req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot check out the primary module")
 	assert.Contains(t, err.Error(), string(SkipUnpinned))
@@ -1155,7 +1156,7 @@ func TestPlanAdoptsAnUnpinnedPrimaryCheckout(t *testing.T) {
 		Full:      true,
 	}
 
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	require.Len(t, m.Checkouts, 9)
@@ -1184,7 +1185,7 @@ func TestPlanDoesNotReResolveAnAdoptedPrimary(t *testing.T) {
 		Revset: "x", Commit: "dsp0000000000000000000000000000000000000", Full: true,
 	}
 
-	_, err := p.Plan(req)
+	_, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	require.NotEmpty(t, loc.calls, "the dependencies still have to be located")

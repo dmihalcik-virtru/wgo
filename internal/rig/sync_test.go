@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -277,7 +278,7 @@ func materializedRig(t *testing.T, content map[string]map[string]string) (string
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "dsp")
 	mz := &Materializer{JJ: &fakeWorkspaces{content: content}}
-	require.NoError(t, mz.Materialize(twoCheckoutManifest(), root))
+	require.NoError(t, mz.Materialize(context.Background(), twoCheckoutManifest(), root))
 	have, err := Load(root)
 	require.NoError(t, err)
 	return root, have
@@ -320,7 +321,7 @@ func TestApplyDiffAddsOnlyTheNewCheckout(t *testing.T) {
 	content["rig-dsp-cccccccc"] = policyContent()
 	ws := &fakeWorkspaces{content: content}
 	mz := &Materializer{JJ: ws}
-	require.NoError(t, mz.ApplyDiff(merged, diff, root, PruneOpts{}))
+	require.NoError(t, mz.ApplyDiff(context.Background(), merged, diff, root, PruneOpts{}))
 
 	require.Len(t, ws.adds, 1, "the two checkouts already on disk are left alone")
 	assert.Equal(t, "rig-dsp-cccccccc", ws.adds[0].opts.Name)
@@ -349,7 +350,7 @@ func TestApplyDiffFoldsGoVersionsFromDisk(t *testing.T) {
 	content["rig-dsp-cccccccc"] = map[string]string{
 		"go.mod": "module github.com/opentdf/policy\n\ngo 1.25.1\n",
 	}
-	require.NoError(t, (&Materializer{JJ: &fakeWorkspaces{content: content}}).ApplyDiff(merged, diff, root, PruneOpts{}))
+	require.NoError(t, (&Materializer{JJ: &fakeWorkspaces{content: content}}).ApplyDiff(context.Background(), merged, diff, root, PruneOpts{}))
 
 	loaded, err := Load(root)
 	require.NoError(t, err)
@@ -371,7 +372,7 @@ func TestApplyDiffRegeneratesFilesWithNothingToChange(t *testing.T) {
 	require.True(t, diff.Empty())
 
 	ws := &fakeWorkspaces{content: twoCheckoutContent()}
-	require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(merged, diff, root, PruneOpts{}))
+	require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(context.Background(), merged, diff, root, PruneOpts{}))
 
 	assert.FileExists(t, filepath.Join(root, GoWorkName))
 	assert.FileExists(t, filepath.Join(root, EnvShName))
@@ -390,7 +391,7 @@ func TestApplyDiffForgetsBeforeRestoring(t *testing.T) {
 	require.Len(t, diff.Restore, 1)
 
 	ws := &fakeWorkspaces{content: twoCheckoutContent()}
-	require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(merged, diff, root, PruneOpts{}))
+	require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(context.Background(), merged, diff, root, PruneOpts{}))
 
 	require.Len(t, ws.forgets, 1)
 	assert.Equal(t, forgetCall{repo: "/mains/opentdf/otdfctl", name: "rig-dsp-bbbbbbbb"}, ws.forgets[0])
@@ -414,7 +415,7 @@ func TestApplyDiffRestoresDespiteAFailedForget(t *testing.T) {
 	}
 	var logged []string
 	mz := &Materializer{JJ: ws, Logf: func(f string, a ...any) { logged = append(logged, f) }}
-	require.NoError(t, mz.ApplyDiff(merged, diff, root, PruneOpts{}))
+	require.NoError(t, mz.ApplyDiff(context.Background(), merged, diff, root, PruneOpts{}))
 
 	require.Len(t, ws.adds, 1)
 	assert.Contains(t, strings.Join(logged, "\n"), "was not registered in")
@@ -432,7 +433,7 @@ func TestApplyDiffWidensAnExistingCheckout(t *testing.T) {
 	require.Len(t, diff.Widen, 1)
 
 	ws := &fakeWorkspaces{content: twoCheckoutContent()}
-	require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(merged, diff, root, PruneOpts{}))
+	require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(context.Background(), merged, diff, root, PruneOpts{}))
 
 	sparse := ws.sparseFor("platform-v0.9.0")
 	require.Len(t, sparse, 1)
@@ -461,7 +462,7 @@ func TestApplyDiffPrunesOnlyWhenAsked(t *testing.T) {
 		require.Len(t, diff.Remove, 1)
 
 		ws := &fakeWorkspaces{content: twoCheckoutContent()}
-		require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(merged, diff, root, PruneOpts{}))
+		require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(context.Background(), merged, diff, root, PruneOpts{}))
 
 		assert.Empty(t, ws.forgets)
 		assert.DirExists(t, filepath.Join(root, SrcDir, "otdfctl-v0.3.0"))
@@ -484,7 +485,7 @@ func TestApplyDiffPrunesOnlyWhenAsked(t *testing.T) {
 		require.NoError(t, err)
 
 		ws := &fakeWorkspaces{content: twoCheckoutContent()}
-		require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(merged, diff, root, PruneOpts{Prune: true}))
+		require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(context.Background(), merged, diff, root, PruneOpts{Prune: true}))
 
 		require.Len(t, ws.forgets, 1)
 		assert.Equal(t, "rig-dsp-bbbbbbbb", ws.forgets[0].name)
@@ -518,7 +519,7 @@ func TestApplyDiffKeepsADirtyCheckout(t *testing.T) {
 				dirty:          map[string][]string{filepath.Join(root, SrcDir, "otdfctl-v0.3.0"): {"M main.go"}},
 			}
 			mz := &Materializer{JJ: ws, Logf: func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }}
-			require.NoError(t, mz.ApplyDiff(merged, diff, root, PruneOpts{Prune: true, Force: tc.force}))
+			require.NoError(t, mz.ApplyDiff(context.Background(), merged, diff, root, PruneOpts{Prune: true, Force: tc.force}))
 
 			loaded, err := Load(root)
 			require.NoError(t, err)
@@ -557,7 +558,7 @@ func TestApplyDiffSurvivesAFailedPrune(t *testing.T) {
 		forgetErr: map[string]error{"rig-dsp-bbbbbbbb": errors.New("locked")},
 	}
 	mz := &Materializer{JJ: ws, Logf: func(f string, a ...any) { logged = append(logged, f) }}
-	require.NoError(t, mz.ApplyDiff(merged, diff, root, PruneOpts{Prune: true}))
+	require.NoError(t, mz.ApplyDiff(context.Background(), merged, diff, root, PruneOpts{Prune: true}))
 
 	joined := strings.Join(logged, "\n")
 	assert.Contains(t, joined, "jj -R %s workspace forget %s", "the user needs the exact command")
@@ -583,7 +584,7 @@ func TestApplyDiffDoesNotAccumulateSkips(t *testing.T) {
 	for range 2 {
 		merged, diff, err := Reconcile(have, have, onDiskUnder(root))
 		require.NoError(t, err)
-		require.NoError(t, (&Materializer{JJ: &fakeWorkspaces{content: content}}).ApplyDiff(merged, diff, root, PruneOpts{}))
+		require.NoError(t, (&Materializer{JJ: &fakeWorkspaces{content: content}}).ApplyDiff(context.Background(), merged, diff, root, PruneOpts{}))
 
 		have, err = Load(root)
 		require.NoError(t, err)
@@ -604,7 +605,7 @@ func TestApplyDiffRollsBackWhatItCreated(t *testing.T) {
 	merged, diff, err := Reconcile(have, policyPlan(have), onDiskUnder(root))
 	require.NoError(t, err)
 
-	require.Error(t, mz.ApplyDiff(merged, diff, root, PruneOpts{}))
+	require.Error(t, mz.ApplyDiff(context.Background(), merged, diff, root, PruneOpts{}))
 
 	require.Len(t, ws.forgets, 1, "only the checkout this run added is undone")
 	assert.Equal(t, "rig-dsp-cccccccc", ws.forgets[0].name)
@@ -625,18 +626,18 @@ func TestApplyDiffSkipsCheckoutsThisRunAlreadyMade(t *testing.T) {
 
 	ws := &fakeWorkspaces{content: twoCheckoutContent()}
 	mz := &Materializer{JJ: ws}
-	_, err := mz.Checkout(root, &m.Checkouts[0])
+	_, err := mz.Checkout(context.Background(), root, &m.Checkouts[0])
 	require.NoError(t, err)
 	require.Len(t, ws.adds, 1)
 
-	require.NoError(t, mz.ApplyDiff(m, &Diff{Add: m.Checkouts}, root, PruneOpts{}))
+	require.NoError(t, mz.ApplyDiff(context.Background(), m, &Diff{Add: m.Checkouts}, root, PruneOpts{}))
 	require.Len(t, ws.adds, 2, "the pre-warmed checkout is not added twice")
 	assert.Equal(t, "rig-dsp-bbbbbbbb", ws.adds[1].opts.Name)
 }
 
 func TestApplyDiffRejectsARelativeRoot(t *testing.T) {
 	mz := &Materializer{JJ: &fakeWorkspaces{content: twoCheckoutContent()}}
-	err := mz.ApplyDiff(twoCheckoutManifest(), &Diff{}, "rigs/dsp", PruneOpts{})
+	err := mz.ApplyDiff(context.Background(), twoCheckoutManifest(), &Diff{}, "rigs/dsp", PruneOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be absolute")
 }
@@ -664,7 +665,7 @@ func TestAddModulesCreatesACheckout(t *testing.T) {
 	m := twoCheckoutManifest()
 	m.Source.Modules = []string{"github.com/opentdf/platform/sdk@v0.9.0"}
 
-	updated, diff, err := addPlanner().AddModules(m, []gomod.Module{
+	updated, diff, err := addPlanner().AddModules(context.Background(), m, []gomod.Module{
 		{Path: "github.com/opentdf/platform/lib/flattening", Version: "v0.1.3"},
 	}, nil)
 	require.NoError(t, err)
@@ -702,7 +703,7 @@ func TestAddModulesCreatesACheckout(t *testing.T) {
 // Modules released from one commit of a monorepo share a working copy rather
 // than getting byte-identical copies of it.
 func TestAddModulesJoinsAnExistingCheckout(t *testing.T) {
-	updated, diff, err := addPlanner().AddModules(twoCheckoutManifest(), []gomod.Module{
+	updated, diff, err := addPlanner().AddModules(context.Background(), twoCheckoutManifest(), []gomod.Module{
 		{Path: "github.com/opentdf/platform/sdk", Version: "v0.9.0"},
 	}, nil)
 	require.NoError(t, err)
@@ -732,7 +733,7 @@ func TestAddModulesJoinsAnExistingCheckout(t *testing.T) {
 // A module at the repository root needs the whole tree, so a sparse checkout
 // that acquires one has to go full.
 func TestAddModulesAtTheRepoRootGoesFull(t *testing.T) {
-	updated, diff, err := addPlanner().AddModules(twoCheckoutManifest(), []gomod.Module{
+	updated, diff, err := addPlanner().AddModules(context.Background(), twoCheckoutManifest(), []gomod.Module{
 		{Path: "github.com/opentdf/platform", Version: "v0.9.0"},
 	}, nil)
 	require.NoError(t, err)
@@ -747,7 +748,7 @@ func TestAddModulesAtTheRepoRootGoesFull(t *testing.T) {
 // A rig is deliberately frozen; moving a pin means a different commit, a
 // different checkout, and a build list that no longer matches the artifact.
 func TestAddModulesRefusesToMoveAPin(t *testing.T) {
-	_, _, err := addPlanner().AddModules(twoCheckoutManifest(), []gomod.Module{
+	_, _, err := addPlanner().AddModules(context.Background(), twoCheckoutManifest(), []gomod.Module{
 		{Path: "github.com/opentdf/otdfctl", Version: "v0.4.0"},
 	}, nil)
 	require.Error(t, err)
@@ -757,7 +758,7 @@ func TestAddModulesRefusesToMoveAPin(t *testing.T) {
 
 func TestAddModulesIsANoOpForAPinAlreadyHeld(t *testing.T) {
 	m := twoCheckoutManifest()
-	updated, diff, err := addPlanner().AddModules(m, []gomod.Module{
+	updated, diff, err := addPlanner().AddModules(context.Background(), m, []gomod.Module{
 		{Path: "github.com/opentdf/otdfctl", Version: "v0.3.0"},
 	}, nil)
 	require.NoError(t, err)
@@ -768,7 +769,7 @@ func TestAddModulesIsANoOpForAPinAlreadyHeld(t *testing.T) {
 // `-m a@v1 -m a@v2` is a typo, not a request. A rig holds one commit per module,
 // so silently taking either one gives the user a rig they did not ask for.
 func TestAddModulesRefusesAContradictoryPin(t *testing.T) {
-	_, _, err := addPlanner().AddModules(twoCheckoutManifest(), []gomod.Module{
+	_, _, err := addPlanner().AddModules(context.Background(), twoCheckoutManifest(), []gomod.Module{
 		{Path: "github.com/opentdf/platform/lib/flattening", Version: "v0.1.3"},
 		{Path: "github.com/opentdf/platform/lib/flattening", Version: "v0.1.4"},
 	}, nil)
@@ -776,7 +777,7 @@ func TestAddModulesRefusesAContradictoryPin(t *testing.T) {
 	assert.Contains(t, err.Error(), "named twice, at v0.1.3 and at v0.1.4")
 
 	// The same pin twice is just a repeat.
-	_, _, err = addPlanner().AddModules(twoCheckoutManifest(), []gomod.Module{
+	_, _, err = addPlanner().AddModules(context.Background(), twoCheckoutManifest(), []gomod.Module{
 		{Path: "github.com/opentdf/platform/lib/flattening", Version: "v0.1.3"},
 		{Path: "github.com/opentdf/platform/lib/flattening", Version: "v0.1.3"},
 	}, nil)
@@ -791,7 +792,7 @@ func TestAddModulesRecordsAnOutOfOrgPin(t *testing.T) {
 	m := twoCheckoutManifest()
 	m.Source.OrgPrefixes = []string{"github.com/virtru"}
 
-	updated, _, err := addPlanner().AddModules(m, []gomod.Module{
+	updated, _, err := addPlanner().AddModules(context.Background(), m, []gomod.Module{
 		{Path: "github.com/opentdf/platform/lib/flattening", Version: "v0.1.3"},
 	}, nil)
 	require.NoError(t, err)
@@ -827,7 +828,7 @@ func TestAddModulesRecordsAnOutOfOrgPin(t *testing.T) {
 func TestAddModulesRestoresADeletedCheckout(t *testing.T) {
 	gone := func(dir string) bool { return dir != "platform-v0.9.0" }
 
-	updated, diff, err := addPlanner().AddModules(twoCheckoutManifest(), []gomod.Module{
+	updated, diff, err := addPlanner().AddModules(context.Background(), twoCheckoutManifest(), []gomod.Module{
 		{Path: "github.com/opentdf/platform/sdk", Version: "v0.9.0"},
 	}, gone)
 	require.NoError(t, err)
@@ -849,7 +850,7 @@ func TestAddModulesRevivesATombstone(t *testing.T) {
 	m.Checkouts[1].Obsolete = true
 	m.Members = m.Members[:2]
 
-	updated, diff, err := addPlanner().AddModules(m, []gomod.Module{
+	updated, diff, err := addPlanner().AddModules(context.Background(), m, []gomod.Module{
 		{Path: "github.com/opentdf/otdfctl", Version: "v0.3.0"},
 	}, nil)
 	require.NoError(t, err)
@@ -864,7 +865,7 @@ func TestAddModulesRevivesATombstone(t *testing.T) {
 
 func TestAddModulesRejectsAnUnpinnableVersion(t *testing.T) {
 	for _, version := range []string{gomod.DevelVersion, ""} {
-		_, _, err := addPlanner().AddModules(twoCheckoutManifest(), []gomod.Module{
+		_, _, err := addPlanner().AddModules(context.Background(), twoCheckoutManifest(), []gomod.Module{
 			{Path: "github.com/opentdf/platform/lib/flattening", Version: version},
 		}, nil)
 		require.Error(t, err, "version %q", version)
@@ -873,7 +874,7 @@ func TestAddModulesRejectsAnUnpinnableVersion(t *testing.T) {
 }
 
 func TestAddModulesNeedsAModulePath(t *testing.T) {
-	_, _, err := addPlanner().AddModules(twoCheckoutManifest(), []gomod.Module{{Version: "v1.0.0"}}, nil)
+	_, _, err := addPlanner().AddModules(context.Background(), twoCheckoutManifest(), []gomod.Module{{Version: "v1.0.0"}}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "needs a module path")
 }
@@ -886,7 +887,7 @@ func TestAddModulesFailsOnAModuleItCannotCheckOut(t *testing.T) {
 		"opentdf/policy": errors.New("no clone and no remote"),
 	}}
 
-	_, _, err := p.AddModules(twoCheckoutManifest(), []gomod.Module{
+	_, _, err := p.AddModules(context.Background(), twoCheckoutManifest(), []gomod.Module{
 		{Path: "github.com/opentdf/policy", Version: "v1.0.0"},
 	}, nil)
 	require.Error(t, err)
@@ -895,7 +896,7 @@ func TestAddModulesFailsOnAModuleItCannotCheckOut(t *testing.T) {
 }
 
 func TestAddModulesNeedsARig(t *testing.T) {
-	_, _, err := addPlanner().AddModules(nil, []gomod.Module{{Path: "x", Version: "v1.0.0"}}, nil)
+	_, _, err := addPlanner().AddModules(context.Background(), nil, []gomod.Module{{Path: "x", Version: "v1.0.0"}}, nil)
 	require.Error(t, err)
 }
 
@@ -904,7 +905,7 @@ func TestAddModulesNeedsARig(t *testing.T) {
 func TestAddModulesAppliesEndToEnd(t *testing.T) {
 	root, have := materializedRig(t, twoCheckoutContent())
 
-	updated, diff, err := addPlanner().AddModules(have, []gomod.Module{
+	updated, diff, err := addPlanner().AddModules(context.Background(), have, []gomod.Module{
 		{Path: "github.com/opentdf/platform/sdk", Version: "v0.9.0"},
 	}, nil)
 	require.NoError(t, err)
@@ -919,7 +920,7 @@ func TestAddModulesAppliesEndToEnd(t *testing.T) {
 		[]byte(content["rig-dsp-aaaaaaaa"]["sdk/go.mod"]), 0o644))
 
 	ws := &fakeWorkspaces{content: content}
-	require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(updated, diff, root, PruneOpts{}))
+	require.NoError(t, (&Materializer{JJ: ws}).ApplyDiff(context.Background(), updated, diff, root, PruneOpts{}))
 
 	assert.Empty(t, ws.adds)
 	sparse := ws.sparseFor("platform-v0.9.0")

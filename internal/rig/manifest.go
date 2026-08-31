@@ -457,6 +457,14 @@ func writeAll(f *os.File, parts ...string) error {
 	return nil
 }
 
+// pathExists reports whether path is present, treating any stat error other
+// than "not there" as absent: a name completion is not the place to surface a
+// permissions problem.
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // Listing is a manifest together with the directory it was loaded from.
 //
 // The two can disagree. Nothing stops a rig directory from being renamed, and
@@ -505,5 +513,42 @@ func List(rigDir string) ([]Listing, error) {
 		out = append(out, Listing{Manifest: m, Root: root})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// Names returns the name of every rig under rigDir, sorted.
+//
+// Deliberately not List: shell completion runs on every keystroke, so it must
+// not pay for a TOML parse per rig, and it must not emit the warnings List
+// prints for a broken manifest — stderr during completion lands in the middle
+// of the user's prompt. A rig too broken to load still has a name, and offering
+// it is right: `wgo rig rm` is how you get rid of it.
+//
+// A src/ directory counts as well as a rig.toml, because the wreckage of a
+// `rig new` that died before the manifest write is exactly what `wgo rig rm
+// --force` exists to clear — and requiring the manifest would leave the one
+// name the user needs to type as the one name completion will not offer.
+// Directories with neither are somebody else's: rig.dir is a directory the
+// user owns and may keep anything in.
+func Names(rigDir string) ([]string, error) {
+	entries, err := os.ReadDir(rigDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("rig: reading %s: %w", rigDir, err)
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		root := filepath.Join(rigDir, e.Name())
+		if !pathExists(ManifestPath(root)) && !pathExists(filepath.Join(root, SrcDir)) {
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	sort.Strings(out)
 	return out, nil
 }

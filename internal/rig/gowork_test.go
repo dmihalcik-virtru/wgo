@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"context"
 	"flag"
 	"os"
 	"os/exec"
@@ -34,7 +35,7 @@ func assertGolden(t *testing.T, name, got string) {
 
 func TestRenderGoWorkDSP(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	assertGolden(t, "dsp-2.7.1.go.work", RenderGoWork(m))
@@ -48,7 +49,7 @@ func TestRenderGoWorkFrozen(t *testing.T) {
 		"github.com/stretchr/testify": "v1.9.0",
 		"golang.org/x/net":            "v0.27.0",
 	}
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 	m.Frozen = []string{"golang.org/x/net", "google.golang.org/grpc"}
 
@@ -64,7 +65,7 @@ func TestRenderGoWorkFrozenToAFork(t *testing.T) {
 	req.Baseline = map[string]string{
 		"google.golang.org/grpc": "github.com/virtru-corp/grpc-go@v1.65.1",
 	}
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 	m.Frozen = []string{"google.golang.org/grpc"}
 
@@ -76,7 +77,7 @@ func TestRenderGoWorkFrozenToAFork(t *testing.T) {
 // version would produce a go.work that does not parse.
 func TestRenderGoWorkFrozenWithoutBaseline(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 	m.Frozen = []string{"golang.org/x/net"}
 
@@ -90,7 +91,7 @@ func TestRenderGoWorkFrozenWithoutBaseline(t *testing.T) {
 func TestRenderGoWorkWithoutPrimaryUse(t *testing.T) {
 	req, p := dspRequest()
 	req.PrimaryUse = nil
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	out := RenderGoWork(m)
@@ -107,7 +108,7 @@ func TestRenderGoWorkWithoutPrimaryUse(t *testing.T) {
 // while nothing points outside it.
 func TestRenderGoWorkUsePathsAreRelative(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	var uses int
@@ -130,7 +131,7 @@ func TestRenderGoWorkUsePathsAreRelative(t *testing.T) {
 // silently destroys the pins the rig exists to preserve.
 func TestRenderGoWorkWarnsAgainstTidy(t *testing.T) {
 	req, p := dspRequest()
-	m, err := p.Plan(req)
+	m, err := p.Plan(context.Background(), req)
 	require.NoError(t, err)
 
 	out := RenderGoWork(m)

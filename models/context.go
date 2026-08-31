@@ -42,6 +42,23 @@ type Context struct {
 	SiblingsOverflow int `json:"siblings_overflow,omitempty"`
 	// Agent is the active AI agent session holding this workspace, if any.
 	Agent *AgentRef `json:"agent,omitempty"`
+	// Rig is set when the workspace is a `wgo rig` checkout rather than branch
+	// work. Nil everywhere else.
+	Rig *RigRef `json:"rig,omitempty"`
+}
+
+// RigRef identifies the rig a workspace belongs to.
+//
+// Worth a segment of its own because every other field reads misleadingly
+// inside a rig: the checkout is pinned to a released commit and carries no
+// bookmark, so Branch is "(no bookmark)", Ahead/Behind are meaningless, and
+// there is no PR to find. Naming the rig and the pin says why.
+type RigRef struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// Pin is what this checkout is pinned to: its tag, or a short commit when
+	// the pin came from a pseudo-version.
+	Pin string `json:"pin,omitempty"`
 }
 
 // AgentRef is the active AI agent session for the current workspace.

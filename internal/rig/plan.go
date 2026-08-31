@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path"
@@ -109,7 +110,7 @@ type candidate struct {
 //
 // The returned Manifest is the plan: `--dry-run` prints it, and materialisation
 // consumes it. Nothing here touches the filesystem beyond what Locator does.
-func (p *Planner) Plan(req Request) (*Manifest, error) {
+func (p *Planner) Plan(ctx context.Context, req Request) (*Manifest, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return nil, errors.New("rig: plan requires a name")
 	}
@@ -146,7 +147,7 @@ func (p *Planner) Plan(req Request) (*Manifest, error) {
 		return nil, err
 	}
 
-	cands, moreSkips, err := p.resolveAll(mods)
+	cands, moreSkips, err := p.resolveAll(ctx, mods)
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +331,7 @@ func unpinnedDetail(version string) string {
 // The caller is responsible for the one skip that must not stay a skip: an
 // unreachable *primary* leaves the rig with no copy of the artifact it exists
 // to debug. Plan checks for that after this returns.
-func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
+func (p *Planner) resolveAll(ctx context.Context, mods []gomod.Module) ([]candidate, []Skip, error) {
 	var (
 		cands []candidate
 		skips []Skip
@@ -341,6 +342,11 @@ func (p *Planner) resolveAll(mods []gomod.Module) ([]candidate, []Skip, error) {
 	)
 
 	for _, mod := range mods {
+		// Locate clones and fetches tags; on a cold cache this loop is most of
+		// a rig build's wall clock, and it is where a Ctrl-C most often lands.
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		origin, err := gomod.ParseOrigin(mod.Path)
 		if err != nil {
 			skips = append(skips, Skip{

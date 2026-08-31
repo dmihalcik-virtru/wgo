@@ -68,13 +68,8 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 		return fmt.Errorf("worktree.worktrees_dir not configured; set it in ~/.wgo/config.toml")
 	}
 
-	// Refuse to join from inside a rig. Step 4 takes the parent directory as the
-	// shared root, which inside a rig is `<rig>/src` — the new workspace would
-	// land among the pinned checkouts, invisible to `wgo rig` and foreign to
-	// `wgo rig rm`. `wgo add` needs no such guard: it always builds its shared
-	// root under worktrees_dir.
-	if rig.UnderDir(cfg.Rig.Dir, currentWtPath) {
-		return fmt.Errorf("%s is inside the rig directory %s; rigs hold pinned checkouts, not branch workspaces.\nTo add a module to this rig: wgo rig add -m <module>@<version>\nTo start branch work: cd to a worktree under %s first", currentWtPath, cfg.Rig.Dir, cfg.Worktree.WorktreesDir)
+	if err := checkNotInsideRig(cfg, currentWtPath); err != nil {
+		return err
 	}
 
 	// 3. Current bookmark (jj-side equivalent of "current branch").
@@ -250,4 +245,23 @@ func planDescriptionForBranch(p *plan.Plan, branch, ticket string) string {
 		}
 	}
 	return ""
+}
+
+// checkNotInsideRig refuses to join from inside a rig.
+//
+// runJoin takes the parent of the current workspace as the shared root, which
+// inside a rig is `<rig>/src` — the new workspace would land among the pinned
+// checkouts, invisible to `wgo rig` and foreign to `wgo rig rm`, which forgets
+// only what its manifest records.
+//
+// `wgo add` needs no such guard: it always builds its shared root under
+// worktrees_dir, so it cannot scribble inside a rig.
+func checkNotInsideRig(cfg *config.Config, wtPath string) error {
+	if !rig.UnderDir(cfg.Rig.Dir, wtPath) {
+		return nil
+	}
+	return fmt.Errorf("%s is inside the rig directory %s; rigs hold pinned checkouts, not branch workspaces.\n"+
+		"To add a module to this rig: wgo rig add -m <module>@<version>\n"+
+		"To start branch work: cd to a worktree under %s first",
+		wtPath, cfg.Rig.Dir, cfg.Worktree.WorktreesDir)
 }

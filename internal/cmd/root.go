@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/virtru/wgo/internal/interrupt"
 )
 
 var (
@@ -54,7 +55,10 @@ across repositories, helping you keep track of what you created, why, and where 
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		// An interrupt is not a failure to report: cobra has already printed
+		// the "interrupted" notice, and the shell wants 128+SIGINT so that
+		// wrappers and `set -e` scripts can tell a cancellation from a bug.
+		os.Exit(interrupt.ExitCode(err))
 	}
 }
 
