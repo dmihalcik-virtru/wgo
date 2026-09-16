@@ -106,8 +106,13 @@ func (d *Discovery) discoverInDir(dir string, depth int) ([]DiscoveredRepo, erro
 	}
 
 	for _, entry := range entries {
-		// Skip hidden directories except .jj
-		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".jj" {
+		fullPath := filepath.Join(dir, entry.Name())
+
+		// Skip hidden directories, except .jj itself and dot-named checkouts.
+		// A repo may legitimately be called ".github"; skipping it outright hid
+		// both its clone and its workspaces from every wgo listing, while the
+		// rule still needs to keep .cache, .venv and friends out of the walk.
+		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".jj" && !isCheckout(fullPath) {
 			continue
 		}
 
@@ -115,8 +120,6 @@ func (d *Discovery) discoverInDir(dir string, depth int) ([]DiscoveredRepo, erro
 		if d.isExcluded(entry.Name()) {
 			continue
 		}
-
-		fullPath := filepath.Join(dir, entry.Name())
 
 		if d.isExcludedRoot(fullPath) {
 			continue
@@ -152,6 +155,12 @@ func (d *Discovery) discoverInDir(dir string, depth int) ([]DiscoveredRepo, erro
 	}
 
 	return repos, nil
+}
+
+// isCheckout reports whether path is itself a jj repo or workspace.
+func isCheckout(path string) bool {
+	info, err := os.Stat(filepath.Join(path, ".jj"))
+	return err == nil && info.IsDir()
 }
 
 // isExcluded checks if a path matches exclude patterns.
