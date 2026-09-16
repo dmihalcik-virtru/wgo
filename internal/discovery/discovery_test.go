@@ -73,6 +73,30 @@ func TestDiscoveryScanDepth(t *testing.T) {
 	assert.Len(t, repos, 1, "expected 1 repo with depth 4")
 }
 
+// A repo may legitimately be named with a leading dot — ".github" is the
+// common one — so the hidden-directory rule must not swallow it, while still
+// keeping ordinary dot directories out of the walk.
+func TestDiscoveryDotNamedRepo(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	repoDir := filepath.Join(tmpDir, "owner", ".github")
+	require.NoError(t, os.MkdirAll(repoDir, 0o755))
+	setupJJRepo(t, repoDir)
+
+	// A plain hidden directory next to it stays invisible, repo inside or not.
+	cacheRepo := filepath.Join(tmpDir, ".cache", "something")
+	require.NoError(t, os.MkdirAll(cacheRepo, 0o755))
+	setupJJRepo(t, cacheRepo)
+
+	discovery := New([]string{tmpDir}, 4, []string{})
+	repos, err := discovery.DiscoverAll()
+	require.NoError(t, err, "DiscoverAll failed")
+
+	require.Len(t, repos, 1)
+	assert.Equal(t, ".github", repos[0].Name)
+	assert.Equal(t, repoDir, repos[0].Path)
+}
+
 func TestDiscoveryExcludePatterns(t *testing.T) {
 	tmpDir := t.TempDir()
 
