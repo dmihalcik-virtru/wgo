@@ -49,16 +49,76 @@ type repoSpec struct {
 
 func (r repoSpec) String() string { return r.owner + "/" + r.repo }
 
+// repoSegmentRe matches one owner or repo path component. A leading dot is
+// legal — ".github" is a real, common repo name — but a slash or colon is not,
+// which is what keeps a whole URL from masquerading as an owner.
+var repoSegmentRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+func validRepoSegment(s string) bool {
+	return s != "." && s != ".." && repoSegmentRe.MatchString(s)
+}
+
+// parseRepoSpecs normalises each -r value to owner/repo.
+//
+// A GitHub URL is accepted the same way `wgo to` accepts one, since pasting the
+// URL you just copied from the browser is the obvious thing to try. Everything
+// else must be exactly two well-formed segments. The validation matters as much
+// as the URL support: splitting on the first slash and only checking for empty
+// halves let "https://github.com/owner/repo" through as owner="https:", which
+// produced a nonsense clone URL, an inited repo at mains/https:/..., and an
+// error that named the eventual push instead of the bad flag.
 func parseRepoSpecs(repos []string) ([]repoSpec, error) {
 	specs := make([]repoSpec, 0, len(repos))
 	for _, r := range repos {
-		parts := strings.SplitN(r, "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return nil, fmt.Errorf("invalid repo %q: expected owner/repo", r)
+		spec, err := parseRepoSpec(r)
+		if err != nil {
+			return nil, err
 		}
-		specs = append(specs, repoSpec{owner: parts[0], repo: parts[1]})
+		specs = append(specs, spec)
 	}
 	return specs, nil
+}
+
+func parseRepoSpec(r string) (repoSpec, error) {
+	if isGitHubURL(r) {
+		// ParseGitHubURL handles https:// (including /tree/... and /pull/N
+		// tails) but not SCP-style git@host:owner/repo, so route those through
+		// extractOwnerRepo instead.
+		ownerRepo := ""
+		if strings.HasPrefix(r, "git@") {
+			ownerRepo = extractOwnerRepo(r)
+		} else {
+			parsed, err := gh.ParseGitHubURL(r)
+			if err != nil {
+				return repoSpec{}, fmt.Errorf("invalid repo %q: %w", r, err)
+			}
+			ownerRepo = parsed.Owner + "/" + parsed.Repo
+		}
+		owner, repo, ok := strings.Cut(ownerRepo, "/")
+		if !ok || !validRepoSegment(owner) || !validRepoSegment(repo) {
+			return repoSpec{}, invalidRepoErr(r)
+		}
+		return repoSpec{owner: owner, repo: repo}, nil
+	}
+
+	owner, repo, ok := strings.Cut(r, "/")
+	if !ok || !validRepoSegment(owner) || !validRepoSegment(repo) {
+		return repoSpec{}, invalidRepoErr(r)
+	}
+	return repoSpec{owner: owner, repo: repo}, nil
+}
+
+// invalidRepoErr explains a rejected -r value and, when an owner/repo is still
+// recoverable from it, names the flag that would have worked.
+func invalidRepoErr(r string) error {
+	if ownerRepo := extractOwnerRepo(r); ownerRepo != "" {
+		owner, rest, ok := strings.Cut(ownerRepo, "/")
+		repo, _, _ := strings.Cut(rest, "/")
+		if ok && validRepoSegment(owner) && validRepoSegment(repo) {
+			return fmt.Errorf("invalid repo %q: expected owner/repo; did you mean -r %s/%s?", r, owner, repo)
+		}
+	}
+	return fmt.Errorf("invalid repo %q: expected owner/repo", r)
 }
 
 var addCmd = &cobra.Command{
@@ -113,7 +173,7 @@ Plain task (no ticket):
 func init() {
 	rootCmd.AddCommand(addCmd)
 	addCmd.Flags().BoolVarP(&addPriority, "priority", "p", false, "Mark as priority task")
-	addCmd.Flags().StringArrayVarP(&addRepos, "repo", "r", nil, "owner/repo to create worktree for (repeatable)")
+	addCmd.Flags().StringArrayVarP(&addRepos, "repo", "r", nil, "owner/repo or GitHub URL to create worktree for (repeatable)")
 	addCmd.Flags().BoolVar(&addNoSpec, "no-spec", false, "Skip spec scaffold commit")
 	addCmd.Flags().StringVar(&addSpecRepo, "spec-repo", "", "owner/repo to write spec into (default: first -r repo)")
 	addCmd.Flags().BoolVar(&addNoClaudeMD, "no-claude-md", false, "Skip generating the shared CLAUDE.md for multi-repo workspaces")

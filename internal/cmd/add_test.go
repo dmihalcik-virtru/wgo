@@ -117,6 +117,53 @@ func TestIsJiraTicket(t *testing.T) {
 	}
 }
 
+func TestParseRepoSpecs(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string // "" means the value must be rejected
+	}{
+		// short form
+		{"virtru/platform", "virtru/platform"},
+		{"virtru-corp/.github", "virtru-corp/.github"},
+		{"owner/repo.with.dots", "owner/repo.with.dots"},
+		// URLs, as copied out of a browser or a clone dialog
+		{"https://github.com/virtru-corp/.github", "virtru-corp/.github"},
+		{"https://github.com/virtru/platform.git", "virtru/platform"},
+		{"https://github.com/virtru/platform/tree/main", "virtru/platform"},
+		{"https://github.com/virtru/platform/pull/42", "virtru/platform"},
+		{"git@github.com:virtru-corp/.github", "virtru-corp/.github"},
+		{"git@github.com:virtru/platform.git", "virtru/platform"},
+		// rejections: the old parser let the first of these through as
+		// owner="https:", which is what produced a bogus clone
+		{"https://gitlab.com/virtru/platform", ""},
+		{"virtru", ""},
+		{"virtru/platform/extra", ""},
+		{"/platform", ""},
+		{"virtru/", ""},
+		{"", ""},
+		{"owner/..", ""},
+	}
+	for _, tt := range tests {
+		specs, err := parseRepoSpecs([]string{tt.input})
+		if tt.want == "" {
+			assert.Error(t, err, "parseRepoSpecs(%q) should have failed", tt.input)
+			continue
+		}
+		if assert.NoError(t, err, "parseRepoSpecs(%q)", tt.input) {
+			require.Len(t, specs, 1)
+			assert.Equal(t, tt.want, specs[0].String(), "parseRepoSpecs(%q)", tt.input)
+		}
+	}
+}
+
+// A value that is only missing its scheme should say so by name, so the user
+// can copy the fix straight out of the error.
+func TestParseRepoSpecsSuggestsOwnerRepo(t *testing.T) {
+	_, err := parseRepoSpecs([]string{"github.com/virtru-corp/.github"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "-r virtru-corp/.github")
+}
+
 func TestSlugTicketBranch(t *testing.T) {
 	tests := []struct {
 		ticket string
