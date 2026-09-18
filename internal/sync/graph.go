@@ -15,9 +15,10 @@ var ErrCycle = errors.New("sync: cycle detected in jj DAG")
 
 // Node is a single bookmarked change in a per-repo jj DAG.
 type Node struct {
-	Bookmark string   // local bookmark name (the "branch" the PR is on)
-	ChangeID string   // jj change id
-	Parents  []string // bookmark names of in-graph ancestors (nearest reachable)
+	Bookmark    string   // local bookmark name (the "branch" the PR is on)
+	ChangeID    string   // jj change id
+	Description string   // the change description, used to seed PR title/body
+	Parents     []string // bookmark names of in-graph ancestors (nearest reachable)
 }
 
 // Graph is a per-repo DAG built from jj log output. Only changes that hold
@@ -31,7 +32,7 @@ type Graph struct {
 }
 
 // BuildFromLog constructs a Graph from jj log entries that should already
-// have been filtered to `bookmarks() & ::heads()` (every entry's commit
+// have been filtered to DAGRevset (every entry's commit
 // either has a bookmark itself or is on the path between two bookmarked
 // commits). Entries without bookmarks are walked through to collapse the
 // in-between commits into direct bookmark→bookmark edges.
@@ -51,7 +52,7 @@ func BuildFromLog(entries []jj.LogEntry) (*Graph, error) {
 			continue
 		}
 		bm := e.Bookmarks[0] // take first bookmark; multi-bookmark changes are rare
-		node := &Node{Bookmark: bm, ChangeID: e.ChangeID}
+		node := &Node{Bookmark: bm, ChangeID: e.ChangeID, Description: e.Description}
 		for _, parentChangeID := range e.Parents {
 			ancestor := walkToBookmark(byChange, parentChangeID)
 			if ancestor == "" || ancestor == bm {

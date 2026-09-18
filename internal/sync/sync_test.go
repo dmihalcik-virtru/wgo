@@ -31,6 +31,7 @@ type fakeGH struct {
 	created     []github.CreatePROpts
 	baseUpdates map[int]string
 	bodyUpdates map[int]string
+	labels      map[int][]string
 	nextNum     int
 }
 
@@ -40,6 +41,7 @@ func newFakeGH() *fakeGH {
 		bodies:      map[int]string{},
 		baseUpdates: map[int]string{},
 		bodyUpdates: map[int]string{},
+		labels:      map[int][]string{},
 		nextNum:     100,
 	}
 }
@@ -63,6 +65,10 @@ func (g *fakeGH) CreatePR(_ string, opts github.CreatePROpts) (github.PRInfo, er
 	pr := github.PRInfo{Number: g.nextNum, State: "open", Branch: opts.Head, BaseRefName: opts.Base, IsDraft: opts.Draft}
 	g.prs[opts.Head] = &pr
 	return pr, nil
+}
+func (g *fakeGH) AddLabels(_ string, n int, labels []string) error {
+	g.labels[n] = append(g.labels[n], labels...)
+	return nil
 }
 
 type fakeLinker struct {
@@ -117,6 +123,104 @@ func TestSync_CreatePRs_BaseSelection(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"a", "b", "c"}, pushedAll)
 	assert.Len(t, res.Created, 3)
+}
+
+// trunkEntries returns main ← a ← b, with the trunk bookmark itself in the
+// DAG — which is what `bookmarks() & ::visible_heads()` actually returns in a
+// real repo.
+func trunkEntries() []jj.LogEntry {
+	return []jj.LogEntry{
+		{ChangeID: "cm", Bookmarks: []string{"main"}},
+		{ChangeID: "ca", Bookmarks: []string{"a"}, Parents: []string{"cm"}},
+		{ChangeID: "cb", Bookmarks: []string{"b"}, Parents: []string{"ca"}},
+	}
+}
+
+func createdHeads(ghc *fakeGH) []string {
+	heads := make([]string, 0, len(ghc.created))
+	for _, c := range ghc.created {
+		heads = append(heads, c.Head)
+	}
+	return heads
+}
+
+func TestSync_CreatePRs_SkipsTrunkBookmark(t *testing.T) {
+	jjc := &fakeJJ{entries: trunkEntries()}
+	ghc := newFakeGH()
+	opts := Options{DefaultBase: "main", CreatePRs: true, GHStackMode: "off"}
+
+	res, err := Sync(jjc, ghc, "/repo", opts)
+	require.NoError(t, err)
+
+	assert.ElementsMatch(t, []string{"a", "b"}, createdHeads(ghc),
+		"the trunk bookmark is never a PR head")
+	assert.NotContains(t, jjc.pushed, []string{"main"}, "trunk is not pushed as a new head")
+	for _, c := range res.Created {
+		assert.NotEqual(t, c.Bookmark, c.Base, "no PR targets itself")
+	}
+}
+
+func TestSync_CreatePRs_ScopedToBookmarks(t *testing.T) {
+	jjc := &fakeJJ{entries: trunkEntries()}
+	ghc := newFakeGH()
+	opts := Options{DefaultBase: "main", CreatePRs: true, GHStackMode: "off",
+		Bookmarks: []string{"b"}}
+
+	_, err := Sync(jjc, ghc, "/repo", opts)
+	require.NoError(t, err)
+
+	require.Len(t, ghc.created, 1, "only the scoped bookmark gets a PR")
+	assert.Equal(t, "b", ghc.created[0].Head)
+	// `a` is in-graph but out of scope, so it has no PR to base on; sync falls
+	// through to the default base rather than inventing one.
+	assert.Equal(t, "main", ghc.created[0].Base)
+}
+
+func TestSync_CreatePRs_TitleAndBodyFromDescription(t *testing.T) {
+	jjc := &fakeJJ{entries: []jj.LogEntry{
+		{ChangeID: "cm", Bookmarks: []string{"main"}},
+		{ChangeID: "ca", Bookmarks: []string{"a"}, Parents: []string{"cm"},
+			Description: "✨ feat(sync): scope PR creation\n\nDetail line.\n"},
+		{ChangeID: "cb", Bookmarks: []string{"b"}, Parents: []string{"ca"}},
+	}}
+	ghc := newFakeGH()
+	opts := Options{DefaultBase: "main", CreatePRs: true, GHStackMode: "off"}
+
+	_, err := Sync(jjc, ghc, "/repo", opts)
+	require.NoError(t, err)
+
+	byHead := map[string]github.CreatePROpts{}
+	for _, c := range ghc.created {
+		byHead[c.Head] = c
+	}
+	assert.Equal(t, "✨ feat(sync): scope PR creation", byHead["a"].Title)
+	assert.Equal(t, "Detail line.", byHead["a"].Body)
+	// A description-less change (a fresh `jj new`) falls back to the bookmark.
+	assert.Equal(t, "b", byHead["b"].Title)
+	assert.Empty(t, byHead["b"].Body)
+}
+
+func TestSync_CreatePRs_AppliesLabels(t *testing.T) {
+	jjc := &fakeJJ{entries: trunkEntries()}
+	ghc := newFakeGH()
+	opts := Options{DefaultBase: "main", CreatePRs: true, GHStackMode: "off",
+		Labels: []string{"root-integrity"}}
+
+	res, err := Sync(jjc, ghc, "/repo", opts)
+	require.NoError(t, err)
+	require.Len(t, res.Created, 2)
+	for _, c := range res.Created {
+		assert.Equal(t, []string{"root-integrity"}, ghc.labels[c.PR])
+	}
+}
+
+func TestSync_CreatePRs_NoLabelsMeansNoLabelCall(t *testing.T) {
+	jjc := &fakeJJ{entries: trunkEntries()}
+	ghc := newFakeGH()
+
+	_, err := Sync(jjc, ghc, "/repo", Options{DefaultBase: "main", CreatePRs: true, GHStackMode: "off"})
+	require.NoError(t, err)
+	assert.Empty(t, ghc.labels)
 }
 
 func TestSync_CreatePRs_DryRunCreatesNothing(t *testing.T) {

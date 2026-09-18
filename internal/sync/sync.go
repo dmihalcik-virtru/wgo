@@ -11,6 +11,16 @@ import (
 	"github.com/virtru/wgo/internal/jj"
 )
 
+// DAGRevset selects the changes sync builds its graph from: every bookmarked
+// change, plus the changes between them, up to the visible heads.
+//
+// It is a constant so TestDAGRevset_ParsesAgainstRealJJ can assert the real jj
+// binary still accepts it. jj renamed the zero-argument `heads()` to
+// `visible_heads()`, and because the revset only reaches jj as a string, the
+// rename turned every `wgo sync` into "Failed to parse revset" with nothing in
+// the build or the unit tests to catch it first.
+const DAGRevset = "bookmarks() & ::visible_heads()"
+
 // ErrGHStackUnavailable is returned when gh_stack="on" but native linking is
 // not available (missing gh, gh-stack extension, gh < 2.90, or a non-colocated
 // repo).
@@ -33,6 +43,7 @@ type GitHubOps interface {
 	GetPRBody(repoPath string, prNumber int) (string, error)
 	UpdatePRBody(repoPath string, prNumber int, body string) error
 	CreatePR(repoPath string, opts github.CreatePROpts) (github.PRInfo, error)
+	AddLabels(repoPath string, prNumber int, labels []string) error
 }
 
 // Options controls a single Sync run.
@@ -49,6 +60,15 @@ type Options struct {
 	// CreatePRs opens draft PRs for bookmarked changes that lack one, basing
 	// each on the nearest ancestor with a PR (else DefaultBase).
 	CreatePRs bool
+	// Bookmarks restricts which bookmarks CreatePRs may open a PR for. Empty
+	// means "every bookmark in the repo's DAG" — which, in a repo that also
+	// holds unrelated efforts' bookmarks, opens PRs for all of them. Ancestor
+	// resolution still walks the whole graph, so a scoped run bases its PR on
+	// an out-of-scope ancestor's PR when that is the nearest one.
+	Bookmarks []string
+	// Labels are applied to every PR opened by CreatePRs. Existing PRs are
+	// left alone.
+	Labels []string
 	// GHStackMode selects how stack topology is published: "auto" (default),
 	// "on", or "off". See config.SyncConfig.GHStack.
 	GHStackMode string
@@ -101,7 +121,7 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 		}
 	}
 
-	entries, err := jjc.Log(repo, "bookmarks() & ::heads()")
+	entries, err := jjc.Log(repo, DAGRevset)
 	if err != nil {
 		return nil, fmt.Errorf("jj log: %w", err)
 	}
@@ -132,16 +152,25 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 	// Create PRs for bookmarked changes that lack one, bottom→top so each new
 	// PR's ancestor already has a PR to base on.
 	if opts.CreatePRs {
+		inScope := scopeFilter(opts.Bookmarks)
 		for _, bm := range order {
 			if _, ok := prs[bm]; ok {
+				continue
+			}
+			if !inScope(bm) {
+				continue
+			}
+			// The trunk bookmark is in the DAG like any other, but it is the
+			// thing stacks are opened *against*, never a PR head.
+			if bm == opts.DefaultBase {
 				continue
 			}
 			base := graph.NearestAncestorWith(bm, hasPR)
 			if base == "" {
 				base = opts.DefaultBase
 			}
-			if base == "" {
-				continue // no base to open against
+			if base == "" || base == bm {
+				continue // no base to open against, or it would target itself
 			}
 			if opts.DryRun {
 				result.Created = append(result.Created, PRCreation{Bookmark: bm, Base: base})
@@ -152,8 +181,9 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 				!errors.Is(err, jj.ErrNothingToPush) {
 				return result, fmt.Errorf("push bookmark %s: %w", bm, err)
 			}
+			title, body := prTitleBody(graph.Nodes[bm])
 			pr, err := ghc.CreatePR(repo, github.CreatePROpts{
-				Title: bm, Head: bm, Base: base, Draft: true,
+				Title: title, Body: body, Head: bm, Base: base, Draft: true,
 			})
 			if err != nil {
 				return result, fmt.Errorf("create PR for %s: %w", bm, err)
@@ -161,6 +191,13 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 			created := pr
 			prs[bm] = &created
 			result.Created = append(result.Created, PRCreation{Bookmark: bm, PR: pr.Number, Base: base})
+			if len(opts.Labels) > 0 {
+				if err := ghc.AddLabels(repo, pr.Number, opts.Labels); err != nil {
+					// The PR exists; only labelling failed. Say so explicitly
+					// rather than letting the caller think nothing was created.
+					return result, fmt.Errorf("label PR #%d (%s): %w", pr.Number, bm, err)
+				}
+			}
 		}
 	}
 
@@ -221,6 +258,38 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 	}
 
 	return result, nil
+}
+
+// scopeFilter returns a predicate reporting whether a bookmark is in scope.
+// An empty list means "everything", preserving the unscoped behaviour.
+func scopeFilter(bookmarks []string) func(string) bool {
+	if len(bookmarks) == 0 {
+		return func(string) bool { return true }
+	}
+	set := make(map[string]struct{}, len(bookmarks))
+	for _, b := range bookmarks {
+		set[b] = struct{}{}
+	}
+	return func(bm string) bool {
+		_, ok := set[bm]
+		return ok
+	}
+}
+
+// prTitleBody derives a PR title and body from the bookmarked change's
+// description: first line as the title, the remainder as the body. Falls back
+// to the bookmark name when the change has no description, which is what a
+// fresh `jj new` looks like.
+func prTitleBody(n *Node) (title, body string) {
+	if n == nil {
+		return "", ""
+	}
+	desc := strings.TrimSpace(n.Description)
+	if desc == "" {
+		return n.Bookmark, ""
+	}
+	title, rest, _ := strings.Cut(desc, "\n")
+	return strings.TrimSpace(title), strings.TrimSpace(rest)
 }
 
 // useNativeStack resolves the effective gh_stack mode against linker
