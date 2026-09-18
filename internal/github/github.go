@@ -288,6 +288,8 @@ type Client interface {
 	UpdatePRBase(repoPath string, prNumber int, baseBranch string) error
 	// CreatePR opens a pull request and returns the created PR.
 	CreatePR(repoPath string, opts CreatePROpts) (PRInfo, error)
+	// AddLabels adds labels to an existing pull request.
+	AddLabels(repoPath string, prNumber int, labels []string) error
 	// ListPRsByBase returns open PRs whose base branch matches (stack children).
 	ListPRsByBase(repoPath, base string) ([]PRInfo, error)
 }
@@ -475,6 +477,32 @@ func (c *CLIClient) CreatePR(repoPath string, opts CreatePROpts) (PRInfo, error)
 		return PRInfo{}, fmt.Errorf("create PR: %w", err)
 	}
 	return *pr.toPRInfo(), nil
+}
+
+// AddLabels adds labels to a PR. GitHub's create-PR endpoint does not accept
+// labels, so this is a second call against the issues API (a PR is an issue).
+// Labels that do not exist in the repo are created by GitHub with a default
+// colour. Adding a label the PR already carries is a no-op.
+func (c *CLIClient) AddLabels(repoPath string, prNumber int, labels []string) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	if !c.Available() {
+		return fmt.Errorf("github: no token available to label PR")
+	}
+	slug, err := c.resolveSlug(repoPath)
+	if err != nil {
+		return err
+	}
+	endpoint := fmt.Sprintf("/repos/%s/issues/%d/labels", slug, prNumber)
+	payload := map[string]any{"labels": labels}
+	var out []struct {
+		Name string `json:"name"`
+	}
+	if err := c.bodyJSON(http.MethodPost, endpoint, payload, &out); err != nil {
+		return fmt.Errorf("add labels: %w", err)
+	}
+	return nil
 }
 
 // ListPRsByBase returns open PRs whose base branch matches. Used by stack

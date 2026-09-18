@@ -193,6 +193,35 @@ func TestCreatePR_SendsPost(t *testing.T) {
 	assert.Equal(t, "o/r", pr.HeadRepoSlug)
 }
 
+func TestAddLabels_PostsToIssuesAPI(t *testing.T) {
+	var called atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		assertCommonHeaders(t, r)
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/repos/o/r/issues/11/labels", r.URL.Path)
+		body, _ := io.ReadAll(r.Body)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(body, &got))
+		assert.Equal(t, []any{"root-integrity", "epic"}, got["labels"])
+		_, _ = w.Write([]byte(`[{"name":"root-integrity"},{"name":"epic"}]`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv, "o/r")
+
+	require.NoError(t, c.AddLabels("/tmp", 11, []string{"root-integrity", "epic"}))
+	assert.True(t, called.Load())
+}
+
+func TestAddLabels_EmptyIsANoOp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("AddLabels made a request for an empty label list")
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv, "o/r")
+	require.NoError(t, c.AddLabels("/tmp", 11, nil))
+}
+
 func TestCreatePR_RejectsMissingHeadBase(t *testing.T) {
 	c := newTestClient(t, httptest.NewServer(http.NotFoundHandler()), "o/r")
 	_, err := c.CreatePR("/tmp", CreatePROpts{Title: "x", Base: "main"})

@@ -982,9 +982,10 @@ func (c *CLIClient) GitFetchTags(repo, remote string, patterns []string) error {
 // callers can distinguish lease conflicts from no-op pushes without
 // string-matching themselves.
 //
-// jj 0.42 implicitly accepts new bookmarks when they are named via
-// --bookmark; opts.AllowNew is therefore retained on the struct (for API
-// stability across jj versions) but not translated to a CLI flag here.
+// jj implicitly accepts new bookmarks when they are named via --bookmark, and
+// jj 0.45 removed the --allow-new flag outright. opts.AllowNew is therefore
+// retained on the struct (for API stability across jj versions) but is
+// deliberately not translated to a CLI flag here.
 func (c *CLIClient) GitPush(repo string, opts PushOpts) (PushResult, error) {
 	args := []string{"git", "push"}
 	if opts.Remote != "" {
