@@ -149,7 +149,9 @@ type PushOpts struct {
 	// Bookmarks names the bookmarks to push. Empty means push all tracked
 	// bookmarks (i.e. invoke `jj git push --tracked`).
 	Bookmarks []string
-	// AllowNew permits creating new remote bookmarks via --allow-new.
+	// AllowNew requests that new remote bookmarks be created. Retained for
+	// API stability only: naming a bookmark with --bookmark already implies
+	// it, and jj 0.45 removed the --allow-new flag. See CLIClient.GitPush.
 	AllowNew bool
 	// AllowEmptyDescription forwards --allow-empty-description.
 	AllowEmptyDescription bool

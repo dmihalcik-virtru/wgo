@@ -179,7 +179,7 @@ wgo doctor               # Report stranded work, redundant trunk workspaces, spe
 
 `wgo` treats the stack as its unit of work and keeps jj authoritative for topology. When working in a wgo/jj workspace:
 
-- jj creates and rewrites changes; `wgo sync` derives the topology from the jj DAG and publishes it with `gh stack link`. `wgo sync --create-prs` opens draft PRs for bookmarks that lack one.
+- jj creates and rewrites changes; `wgo sync` derives the topology from the jj DAG and publishes it with `gh stack link`. `wgo sync --create-prs` opens draft PRs for bookmarks that lack one — it considers *every* bookmark in the repo's DAG, so in a repo that also holds unrelated efforts' bookmarks, scope it with `--bookmark` and check with `--dry-run` first.
 - **Never run `gh stack {init,add,rebase,sync,modify,submit}`** in a wgo/jj workspace. Those commands write `.git/gh-stack` shadow state and drive `git rebase`/`git push`, which fights jj's automatic descendant restacking and creates a second, drifting source of truth. Only `gh stack link` is safe, and `wgo` invokes it for you.
 - To build on someone else's stack: `wgo to <PR-URL>` fetches the whole stack; `jj new <node>` forks atop a leaf or interior node; `wgo sync --create-prs` opens your PR based on the forked-from node.
 

@@ -21,6 +21,8 @@ var (
 	syncSkipFetch     bool
 	syncDefaultBase   string
 	syncCreatePRsFlag bool
+	syncBookmarkFlag  []string
+	syncLabelFlag     []string
 )
 
 var syncCmd = &cobra.Command{
@@ -34,7 +36,11 @@ jj auto-restacks descendants whenever an ancestor commit changes, so sync
 does not perform local rebases. It only mutates GitHub state.
 
 With --repo, sync runs against a single repository path. Without it, sync
-iterates every tracked repo that has a .jj/ directory.`,
+iterates every tracked repo that has a .jj/ directory.
+
+--create-prs considers every bookmark in the repo's DAG, which in a repo that
+also holds unrelated efforts' bookmarks means PRs for all of them. Scope it
+with --bookmark, and check with --dry-run first.`,
 	SilenceUsage: true,
 	RunE:         runSync,
 }
@@ -45,6 +51,10 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncSkipFetch, "no-fetch", false, "skip `jj git fetch` before reading the DAG")
 	syncCmd.Flags().StringVar(&syncDefaultBase, "default-base", "main", "fallback base bookmark for stack roots")
 	syncCmd.Flags().BoolVar(&syncCreatePRsFlag, "create-prs", false, "open draft PRs for bookmarked changes that lack one")
+	syncCmd.Flags().StringSliceVar(&syncBookmarkFlag, "bookmark", nil,
+		"limit --create-prs to these bookmarks (repeatable); default is every bookmark in the DAG")
+	syncCmd.Flags().StringSliceVar(&syncLabelFlag, "label", nil,
+		"label to apply to each PR opened by --create-prs (repeatable)")
 	rootCmd.AddCommand(syncCmd)
 }
 
@@ -76,6 +86,8 @@ func runSync(_ *cobra.Command, _ []string) error {
 		DryRun:      syncDryRunFlag,
 		DefaultBase: syncDefaultBase,
 		CreatePRs:   syncCreatePRsFlag || cfg.Sync.CreatePRs,
+		Bookmarks:   syncBookmarkFlag,
+		Labels:      syncLabelFlag,
 		GHStackMode: cfg.Sync.GHStackMode(),
 		Linker:      wgosync.NewCLILinker(),
 	}
