@@ -353,3 +353,108 @@ func TestBuildContextOptsLocalOnly(t *testing.T) {
 	assert.Nil(t, ctx.Siblings, "siblings walk should be skipped")
 	assert.Empty(t, ctx.PRs, "cold cache in local-only mode yields no PRs")
 }
+
+// TestRenderTextPRLookupStates covers the three PR-provenance branches: a
+// failed refresh over surviving refs, a failure with nothing cached, and the
+// ordinary case where nothing is wrong.
+func TestRenderTextPRLookupStates(t *testing.T) {
+	twoHoursAgo := time.Now().Add(-2 * time.Hour)
+	tests := []struct {
+		name    string
+		prs     []models.PRRef
+		lookup  *models.PRLookupRef
+		want    string
+		notWant string
+	}{
+		{
+			name: "stale refs after a failed refresh keep the PR line and date it",
+			prs: []models.PRRef{{
+				Number: 42, Title: "Add context", State: "open",
+				URL: "https://github.com/virtru/wgo/pull/42",
+			}},
+			lookup: &models.PRLookupRef{
+				FetchedAt: &twoHoursAgo,
+				Error:     "github rate limit exhausted",
+			},
+			want: "pr:     ⚠ shown from 2 hours ago — refresh failed: github rate limit exhausted\n",
+		},
+		{
+			name:   "no cached refs at all names the failure on its own",
+			lookup: &models.PRLookupRef{Error: "no GitHub credentials"},
+			want:   "pr:     ⚠ lookup failed: no GitHub credentials\n",
+		},
+		{
+			name:    "a branch that genuinely has no PRs warns about nothing",
+			notWant: "⚠",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := fixtureContext()
+			ctx.PRs = tt.prs
+			ctx.PRLookup = tt.lookup
+
+			var buf bytes.Buffer
+			renderText(&buf, ctx, false)
+			if tt.want != "" {
+				assert.Contains(t, buf.String(), tt.want)
+			}
+			if tt.notWant != "" {
+				assert.NotContains(t, buf.String(), tt.notWant)
+			}
+		})
+	}
+}
+
+// TestRenderTextPRLinkSurvivesFailedRefresh is the point of WGO-137 stated as
+// output: the clickable PR line is still there when the refresh failed.
+func TestRenderTextPRLinkSurvivesFailedRefresh(t *testing.T) {
+	fetched := time.Now().Add(-90 * time.Minute)
+	ctx := fixtureContext()
+	ctx.PRLookup = &models.PRLookupRef{FetchedAt: &fetched, Error: "503 bad gateway"}
+
+	var buf bytes.Buffer
+	renderText(&buf, ctx, false)
+	assert.Contains(t, buf.String(), "pr:     #42 Add context [OPEN ✓ CI:green]\n")
+	assert.Contains(t, buf.String(), "refresh failed: 503 bad gateway")
+}
+
+// TestRenderTextPRLookupWarningStaysOneLine guards the layout against the error
+// text it actually receives: a GitHub APIError carries the pretty-printed JSON
+// response body, so the warning must be flattened and clamped or it breaks the
+// aligned key-value rows that follow it.
+func TestRenderTextPRLookupWarningStaysOneLine(t *testing.T) {
+	render := func(errText string) string {
+		ctx := fixtureContext()
+		ctx.PRLookup = &models.PRLookupRef{Error: errText}
+		var buf bytes.Buffer
+		renderText(&buf, ctx, false)
+		return buf.String()
+	}
+
+	out := render("github api: GET /repos/o/r/pulls -> 401: {\r\n  \"message\": \"Bad credentials\",\r\n" +
+		"  \"documentation_url\": \"https://docs.github.com/rest\",\r\n  \"status\": \"401\"\r\n}")
+
+	var warning string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "⚠") {
+			warning = line
+		}
+	}
+	require.NotEmpty(t, warning, "expected a warning row")
+	assert.Contains(t, warning, "Bad credentials", "the useful part survives")
+	assert.LessOrEqual(t, len([]rune(warning)), 200)
+	// The sprawling error costs no extra rows: it was folded into the one warning.
+	assert.Equal(t, strings.Count(render("boom"), "\n"), strings.Count(out, "\n"))
+}
+
+// TestOneLine covers the flattening helper's edges directly.
+func TestOneLine(t *testing.T) {
+	assert.Equal(t, "a b c", oneLine("a\n  b\r\n\tc", 80))
+	assert.Equal(t, "", oneLine("   \n\t ", 80))
+	assert.Equal(t, "abcde", oneLine("abcde", 5), "exactly max is not truncated")
+	assert.Equal(t, "abcd…", oneLine("abcdef", 4), "truncation marks itself")
+	assert.Equal(t, "ab…", oneLine("ab   cdef", 3), "trailing space is trimmed before the ellipsis")
+	assert.Equal(t, "héllo…", oneLine("héllo wörld", 6), "counts runes, not bytes")
+}

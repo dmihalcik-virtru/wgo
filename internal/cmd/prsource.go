@@ -41,12 +41,33 @@ func (g ghFetcher) FetchPRs(repoPath, branch string) ([]models.PRRef, error) {
 //     the first run is never blank; a Stale hit serves instantly and warms in
 //     the background.
 //   - --refresh (opts.Refresh): bypass the cache and fetch synchronously.
-func resolvePRs(cwd, remoteURL, branch string, opts contextOptions) []models.PRRef {
+//
+// The full Result is returned, not just the refs: a failed lookup can still
+// carry last-known-good PRs, and the renderer needs the fetch time and error to
+// say so.
+func resolvePRs(cwd, remoteURL, branch string, opts contextOptions) prcache.Result {
 	if branch == "" || branch == "(no bookmark)" {
-		return nil
+		return prcache.Result{}
 	}
-	refs, _, _ := prcache.Resolve(newGHFetcher(), remoteURL, cwd, branch, cacheOpts(opts))
-	return refs
+	return prcache.Resolve(newGHFetcher(), remoteURL, cwd, branch, cacheOpts(opts))
+}
+
+// prLookup splits a cache Result into the two fields the context exposes: the
+// refs to render, and — only when something is off — their provenance.
+//
+// Provenance is attached only for a failure over non-current data. A failure a
+// fresh success has already superseded is not worth a warning: it would flicker
+// on and off as background refreshes race the TTL.
+func prLookup(res prcache.Result) ([]models.PRRef, *models.PRLookupRef) {
+	if res.Err == nil || res.State == prcache.Fresh {
+		return res.PRs, nil
+	}
+	ref := &models.PRLookupRef{Error: res.Err.Error()}
+	if !res.FetchedAt.IsZero() {
+		at := res.FetchedAt
+		ref.FetchedAt = &at
+	}
+	return res.PRs, ref
 }
 
 // cacheOpts maps the context resolver options onto prcache.Opts.

@@ -200,7 +200,7 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 
 	// PRs for the current branch. In LocalOnly mode these come from the
 	// on-disk cache (no network); otherwise a synchronous fetch warms it.
-	ctx.PRs = resolvePRs(cwd, remoteURL, branch, opts)
+	ctx.PRs, ctx.PRLookup = prLookup(resolvePRs(cwd, remoteURL, branch, opts))
 
 	// Tasks linked to this branch from the plan file.
 	if s, err := store.New(); err == nil {
@@ -293,6 +293,31 @@ func prBracket(pr models.PRRef, tty bool) string {
 	return "[" + strings.Join(parts, " ") + "]"
 }
 
+// prLookupWarning phrases a PR-lookup failure. With a prior successful fetch
+// the PR lines above it are real (just old), so the warning dates them; with no
+// prior fetch there is nothing above it and the warning stands alone.
+func prLookupWarning(l models.PRLookupRef) string {
+	cause := oneLine(l.Error, 160)
+	if l.FetchedAt != nil {
+		return fmt.Sprintf("shown from %s — refresh failed: %s", formatTime(*l.FetchedAt), cause)
+	}
+	return fmt.Sprintf("lookup failed: %s", cause)
+}
+
+// oneLine flattens s onto a single line of at most max runes.
+//
+// GitHub API errors embed the raw response body, which is pretty-printed JSON
+// spanning several lines. Interpolated as-is into a "pr:" row that shatters the
+// aligned key-value layout, so the renderer clamps it rather than trusting the
+// error to be terse. The cache and --json keep the untruncated text.
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > max {
+		return strings.TrimRight(string(r[:max]), " ") + "…"
+	}
+	return s
+}
+
 // ciWord maps a CI rollup state to the word shown after "CI:" in text output,
 // or "" for none/unknown (so the segment is dropped).
 func ciWord(state string) string {
@@ -326,6 +351,9 @@ func renderText(w io.Writer, c *models.Context, tty bool) {
 	for _, pr := range c.PRs {
 		label := fmt.Sprintf("#%d %s", pr.Number, pr.Title)
 		fmt.Fprintf(w, "pr:     %s %s\n", links.Link(pr.URL, label, tty), prBracket(pr, tty))
+	}
+	if c.PRLookup != nil {
+		fmt.Fprintf(w, "pr:     ⚠ %s\n", prLookupWarning(*c.PRLookup))
 	}
 
 	for _, t := range c.Tasks {

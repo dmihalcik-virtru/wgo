@@ -38,49 +38,73 @@ type Opts struct {
 const refreshBackoff = 30 * time.Second
 
 // Resolve returns the PR refs for a branch, reconciling the on-disk cache with
-// the network per opts, and reports the freshness State of the value served.
-// The hot path (a Fresh hit, or a Stale hit without SyncOnMiss) never blocks on
-// the network.
-func Resolve(f Fetcher, remoteURL, repoPath, branch string, opts Opts) ([]models.PRRef, State, error) {
+// the network per opts. The hot path (a Fresh hit, or a Stale hit without
+// SyncOnMiss) never blocks on the network.
+//
+// It returns a single Result rather than (refs, state, error) because here the
+// error is data: a failed refresh over surviving last-known-good data yields
+// both populated PRs and a non-nil Err, and a (value, error) signature invites
+// callers to discard the value they should still be rendering.
+func Resolve(f Fetcher, remoteURL, repoPath, branch string, opts Opts) Result {
 	if opts.Synchronous {
 		return fetchAndStore(f, remoteURL, repoPath, branch)
 	}
 
-	refs, state := Read(remoteURL, repoPath, branch, opts.TTL)
-	switch state {
+	cached := Read(remoteURL, repoPath, branch, opts.TTL)
+	switch cached.State {
 	case Fresh:
-		return refs, Fresh, nil
+		return cached
 	case Stale:
 		if opts.RefreshStale {
 			startRefresh(remoteURL, repoPath, branch)
 		}
-		return refs, Stale, nil
+		return cached
 	default: // Miss
-		if opts.SyncOnMiss {
+		// A recent failure is itself a result: re-fetching now would just
+		// re-fail, and SyncOnMiss would turn a GitHub outage into a blocking
+		// call on every single invocation.
+		recentlyFailed := cached.Err != nil && time.Since(cached.LastAttemptAt) < opts.TTL
+		if opts.SyncOnMiss && !recentlyFailed {
 			return fetchAndStore(f, remoteURL, repoPath, branch)
 		}
 		if opts.RefreshStale {
 			startRefresh(remoteURL, repoPath, branch)
 		}
-		return nil, Miss, nil
+		return cached
 	}
 }
 
-// fetchAndStore performs the live fetch and writes the result through the cache.
-// A fetch error is returned and the cache is left untouched; a successful fetch
-// (including a "no PRs" result) is written so subsequent reads are served
-// locally.
-func fetchAndStore(f Fetcher, remoteURL, repoPath, branch string) ([]models.PRRef, State, error) {
+// fetchAndStore performs the live fetch and writes the result through the
+// cache. A successful fetch (including a genuine "no PRs" result) replaces the
+// cached refs. A failed fetch is recorded as a failed *attempt*: any previously
+// cached refs are preserved and returned alongside the error, so a transient
+// GitHub failure degrades to a stale PR line rather than a blank one.
+func fetchAndStore(f Fetcher, remoteURL, repoPath, branch string) Result {
 	if f == nil {
-		return nil, Miss, nil
+		return readAsStale(remoteURL, repoPath, branch)
 	}
 	refs, err := f.FetchPRs(repoPath, branch)
 	if err != nil {
-		return nil, Miss, err
+		// Ignore write errors: a failed cache write must not fail the command.
+		_ = WriteFailure(remoteURL, repoPath, branch, err)
+		prior := readAsStale(remoteURL, repoPath, branch)
+		prior.Err = err
+		return prior
 	}
-	// Ignore write errors: a failed cache write must not fail the command.
 	_ = Write(remoteURL, repoPath, branch, refs)
-	return refs, Fresh, nil
+	return Result{
+		PRs:           refs,
+		State:         Fresh,
+		FetchedAt:     time.Now(),
+		LastAttemptAt: time.Now(),
+	}
+}
+
+// readAsStale reads the cached entry with a zero TTL, so whatever it holds is
+// reported as Stale rather than Fresh. Used after a live fetch failed: the
+// surviving refs are by definition not current.
+func readAsStale(remoteURL, repoPath, branch string) Result {
+	return Read(remoteURL, repoPath, branch, 0)
 }
 
 // startRefresh is the seam for kicking a background refresh. Tests override it

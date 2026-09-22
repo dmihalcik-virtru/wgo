@@ -31,13 +31,17 @@ type Context struct {
 	// from the on-disk Jira cache. Empty for non-Jira tickets or when unavailable.
 	JiraStatus string `json:"jira_status,omitempty"`
 	// JiraAssignee is the display name of the ticket's assignee, if any.
-	JiraAssignee   string       `json:"jira_assignee,omitempty"`
-	Spec           *SpecRef     `json:"spec,omitempty"`
-	SpecMissing    bool         `json:"spec_missing,omitempty"`    // ticket present but no spec file
-	SpecUnreadable bool         `json:"spec_unreadable,omitempty"` // spec file present but unparseable
-	Tasks          []TaskRef    `json:"tasks,omitempty"`
-	PRs            []PRRef      `json:"prs,omitempty"`
-	Siblings       []SiblingRef `json:"siblings,omitempty"`
+	JiraAssignee   string    `json:"jira_assignee,omitempty"`
+	Spec           *SpecRef  `json:"spec,omitempty"`
+	SpecMissing    bool      `json:"spec_missing,omitempty"`    // ticket present but no spec file
+	SpecUnreadable bool      `json:"spec_unreadable,omitempty"` // spec file present but unparseable
+	Tasks          []TaskRef `json:"tasks,omitempty"`
+	PRs            []PRRef   `json:"prs,omitempty"`
+	// PRLookup is set only when the PR lookup was not simply current: it says
+	// when PRs were last successfully fetched and what the latest refresh
+	// failure was. Nil on the ordinary path, so the common case grows nothing.
+	PRLookup *PRLookupRef `json:"pr_lookup,omitempty"`
+	Siblings []SiblingRef `json:"siblings,omitempty"`
 	// SiblingsOverflow counts jj repos beyond the display cap of 10.
 	SiblingsOverflow int `json:"siblings_overflow,omitempty"`
 	// Agent is the active AI agent session holding this workspace, if any.
@@ -94,6 +98,20 @@ type PRRef struct {
 	IsDraft bool `json:"is_draft,omitempty"`
 	// Checks is the CI/checks rollup for the PR's head commit.
 	Checks CIStatus `json:"checks"`
+}
+
+// PRLookupRef is the provenance of Context.PRs, present only when those refs
+// are not a current, successful lookup.
+//
+// It exists because an empty PRs is ambiguous on its own: the branch may have
+// no PRs, or the lookup may have failed. Conflating the two is what let a
+// transient GitHub failure hide an open PR (WGO-137).
+type PRLookupRef struct {
+	// FetchedAt is when PRs were last successfully fetched. Nil when there has
+	// never been a successful fetch, so PRs is unknown rather than empty.
+	FetchedAt *time.Time `json:"fetched_at,omitempty"`
+	// Error is the most recent lookup failure, if the last attempt failed.
+	Error string `json:"error,omitempty"`
 }
 
 // CIStatus is the rolled-up CI/checks state for a commit, summarizing GitHub's

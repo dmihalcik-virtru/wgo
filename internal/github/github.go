@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -529,21 +530,34 @@ func (c *CLIClient) ListPRsByBase(repoPath, base string) ([]PRInfo, error) {
 	return out, nil
 }
 
+// ErrNoAuth is returned when no GitHub credentials can be resolved at all:
+// no GITHUB_TOKEN and no gh CLI to fall back on.
+var ErrNoAuth = errors.New("no GitHub credentials: set GITHUB_TOKEN or run `gh auth login`")
+
 // ListPRsForBranch returns all PRs (any state) whose head branch matches.
+//
+// Every failure mode is reported as an error rather than an empty list. The
+// distinction matters because the caller caches the result: an empty list is
+// recorded as the authoritative "this branch has no PRs", so laundering a rate
+// limit or an expired token into one pins that answer onto a branch that
+// actually has an open PR (WGO-137).
 func (c *CLIClient) ListPRsForBranch(repoPath, branch string) ([]PRInfo, error) {
 	if !c.Available() {
-		return nil, nil
+		return nil, ErrNoAuth
 	}
 	slug, err := c.resolveSlug(repoPath)
-	if err != nil || slug == "" {
-		return nil, nil
+	if err != nil {
+		return nil, err
+	}
+	if slug == "" {
+		return nil, fmt.Errorf("could not determine GitHub repo slug for %s", repoPath)
 	}
 	owner, _ := splitOwnerRepo(slug)
 	endpoint := fmt.Sprintf("/repos/%s/pulls?head=%s:%s&state=all&per_page=5",
 		slug, owner, url.QueryEscape(branch))
 	var list []apiPullRequest
 	if err := c.getJSON(endpoint, &list); err != nil {
-		return nil, nil
+		return nil, err
 	}
 	out := make([]PRInfo, 0, len(list))
 	for i := range list {

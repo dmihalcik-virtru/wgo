@@ -48,10 +48,10 @@ func TestResolveFreshNoNetwork(t *testing.T) {
 	require.NoError(t, Write(testRemote, testRepo, "feature-x", sampleRefs()))
 
 	f := &countingFetcher{refs: sampleRefs()}
-	refs, state, err := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, RefreshStale: true})
-	require.NoError(t, err)
-	assert.Equal(t, Fresh, state)
-	require.Len(t, refs, 1)
+	res := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, RefreshStale: true})
+	require.NoError(t, res.Err)
+	assert.Equal(t, Fresh, res.State)
+	require.Len(t, res.PRs, 1)
 	assert.Equal(t, 0, f.count(), "fresh hit must not touch the network")
 }
 
@@ -62,16 +62,16 @@ func TestResolveZeroNetworkAcrossReads(t *testing.T) {
 	f := &countingFetcher{refs: sampleRefs()}
 
 	// Cold miss with SyncOnMiss → one fetch, cache warmed.
-	_, state, err := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, RefreshStale: true, SyncOnMiss: true})
-	require.NoError(t, err)
-	assert.Equal(t, Fresh, state)
+	res := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, RefreshStale: true, SyncOnMiss: true})
+	require.NoError(t, res.Err)
+	assert.Equal(t, Fresh, res.State)
 
 	// Subsequent reads within the TTL: no more fetches.
 	for range 3 {
-		refs, state, err := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, RefreshStale: true})
-		require.NoError(t, err)
-		assert.Equal(t, Fresh, state)
-		require.Len(t, refs, 1)
+		res := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, RefreshStale: true})
+		require.NoError(t, res.Err)
+		assert.Equal(t, Fresh, res.State)
+		require.Len(t, res.PRs, 1)
 	}
 	assert.Equal(t, 1, f.count(), "only the cold miss should hit the network")
 }
@@ -82,15 +82,15 @@ func TestResolveSyncOnMissFetches(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	f := &countingFetcher{refs: sampleRefs()}
 
-	refs, state, err := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, SyncOnMiss: true})
-	require.NoError(t, err)
-	assert.Equal(t, Fresh, state)
-	require.Len(t, refs, 1)
+	res := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, SyncOnMiss: true})
+	require.NoError(t, res.Err)
+	assert.Equal(t, Fresh, res.State)
+	require.Len(t, res.PRs, 1)
 	assert.Equal(t, 1, f.count())
 
-	cached, cState := Read(testRemote, testRepo, "feature-x", time.Hour)
-	assert.Equal(t, Fresh, cState)
-	require.Len(t, cached, 1)
+	cached := Read(testRemote, testRepo, "feature-x", time.Hour)
+	assert.Equal(t, Fresh, cached.State)
+	require.Len(t, cached.PRs, 1)
 }
 
 // TestResolveMissKicksBackgroundRefresh: a cold miss without SyncOnMiss returns
@@ -100,10 +100,10 @@ func TestResolveMissKicksBackgroundRefresh(t *testing.T) {
 	n := stubRefresh(t)
 	f := &countingFetcher{refs: sampleRefs()}
 
-	refs, state, err := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, RefreshStale: true})
-	require.NoError(t, err)
-	assert.Equal(t, Miss, state)
-	assert.Nil(t, refs)
+	res := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, RefreshStale: true})
+	require.NoError(t, res.Err)
+	assert.Equal(t, Miss, res.State)
+	assert.Nil(t, res.PRs)
 	assert.Equal(t, 0, f.count(), "hot path never fetches synchronously")
 	assert.Equal(t, int32(1), atomic.LoadInt32(n), "a background refresh should be kicked")
 }
@@ -117,10 +117,10 @@ func TestResolveStaleServesAndKicks(t *testing.T) {
 	f := &countingFetcher{refs: sampleRefs()}
 
 	// TTL 0 makes the just-written entry stale.
-	refs, state, err := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: 0, RefreshStale: true})
-	require.NoError(t, err)
-	assert.Equal(t, Stale, state)
-	require.Len(t, refs, 1)
+	res := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: 0, RefreshStale: true})
+	require.NoError(t, res.Err)
+	assert.Equal(t, Stale, res.State)
+	require.Len(t, res.PRs, 1)
 	assert.Equal(t, 0, f.count(), "stale hot path never blocks on the network")
 	assert.Equal(t, int32(1), atomic.LoadInt32(n))
 }
@@ -133,16 +133,16 @@ func TestResolveSynchronousBypassesCache(t *testing.T) {
 
 	newRefs := []models.PRRef{{Number: 99, State: "open", URL: "u"}}
 	f := &countingFetcher{refs: newRefs}
-	refs, state, err := Resolve(f, testRemote, testRepo, "feature-x", Opts{Synchronous: true})
-	require.NoError(t, err)
-	assert.Equal(t, Fresh, state)
-	require.Len(t, refs, 1)
-	assert.Equal(t, 99, refs[0].Number)
+	res := Resolve(f, testRemote, testRepo, "feature-x", Opts{Synchronous: true})
+	require.NoError(t, res.Err)
+	assert.Equal(t, Fresh, res.State)
+	require.Len(t, res.PRs, 1)
+	assert.Equal(t, 99, res.PRs[0].Number)
 	assert.Equal(t, 1, f.count())
 
-	cached, _ := Read(testRemote, testRepo, "feature-x", time.Hour)
-	require.Len(t, cached, 1)
-	assert.Equal(t, 99, cached[0].Number, "cache should be overwritten with fresh data")
+	cached := Read(testRemote, testRepo, "feature-x", time.Hour)
+	require.Len(t, cached.PRs, 1)
+	assert.Equal(t, 99, cached.PRs[0].Number, "cache should be overwritten with fresh data")
 }
 
 // TestResolveFetchErrorLeavesCache: a fetch error surfaces and does not clobber
@@ -152,12 +152,14 @@ func TestResolveFetchErrorLeavesCache(t *testing.T) {
 	require.NoError(t, Write(testRemote, testRepo, "feature-x", sampleRefs()))
 
 	f := &countingFetcher{err: errors.New("boom")}
-	_, _, err := Resolve(f, testRemote, testRepo, "feature-x", Opts{Synchronous: true})
-	require.Error(t, err)
+	res := Resolve(f, testRemote, testRepo, "feature-x", Opts{Synchronous: true})
+	require.Error(t, res.Err)
+	require.Len(t, res.PRs, 1, "the failed fetch must still serve last-known-good refs")
 
-	cached, state := Read(testRemote, testRepo, "feature-x", time.Hour)
-	assert.Equal(t, Fresh, state)
-	require.Len(t, cached, 1, "failed fetch must not wipe the cached entry")
+	cached := Read(testRemote, testRepo, "feature-x", time.Hour)
+	assert.Equal(t, Fresh, cached.State)
+	require.Len(t, cached.PRs, 1, "failed fetch must not wipe the cached entry")
+	assert.EqualError(t, cached.Err, "boom", "the failure is recorded for the next process")
 }
 
 // TestInvalidateRemovesEntry: invalidation drops the entry so the next read is a
@@ -165,12 +167,10 @@ func TestResolveFetchErrorLeavesCache(t *testing.T) {
 func TestInvalidateRemovesEntry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	require.NoError(t, Write(testRemote, testRepo, "gone", sampleRefs()))
-	_, state := Read(testRemote, testRepo, "gone", time.Hour)
-	require.Equal(t, Fresh, state)
+	require.Equal(t, Fresh, Read(testRemote, testRepo, "gone", time.Hour).State)
 
 	require.NoError(t, Invalidate(testRemote, testRepo, "gone"))
-	_, state = Read(testRemote, testRepo, "gone", time.Hour)
-	assert.Equal(t, Miss, state)
+	assert.Equal(t, Miss, Read(testRemote, testRepo, "gone", time.Hour).State)
 
 	assert.NoError(t, Invalidate(testRemote, testRepo, "gone"), "invalidating an absent entry is not an error")
 }
@@ -216,9 +216,9 @@ func TestWriteConcurrentAtomic(t *testing.T) {
 	}
 	wg.Wait()
 
-	refs, state := Read(testRemote, testRepo, "race", time.Hour)
-	require.NotEqual(t, Miss, state, "final entry must be readable valid JSON")
-	require.Len(t, refs, 1, "final entry is one complete writer's content, never a mix")
+	res := Read(testRemote, testRepo, "race", time.Hour)
+	require.NotEqual(t, Miss, res.State, "final entry must be readable valid JSON")
+	require.Len(t, res.PRs, 1, "final entry is one complete writer's content, never a mix")
 
 	dir := filepath.Join(home, ".wgo", "cache", "pr", "acme-widgets")
 	entries, err := os.ReadDir(dir)
@@ -226,4 +226,53 @@ func TestWriteConcurrentAtomic(t *testing.T) {
 	for _, e := range entries {
 		assert.NotContains(t, e.Name(), ".tmp", "no temp file should survive concurrent writes")
 	}
+}
+
+// TestResolveStaleServesGoodDataWithRecordedError: the common WGO-137 shape —
+// a background refresh failed in another process, leaving good-but-stale refs
+// annotated with the error. Resolve serves both, so `wgo .` can still print the
+// PR link and say why it is old.
+func TestResolveStaleServesGoodDataWithRecordedError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, Write(testRemote, testRepo, "feature-x", sampleRefs()))
+	require.NoError(t, WriteFailure(testRemote, testRepo, "feature-x", errors.New("503 bad gateway")))
+	stubRefresh(t)
+	f := &countingFetcher{refs: sampleRefs()}
+
+	res := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: 0, RefreshStale: true})
+	assert.Equal(t, Stale, res.State)
+	require.Len(t, res.PRs, 1, "last-known-good refs survive the failure")
+	assert.EqualError(t, res.Err, "503 bad gateway")
+	assert.Equal(t, 0, f.count(), "the hot path still never blocks")
+}
+
+// TestResolveSyncOnMissSkipsRecentFailure: with no good data but a failure
+// recorded inside the TTL, SyncOnMiss must not re-fetch. Otherwise a GitHub
+// outage turns every `wgo .` into a blocking call that will just fail again.
+func TestResolveSyncOnMissSkipsRecentFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, WriteFailure(testRemote, testRepo, "feature-x", errors.New("boom")))
+	f := &countingFetcher{refs: sampleRefs()}
+
+	res := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Hour, SyncOnMiss: true})
+	assert.Equal(t, Miss, res.State)
+	assert.EqualError(t, res.Err, "boom")
+	assert.Equal(t, 0, f.count(), "a failure inside the TTL is served, not retried")
+}
+
+// TestResolveSyncOnMissRetriesOldFailure: once the recorded failure ages past
+// the TTL, SyncOnMiss tries again — the backoff must not become permanent.
+func TestResolveSyncOnMissRetriesOldFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, writeEntry(testRemote, testRepo, "feature-x", entry{
+		LastAttemptAt: time.Now().Add(-time.Hour),
+		LastError:     "boom",
+	}))
+	f := &countingFetcher{refs: sampleRefs()}
+
+	res := Resolve(f, testRemote, testRepo, "feature-x", Opts{TTL: time.Minute, SyncOnMiss: true})
+	require.NoError(t, res.Err)
+	assert.Equal(t, Fresh, res.State)
+	require.Len(t, res.PRs, 1)
+	assert.Equal(t, 1, f.count())
 }
