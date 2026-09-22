@@ -782,3 +782,55 @@ func TestAvailable_WithToken(t *testing.T) {
 	c := NewClient(WithToken("xyz"))
 	assert.True(t, c.Available())
 }
+
+// TestListPRsForBranch_APIErrorPropagates: an API failure must surface as an
+// error, never as an empty list. The caller caches the result, so a laundered
+// failure is stored as the authoritative "this branch has no PRs" (WGO-137).
+func TestListPRsForBranch_APIErrorPropagates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv, "o/r")
+
+	prs, err := c.ListPRsForBranch("/tmp", "a")
+	require.Error(t, err)
+	assert.Nil(t, prs)
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusUnauthorized, apiErr.StatusCode)
+}
+
+// TestListPRsForBranch_SlugFailurePropagates: an unresolvable origin remote is
+// a diagnosable condition, not "no PRs".
+func TestListPRsForBranch_SlugFailurePropagates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("server should not be called when the slug cannot be resolved")
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv, "o/r")
+	c.slugResolver = func(string) (string, error) { return "", fmt.Errorf("no origin remote") }
+
+	prs, err := c.ListPRsForBranch("/tmp", "a")
+	assert.Nil(t, prs)
+	assert.EqualError(t, err, "no origin remote")
+}
+
+// TestListPRsForBranch_NoAuthReturnsError: with no credentials at all the
+// caller gets ErrNoAuth, which names the fix, instead of a silent empty list.
+func TestListPRsForBranch_NoAuthReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("server should not be called without credentials")
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv, "o/r")
+	c.tokens.SetToken("")
+	c.tokens.err = fmt.Errorf("no token")
+	c.tokens.resolved = true
+	t.Setenv("PATH", t.TempDir()) // no gh to fall back on
+
+	prs, err := c.ListPRsForBranch("/tmp", "a")
+	assert.Nil(t, prs)
+	assert.ErrorIs(t, err, ErrNoAuth)
+}

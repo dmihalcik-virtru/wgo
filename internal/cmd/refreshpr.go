@@ -45,6 +45,8 @@ func runRefreshPR(branch string) error {
 		remoteURL = remotes["origin"]
 	}
 
-	_, _, err = prcache.Resolve(newGHFetcher(), remoteURL, cwd, branch, prcache.Opts{Synchronous: true})
-	return err
+	// Resolve has already recorded the failure in the cache entry, so the
+	// foreground process can explain it; returning it here is for the operator
+	// who ran `_refresh-pr` by hand.
+	return prcache.Resolve(newGHFetcher(), remoteURL, cwd, branch, prcache.Opts{Synchronous: true}).Err
 }

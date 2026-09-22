@@ -10,6 +10,7 @@ package prcache
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,39 +35,122 @@ const (
 )
 
 // entry is the on-disk representation of a cached PR lookup.
+//
+// PRs/FetchedAt describe the last *successful* fetch and are only ever written
+// by one; LastAttemptAt/LastError describe the most recent attempt, successful
+// or not. Keeping them apart is what stops a transient GitHub failure from
+// being recorded as the authoritative "this branch has no PRs" (WGO-137).
+//
+// LastError is persisted rather than held in memory because the failing fetch
+// usually happens in the detached `_refresh-pr` child: the process that later
+// renders the PR line is not the process that saw the error.
+//
+// The trailing two fields are omitempty, so entries written before WGO-137
+// load unchanged, as a success with no recorded attempt.
 type entry struct {
-	PRs       []models.PRRef `json:"prs"`
-	FetchedAt time.Time      `json:"fetched_at"`
+	PRs           []models.PRRef `json:"prs"`
+	FetchedAt     time.Time      `json:"fetched_at"`
+	LastAttemptAt time.Time      `json:"last_attempt_at,omitempty"`
+	LastError     string         `json:"last_error,omitempty"`
+}
+
+// Result is what a cache lookup served, plus the provenance a renderer needs
+// to explain it.
+type Result struct {
+	// PRs is the last successfully fetched list. An empty non-nil slice means
+	// GitHub genuinely reported no PRs; nil means nothing was ever fetched.
+	PRs []models.PRRef
+	// State is the freshness of PRs, derived from FetchedAt.
+	State State
+	// FetchedAt is when PRs were last successfully fetched; zero if never.
+	FetchedAt time.Time
+	// LastAttemptAt is when a fetch was last attempted, successful or not.
+	LastAttemptAt time.Time
+	// Err is the most recent recorded fetch failure. It can be non-nil
+	// alongside a populated PRs: a refresh failed, but last-known-good data
+	// survived it.
+	Err error
 }
 
 // Read returns the cached PR refs for a branch and their freshness. It never
-// makes a network call and never blocks. A Miss returns nil refs. A cached
-// "no PRs" result is a valid Fresh/Stale hit (empty slice), so callers do not
-// re-fetch a branch that genuinely has no PRs.
-func Read(remoteURL, repoPath, branch string, ttl time.Duration) ([]models.PRRef, State) {
+// makes a network call and never blocks. A cached "no PRs" result is a valid
+// Fresh/Stale hit (empty slice), so callers do not re-fetch a branch that
+// genuinely has no PRs. An entry that only ever recorded failures reads as a
+// Miss carrying Err, so callers can tell "no data" from "no PRs".
+func Read(remoteURL, repoPath, branch string, ttl time.Duration) Result {
+	e, ok := readEntry(remoteURL, repoPath, branch)
+	if !ok {
+		return Result{State: Miss}
+	}
+	r := Result{
+		PRs:           e.PRs,
+		FetchedAt:     e.FetchedAt,
+		LastAttemptAt: e.LastAttemptAt,
+	}
+	if e.LastError != "" {
+		r.Err = errors.New(e.LastError)
+	}
+	switch {
+	case e.FetchedAt.IsZero():
+		// Never successfully fetched: an error-only entry is not data.
+		r.State = Miss
+	case time.Since(e.FetchedAt) >= ttl:
+		r.State = Stale
+	default:
+		r.State = Fresh
+	}
+	return r
+}
+
+// readEntry loads and decodes the on-disk entry. ok is false when the entry is
+// absent or unreadable, which callers treat as no cached knowledge at all.
+func readEntry(remoteURL, repoPath, branch string) (entry, bool) {
 	path, err := prPath(remoteURL, repoPath, branch)
 	if err != nil {
-		return nil, Miss
+		return entry{}, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, Miss
+		return entry{}, false
 	}
 	var e entry
 	if err := json.Unmarshal(data, &e); err != nil {
-		return nil, Miss
+		return entry{}, false
 	}
-	if time.Since(e.FetchedAt) >= ttl {
-		return e.PRs, Stale
-	}
-	return e.PRs, Fresh
+	return e, true
 }
 
-// Write stores the PR refs for a branch, stamping the current time. The write
-// is atomic (temp file + rename) so a killed writer never leaves a truncated
-// entry for a concurrent reader. The temp file gets a unique name so two
-// concurrent writers never clobber each other's temp before the rename.
+// Write stores the PR refs from a successful fetch, stamping the current time
+// and clearing any recorded failure.
 func Write(remoteURL, repoPath, branch string, refs []models.PRRef) error {
+	now := time.Now()
+	return writeEntry(remoteURL, repoPath, branch, entry{
+		PRs:           refs,
+		FetchedAt:     now,
+		LastAttemptAt: now,
+	})
+}
+
+// WriteFailure records that a fetch was attempted and failed, preserving any
+// previously cached PRs and their fetch time. This is the point of the split:
+// a failure annotates the entry, it never replaces good data with an empty
+// list.
+//
+// The read-modify-write is not locked. Two writers racing can drop a recorded
+// error, which costs a warning line, never good data — Write only ever moves
+// PRs forward to a newer successful fetch.
+func WriteFailure(remoteURL, repoPath, branch string, cause error) error {
+	e, _ := readEntry(remoteURL, repoPath, branch)
+	e.LastAttemptAt = time.Now()
+	e.LastError = cause.Error()
+	return writeEntry(remoteURL, repoPath, branch, e)
+}
+
+// writeEntry persists e. The write is atomic (temp file + rename) so a killed
+// writer never leaves a truncated entry for a concurrent reader. The temp file
+// gets a unique name so two concurrent writers never clobber each other's temp
+// before the rename.
+func writeEntry(remoteURL, repoPath, branch string, e entry) error {
 	path, err := prPath(remoteURL, repoPath, branch)
 	if err != nil {
 		return err
@@ -75,7 +159,7 @@ func Write(remoteURL, repoPath, branch string, refs []models.PRRef) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(&entry{PRs: refs, FetchedAt: time.Now()}, "", "  ")
+	data, err := json.MarshalIndent(&e, "", "  ")
 	if err != nil {
 		return err
 	}
