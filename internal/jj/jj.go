@@ -828,11 +828,28 @@ func (c *CLIClient) BookmarkCreate(repo, name, revset string) error {
 // drops out of the default immutable set, so its commits become mutable and
 // `jj git push` will update the remote branch. Re-tracking an already-tracked
 // bookmark is treated as success.
+//
+// jj treats "already tracked" as a no-op (exit 0, just a warning) even when
+// the local bookmark was since deleted — e.g. by a prior workspace cleanup —
+// while the remote's tracking metadata persisted. That leaves `name`
+// unresolvable even though tracking "succeeded", so verify the local
+// bookmark actually exists afterward and repair it by pointing it at the
+// remote's current target if not.
 func (c *CLIClient) BookmarkTrack(repo, name, remote string) error {
 	_, err := c.runR(repo, "bookmark", "track", name+"@"+remote)
-	if err != nil && strings.Contains(err.Error(), "already tracked") {
-		return nil
+	if err != nil && !strings.Contains(err.Error(), "already tracked") {
+		return err
 	}
+	bms, lerr := c.BookmarkList(repo, BookmarkListOpts{AllRemotes: true, Names: []string{name}})
+	if lerr != nil {
+		return lerr
+	}
+	for _, b := range bms {
+		if b.Name == name && b.Remote == "" && b.Present {
+			return nil
+		}
+	}
+	_, err = c.runR(repo, "bookmark", "set", name, "-r", name+"@"+remote)
 	return err
 }
 

@@ -752,6 +752,30 @@ func TestBookmarkTrack(t *testing.T) {
 	if err := c.BookmarkTrack(consumer, "feature", "origin"); err != nil {
 		t.Fatalf("BookmarkTrack (second call) should be a no-op: %v", err)
 	}
+
+	// Regression: jj reports "already tracked" (exit 0) for a bookmark whose
+	// local copy was deleted after a prior track, e.g. by workspace cleanup.
+	// A naive re-track is then a silent no-op that leaves the bare name
+	// unresolvable; BookmarkTrack must repair the local bookmark instead.
+	if err := c.BookmarkDelete(consumer, "feature"); err != nil {
+		t.Fatalf("BookmarkDelete: %v", err)
+	}
+	if err := c.BookmarkTrack(consumer, "feature", "origin"); err != nil {
+		t.Fatalf("BookmarkTrack (repair after delete): %v", err)
+	}
+	bms, err = c.BookmarkList(consumer, jj.BookmarkListOpts{AllRemotes: true, Names: []string{"feature"}})
+	if err != nil {
+		t.Fatalf("BookmarkList: %v", err)
+	}
+	haveLocal = false
+	for _, b := range bms {
+		if b.Name == "feature" && b.Remote == "" && b.Present {
+			haveLocal = true
+		}
+	}
+	if !haveLocal {
+		t.Fatalf("expected BookmarkTrack to repair local 'feature' bookmark: %+v", bms)
+	}
 }
 
 // TestNearestBookmark verifies that NearestBookmark resolves the bookmark the
