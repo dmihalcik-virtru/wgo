@@ -837,18 +837,9 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 			if r, ok := forkRemote[m.PRNumber]; ok {
 				remote = r
 			}
-			bm := m.Branch
-			if shouldTrack(cfg, m.Branch) && !localBookmarkConflicts(jjc, repoPath, m.Branch, m.HeadOID) {
-				logTo("tracking %s@%s...", m.Branch, remote)
-				if err := jjc.BookmarkTrack(repoPath, m.Branch, remote); err != nil {
-					logTo("warning: track %s@%s: %v", m.Branch, remote, err)
-				}
-			} else {
-				bm = fmt.Sprintf("pr-%d-%s", m.PRNumber, gh.SanitizeBranch(m.Branch))
-				logTo("not tracking %s; pinning bookmark %s to %s...", m.Branch, bm, m.HeadOID)
-				if err := jjc.BookmarkCreate(repoPath, bm, m.HeadOID); err != nil {
-					return "", fmt.Errorf("create bookmark %s at %s: %w", bm, m.HeadOID, err)
-				}
+			bm, err := trackOrPinMember(jjc, cfg, repoPath, remote, m)
+			if err != nil {
+				return "", err
 			}
 			bmFor[m.PRNumber] = bm
 		}
@@ -909,6 +900,41 @@ func shouldTrack(cfg *config.Config, branch string) bool {
 // it (rather than the full client) keeps the tracking helpers easy to unit test.
 type bookmarkLister interface {
 	BookmarkList(repo string, opts jj.BookmarkListOpts) ([]jj.Bookmark, error)
+}
+
+// memberBookmarker is the subset of jj.Client trackOrPinMember needs. Note the
+// absence of BookmarkCreate: pinning must be re-runnable, and `jj bookmark
+// create` fails on an existing name.
+type memberBookmarker interface {
+	bookmarkLister
+	BookmarkTrack(repo, name, remote string) error
+	BookmarkSet(repo, name, revset string, allowBackwards bool) error
+}
+
+// trackOrPinMember gives one stack member a local bookmark and returns its
+// name. A tracked bookmark is preferred — it is mutable and pushable, so the
+// workspace can build on the PR — but a protected ref, or a local bookmark of
+// the same name already sitting on a different commit, falls back to a pinned
+// `pr-<N>-<branch>` bookmark that names the PR head without disturbing it.
+//
+// The pin is set, not created: `wgo to <PR-URL>` is a lookup users re-run
+// freely, and the pin is wgo-owned, so a second run must land on the same
+// bookmark rather than fail with "Bookmark already exists". Backwards moves
+// are allowed because a force-push can rewind a PR head to an ancestor.
+func trackOrPinMember(jjc memberBookmarker, cfg *config.Config, repoPath, remote string, m *stack.StackMember) (string, error) {
+	if shouldTrack(cfg, m.Branch) && !localBookmarkConflicts(jjc, repoPath, m.Branch, m.HeadOID) {
+		logTo("tracking %s@%s...", m.Branch, remote)
+		if err := jjc.BookmarkTrack(repoPath, m.Branch, remote); err != nil {
+			logTo("warning: track %s@%s: %v", m.Branch, remote, err)
+		}
+		return m.Branch, nil
+	}
+	bm := fmt.Sprintf("pr-%d-%s", m.PRNumber, gh.SanitizeBranch(m.Branch))
+	logTo("not tracking %s; pinning bookmark %s to %s...", m.Branch, bm, m.HeadOID)
+	if err := jjc.BookmarkSet(repoPath, bm, m.HeadOID, true); err != nil {
+		return "", fmt.Errorf("pin bookmark %s at %s: %w", bm, m.HeadOID, err)
+	}
+	return bm, nil
 }
 
 // localBookmarkConflicts reports whether a local bookmark named name already
