@@ -388,27 +388,67 @@ func TestTrackOrPinMemberPinIsRerunnable(t *testing.T) {
 func TestRemoteBookmarkTrackable(t *testing.T) {
 	const name = "feat"
 
+	trackable := func(t *testing.T, f *fakeBookmarkLister) bool {
+		t.Helper()
+		got, err := remoteBookmarkTrackable(f, "/repo", name, "origin")
+		require.NoError(t, err)
+		return got
+	}
+
 	// Untracked remote bookmark on origin: trackable.
 	f := &fakeBookmarkLister{bookmarks: []jj.Bookmark{
 		{Name: name, Remote: "origin", Present: true, Tracked: false},
 	}}
-	assert.True(t, remoteBookmarkTrackable(f, "/repo", name, "origin"))
+	assert.True(t, trackable(t, f))
 
 	// Already tracked: nothing useful to do.
 	f = &fakeBookmarkLister{bookmarks: []jj.Bookmark{
 		{Name: name, Remote: "origin", Present: true, Tracked: true},
 	}}
-	assert.False(t, remoteBookmarkTrackable(f, "/repo", name, "origin"))
+	assert.False(t, trackable(t, f))
 
 	// Local-only branch (no remote counterpart): not trackable.
 	f = &fakeBookmarkLister{bookmarks: []jj.Bookmark{
 		{Name: name, Remote: "", Present: true},
 	}}
-	assert.False(t, remoteBookmarkTrackable(f, "/repo", name, "origin"))
+	assert.False(t, trackable(t, f))
 
 	// Remote bookmark on a different remote: not trackable against origin.
 	f = &fakeBookmarkLister{bookmarks: []jj.Bookmark{
 		{Name: name, Remote: "upstream", Present: true, Tracked: false},
 	}}
-	assert.False(t, remoteBookmarkTrackable(f, "/repo", name, "origin"))
+	assert.False(t, trackable(t, f))
+}
+
+// fakeJJClient is a jj.Client whose bookmark listing fails. bookmarkExists
+// takes the whole client rather than bookmarkLister, so it needs one; every
+// other method is left nil because the failure short-circuits before them.
+type fakeJJClient struct {
+	jj.Client
+	listErr error
+}
+
+func (f *fakeJJClient) BookmarkList(string, jj.BookmarkListOpts) ([]jj.Bookmark, error) {
+	return nil, f.listErr
+}
+
+// Neither lookup may answer on jj's behalf when jj did not answer: "not
+// trackable" and "does not exist" are both actionable claims that callers
+// turn into a downgrade or a wrong "branch not found" error.
+func TestBookmarkLookupsPropagateListErrors(t *testing.T) {
+	boom := errors.New("failed to snapshot the working copy")
+
+	t.Run("remoteBookmarkTrackable", func(t *testing.T) {
+		got, err := remoteBookmarkTrackable(&fakeBookmarkLister{listErr: boom}, "/repo", "feat", "origin")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, boom)
+		assert.False(t, got)
+	})
+
+	t.Run("bookmarkExists", func(t *testing.T) {
+		got, err := bookmarkExists(&fakeJJClient{listErr: boom}, "/repo", "feat")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, boom)
+		assert.False(t, got, "a failed lookup must not read as 'branch not found'")
+	})
 }

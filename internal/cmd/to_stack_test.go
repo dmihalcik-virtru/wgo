@@ -37,7 +37,7 @@ func TestChooseLandingNode(t *testing.T) {
 	members := stackMembers()
 	bmFor := map[int]string{1: "a", 2: "b", 3: "c"}
 	named := memberByPR(members, 3) // user passed the leaf PR #3
-	noExisting := func(string) bool { return false }
+	noExisting := func(string) (bool, error) { return false, nil }
 
 	// Default: land on the passed PR's bookmark.
 	got, err := chooseLandingNode(members, bmFor, named, 3, "", noExisting)
@@ -50,7 +50,7 @@ func TestChooseLandingNode(t *testing.T) {
 	assert.Equal(t, "a", got)
 
 	// --on a bookmark outside the stack but existing locally lands on it.
-	got, err = chooseLandingNode(members, bmFor, named, 3, "other", func(n string) bool { return n == "other" })
+	got, err = chooseLandingNode(members, bmFor, named, 3, "other", func(n string) (bool, error) { return n == "other", nil })
 	require.NoError(t, err)
 	assert.Equal(t, "other", got)
 
@@ -66,11 +66,11 @@ func TestChooseLandingNode_PinnedBookmarks(t *testing.T) {
 	bmFor := map[int]string{1: "pr-1-a", 2: "pr-2-b", 3: "pr-3-c"}
 	named := memberByPR(members, 2)
 
-	got, err := chooseLandingNode(members, bmFor, named, 2, "", func(string) bool { return false })
+	got, err := chooseLandingNode(members, bmFor, named, 2, "", func(string) (bool, error) { return false, nil })
 	require.NoError(t, err)
 	assert.Equal(t, "pr-2-b", got, "lands on the pinned bookmark of the passed PR")
 
-	got, err = chooseLandingNode(members, bmFor, named, 2, "a", func(string) bool { return false })
+	got, err = chooseLandingNode(members, bmFor, named, 2, "a", func(string) (bool, error) { return false, nil })
 	require.NoError(t, err)
 	assert.Equal(t, "pr-1-a", got, "--on resolves via stack membership to the pinned bookmark")
 }

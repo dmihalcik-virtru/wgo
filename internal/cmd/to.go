@@ -743,7 +743,11 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 	case gh.URLTypeIssue:
 		startPoint := ""
 		if toOnParent != "" {
-			if !bookmarkExists(jjc, repoPath, toOnParent) {
+			exists, err := bookmarkExists(jjc, repoPath, toOnParent)
+			if err != nil {
+				return "", err
+			}
+			if !exists {
 				return "", fmt.Errorf("--on parent %q not found locally or on origin", toOnParent)
 			}
 			// An existing parent implies the repo already has commits, so there
@@ -847,7 +851,7 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 		// (C) Choose the landing node: the passed PR by default, or --on to land
 		// on an interior stack node (or any existing bookmark) for forking.
 		landOn, err := chooseLandingNode(members, bmFor, named, num, toOnParent,
-			func(name string) bool { return bookmarkExists(jjc, repoPath, name) })
+			func(name string) (bool, error) { return bookmarkExists(jjc, repoPath, name) })
 		if err != nil {
 			return "", err
 		}
@@ -861,16 +865,26 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 		}
 
 	case gh.URLTypeBranch:
-		if !bookmarkExists(jjc, repoPath, branch) {
+		exists, err := bookmarkExists(jjc, repoPath, branch)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
 			return "", fmt.Errorf("branch %q not found locally or on origin", branch)
 		}
 		// Track the branch so the workspace gets a mutable local bookmark,
 		// unless it's protected (those stay immutable via trunk()) or has no
 		// untracked origin counterpart (local-only, or already tracked).
-		if shouldTrack(cfg, branch) && remoteBookmarkTrackable(jjc, repoPath, branch, "origin") {
-			logTo("tracking %s@origin...", branch)
-			if err := jjc.BookmarkTrack(repoPath, branch, "origin"); err != nil {
-				logTo("warning: track %s@origin: %v", branch, err)
+		if shouldTrack(cfg, branch) {
+			trackable, err := remoteBookmarkTrackable(jjc, repoPath, branch, "origin")
+			if err != nil {
+				return "", err
+			}
+			if trackable {
+				logTo("tracking %s@origin...", branch)
+				if err := jjc.BookmarkTrack(repoPath, branch, "origin"); err != nil {
+					logTo("warning: track %s@origin: %v", branch, err)
+				}
 			}
 		}
 		logTo("creating workspace for branch %s...", branch)
@@ -1056,42 +1070,49 @@ func localBookmarkConflicts(jjc bookmarkLister, repo, name, oid string) (bool, e
 // remoteBookmarkTrackable reports whether name has an untracked remote bookmark
 // on remote — i.e. tracking it would create a useful local bookmark. Returns
 // false for local-only branches (nothing to track) and already-tracked ones.
-func remoteBookmarkTrackable(jjc bookmarkLister, repo, name, remote string) bool {
+// A list failure is returned rather than reported as "not trackable", so a
+// broken jj cannot quietly downgrade the workspace to an untracked bookmark.
+func remoteBookmarkTrackable(jjc bookmarkLister, repo, name, remote string) (bool, error) {
 	bms, err := jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true, Names: []string{name}})
 	if err != nil {
-		return false
+		return false, fmt.Errorf("check remote bookmark %s@%s in %s: %w", name, remote, repo, err)
 	}
 	for _, b := range bms {
 		if b.Name == name && b.Remote == remote && b.Present && !b.Tracked {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // bookmarkExists returns true when a bookmark of name exists locally or on
 // any remote of repo.
-func bookmarkExists(jjc jj.Client, repo, name string) bool {
+//
+// A list failure is returned, not flattened to "does not exist". Callers turn
+// a false into a user-facing "branch %q not found locally or on origin" or
+// "--on %q is not in PR #%d's stack nor an existing bookmark", both of which
+// are flatly wrong when the real cause was jj failing to answer.
+func bookmarkExists(jjc jj.Client, repo, name string) (bool, error) {
 	bms, err := jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true, Names: []string{name}})
 	if err != nil {
-		return false
+		return false, fmt.Errorf("check bookmark %s in %s: %w", name, repo, err)
 	}
 	for _, b := range bms {
 		if b.Name == name {
-			return true
+			return true, nil
 		}
 	}
 	// Also accept a remote-tracking ref written as "origin/name".
 	bms, err = jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true})
 	if err != nil {
-		return false
+		return false, fmt.Errorf("list bookmarks in %s: %w", repo, err)
 	}
 	for _, b := range bms {
 		if b.Name == name {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // recordStackParent used to persist a parent link in state.json so the new
@@ -1126,15 +1147,20 @@ func memberByBranch(members []stack.StackMember, branch string) (int, bool) {
 // Default is the named PR's bookmark; --on selects an interior stack member (by
 // branch) or, failing that, any existing bmark. An --on that matches neither is
 // an error. bmFor maps PR number → local bookmark; bookmarkExistsFn tests for a
-// pre-existing bookmark.
-func chooseLandingNode(members []stack.StackMember, bmFor map[int]string, named *stack.StackMember, num int, onParent string, bookmarkExistsFn func(string) bool) (string, error) {
+// pre-existing bookmark and may fail, in which case its error is returned
+// rather than being reported as "--on names nothing".
+func chooseLandingNode(members []stack.StackMember, bmFor map[int]string, named *stack.StackMember, num int, onParent string, bookmarkExistsFn func(string) (bool, error)) (string, error) {
 	if onParent == "" {
 		return bmFor[named.PRNumber], nil
 	}
 	if pn, ok := memberByBranch(members, onParent); ok {
 		return bmFor[pn], nil
 	}
-	if bookmarkExistsFn(onParent) {
+	exists, err := bookmarkExistsFn(onParent)
+	if err != nil {
+		return "", err
+	}
+	if exists {
 		return onParent, nil
 	}
 	return "", fmt.Errorf("--on %q is not in PR #%d's stack nor an existing bookmark", onParent, num)
