@@ -726,6 +726,48 @@ func findOrCloneRepoOpt(jjc jj.Client, cfg *config.Config, owner, repo string, i
 	return destPath, nil
 }
 
+// addWorkspace creates a workspace and removes what it created on failure.
+//
+// `jj workspace add` registers the workspace and creates its directory before
+// it resolves the revset, so a failed add leaves a husk behind: a registered
+// workspace whose directory holds nothing but .jj/. Left in place, the next
+// `wgo to` stats that directory, takes the re-entry path, and has to fail on a
+// workspace wgo itself abandoned. Callers reach this only after establishing
+// that wtPath did not already exist, so removing it cannot take user work.
+func addWorkspace(jjc jj.Client, repoPath, wtPath, name, revset string) error {
+	// A taken name is itself one of the reasons `jj workspace add` fails, so
+	// forgetting unconditionally would unregister the workspace that already
+	// owned the name — turning a failed add into someone else's lost
+	// workspace. Only forget a registration this call introduced.
+	preexisting := workspaceRegistered(jjc, repoPath, name)
+
+	err := jjc.WorkspaceAdd(repoPath, wtPath, jj.WorkspaceAddOpts{Name: name, Revset: revset})
+	if err == nil {
+		return nil
+	}
+	if !preexisting && workspaceRegistered(jjc, repoPath, name) {
+		if ferr := jjc.WorkspaceForget(repoPath, name); ferr != nil {
+			logTo("warning: could not forget partial workspace %s: %v", name, ferr)
+		}
+	}
+	if rerr := os.RemoveAll(wtPath); rerr != nil {
+		logTo("warning: could not remove partial workspace at %s: %v", wtPath, rerr)
+	}
+	return err
+}
+
+// workspaceRegistered reports whether repoPath has a workspace named name. A
+// list failure answers true: the only caller uses this to decide whether
+// forgetting the name is safe, and "I could not tell" must not authorize
+// unregistering a workspace that may not be ours.
+func workspaceRegistered(jjc jj.Client, repoPath, name string) bool {
+	wss, err := jjc.ListWorkspaces(repoPath)
+	if err != nil {
+		return true
+	}
+	return slices.ContainsFunc(wss, func(w jj.Workspace) bool { return w.Name == name })
+}
+
 // createWorktree creates a new jj workspace for the given branch.
 //
 // Layout per gh-21:
@@ -766,16 +808,20 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 		if err != nil {
 			return "", err
 		}
+		// From here on wgo cannot show that wtPath is a checkout of what was
+		// asked for, and `wgo to` is consumed as `cd $(wgo to ...)` — printing
+		// the path anyway walks the user into the wrong tree. Fail instead.
 		if target == "" {
-			// EditChange would only fail on a name that does not resolve; say so
-			// once here instead of laundering it through jj's revset error.
-			logTo("warning: workspace exists at %s but none of %s exist locally; leaving @ where it is",
-				wtPath, strings.Join(want, ", "))
-			return wtPath, nil
+			return "", fmt.Errorf("workspace at %s exists but none of its bookmarks (%s) resolve locally, "+
+				"so wgo cannot land it on %s; if it is an empty leftover from an interrupted run, "+
+				"find it with `jj -R %s workspace list`, forget it, and `rm -rf %s`",
+				wtPath, strings.Join(want, ", "), branch, repoPath, wtPath)
 		}
 		logTo("workspace exists at %s, moving @ to %s...", wtPath, target)
 		if err := jjc.EditChange(wtPath, target); err != nil {
-			logTo("warning: could not move to %s: %v", target, err)
+			// Not only unresolvable names land here: `jj edit` also refuses an
+			// immutable target, which a protected ref is by design.
+			return "", fmt.Errorf("workspace exists at %s but @ could not be moved to %s: %w", wtPath, target, err)
 		}
 		return wtPath, nil
 	}
@@ -876,9 +922,7 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 			}
 		}
 
-		// (B) Track or pin a bookmark per member. Prefer a tracked local
-		// bookmark (mutable + pushable); fall back to a pinned pr-<N> bookmark
-		// for protected refs or divergent local collisions.
+		// (B) Track or pin a bookmark per member (see trackOrPinMember).
 		bmFor := map[int]string{}
 		for i := range members {
 			m := &members[i]
@@ -905,7 +949,7 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 		// stable, slash-free id even though bookmarks may carry slashes.
 		wsName := fmt.Sprintf("pr-%d-%s", num, gh.SanitizeBranch(named.Branch))
 		logTo("creating workspace at bookmark %s...", landOn)
-		if err := jjc.WorkspaceAdd(repoPath, wtPath, jj.WorkspaceAddOpts{Name: wsName, Revset: landOn}); err != nil {
+		if err := addWorkspace(jjc, repoPath, wtPath, wsName, landOn); err != nil {
 			return "", fmt.Errorf("workspace add failed: %w", err)
 		}
 
@@ -918,8 +962,9 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 			return "", fmt.Errorf("branch %q not found locally or on origin", branch)
 		}
 		// Track the branch so the workspace gets a mutable local bookmark,
-		// unless it's protected (those stay immutable via trunk()) or has no
-		// untracked origin counterpart (local-only, or already tracked).
+		// unless it's protected (those stay untracked so immutable_heads()
+		// keeps them immutable — see shouldTrack) or has no untracked origin
+		// counterpart (local-only, or already tracked).
 		if shouldTrack(cfg, branch) {
 			trackable, err := remoteBookmarkTrackable(jjc, repoPath, branch, "origin")
 			if err != nil {
@@ -933,7 +978,7 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 			}
 		}
 		logTo("creating workspace for branch %s...", branch)
-		if err := jjc.WorkspaceAdd(repoPath, wtPath, jj.WorkspaceAddOpts{Name: branch, Revset: branch}); err != nil {
+		if err := addWorkspace(jjc, repoPath, wtPath, branch, branch); err != nil {
 			return "", fmt.Errorf("workspace add failed: %w", err)
 		}
 
@@ -947,10 +992,11 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 // shouldTrack reports whether wgo should create a tracked local bookmark for
 // branch when checking it out. Protected branches — matched against the
 // configured doctor.exclude_bookmarks globs (main/master/develop, release/*)
-// — are left untracked: they stay immutable via jj's trunk() anyway and are
-// not meant to be rewritten locally. (The default branch is covered by those
-// globs; even if a repo's default is named oddly, tracking it is harmless
-// because trunk() still holds it immutable.)
+// — are left untracked precisely so they stay immutable: jj's default
+// immutable_heads() is `builtin_immutable_heads()`, which covers *untracked*
+// remote bookmarks, so tracking one is what makes it locally rewritable.
+// trunk() alone would not do it — that resolves to a single bookmark and says
+// nothing about develop or release/*.
 func shouldTrack(cfg *config.Config, branch string) bool {
 	return !bookmarkExcluded(branch, cfg.Doctor.ExcludeBookmarks)
 }
@@ -1007,21 +1053,28 @@ func trackOrPinMember(jjc memberBookmarker, cfg *config.Config, repoPath, remote
 		return "", fmt.Errorf("PR #%d (%s): GitHub reported no head commit, so there is nothing to pin a bookmark to; retry, or check the branch out directly with `wgo to %s`", m.PRNumber, m.Branch, m.Branch)
 	}
 
-	conflicts, err := localBookmarkConflicts(jjc, repoPath, m.Branch, m.HeadOID)
-	if err != nil {
-		return "", err
-	}
-	if shouldTrack(cfg, m.Branch) && !conflicts {
-		logTo("tracking %s@%s...", m.Branch, remote)
-		err := jjc.BookmarkTrack(repoPath, m.Branch, remote)
-		if err == nil {
-			return m.Branch, nil
+	// Ask about a colliding local bookmark only on the path that reads the
+	// answer. A protected ref goes straight to the pin below and never looks at
+	// it, so listing there would abort the whole stack checkout on a question
+	// nobody asked — and cost an extra working-copy snapshot per member.
+	if shouldTrack(cfg, m.Branch) {
+		conflicts, err := localBookmarkConflicts(jjc, repoPath, m.Branch, m.HeadOID)
+		if err != nil {
+			return "", err
 		}
-		// BookmarkTrack already repairs a missing local bookmark itself, so an
-		// error here means that repair failed too and `m.Branch` almost
-		// certainly does not resolve. Returning it anyway would surface much
-		// later as an opaque "workspace add failed"; pin instead.
-		logTo("warning: track %s@%s failed (%v); pinning instead", m.Branch, remote, err)
+		if !conflicts {
+			logTo("tracking %s@%s...", m.Branch, remote)
+			err := jjc.BookmarkTrack(repoPath, m.Branch, remote)
+			if err == nil {
+				return m.Branch, nil
+			}
+			// BookmarkTrack already repairs a missing local bookmark itself, so
+			// an error here means that repair failed too and `m.Branch` almost
+			// certainly does not resolve. Returning it anyway would surface
+			// much later as an opaque "workspace add failed"; pin instead.
+			// The pin is not pushable, so say what that costs.
+			logTo("warning: track %s@%s failed (%v); pinning instead — pushing from this workspace will NOT update PR #%d", m.Branch, remote, err, m.PRNumber)
+		}
 	}
 
 	bm := prPinBookmark(m.PRNumber, m.Branch)
@@ -1033,7 +1086,13 @@ func trackOrPinMember(jjc memberBookmarker, cfg *config.Config, repoPath, remote
 		return "", fmt.Errorf("bookmark %s is tracked on a remote, so it is not wgo's to move; rename or delete it, then re-run `wgo to`", bm)
 	}
 	logTo("not tracking %s; pinning bookmark %s to %s...", m.Branch, bm, m.HeadOID)
-	if pin.present && pin.commitID != "" && pin.commitID != m.HeadOID {
+	// A conflicted pin reports no commitID, so without the first case it would
+	// look identical to one already sitting on the head and the set below would
+	// collapse the conflict silently.
+	switch {
+	case pin.conflicted:
+		logTo("  %s is conflicted; pinning to the PR head resolves it (`jj undo` reverts)", bm)
+	case pin.present && pin.commitID != "" && pin.commitID != m.HeadOID:
 		logTo("  %s moves off %s (PR head changed; `jj undo` reverts)", bm, pin.commitID)
 	}
 	if err := jjc.BookmarkSet(repoPath, bm, m.HeadOID, true); err != nil {
@@ -1048,6 +1107,10 @@ type pinState struct {
 	present bool
 	// commitID is where it currently sits, or "" when unknown or conflicted.
 	commitID string
+	// conflicted is true when the bookmark has conflicting targets. jj reports
+	// no commitID for those, so without this flag a conflicted pin is
+	// indistinguishable from one sitting exactly where we want it.
+	conflicted bool
 	// published is true when the name has a tracked counterpart on a real
 	// remote, which means someone pushed it — a wgo pin is never pushed, so
 	// the name is not wgo's to move.
@@ -1078,6 +1141,7 @@ func inspectPin(jjc bookmarkLister, repo, name string) (pinState, error) {
 		if b.Present {
 			st.present = true
 			st.commitID = b.CommitID
+			st.conflicted = b.Conflict
 		}
 	}
 	return st, nil
@@ -1141,16 +1205,6 @@ func bookmarkExists(jjc jj.Client, repo, name string) (bool, error) {
 	bms, err := jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true, Names: []string{name}})
 	if err != nil {
 		return false, fmt.Errorf("check bookmark %s in %s: %w", name, repo, err)
-	}
-	for _, b := range bms {
-		if b.Name == name {
-			return true, nil
-		}
-	}
-	// Also accept a remote-tracking ref written as "origin/name".
-	bms, err = jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true})
-	if err != nil {
-		return false, fmt.Errorf("list bookmarks in %s: %w", repo, err)
 	}
 	for _, b := range bms {
 		if b.Name == name {
