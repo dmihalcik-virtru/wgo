@@ -452,3 +452,107 @@ func TestBookmarkLookupsPropagateListErrors(t *testing.T) {
 		assert.False(t, got, "a failed lookup must not read as 'branch not found'")
 	})
 }
+
+// The helpers return their list errors; these assert the *caller* honors them
+// rather than pinning or tracking on the strength of a lookup that failed.
+func TestTrackOrPinMemberPropagatesListErrors(t *testing.T) {
+	boom := errors.New("failed to snapshot the working copy")
+	const oid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	// A trackable branch consults localBookmarkConflicts first. Swallowing its
+	// error would route into `jj bookmark track`, which merges a genuinely
+	// colliding bookmark into a conflicted one at exit 0.
+	t.Run("conflict check", func(t *testing.T) {
+		m := &stack.StackMember{Branch: "feat", PRNumber: 7, HeadOID: oid}
+		f := &fakeMemberBookmarker{fakeBookmarkLister: fakeBookmarkLister{listErr: boom}}
+
+		_, err := trackOrPinMember(f, protectedCfg(), "/repo", "origin", m)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, boom)
+		assert.Empty(t, f.tracked, "must not track on a failed conflict check")
+		assert.Empty(t, f.sets)
+	})
+
+	// A protected branch skips the conflict check entirely and fails at
+	// inspectPin instead — "I cannot tell whether this name is mine".
+	t.Run("pin inspection", func(t *testing.T) {
+		m := &stack.StackMember{Branch: "main", PRNumber: 7, HeadOID: oid}
+		f := &fakeMemberBookmarker{fakeBookmarkLister: fakeBookmarkLister{listErr: boom}}
+
+		_, err := trackOrPinMember(f, protectedCfg(), "/repo", "origin", m)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, boom)
+		assert.Empty(t, f.sets, "must not move a bookmark whose owner is unknown")
+	})
+}
+
+func TestInspectPin(t *testing.T) {
+	const name, oid = "pr-7-feat", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	// A conflicted bookmark reports no commit id, so without the conflicted
+	// flag it is indistinguishable from one sitting exactly on the head.
+	t.Run("conflicted", func(t *testing.T) {
+		f := &fakeBookmarkLister{bookmarks: []jj.Bookmark{
+			{Name: name, Present: true, Conflict: true},
+		}}
+
+		st, err := inspectPin(f, "/repo", name)
+
+		require.NoError(t, err)
+		assert.True(t, st.conflicted)
+		assert.True(t, st.present)
+		assert.Empty(t, st.commitID)
+		assert.False(t, st.published)
+	})
+
+	// Pushed, then deleted locally: jj keeps the tracked remote row, so the
+	// name is still not wgo's to move even though nothing is present locally.
+	t.Run("published with no local bookmark", func(t *testing.T) {
+		f := &fakeBookmarkLister{bookmarks: []jj.Bookmark{
+			{Name: name, Remote: "origin", Present: true, Tracked: true},
+		}}
+
+		st, err := inspectPin(f, "/repo", name)
+
+		require.NoError(t, err)
+		assert.True(t, st.published)
+		assert.False(t, st.present)
+	})
+
+	// wgo always colocates, so jj's auto-export to the "git" pseudo-remote
+	// must not read as a publication or no pin could ever be re-set.
+	t.Run("colocated git remote is not published", func(t *testing.T) {
+		f := &fakeBookmarkLister{bookmarks: []jj.Bookmark{
+			{Name: name, Present: true, CommitID: oid},
+			{Name: name, Remote: jj.GitPseudoRemote, Present: true, Tracked: true, CommitID: oid},
+		}}
+
+		st, err := inspectPin(f, "/repo", name)
+
+		require.NoError(t, err)
+		assert.False(t, st.published)
+		assert.Equal(t, oid, st.commitID)
+		assert.False(t, st.conflicted)
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		st, err := inspectPin(&fakeBookmarkLister{}, "/repo", name)
+
+		require.NoError(t, err)
+		assert.Equal(t, pinState{}, st)
+	})
+
+	// "I cannot tell whether this name is mine" must not be spelled "the name
+	// is free" — that would hand a stranger's bookmark to BookmarkSet.
+	t.Run("list failure", func(t *testing.T) {
+		boom := errors.New("jj exploded")
+
+		_, err := inspectPin(&fakeBookmarkLister{listErr: boom}, "/repo", name)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, boom)
+		assert.ErrorContains(t, err, name)
+	})
+}
