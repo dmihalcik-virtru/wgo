@@ -114,8 +114,15 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 		return fmt.Errorf("workspace already exists at %s; remove it first or use cd %s", newWtPath, newWtPath)
 	}
 
-	// 10. Create workspace: attach existing bookmark or create new one.
-	if bookmarkExists(jjc, repoPath, branch) {
+	// 10. Create workspace: attach existing bookmark or create new one. A
+	// failed lookup must not fall through to the else branch — that would
+	// branch a second, divergent bookmark off trunk under a name that already
+	// exists.
+	branchExists, err := bookmarkExists(jjc, repoPath, branch)
+	if err != nil {
+		return err
+	}
+	if branchExists {
 		fmt.Fprintf(os.Stderr, "creating workspace for existing bookmark %s...\n", branch)
 		if err := jjc.WorkspaceAdd(repoPath, newWtPath, jj.WorkspaceAddOpts{Name: branch, Revset: branch}); err != nil {
 			return fmt.Errorf("workspace add: %w", err)
