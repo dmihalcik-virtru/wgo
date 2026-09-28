@@ -1017,15 +1017,18 @@ type memberBookmarker interface {
 }
 
 // prPinBookmark names the wgo-owned local bookmark that pins PR n's head when
-// the head ref itself cannot be tracked. The `pr-<N>-` prefix is reserved for
-// wgo, and the PR number keeps it unique per repo even when SanitizeBranch
-// collapses two long head refs to the same slug.
+// the head ref itself cannot be tracked.
+//
+// The shape lives in the github package rather than here because recognising a
+// pin matters outside this file: `wgo sync` has to keep pins out of the
+// bookmarks it pushes and opens PRs for, and it can only do that if the
+// reserved namespace has one definition (gh.IsPinBookmark).
 //
 // Note this shares its shape with two *different* namespaces built from the
 // same parts: the workspace directory slug and the jj workspace name. jj keeps
 // bookmark, workspace, and remote names separate, so the collision is cosmetic.
 func prPinBookmark(n int, branch string) string {
-	return fmt.Sprintf("pr-%d-%s", n, gh.SanitizeBranch(branch))
+	return gh.PinBookmark(n, branch)
 }
 
 // trackOrPinMember gives one stack member a local bookmark and returns its

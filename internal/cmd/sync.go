@@ -52,7 +52,7 @@ func init() {
 	syncCmd.Flags().StringVar(&syncDefaultBase, "default-base", "main", "fallback base bookmark for stack roots")
 	syncCmd.Flags().BoolVar(&syncCreatePRsFlag, "create-prs", false, "open draft PRs for bookmarked changes that lack one")
 	syncCmd.Flags().StringSliceVar(&syncBookmarkFlag, "bookmark", nil,
-		"limit --create-prs to these bookmarks (repeatable); default is every bookmark in the DAG")
+		"limit --create-prs to these bookmarks (repeatable); default is every bookmark in the DAG except wgo's own pr-<N>- pins")
 	syncCmd.Flags().StringSliceVar(&syncLabelFlag, "label", nil,
 		"label to apply to each PR opened by --create-prs (repeatable)")
 	rootCmd.AddCommand(syncCmd)

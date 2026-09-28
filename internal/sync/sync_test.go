@@ -331,3 +331,94 @@ func TestSync_InvalidMode(t *testing.T) {
 	_, err := Sync(jjc, ghc, "/repo", Options{GHStackMode: "bogus"})
 	require.Error(t, err)
 }
+
+// A repo visited with `wgo to <PR-URL>` carries local `pr-<N>-<slug>`
+// bookmarks pinning PR heads wgo could not track. They are wgo's, not the
+// user's work, and pushing one publishes a duplicate head ref for a PR that
+// already exists — after which `wgo to` on that URL refuses to move the pin
+// ever again.
+func TestSync_CreatePRs_SkipsPinBookmarks(t *testing.T) {
+	jjc := &fakeJJ{entries: []jj.LogEntry{
+		{ChangeID: "ca", Bookmarks: []string{"a"}, Parents: []string{"trunk"}},
+		{ChangeID: "cp", Bookmarks: []string{"pr-7-their-feature"}, Parents: []string{"trunk"}},
+	}}
+	ghc := newFakeGH()
+	opts := Options{DefaultBase: "main", CreatePRs: true, GHStackMode: "off"}
+
+	res, err := Sync(jjc, ghc, "/repo", opts)
+	require.NoError(t, err)
+
+	require.Len(t, ghc.created, 1, "only the user's own bookmark gets a PR")
+	assert.Equal(t, "a", ghc.created[0].Head)
+	assert.Equal(t, []PRCreation{{Bookmark: "a", PR: 101, Base: "main"}}, res.Created)
+
+	var pushed []string
+	for _, p := range jjc.pushed {
+		pushed = append(pushed, p...)
+	}
+	assert.NotContains(t, pushed, "pr-7-their-feature", "the pin must never reach the remote")
+}
+
+// Dry-run is the mode people reach for to find out what an unscoped
+// --create-prs would do, so it has to report the same exclusion; a pin listed
+// there would send them looking for a --bookmark scope they do not need.
+func TestSync_CreatePRs_DryRunSkipsPinBookmarks(t *testing.T) {
+	jjc := &fakeJJ{entries: []jj.LogEntry{
+		{ChangeID: "ca", Bookmarks: []string{"a"}, Parents: []string{"trunk"}},
+		{ChangeID: "cp", Bookmarks: []string{"pr-7-their-feature"}, Parents: []string{"trunk"}},
+	}}
+	ghc := newFakeGH()
+
+	res, err := Sync(jjc, ghc, "/repo", Options{DefaultBase: "main", CreatePRs: true, DryRun: true, GHStackMode: "off"})
+	require.NoError(t, err)
+	assert.Equal(t, []PRCreation{{Bookmark: "a", Base: "main"}}, res.Created)
+}
+
+// An unscoped run never meant to include pins, so skipping them silently is
+// right. Typing one is a different act: it asks for something specific, and
+// quietly doing nothing would read as "done".
+func TestSync_CreatePRs_RejectsExplicitPinBookmark(t *testing.T) {
+	jjc := &fakeJJ{entries: []jj.LogEntry{
+		{ChangeID: "cp", Bookmarks: []string{"pr-7-their-feature"}, Parents: []string{"trunk"}},
+	}}
+	ghc := newFakeGH()
+	opts := Options{
+		DefaultBase: "main", CreatePRs: true, GHStackMode: "off",
+		Bookmarks: []string{"pr-7-their-feature"},
+	}
+
+	_, err := Sync(jjc, ghc, "/repo", opts)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "pr-7-their-feature")
+	assert.Empty(t, jjc.pushed)
+	assert.Empty(t, ghc.created)
+}
+
+// The rejection is about --create-prs' scope. Base alignment and marker
+// refresh for bookmarks that already have PRs must stay reachable.
+func TestSync_PinBookmarkScopeIsFineWithoutCreatePRs(t *testing.T) {
+	jjc := &fakeJJ{entries: linearEntries()}
+	ghc := newFakeGH()
+	ghc.prs = map[string]*github.PRInfo{"b": openPR(2, "b", "wrong-base")}
+	opts := Options{DefaultBase: "main", GHStackMode: "off", Bookmarks: []string{"pr-7-their-feature"}}
+
+	res, err := Sync(jjc, ghc, "/repo", opts)
+	require.NoError(t, err)
+	assert.Equal(t, "main", ghc.baseUpdates[2])
+	assert.NotEmpty(t, res.BaseChanges)
+}
+
+// A branch that merely starts with "pr-" belongs to whoever made it.
+func TestSync_CreatePRs_PrefixLookalikeIsNotReserved(t *testing.T) {
+	jjc := &fakeJJ{entries: []jj.LogEntry{
+		{ChangeID: "cr", Bookmarks: []string{"pr-review-fixes"}, Parents: []string{"trunk"}},
+	}}
+	ghc := newFakeGH()
+
+	res, err := Sync(jjc, ghc, "/repo", Options{DefaultBase: "main", CreatePRs: true, GHStackMode: "off"})
+	require.NoError(t, err)
+	require.Len(t, ghc.created, 1)
+	assert.Equal(t, "pr-review-fixes", ghc.created[0].Head)
+	assert.NotEmpty(t, res.Created)
+}
