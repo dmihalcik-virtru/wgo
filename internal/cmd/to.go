@@ -911,53 +911,146 @@ type memberBookmarker interface {
 	BookmarkSet(repo, name, revset string, allowBackwards bool) error
 }
 
+// prPinBookmark names the wgo-owned local bookmark that pins PR n's head when
+// the head ref itself cannot be tracked. The `pr-<N>-` prefix is reserved for
+// wgo, and the PR number keeps it unique per repo even when SanitizeBranch
+// collapses two long head refs to the same slug.
+//
+// Note this shares its shape with two *different* namespaces built from the
+// same parts: the workspace directory slug and the jj workspace name. jj keeps
+// bookmark, workspace, and remote names separate, so the collision is cosmetic.
+func prPinBookmark(n int, branch string) string {
+	return fmt.Sprintf("pr-%d-%s", n, gh.SanitizeBranch(branch))
+}
+
 // trackOrPinMember gives one stack member a local bookmark and returns its
-// name. A tracked bookmark is preferred — it is mutable and pushable, so the
-// workspace can build on the PR — but a protected ref, or a local bookmark of
-// the same name already sitting on a different commit, falls back to a pinned
-// `pr-<N>-<branch>` bookmark that names the PR head without disturbing it.
+// name. A tracked bookmark is preferred — it is mutable, and for a same-repo
+// PR pushable, so the workspace can build on the PR — but a protected ref, or
+// a local bookmark of the same name already sitting on a different commit,
+// falls back to a pinned `pr-<N>-<sanitized-branch>` bookmark that names the
+// PR head without touching the protected ref or the colliding bookmark. (A
+// fork PR tracks the contributor's remote, so pushing it needs write access to
+// their fork.)
 //
 // The pin is set, not created: `wgo to <PR-URL>` is a lookup users re-run
-// freely, and the pin is wgo-owned, so a second run must land on the same
-// bookmark rather than fail with "Bookmark already exists". Backwards moves
-// are allowed because a force-push can rewind a PR head to an ancestor.
+// freely, so a second run must land on the same bookmark rather than fail with
+// "Bookmark already exists". Backwards moves are allowed because a force-push
+// can replace the PR head with a commit that is not a descendant of the old
+// one — an amended or rebased sibling, or an outright rewind to an ancestor.
+//
+// Setting rather than creating gives up the accidental guard `jj bookmark
+// create` provided against overwriting a name wgo does not own, so the pin is
+// checked for a tracked remote counterpart first and any move is reported.
 func trackOrPinMember(jjc memberBookmarker, cfg *config.Config, repoPath, remote string, m *stack.StackMember) (string, error) {
-	if shouldTrack(cfg, m.Branch) && !localBookmarkConflicts(jjc, repoPath, m.Branch, m.HeadOID) {
-		logTo("tracking %s@%s...", m.Branch, remote)
-		if err := jjc.BookmarkTrack(repoPath, m.Branch, remote); err != nil {
-			logTo("warning: track %s@%s: %v", m.Branch, remote, err)
-		}
-		return m.Branch, nil
+	// An empty head would make BookmarkSet omit -r, and jj defaults that to @ —
+	// silently pinning the PR to whatever the main clone's working copy is.
+	if m.HeadOID == "" {
+		return "", fmt.Errorf("PR #%d (%s): GitHub reported no head commit, so there is nothing to pin a bookmark to; retry, or check the branch out directly with `wgo to %s`", m.PRNumber, m.Branch, m.Branch)
 	}
-	bm := fmt.Sprintf("pr-%d-%s", m.PRNumber, gh.SanitizeBranch(m.Branch))
+
+	conflicts, err := localBookmarkConflicts(jjc, repoPath, m.Branch, m.HeadOID)
+	if err != nil {
+		return "", err
+	}
+	if shouldTrack(cfg, m.Branch) && !conflicts {
+		logTo("tracking %s@%s...", m.Branch, remote)
+		err := jjc.BookmarkTrack(repoPath, m.Branch, remote)
+		if err == nil {
+			return m.Branch, nil
+		}
+		// BookmarkTrack already repairs a missing local bookmark itself, so an
+		// error here means that repair failed too and `m.Branch` almost
+		// certainly does not resolve. Returning it anyway would surface much
+		// later as an opaque "workspace add failed"; pin instead.
+		logTo("warning: track %s@%s failed (%v); pinning instead", m.Branch, remote, err)
+	}
+
+	bm := prPinBookmark(m.PRNumber, m.Branch)
+	pin, err := inspectPin(jjc, repoPath, bm)
+	if err != nil {
+		return "", err
+	}
+	if pin.published {
+		return "", fmt.Errorf("bookmark %s is tracked on a remote, so it is not wgo's to move; rename or delete it, then re-run `wgo to`", bm)
+	}
 	logTo("not tracking %s; pinning bookmark %s to %s...", m.Branch, bm, m.HeadOID)
+	if pin.present && pin.commitID != "" && pin.commitID != m.HeadOID {
+		logTo("  %s moves off %s (PR head changed; `jj undo` reverts)", bm, pin.commitID)
+	}
 	if err := jjc.BookmarkSet(repoPath, bm, m.HeadOID, true); err != nil {
 		return "", fmt.Errorf("pin bookmark %s at %s: %w", bm, m.HeadOID, err)
 	}
 	return bm, nil
 }
 
+// pinState describes whatever local bookmark already occupies a pin's name.
+type pinState struct {
+	// present is true when a local bookmark of that name resolves to a commit.
+	present bool
+	// commitID is where it currently sits, or "" when unknown or conflicted.
+	commitID string
+	// published is true when the name has a tracked counterpart on a real
+	// remote, which means someone pushed it — a wgo pin is never pushed, so
+	// the name is not wgo's to move.
+	published bool
+}
+
+// inspectPin reports what sits at a prospective pin name. A list failure is an
+// error, not an empty pinState: "I cannot tell whether this name is mine" must
+// not be spelled "the name is free".
+func inspectPin(jjc bookmarkLister, repo, name string) (pinState, error) {
+	bms, err := jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true, Names: []string{name}})
+	if err != nil {
+		return pinState{}, fmt.Errorf("list bookmark %s in %s: %w", name, repo, err)
+	}
+	var st pinState
+	for _, b := range bms {
+		if b.Name != name {
+			continue
+		}
+		if b.Remote != "" {
+			// jj auto-exports local bookmarks to the colocated git repo and
+			// calls that tracked, so it says nothing about who owns the name.
+			if b.Tracked && b.Remote != jj.GitPseudoRemote {
+				st.published = true
+			}
+			continue
+		}
+		if b.Present {
+			st.present = true
+			st.commitID = b.CommitID
+		}
+	}
+	return st, nil
+}
+
 // localBookmarkConflicts reports whether a local bookmark named name already
 // exists pointing somewhere other than oid (or is conflicted). Used to avoid
 // clobbering a pre-existing divergent bookmark — e.g. a fork PR whose head ref
 // collides with an already-tracked origin branch of the same name.
-func localBookmarkConflicts(jjc bookmarkLister, repo, name, oid string) bool {
+//
+// A list failure is returned, not swallowed as "no conflict". The false branch
+// leads to `jj bookmark track`, which on a genuine collision merges the user's
+// local bookmark with the remote into a *conflicted* bookmark — and does it at
+// exit 0, so nothing would warn. Guessing "safe" when the check itself failed
+// is the one direction that damages the user's repo.
+func localBookmarkConflicts(jjc bookmarkLister, repo, name, oid string) (bool, error) {
 	bms, err := jjc.BookmarkList(repo, jj.BookmarkListOpts{AllRemotes: true, Names: []string{name}})
 	if err != nil {
-		return false
+		return false, fmt.Errorf("check local bookmark %s in %s: %w", name, repo, err)
 	}
 	for _, b := range bms {
 		if b.Name != name || b.Remote != "" || !b.Present {
 			continue
 		}
 		if b.Conflict {
-			return true
+			return true, nil
 		}
 		if oid != "" && b.CommitID != "" && b.CommitID != oid {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // remoteBookmarkTrackable reports whether name has an untracked remote bookmark

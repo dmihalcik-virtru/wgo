@@ -22,6 +22,13 @@ type Workspace struct {
 	CommitID string
 }
 
+// GitPseudoRemote is the remote name jj reports for the underlying git repo of
+// a colocated workspace. It is not a network remote: jj exports every local
+// bookmark to it automatically and lists the result as Tracked, so code asking
+// "has this bookmark been published?" must exclude it or every local bookmark
+// in a colocated repo looks published.
+const GitPseudoRemote = "git"
+
 // Bookmark is a named ref pointing at a change. May be local-only, or paired
 // with a remote (then Remote is non-empty).
 type Bookmark struct {
