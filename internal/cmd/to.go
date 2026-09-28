@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -279,7 +280,7 @@ func runTo(rawURL string) error {
 	logTo("resolved branch: %s", branch)
 
 	// 4. Search for existing checkout
-	existing, err := findExistingCheckout(jjc, cfg, parsed.Owner, parsed.Repo, branch)
+	existing, err := findExistingCheckout(jjc, cfg, parsed.Owner, parsed.Repo, workspaceBookmarkNames(parsed, branch))
 	if err == nil && existing != "" {
 		logTo("found existing checkout")
 		fmt.Println(existing)
@@ -348,7 +349,7 @@ func runToBranch(jjc jj.Client, cfg *config.Config, parsed *gh.ParsedURL) error 
 		return printMainsCheckout(jjc, cfg, repoPath, branch)
 	}
 
-	existing, err := findExistingCheckout(jjc, cfg, parsed.Owner, parsed.Repo, branch)
+	existing, err := findExistingCheckout(jjc, cfg, parsed.Owner, parsed.Repo, workspaceBookmarkNames(parsed, branch))
 	if err == nil && existing != "" {
 		logTo("found existing checkout")
 		fmt.Println(existing)
@@ -553,13 +554,40 @@ func currentBookmark(jjc jj.Client, workspacePath string) string {
 	return bm
 }
 
+// workspaceBookmarkNames lists the local bookmark names a workspace for this
+// target may be sitting on. A PR workspace lands on the head-ref bookmark when
+// wgo could track it and on wgo's pin when it could not (protected ref,
+// divergent local name, fork) — and which of those happened is not recoverable
+// later, so every lookup that identifies a workspace by its bookmark has to
+// accept both or it misses half the PR workspaces wgo creates.
+//
+// The result is in preference order, pin first: a local bookmark named after
+// the head ref can also be the *divergent* one that forced the pin in the
+// first place, and that one points somewhere else entirely.
+func workspaceBookmarkNames(parsed *gh.ParsedURL, branch string) []string {
+	var names []string
+	if parsed.Type == gh.URLTypePR {
+		if n, err := strconv.Atoi(parsed.Identifier); err == nil {
+			names = append(names, prPinBookmark(n, branch))
+		}
+	}
+	return append(names, branch)
+}
+
 // findExistingCheckout searches discovered repos for one whose origin
-// matches owner/repo and has a workspace whose @ carries the named bookmark.
-func findExistingCheckout(jjc jj.Client, cfg *config.Config, owner, repo, branch string) (string, error) {
+// matches owner/repo and has a workspace whose @ carries any of bookmarks.
+func findExistingCheckout(jjc jj.Client, cfg *config.Config, owner, repo string, bookmarks []string) (string, error) {
 	disc := discovery.FromConfig(cfg)
 	repos, err := disc.DiscoverAll()
 	if err != nil {
 		return "", err
+	}
+
+	// currentBookmark yields "" for a workspace with no bookmark, which must
+	// not match a caller that passed an empty name through.
+	carries := func(path string) bool {
+		cur := currentBookmark(jjc, path)
+		return cur != "" && slices.Contains(bookmarks, cur)
 	}
 
 	for _, r := range repos {
@@ -568,7 +596,7 @@ func findExistingCheckout(jjc jj.Client, cfg *config.Config, owner, repo, branch
 		}
 
 		// Check the workspace at r.Path itself first.
-		if currentBookmark(jjc, r.Path) == branch {
+		if carries(r.Path) {
 			return r.Path, nil
 		}
 
@@ -578,7 +606,7 @@ func findExistingCheckout(jjc jj.Client, cfg *config.Config, owner, repo, branch
 			continue
 		}
 		for _, ws := range workspaces {
-			if currentBookmark(jjc, ws.Path) == branch {
+			if carries(ws.Path) {
 				return ws.Path, nil
 			}
 		}
@@ -724,13 +752,30 @@ func createWorktree(jjc jj.Client, repoPath string, cfg *config.Config, parsed *
 
 	// Check if path already exists (e.g. from a previous run).
 	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
-		if currentBookmark(jjc, wtPath) != branch {
-			logTo("workspace exists at %s, moving @ to %s...", wtPath, branch)
-			if err := jjc.EditChange(wtPath, branch); err != nil {
-				logTo("warning: could not move to %s: %v", branch, err)
-			}
-		} else {
+		// A pinned PR workspace sits on pr-<N>-<slug>, never on the head ref —
+		// the pin is taken precisely when the head ref could not be tracked, so
+		// comparing against `branch` alone never matched and every re-run tried
+		// to move @ onto a bookmark that by construction does not exist.
+		want := workspaceBookmarkNames(parsed, branch)
+		cur := currentBookmark(jjc, wtPath)
+		if cur != "" && slices.Contains(want, cur) {
 			logTo("workspace path already exists")
+			return wtPath, nil
+		}
+		target, err := firstLocalBookmark(jjc, repoPath, want)
+		if err != nil {
+			return "", err
+		}
+		if target == "" {
+			// EditChange would only fail on a name that does not resolve; say so
+			// once here instead of laundering it through jj's revset error.
+			logTo("warning: workspace exists at %s but none of %s exist locally; leaving @ where it is",
+				wtPath, strings.Join(want, ", "))
+			return wtPath, nil
+		}
+		logTo("workspace exists at %s, moving @ to %s...", wtPath, target)
+		if err := jjc.EditChange(wtPath, target); err != nil {
+			logTo("warning: could not move to %s: %v", target, err)
 		}
 		return wtPath, nil
 	}
@@ -1113,6 +1158,31 @@ func bookmarkExists(jjc jj.Client, repo, name string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// firstLocalBookmark returns the first name in names that exists as a local
+// bookmark in repo, or "" when none do. Names are tried in order, so callers
+// express preference by ordering.
+//
+// Local only, unlike bookmarkExists: the caller's next move is `jj edit
+// <name>`, and jj resolves a bare symbol against local bookmarks — a name that
+// exists only as `name@origin` would fail there anyway.
+func firstLocalBookmark(jjc bookmarkLister, repo string, names []string) (string, error) {
+	bms, err := jjc.BookmarkList(repo, jj.BookmarkListOpts{Local: true, Names: names})
+	if err != nil {
+		return "", fmt.Errorf("list bookmarks %s in %s: %w", strings.Join(names, ", "), repo, err)
+	}
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		for _, b := range bms {
+			if b.Name == name && b.Present {
+				return name, nil
+			}
+		}
+	}
+	return "", nil
 }
 
 // recordStackParent used to persist a parent link in state.json so the new
