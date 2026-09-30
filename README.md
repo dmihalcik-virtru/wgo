@@ -934,6 +934,29 @@ leaves the rig in place for `rig rm --force`.
 
 ---
 
+## Year in Review (Claude Code skill)
+
+This repo ships a `/year-in-review` Claude Code skill at
+`.claude/skills/year-in-review/`, with its agents in `.claude/agents/yir-*.md`.
+It turns your GitHub and Jira activity for a period into an evidence-backed
+report grouped by theme, effectiveness, collaboration, and complexity. It
+isn't a `wgo` command, but it uses `wgo ls` and `wgo contrib` to find local
+repos that have no GitHub activity.
+
+```
+/year-in-review                  # year to date
+/year-in-review 2026-H1 collab   # one aspect
+/year-in-review 2026 focus:zip64 # deep dive on one theme
+```
+
+It needs `gh` (with the `read:org` scope for the team map) and, optionally,
+`acli` for Jira. `collect.py` caches closed months under
+`~/.wgo/cache/review`. The first full-year run takes a few minutes because
+GitHub search is limited to 30 requests a minute. Reports are written to
+`~/.wgo/reviews/<period>.md`. The skill is read-only against GitHub and Jira.
+
+---
+
 ## Commands Reference
 
 | Command | Description |
