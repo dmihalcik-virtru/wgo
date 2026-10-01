@@ -950,6 +950,24 @@ It needs `gh` (with the `read:org` scope for the team map) and, optionally,
 GitHub search is limited to 30 requests a minute. Reports are written to
 `~/.wgo/reviews/<period>.md`. The skill is read-only against GitHub and Jira.
 
+### Exploring a year in review
+
+`wgo review graph` turns a finished run (under `~/.wgo/cache/review/runs/`)
+into an influence graph: people, PRs, tickets and repos, joined by who wrote,
+reviewed, built on or referenced what. Pass a run label or directory, or omit
+it for the most recent run.
+
+```
+wgo review graph | jq '.nodes | length'          # JSON on stdout
+wgo review graph --open         # offline explorer, opened in the browser
+wgo review graph 2026-H1 --out /tmp/h1.html      # .html extension selects html
+wgo review graph --format html --out - > e.html  # html to stdout
+```
+
+The HTML is a single self-contained file with no network requests, so it can
+be shared as-is. Without `--out` it is written to
+`~/.wgo/reviews/<label>.graph.html`.
+
 ---
 
 ## Commands Reference
