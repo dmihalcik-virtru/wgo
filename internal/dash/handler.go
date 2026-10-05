@@ -29,6 +29,15 @@ type HandlerOptions struct {
 	// Logf receives server faults, such as a page that fails to render;
 	// nil writes them to stderr.
 	Logf func(format string, args ...any)
+	// Actions, when set, enables POST /api/action (Open tab, Resume,
+	// Editor, Finder, Plan, Spec).
+	Actions *ActionOptions
+	// Ack, when set, enables POST /api/ack (Mark seen).
+	Ack Acker
+	// Token is the per-launch action token the page must send in
+	// TokenHeader. When empty and actions or ack are enabled, NewHandler
+	// generates one. It is embedded only in the live page.
+	Token string
 }
 
 func stderrLogf(format string, args ...any) {
@@ -45,17 +54,24 @@ func Handler(src ViewSource, host string) http.Handler {
 
 // server holds the pre-rendered pages and routes.
 type server struct {
-	opts HandlerOptions
-	live *page
-	err  error // rendering the live page failed (a build defect)
-	boot liveBoot
+	opts  HandlerOptions
+	token string // the action token; empty when no POST route is enabled
+	live  *page
+	err   error // rendering the live page failed (a build defect)
+	boot  liveBoot
 }
 
-// NewHandler serves the dashboard read-only. It never runs discovery, jj, a
-// network call or a process: it only serializes what it already holds (the
+// NewHandler serves the dashboard. Its GET routes never run discovery, jj, a
+// network call or a process: they only serialize what it already holds (the
 // view src currently publishes, and pages rendered once at construction), so
 // a request costs a pointer load and a write. Requests whose Host header is
 // not exactly opts.Host are rejected, which defeats DNS rebinding.
+//
+// The only state-changing routes are POST /api/action and POST /api/ack,
+// enabled by opts.Actions and opts.Ack. They additionally require an Origin
+// exactly matching the server, the per-launch token in TokenHeader, a JSON
+// body with only known fields, and a known action. No route ever sends CORS
+// headers.
 func NewHandler(opts HandlerOptions) http.Handler {
 	if opts.PollInterval <= 0 {
 		opts.PollInterval = DefaultPollInterval
@@ -67,6 +83,27 @@ func NewHandler(opts HandlerOptions) http.Handler {
 	s.boot = liveBoot{Mode: string(review.ModeLive), API: "/api/snapshot", PollMS: opts.PollInterval.Milliseconds()}
 	if opts.Reviews != nil {
 		s.boot.Links = "/api/review-links"
+	}
+	if opts.Actions != nil || opts.Ack != nil {
+		s.token = opts.Token
+		if s.token == "" {
+			var err error
+			if s.token, err = NewToken(); err != nil {
+				// Without a token no POST can pass; the page shows
+				// actions as unavailable.
+				opts.Logf("generate the action token: %v", err)
+			}
+		}
+	}
+	if s.token != "" {
+		s.boot.Token = s.token
+		if opts.Actions != nil {
+			s.boot.ActionAPI = ActionPath
+			s.boot.Resume = opts.Actions.Resume
+		}
+		if opts.Ack != nil {
+			s.boot.AckAPI = AckPath
+		}
 	}
 	s.live, s.err = newPage(review.Page{Mode: review.ModeLive, Title: "live work", Boot: s.boot})
 	if s.err != nil {
@@ -91,6 +128,21 @@ func NewHandler(opts HandlerOptions) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		if r.Host != opts.Host {
 			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		if r.URL.Path == ActionPath || r.URL.Path == AckPath {
+			// OPTIONS (a CORS preflight) lands here too: it is refused
+			// like any other method, with no Access-Control-Allow-*.
+			if r.Method != http.MethodPost {
+				h.Set("Allow", http.MethodPost)
+				writeError(w, reject(http.StatusMethodNotAllowed, "%s accepts only POST", r.URL.Path))
+				return
+			}
+			if r.URL.Path == ActionPath {
+				s.serveAction(w, r)
+			} else {
+				s.serveAck(w, r)
+			}
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

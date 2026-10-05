@@ -24,6 +24,33 @@ type Config struct {
 	Cache     CacheConfig     `mapstructure:"cache"`
 	Sync      SyncConfig      `mapstructure:"sync"`
 	Rig       RigConfig       `mapstructure:"rig"`
+	Dash      DashConfig      `mapstructure:"dash"`
+}
+
+// DashConfig controls `wgo dash`, the local live dashboard, and the
+// launchers its browser actions use. Zero values mean the built-in default;
+// command-line flags override port and days.
+type DashConfig struct {
+	// Port is the loopback port to serve on (8766 when zero).
+	Port int `mapstructure:"port"`
+	// Terminal picks the Open tab launcher: ghostty (default), iterm,
+	// terminal or command.
+	Terminal string `mapstructure:"terminal"`
+	// TerminalCommand is the argv for terminal = "command", and the fallback
+	// tried after Ghostty when set. An element that is exactly {workspace}
+	// is replaced by the workspace directory; no shell is involved.
+	TerminalCommand []string `mapstructure:"terminal_command"`
+	// Resume names the agent tool the Resume action starts in a new tab:
+	// "claude" (claude --continue) or "codex" (codex resume --last). Empty
+	// hides Resume.
+	Resume string `mapstructure:"resume"`
+	// Editor is an editor executable preferred over code and xed for the
+	// Editor, Plan and Spec actions.
+	Editor string `mapstructure:"editor"`
+	// RefreshSeconds is the background re-collection interval (30 when zero).
+	RefreshSeconds int `mapstructure:"refresh_seconds"`
+	// Days is the activity window of the small multiples (14 when zero).
+	Days int `mapstructure:"days"`
 }
 
 // RigConfig controls `wgo rig`, which materialises one pinned checkout per
@@ -256,6 +283,7 @@ func Init() error {
 	cfg.Worktree.MainsDir = expandPath(cfg.Worktree.MainsDir)
 	cfg.Worktree.WorktreesDir = expandPath(cfg.Worktree.WorktreesDir)
 	cfg.Rig.Dir = expandPath(cfg.Rig.Dir)
+	cfg.Dash.Editor = expandPath(cfg.Dash.Editor)
 
 	return nil
 }
@@ -377,6 +405,16 @@ create_prs = false
 #   "off"  - always use the wgo-stack marker
 #   "on"   - require native linking; error if "gh stack" is unavailable
 gh_stack = "auto"
+
+# [dash]
+# Settings for "wgo dash", the local live dashboard. All optional.
+# port = 8766                   # loopback port (--port overrides)
+# terminal = "ghostty"          # Open tab: ghostty | iterm | terminal | command
+# terminal_command = ["wezterm", "start", "--cwd", "{workspace}"]  # for "command", or the fallback after Ghostty
+# resume = "claude"             # Resume action: "claude" or "codex"; empty hides it
+# editor = "code"               # preferred editor for Editor/Plan/Spec (else code, then xed)
+# refresh_seconds = 30          # background re-collection interval
+# days = 14                     # activity window (--days overrides)
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)

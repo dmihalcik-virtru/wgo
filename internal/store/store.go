@@ -59,6 +59,11 @@ func (fs *FileStore) BaseDir() string {
 	return fs.baseDir
 }
 
+// PlanPath returns the path of the plan file (~/.wgo/plan.md).
+func (fs *FileStore) PlanPath() string {
+	return fs.planFile
+}
+
 // EnsureDir creates the store directory if it doesn't exist.
 func (fs *FileStore) EnsureDir() error {
 	if err := os.MkdirAll(fs.baseDir, 0o755); err != nil {

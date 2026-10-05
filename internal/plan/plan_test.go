@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -237,4 +238,25 @@ func TestParentSuffixWithSpecPath(t *testing.T) {
 	assert.Equal(t, "child of a", entry.Reason)
 	assert.Equal(t, []string{"a"}, entry.Parents)
 	assert.Equal(t, "spec/x.md", entry.SpecPath, "spec path must coexist with parent suffix")
+}
+
+func TestFindBranchLine(t *testing.T) {
+	content := "# Plan\n\nintro\n\n## Tasks\n\n- [ ] thing\n\n## Active Branches\n\n```\n- **wgo:fake** — in a fence\n```\n- **wgo:gh-70-dash** — dashboard\n- **other:gh-70-dash** — elsewhere\n\n## Notes\n"
+	p, err := Parse(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, line := p.FindBranchLine(func(e BranchEntry) bool { return e.Branch == "gh-70-dash" })
+	if line != 14 || e.Repo != "wgo" {
+		t.Fatalf("got %+v at line %d, want wgo at 14", e, line)
+	}
+	if got := strings.Split(content, "\n")[line-1]; !strings.Contains(got, "wgo:gh-70-dash") {
+		t.Fatalf("line %d is %q", line, got)
+	}
+	if _, line := p.FindBranchLine(func(e BranchEntry) bool { return e.Branch == "fake" }); line != 0 {
+		t.Fatalf("fenced entry matched at %d", line)
+	}
+	if _, line := (&Plan{}).FindBranchLine(func(BranchEntry) bool { return true }); line != 0 {
+		t.Fatal("plan without a document matched")
+	}
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -180,4 +181,34 @@ func TestResolveProject_RuleWithNoFields(t *testing.T) {
 	}
 	proj, _ := cfg.ResolveProject("x/repo", "/cwd")
 	assert.Equal(t, "X", proj)
+}
+
+// TestDashConfig verifies the optional [dash] section is read and that the
+// default config documents it without setting anything.
+func TestDashConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, Init())
+	assert.Equal(t, DashConfig{}, Get().Dash, "a default config leaves [dash] unset")
+
+	path := filepath.Join(home, ".wgo", "config.toml")
+	require.NoError(t, os.WriteFile(path, []byte(`[dash]
+port = 8799
+terminal = "command"
+terminal_command = ["wezterm", "start", "--cwd", "{workspace}"]
+resume = "claude"
+editor = "~/bin/myedit"
+refresh_seconds = 45
+days = 21
+`), 0o644))
+	require.NoError(t, Init())
+	assert.Equal(t, DashConfig{
+		Port:            8799,
+		Terminal:        "command",
+		TerminalCommand: []string{"wezterm", "start", "--cwd", "{workspace}"},
+		Resume:          "claude",
+		Editor:          filepath.Join(home, "bin", "myedit"),
+		RefreshSeconds:  45,
+		Days:            21,
+	}, Get().Dash)
 }
