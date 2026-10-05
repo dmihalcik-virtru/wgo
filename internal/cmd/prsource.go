@@ -96,6 +96,9 @@ func toPRRefs(prs []github.PRInfo) []models.PRRef {
 			ReviewDecision: pr.ReviewDecision,
 			IsDraft:        pr.IsDraft,
 			Checks:         pr.Checks,
+			UpdatedAt:      pr.UpdatedAt,
+			// Never nil: the cache records that reviewers were fetched.
+			RequestedReviewers: append([]string{}, pr.RequestedReviewers...),
 		})
 	}
 	return refs

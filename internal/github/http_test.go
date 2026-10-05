@@ -151,6 +151,31 @@ func TestListPRsForBranch_HappyPath(t *testing.T) {
 	assert.Equal(t, 2, prs[1].Number)
 }
 
+// TestListPRsForBranch_UpdatedAtAndRequestedReviewers: the list payload's
+// updated_at and pending review requests (users and teams) reach PRInfo, so
+// the PR cache can record them without extra API calls (gh-70).
+func TestListPRsForBranch_UpdatedAtAndRequestedReviewers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"number": 1, "state": "open", "title": "A", "updated_at": "2026-10-01T12:00:00Z",
+			 "requested_reviewers": [{"login":"alice"},{"login":"bob"}],
+			 "requested_teams": [{"slug":"devs"}],
+			 "head":{"ref":"a","sha":"sha-a","repo":{"full_name":"o/r"}}, "user":{"login":"x"}},
+			{"number": 2, "state": "open", "title": "B", "head":{"ref":"a","sha":"sha-b","repo":{"full_name":"o/r"}}, "user":{"login":"y"}}
+		]`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv, "o/r")
+
+	prs, err := c.ListPRsForBranch("/tmp", "a")
+	require.NoError(t, err)
+	require.Len(t, prs, 2)
+	assert.Equal(t, time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), prs[0].UpdatedAt.UTC())
+	assert.Equal(t, []string{"alice", "bob", "team:devs"}, prs[0].RequestedReviewers)
+	assert.NotNil(t, prs[1].RequestedReviewers, "fetched-but-empty must not be nil")
+	assert.Empty(t, prs[1].RequestedReviewers)
+}
+
 func TestCreatePR_SendsPost(t *testing.T) {
 	var called atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

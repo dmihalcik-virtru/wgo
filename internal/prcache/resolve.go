@@ -93,10 +93,11 @@ func fetchAndStore(f Fetcher, remoteURL, repoPath, branch string) Result {
 	}
 	_ = Write(remoteURL, repoPath, branch, refs)
 	return Result{
-		PRs:           refs,
-		State:         Fresh,
-		FetchedAt:     time.Now(),
-		LastAttemptAt: time.Now(),
+		PRs:            refs,
+		State:          Fresh,
+		FetchedAt:      time.Now(),
+		LastAttemptAt:  time.Now(),
+		ReviewersKnown: true,
 	}
 }
 

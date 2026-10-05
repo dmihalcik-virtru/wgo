@@ -21,6 +21,10 @@ type apiPullRequest struct {
 	Head      apiPRRef   `json:"head"`
 	Base      apiPRRef   `json:"base"`
 	User      apiUser    `json:"user"`
+	// RequestedReviewers and RequestedTeams list reviews still pending;
+	// GitHub drops a reviewer from them once that reviewer submits.
+	RequestedReviewers []apiUser `json:"requested_reviewers"`
+	RequestedTeams     []apiTeam `json:"requested_teams"`
 	// MergedBy is non-nil when state == "closed" and merged_at is set; we
 	// don't currently need it but the field is documented in the API.
 }
@@ -36,6 +40,10 @@ type apiRepo struct {
 	FullName      string `json:"full_name"`
 	NameWithOwner string `json:"-"` // alias for FullName, populated for compatibility
 	DefaultBranch string `json:"default_branch"`
+}
+
+type apiTeam struct {
+	Slug string `json:"slug"`
 }
 
 type apiUser struct {
@@ -59,6 +67,18 @@ func (p *apiPullRequest) toPRInfo() *PRInfo {
 		Author:       p.User.Login,
 		IsDraft:      p.Draft,
 		HeadRepoSlug: p.Head.Repo.FullName,
+		UpdatedAt:    p.UpdatedAt,
+	}
+	info.RequestedReviewers = make([]string, 0, len(p.RequestedReviewers)+len(p.RequestedTeams))
+	for _, u := range p.RequestedReviewers {
+		if u.Login != "" {
+			info.RequestedReviewers = append(info.RequestedReviewers, u.Login)
+		}
+	}
+	for _, team := range p.RequestedTeams {
+		if team.Slug != "" {
+			info.RequestedReviewers = append(info.RequestedReviewers, "team:"+team.Slug)
+		}
 	}
 	if p.MergeSHA != nil && *p.MergeSHA != "" {
 		info.MergeCommit = &PRMergeCommit{OID: *p.MergeSHA}
