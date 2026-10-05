@@ -36,6 +36,7 @@ Developers with many branches, worktrees, and repos across multiple checkouts lo
 - **`wgo .`** — Instantly see your current repository context (branch, status, commits, remote tracking)
 - **`wgo plan`** — View and manage a human-readable markdown plan file tracking all your work
 - **`wgo plan add "reason"`** — Annotate branches with their purpose
+- **`wgo plan effort`** — Group bookmarks across repositories into named [efforts](#efforts)
 - **`wgo ls`** — List all repositories across your filesystem with their status
 - **Persistent tracking** — All annotations stored in `~/.wgo/state.json`
 - **Plan file** — Human-editable markdown at `~/.plan` (symlinked from `~/.wgo/plan.md`)
@@ -58,7 +59,7 @@ Developers with many branches, worktrees, and repos across multiple checkouts lo
 
 - GitHub PR integration with cached status
 - Fuzzy finder for quick worktree/branch selection
-- Cross-repo effort grouping
+- Effort grouping in `wgo status` and `wgo .` (efforts and workspace attribution exist; the dashboard does not use them yet)
 
 ## Installation
 
@@ -270,6 +271,49 @@ wgo plan edit
 ```
 
 Opens `~/.plan` in your `$EDITOR` (defaults to `vi`). Manual edits are preserved through wgo operations.
+
+wgo only rewrites the parts of the plan it manages (Tasks, Active Branches,
+Efforts and Notes) and only the lines it was asked to change. Your own
+sections, prose, code fences and line endings are written back exactly as you
+left them, and anything it cannot interpret is kept and reported as a
+`warning:` rather than dropped.
+
+### Efforts
+
+An *effort* groups the bookmarks that make up one piece of work across
+repositories. Efforts live in the `## Efforts` section of the plan and in
+`~/.wgo/state.json`; write them by hand or with `wgo plan effort`:
+
+```markdown
+## Efforts
+
+### Rotate signing keys
+Move the platform and SDK to the new key format.
+
+- platform:gh-71-rotate
+- opentdf/sdk:rotate-keys
+```
+
+```bash
+wgo plan effort add "Rotate signing keys" -d "Move the platform and SDK to the new key format"
+wgo plan effort link "Rotate signing keys" platform:gh-71-rotate
+wgo plan effort unlink "Rotate signing keys" platform:gh-71-rotate
+wgo plan effort remove "Rotate signing keys"
+```
+
+Each entry is `repo:bookmark`, where `repo` is a discovered main clone's
+directory name, its `owner/repo`, or its absolute path. Commands write the
+shortest of those that is unambiguous. A hand edit of the plan wins over the
+state copy of the same effort, and the effort's ID comes from its heading, so
+renaming a heading creates a new effort.
+
+`remove` will not delete hand-written notes or malformed entries under an
+effort without `--force`; it lists them first.
+
+Workspaces are attributed to an effort by their current bookmark in their
+repository, never by bookmark name alone, so the same name in two repos does not
+collide. A workspace that no effort claims is grouped by its ticket ID, then
+left ungrouped; one claimed by several efforts is reported as a conflict.
 
 ### List All Repositories
 
@@ -934,6 +978,49 @@ leaves the rig in place for `rig rm --force`.
 
 ---
 
+## Year in Review (Claude Code skill)
+
+This repo ships a `/year-in-review` Claude Code skill at
+`.claude/skills/year-in-review/`, with its agents in `.claude/agents/yir-*.md`.
+It turns your GitHub and Jira activity for a period into an evidence-backed
+report grouped by theme, effectiveness, collaboration, and complexity. It
+isn't a `wgo` command, but it uses `wgo ls` to find local repos that have no
+GitHub activity, and saves a `wgo contrib` heatmap alongside the run.
+
+```
+/year-in-review                  # year to date
+/year-in-review 2026-H1 collab   # one aspect
+/year-in-review 2026 focus:zip64 # deep dive on one theme
+```
+
+It needs `gh` (with the `read:org` scope for the team map) and, optionally,
+`acli` for Jira. `collect.py` caches closed months under
+`~/.wgo/cache/review`. The first full-year run takes a few minutes because
+GitHub search is limited to 30 requests a minute. Reports are written to
+`~/.wgo/reviews/<label>.md`, named after the run: `2026-Q3.md`, or
+`2026-to-2026-10-09.md` for a period still in progress. The skill is read-only
+against GitHub and Jira.
+
+### Exploring a year in review
+
+`wgo review graph` turns a finished run (under `~/.wgo/cache/review/runs/`)
+into an influence graph: people, PRs, tickets and repos, joined by who wrote,
+reviewed, built on or referenced what. Pass a run label or directory, or omit
+it for the most recent run.
+
+```
+wgo review graph | jq '.nodes | length'          # JSON on stdout
+wgo review graph --open         # offline explorer, opened in the browser
+wgo review graph 2026-H1 --out /tmp/h1.html      # .html extension selects html
+wgo review graph --format html --out - > e.html  # html to stdout
+```
+
+The HTML is a single self-contained file with no network requests, so it can
+be shared as-is. Without `--out` it is written to
+`~/.wgo/reviews/<label>.graph.html`.
+
+---
+
 ## Commands Reference
 
 | Command | Description |
@@ -946,6 +1033,10 @@ leaves the rig in place for `rig rm --force`.
 | `wgo plan` | Display your plan file |
 | `wgo plan add "reason"` | Annotate current branch with purpose |
 | `wgo plan edit` | Edit plan file in $EDITOR |
+| `wgo plan effort add <name> [-d text]` | Create an effort |
+| `wgo plan effort link <name> <repo:bookmark>` | Add a bookmark to an effort |
+| `wgo plan effort unlink <name> <repo:bookmark>` | Remove a bookmark from an effort |
+| `wgo plan effort remove <name> [--force]` | Delete an effort from state and the plan |
 | `wgo add "task"` | Add a task to your plan |
 | `wgo done "pattern"` | Mark a matching task as complete |
 | `wgo cancel "pattern"` | Cancel a matching task |
@@ -1123,10 +1214,17 @@ Persistence layer for state and plan files:
 
 #### internal/plan/
 Plan file parser and renderer:
-- Tolerant markdown parsing
-- Preserves manual edits through round-trip
-- Supports Active Branches, Efforts, and Notes sections
-- Tested with complex manual edit scenarios
+- Tolerant markdown parsing; ambiguous content is kept and reported in `Plan.Diagnostics`
+- Keeps the raw file lines, so `Render` rewrites only what a caller changed and
+  preserves unknown sections, prose, fences and line endings byte for byte
+- Manages Tasks, Active Branches, Efforts, and Notes sections
+- Golden round-trip files in `testdata/roundtrip/`
+
+#### internal/effort/
+Effort references and workspace attribution:
+- Resolves `repo:bookmark` against discovered main clones (one clone or an error)
+- Merges state and plan efforts (the plan wins) and attributes workspaces to them
+- `Collect` is read-only: it takes a `Source` that can load state and the plan but not write them
 
 #### internal/config/
 Configuration management using Viper:

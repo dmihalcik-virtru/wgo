@@ -29,3 +29,7 @@ wgo
 
 # Claude Code per-user local settings (not shared)
 .claude/settings.local.json
+
+# Python bytecode (Claude Code skill scripts)
+__pycache__/
+*.py[cod]

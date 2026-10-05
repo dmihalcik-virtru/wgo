@@ -61,10 +61,12 @@ type Options struct {
 	// each on the nearest ancestor with a PR (else DefaultBase).
 	CreatePRs bool
 	// Bookmarks restricts which bookmarks CreatePRs may open a PR for. Empty
-	// means "every bookmark in the repo's DAG" — which, in a repo that also
-	// holds unrelated efforts' bookmarks, opens PRs for all of them. Ancestor
-	// resolution still walks the whole graph, so a scoped run bases its PR on
-	// an out-of-scope ancestor's PR when that is the nearest one.
+	// means "every bookmark in the repo's DAG except wgo's own pin bookmarks"
+	// — which, in a repo that also holds unrelated efforts' bookmarks, opens
+	// PRs for all of them. Naming a pin bookmark here is an error, not a
+	// silent skip; see reservedPins. Ancestor resolution still walks the whole
+	// graph, so a scoped run bases its PR on an out-of-scope ancestor's PR
+	// when that is the nearest one.
 	Bookmarks []string
 	// Labels are applied to every PR opened by CreatePRs. Existing PRs are
 	// left alone.
@@ -82,6 +84,7 @@ type Result struct {
 	BaseChanges   []BaseChange
 	MarkerUpdates []MarkerUpdate
 	Skipped       []string       // bookmarks with no open PR
+	PinsSkipped   []string       // wgo pin bookmarks --create-prs left alone
 	Created       []PRCreation   // PRs opened by --create-prs
 	Linked        []string       // branches linked into the native Stack (bottom→top)
 	MarkerStrips  []MarkerUpdate // PRs whose wgo-stack marker was stripped (native migration)
@@ -115,6 +118,11 @@ type PRCreation struct {
 // descendants whenever an ancestor commit changes, so there is no rebase
 // work for sync to do.
 func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) {
+	// Before the fetch: invalid flag input needs no network round trip to report.
+	if err := CheckOptions(opts); err != nil {
+		return nil, err
+	}
+
 	if opts.Fetch {
 		if err := jjc.GitFetch(repo, "origin", nil); err != nil {
 			return nil, fmt.Errorf("jj git fetch: %w", err)
@@ -158,6 +166,11 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 				continue
 			}
 			if !inScope(bm) {
+				// Say so: a pin shows up in no other output, and a user's own
+				// `pr-<N>-x` branch would otherwise vanish without a word.
+				if github.IsPinBookmark(bm) {
+					result.PinsSkipped = append(result.PinsSkipped, bm)
+				}
 				continue
 			}
 			// The trunk bookmark is in the DAG like any other, but it is the
@@ -262,18 +275,62 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 
 // scopeFilter returns a predicate reporting whether a bookmark is in scope.
 // An empty list means "everything", preserving the unscoped behaviour.
+//
+// "Everything" excludes wgo's reserved pin bookmarks. `wgo to <PR-URL>` creates
+// a local `pr-<N>-<slug>` bookmark to pin a PR head it could not track, so a
+// repo visited that way carries bookmarks for other people's PRs — bookmarks
+// that already have a PR and usually are not ours to push. See reservedPins for
+// what publishing one costs.
 func scopeFilter(bookmarks []string) func(string) bool {
 	if len(bookmarks) == 0 {
-		return func(string) bool { return true }
+		return func(bm string) bool { return !github.IsPinBookmark(bm) }
 	}
 	set := make(map[string]struct{}, len(bookmarks))
 	for _, b := range bookmarks {
 		set[b] = struct{}{}
 	}
+	// An explicitly named pin is rejected by reservedPins before sync does any
+	// work, so the exclusion here is only reached on the unscoped path.
 	return func(bm string) bool {
 		_, ok := set[bm]
-		return ok
+		return ok && !github.IsPinBookmark(bm)
 	}
+}
+
+// CheckOptions rejects option combinations Sync would refuse, so a caller that
+// syncs several repos can report them once instead of once per repo.
+func CheckOptions(opts Options) error {
+	if !opts.CreatePRs {
+		return nil
+	}
+	reserved := reservedPins(opts.Bookmarks)
+	if len(reserved) == 0 {
+		return nil
+	}
+	return fmt.Errorf("sync: refusing to open a PR for %s: the pr-<N>- prefix is reserved for the "+
+		"local bookmarks `wgo to <PR-URL>` creates to pin an existing PR's head. Name the bookmark "+
+		"holding your own work (if this is your own branch, rename it), or drop --bookmark to sync "+
+		"every other bookmark",
+		strings.Join(reserved, ", "))
+}
+
+// reservedPins returns the entries of bookmarks that name one of wgo's pin
+// bookmarks. Naming one is rejected rather than quietly skipped: the unscoped
+// run never meant to include them, but someone who typed the name asked for
+// something specific and deserves to hear that it will not happen.
+//
+// Opening a PR for a pin publishes a second head ref for a PR that already
+// exists. It also breaks the thing the pin was for: once the bookmark has a
+// tracked remote counterpart, `wgo to <PR-URL>` will not move it any more, and
+// every later visit to that PR fails on a bookmark wgo created itself.
+func reservedPins(bookmarks []string) []string {
+	var reserved []string
+	for _, b := range bookmarks {
+		if github.IsPinBookmark(b) {
+			reserved = append(reserved, b)
+		}
+	}
+	return reserved
 }
 
 // prTitleBody derives a PR title and body from the bookmarked change's

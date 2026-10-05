@@ -52,7 +52,7 @@ func init() {
 	syncCmd.Flags().StringVar(&syncDefaultBase, "default-base", "main", "fallback base bookmark for stack roots")
 	syncCmd.Flags().BoolVar(&syncCreatePRsFlag, "create-prs", false, "open draft PRs for bookmarked changes that lack one")
 	syncCmd.Flags().StringSliceVar(&syncBookmarkFlag, "bookmark", nil,
-		"limit --create-prs to these bookmarks (repeatable); default is every bookmark in the DAG")
+		"limit --create-prs to these bookmarks (repeatable); default is every bookmark in the DAG except wgo's own pr-<N>- pins")
 	syncCmd.Flags().StringSliceVar(&syncLabelFlag, "label", nil,
 		"label to apply to each PR opened by --create-prs (repeatable)")
 	rootCmd.AddCommand(syncCmd)
@@ -92,6 +92,10 @@ func runSync(_ *cobra.Command, _ []string) error {
 		Linker:      wgosync.NewCLILinker(),
 	}
 
+	if err := wgosync.CheckOptions(opts); err != nil {
+		return err
+	}
+
 	exitWithErr := false
 	for _, repo := range repos {
 		if !jjc.IsRepo(repo) {
@@ -118,6 +122,12 @@ func runSync(_ *cobra.Command, _ []string) error {
 
 func printSyncResult(repo string, r *wgosync.Result) {
 	fmt.Printf("== %s ==\n", repo)
+	defer func() {
+		if len(r.PinsSkipped) > 0 {
+			fmt.Printf("  left alone %d wgo pin bookmark(s) (pr-<N>-*): %s\n",
+				len(r.PinsSkipped), strings.Join(r.PinsSkipped, ", "))
+		}
+	}()
 	if len(r.BaseChanges) == 0 && len(r.MarkerUpdates) == 0 &&
 		len(r.Created) == 0 && len(r.Linked) == 0 && len(r.MarkerStrips) == 0 {
 		fmt.Println("  no changes")
