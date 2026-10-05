@@ -12,10 +12,14 @@ type fakeRunner struct {
 	out     map[string]string
 	err     map[string]error
 	extract map[string]string
+	before  func(argv []string) // runs before answering, e.g. to leave files behind
 }
 
 func (f *fakeRunner) Output(_ context.Context, argv []string) (string, error) {
 	f.calls = append(f.calls, argv)
+	if f.before != nil {
+		f.before(argv)
+	}
 	if argv[0] == "plutil" && len(argv) > 2 && argv[1] == "-extract" {
 		v, ok := f.extract[argv[2]]
 		if !ok {

@@ -80,10 +80,33 @@ func TestParseOpenURLRejects(t *testing.T) {
 		"quote":                   "wgo://open?ws=" + goodID + "'",
 		"double slash after host": "wgo://open//?ws=" + goodID,
 	}
+	const marker = "Run_in_Terminal"
+	for k, raw := range map[string]string{
+		"marker host":      "wgo://" + marker + "?ws=" + goodID,
+		"marker key":       "wgo://open?ws=" + goodID + "&" + marker + "=1",
+		"marker key first": "wgo://open?" + marker + "=1",
+		"marker value":     "wgo://open?ws=" + marker,
+		"marker path":      "wgo://open/" + marker + "?ws=" + goodID,
+		"marker user":      "wgo://" + marker + "@open?ws=" + goodID,
+		"marker port":      "wgo://open:" + marker + "?ws=" + goodID,
+		"marker fragment":  "wgo://open?ws=" + goodID + "#" + marker,
+		"marker scheme":    marker + "://open?ws=" + goodID,
+		"marker opaque":    "wgo:" + marker,
+		"marker command":   "wgo://open?ws=" + goodID + "&command=" + marker,
+		"marker spaced":    "wgo://open?ws=" + goodID + "&x=" + marker + " now",
+	} {
+		cases[k] = raw
+	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
-			if id, err := ParseOpenURL(raw); err == nil {
+			id, err := ParseOpenURL(raw)
+			if err == nil {
 				t.Fatalf("ParseOpenURL(%q) = %q, want an error", raw, id)
+			}
+			// The applet shows this message; a page must not be able to
+			// put words in wgo's mouth.
+			if strings.Contains(err.Error(), marker) || strings.Contains(err.Error(), "ws-0123") {
+				t.Fatalf("error quotes the URL: %v", err)
 			}
 		})
 	}

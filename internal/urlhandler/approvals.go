@@ -83,12 +83,16 @@ func (a *Approvals) Approved(id, path string) (bool, error) {
 
 // Approve records id as confirmed at path, replacing any earlier path for
 // it. A corrupt file is replaced rather than blocking the approval the user
-// just gave; a file from a newer wgo is left alone.
-func (a *Approvals) Approve(id, path string, now time.Time) error {
+// just gave, and warnf (when set) is told the earlier approvals were lost;
+// a file from a newer wgo is left alone.
+func (a *Approvals) Approve(id, path string, now time.Time, warnf func(format string, args ...any)) error {
 	doc, err := a.load()
 	if err != nil {
 		if doc.Version > approvalsVersion {
 			return err
+		}
+		if warnf != nil {
+			warnf("replacing unreadable %s; earlier wgo:// approvals were lost and those workspaces will ask again (%v)", a.path, err)
 		}
 		doc = approvalsDoc{}
 	}
@@ -106,3 +110,9 @@ func (a *Approvals) Approve(id, path string, now time.Time) error {
 	}
 	return atomicfile.Write(a.path, append(b, '\n'), 0o600)
 }
+
+// LockFile is the single-instance lock `wgo open` takes under ~/.wgo.
+const LockFile = "url-handler.lock"
+
+// LockPath is the lock file in the wgo base directory (~/.wgo).
+func LockPath(baseDir string) string { return filepath.Join(baseDir, LockFile) }

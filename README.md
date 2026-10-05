@@ -1218,8 +1218,31 @@ as hostile:
   path, wgo asks again. Without a dialog, for example over SSH, `wgo open`
   asks y/N on a terminal and otherwise refuses. It never accepts on its
   own.
+- **No disguised paths.** A workspace path containing control characters or
+  invisible Unicode formatting characters is refused before any dialog.
+  This covers bidi overrides and isolates (U+202A–U+202E, U+2066–U+2069),
+  direction marks (U+200E, U+200F, U+061C) and zero-width characters, any
+  of which could make the path in the dialog read as another.
+- **One link at a time.** `wgo open` takes a non-blocking lock,
+  `~/.wgo/url-handler.lock`. While one link is being handled, for example
+  while its dialog is up, another link exits at once with "another wgo://
+  link is already being handled" and is dropped, not queued. A page cannot
+  stack up dialogs.
 
-When `wgo open` rejects a link, the applet shows the reason in an alert.
+When `wgo open` does not open a link, the applet shows why in a macOS
+notification, never a modal alert. A web page can trigger this without
+any click from you. The messages are fixed text and never quote the URL,
+so a page cannot put its own words in a wgo notification. Run the same
+`wgo open '<url>'` in a terminal to see the full message.
+
+### Known limitation
+
+Workspace IDs are unsalted hashes of the workspace and main clone paths.
+A page that targets you and guesses your directory layout could compute a
+real ID and make the first-use dialog appear. It still cannot open
+anything unless you click **Open**, but a per-install salt would make IDs
+unguessable. That is a possible follow-up. It would change the dashboard's
+workspace IDs.
 
 ### Automation prompt for links
 

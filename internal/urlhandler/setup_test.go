@@ -43,10 +43,14 @@ func TestAppletSource(t *testing.T) {
 		`set envPath to "/opt/homebrew/bin:/usr/bin"`,
 		`on open location theURL`,
 		`do shell script "PATH=" & quoted form of envPath & " " & quoted form of wgoPath & " open " & quoted form of theURL`,
+		`display notification errMsg with title "wgo did not open the link"`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("source lacks %q:\n%s", want, src)
 		}
+	}
+	if strings.Contains(src, "display alert") {
+		t.Error("link failures must not raise a modal alert")
 	}
 	if strings.Contains(src, "property ") {
 		t.Error("the applet must not use properties (they are saved back into the bundle)")
@@ -132,6 +136,11 @@ func TestInstallFailureRemovesPartialApplet(t *testing.T) {
 	r := &fakeRunner{err: map[string]error{"codesign": errors.New("boom")}}
 	in, _ := newInstaller(t, r)
 	app := AppPath(in.Home)
+	r.before = func(argv []string) {
+		if argv[0] == "osacompile" {
+			_ = os.MkdirAll(filepath.Join(app, "Contents"), 0o755)
+		}
+	}
 	var removed []string
 	in.RemoveAll = func(p string) error { removed = append(removed, p); return nil }
 	if err := in.Install(context.Background()); err == nil {
@@ -144,6 +153,37 @@ func TestInstallFailureRemovesPartialApplet(t *testing.T) {
 		if c[0] == LSRegister {
 			t.Fatal("must not register after a failed step")
 		}
+	}
+}
+
+// A failing osacompile may leave a half-built applet behind; this install
+// created it, so it is removed.
+func TestInstallOsacompileFailureRemovesPartialApplet(t *testing.T) {
+	r := &fakeRunner{err: map[string]error{"osacompile": errors.New("syntax error")}}
+	in, _ := newInstaller(t, r)
+	app := AppPath(in.Home)
+	r.before = func(argv []string) {
+		if argv[0] == "osacompile" {
+			_ = os.MkdirAll(filepath.Join(app, "Contents"), 0o755)
+		}
+	}
+	if err := in.Install(context.Background()); err == nil || !strings.Contains(err.Error(), "partial applet was removed") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Lstat(app); !os.IsNotExist(err) {
+		t.Fatalf("partial applet left behind: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("ran %q after osacompile failed", r.calls)
+	}
+}
+
+func TestInstallOsacompileFailureWithoutPartial(t *testing.T) {
+	r := &fakeRunner{err: map[string]error{"osacompile": errors.New("syntax error")}}
+	in, _ := newInstaller(t, r)
+	in.RemoveAll = func(p string) error { t.Fatalf("removed %s, which does not exist", p); return nil }
+	if err := in.Install(context.Background()); err == nil || strings.Contains(err.Error(), "removed") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -211,6 +251,19 @@ func TestUninstall(t *testing.T) {
 			}
 		})
 	}
+	t.Run("remove fails after unregister", func(t *testing.T) {
+		r := &fakeRunner{extract: ours}
+		in, _ := newInstaller(t, r)
+		app := AppPath(in.Home)
+		if err := os.MkdirAll(filepath.Join(app, "Contents"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		in.RemoveAll = func(string) error { return errors.New("permission denied") }
+		err := in.Uninstall(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "unregistered") || !strings.Contains(err.Error(), "remove it manually") {
+			t.Fatalf("err = %v", err)
+		}
+	})
 	t.Run("symlink", func(t *testing.T) {
 		r := &fakeRunner{extract: ours}
 		in, _ := newInstaller(t, r)

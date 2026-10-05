@@ -1,11 +1,15 @@
 package urlhandler
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,6 +57,8 @@ type openFixture struct {
 	launcher          *fakeLauncher
 	confirmer         *fakeConfirmer
 	approvals         *Approvals
+	lock              func() (func(), error)
+	warnf             func(string, ...any)
 }
 
 func mkWorkspace(t *testing.T, dir string) string {
@@ -93,6 +99,8 @@ func (f *openFixture) open(raw string) (launch.Result, error) {
 		Launcher:  f.launcher,
 		Confirmer: f.confirmer,
 		Approvals: f.approvals,
+		Lock:      f.lock,
+		Warnf:     f.warnf,
 		Now:       func() time.Time { return time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC) },
 	})
 }
@@ -247,8 +255,13 @@ func TestOpenCorruptApprovalsConfirmsAgain(t *testing.T) {
 	if err := os.WriteFile(f.approvals.Path(), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	var warns []string
+	f.warnf = func(format string, args ...any) { warns = append(warns, fmt.Sprintf(format, args...)) }
 	if _, err := f.open(OpenURL(f.wsID)); err != nil {
 		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(warns, func(w string) bool { return strings.Contains(w, "approvals were lost") }) {
+		t.Fatalf("warnings %q do not say the earlier approvals were lost", warns)
 	}
 	if len(f.confirmer.prompts) != 1 {
 		t.Fatal("a corrupt approvals file must lead to a confirmation")
@@ -321,5 +334,142 @@ func TestSystemConfirmer(t *testing.T) {
 				t.Fatalf("prompt = %q", prompt.String())
 			}
 		})
+	}
+}
+
+func TestApprovalsRejectsNewerVersion(t *testing.T) {
+	f := newOpenFixture(t)
+	if err := os.MkdirAll(filepath.Dir(f.approvals.Path()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newer := []byte(`{"version": 99, "approvals": [], "future": true}` + "\n")
+	if err := os.WriteFile(f.approvals.Path(), newer, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := f.approvals.Approve(f.wsID, f.ws, time.Now(), nil)
+	if err == nil || !strings.Contains(err.Error(), "newer wgo") {
+		t.Fatalf("Approve err = %v, want a newer-wgo error", err)
+	}
+	var warns []string
+	f.warnf = func(format string, args ...any) { warns = append(warns, fmt.Sprintf(format, args...)) }
+	if _, err := f.open(OpenURL(f.wsID)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.confirmer.prompts) != 1 || len(f.launcher.acts) != 1 {
+		t.Fatalf("prompts %d, launches %d; want 1 each", len(f.confirmer.prompts), len(f.launcher.acts))
+	}
+	if len(warns) == 0 {
+		t.Fatal("want warnings about the unreadable and unwritable approvals")
+	}
+	if got, _ := os.ReadFile(f.approvals.Path()); !bytes.Equal(got, newer) {
+		t.Fatalf("a newer approvals file was changed: %s", got)
+	}
+}
+
+func TestOpenErrorsNeverQuoteTheURL(t *testing.T) {
+	f := newOpenFixture(t)
+	for _, raw := range []string{
+		"wgo://Run_in_Terminal?ws=" + f.wsID,
+		OpenURL(f.wsID) + "&Run_in_Terminal=1",
+		"wgo://open?ws=Run_in_Terminal",
+	} {
+		_, err := f.open(raw)
+		if err == nil || strings.Contains(err.Error(), "Run_in_Terminal") {
+			t.Fatalf("open(%q) err = %v", raw, err)
+		}
+	}
+	// Errors after the URL was accepted do not quote the ID either.
+	for _, id := range []string{"ws-ffffffffffffffff", f.outsideID} {
+		if _, err := f.open(OpenURL(id)); err == nil || strings.Contains(err.Error(), id) {
+			t.Fatalf("open(%s) err = %v", id, err)
+		}
+	}
+}
+
+func TestOpenRefusesDisguisingPathCharacters(t *testing.T) {
+	for name, seg := range map[string]string{
+		"rlo":     "safe\u202Egpj.exe",
+		"lri":     "a\u2066b\u2069",
+		"lrm":     "a\u200Eb",
+		"rlm":     "a\u200Fb",
+		"alm":     "a\u061Cb",
+		"zwsp":    "a\u200Bb",
+		"newline": "a\nb",
+		"tab":     "a\tb",
+		"escape":  "a\x1b[31mb",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newOpenFixture(t)
+			ws := mkWorkspace(t, filepath.Join(f.root, "worktrees", seg, "wgo"))
+			id := dash.WorkspaceID(ws, ws)
+			f.resolver[id] = dash.Target{ID: id, Root: ws, MainClone: ws}
+			_, err := f.open(OpenURL(id))
+			if err == nil || !strings.Contains(err.Error(), "formatting characters") {
+				t.Fatalf("err = %v, want a refusal", err)
+			}
+			if strings.Contains(err.Error(), seg) {
+				t.Fatal("the refusal must not echo the path")
+			}
+			if len(f.confirmer.prompts) != 0 || len(f.launcher.acts) != 0 {
+				t.Fatal("a disguised path must not be confirmed or launched")
+			}
+		})
+	}
+	if !displaySafe("/Users/me/Документы/日本語/it's \"ok\"") {
+		t.Fatal("ordinary non-ASCII paths must be allowed")
+	}
+}
+
+// blockingConfirmer holds the first confirmation open until released.
+type blockingConfirmer struct {
+	mu      sync.Mutex
+	calls   int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingConfirmer) Confirm(context.Context, Prompt) (bool, error) {
+	b.mu.Lock()
+	b.calls++
+	b.mu.Unlock()
+	close(b.entered)
+	<-b.release
+	return true, nil
+}
+
+func TestOpenOneLinkAtATime(t *testing.T) {
+	f := newOpenFixture(t)
+	lockPath := LockPath(t.TempDir())
+	f.lock = func() (func(), error) { return TryLock(lockPath) }
+	bc := &blockingConfirmer{entered: make(chan struct{}), release: make(chan struct{})}
+	opts := func() OpenOptions {
+		return OpenOptions{Resolver: f.resolver, Roots: []string{f.root}, Launcher: f.launcher,
+			Confirmer: bc, Approvals: f.approvals, Lock: f.lock}
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := Open(context.Background(), OpenURL(f.wsID), opts())
+		first <- err
+	}()
+	<-bc.entered // the first link's dialog is up, holding the lock
+	start := time.Now()
+	_, err := Open(context.Background(), OpenURL(f.wsID), opts())
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("second open err = %v, want ErrBusy", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("the second open waited for the lock")
+	}
+	close(bc.release)
+	if err := <-first; err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	if bc.calls != 1 || len(f.launcher.acts) != 1 {
+		t.Fatalf("confirms %d, launches %d; want 1 each", bc.calls, len(f.launcher.acts))
+	}
+	// Released: the next link is handled (already approved, so no dialog).
+	f.confirmer.answer = false
+	if _, err := f.open(OpenURL(f.wsID)); err != nil {
+		t.Fatalf("open after release: %v", err)
 	}
 }

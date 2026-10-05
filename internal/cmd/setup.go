@@ -52,7 +52,7 @@ macOS only; on other systems it reports that it is unavailable. wgo dash
 does not need it.`,
 	Args: cobra.NoArgs,
 	// The error says what to do; usage text would bury it (and the
-	// applet shows it in an alert).
+	// applet shows it in a notification).
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		in := &urlhandler.Installer{
