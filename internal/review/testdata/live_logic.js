@@ -177,4 +177,18 @@ test("action errors prefer the server's explanation", () => {
   assert.match(L.ackText({ ok: true, generation: 7 }), /^Marked generation 7 seen/);
 });
 
+test("localURL accepts only same-origin paths", () => {
+  for (const ok of ["/", "/review/2026-H1/", "/review/x/?focus=pr%3A1#view=table"]) assert.equal(L.localURL(ok), ok, ok);
+  for (const bad of ["//evil.example/", "/\\evil.example/", "/a\\b", "\\\\evil", "https://evil.example/", "javascript:alert(1)",
+    "review/x", "", "/\t/evil.example", "/\n/evil.example", "/ /x", "/\u0000x", null, undefined, 42, {}]) {
+    assert.equal(L.localURL(bad), "", JSON.stringify(bad));
+  }
+});
+
+test("Resume is labelled with the configured tool", () => {
+  const r = L.actionButtons({ token: "t", action_api: "/api/action", resume: "codex" }).find((a) => a.kind === "resume");
+  assert.equal(r.label, "Resume codex");
+  assert.match(r.title, /last codex session/);
+});
+
 console.log("ok " + n);

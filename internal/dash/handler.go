@@ -49,7 +49,8 @@ const DefaultPollInterval = 5 * time.Second
 
 // Handler serves the dashboard read-only with default options.
 func Handler(src ViewSource, host string) http.Handler {
-	return NewHandler(HandlerOptions{Source: src, Host: host})
+	h, _ := NewHandler(HandlerOptions{Source: src, Host: host}) // read-only: cannot fail
+	return h
 }
 
 // server holds the pre-rendered pages and routes.
@@ -72,7 +73,10 @@ type server struct {
 // exactly matching the server, the per-launch token in TokenHeader, a JSON
 // body with only known fields, and a known action. No route ever sends CORS
 // headers.
-func NewHandler(opts HandlerOptions) http.Handler {
+//
+// NewHandler fails only when POST routes are enabled and no action token
+// can be generated: it never falls back to serving read-only.
+func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	if opts.PollInterval <= 0 {
 		opts.PollInterval = DefaultPollInterval
 	}
@@ -88,10 +92,8 @@ func NewHandler(opts HandlerOptions) http.Handler {
 		s.token = opts.Token
 		if s.token == "" {
 			var err error
-			if s.token, err = NewToken(); err != nil {
-				// Without a token no POST can pass; the page shows
-				// actions as unavailable.
-				opts.Logf("generate the action token: %v", err)
+			if s.token, err = newToken(); err != nil {
+				return nil, fmt.Errorf("wgo dash: generate the browser action token: %w", err)
 			}
 		}
 	}
@@ -135,7 +137,7 @@ func NewHandler(opts HandlerOptions) http.Handler {
 			// like any other method, with no Access-Control-Allow-*.
 			if r.Method != http.MethodPost {
 				h.Set("Allow", http.MethodPost)
-				writeError(w, reject(http.StatusMethodNotAllowed, "%s accepts only POST", r.URL.Path))
+				s.writeError(w, reject(http.StatusMethodNotAllowed, "%s accepts only POST", r.URL.Path))
 				return
 			}
 			if r.URL.Path == ActionPath {
@@ -151,7 +153,7 @@ func NewHandler(opts HandlerOptions) http.Handler {
 			return
 		}
 		mux.ServeHTTP(w, r)
-	})
+	}), nil
 }
 
 func (s *server) serveSnapshot(w http.ResponseWriter, r *http.Request) {

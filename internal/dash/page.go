@@ -84,6 +84,10 @@ var (
 // styles (by hash), same-origin fetches and nothing else: no eval, no
 // remote code, no framing, no form posts.
 func contentSecurityPolicy(page []byte) string {
+	// WARNING: every bare <script> (and <style>) in the rendered page is
+	// hashed and so allowlisted, whatever it contains. Untrusted data
+	// (snapshot fields, paths, branch names) must never be rendered into
+	// one; it belongs in the JSON bootstrap or the /api responses.
 	hashes := func(re *regexp.Regexp) string {
 		var out []string
 		for _, m := range re.FindAllSubmatch(page, -1) {

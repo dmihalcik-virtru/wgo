@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,25 @@ type actionFixture struct {
 	launcher                             *fakeLauncher
 	acker                                *fakeAcker
 	srv                                  *httptest.Server
+	logs                                 *logBuf
+}
+
+// logBuf collects a server's Logf lines.
+type logBuf struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logBuf) logf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *logBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.lines, "\n")
 }
 
 func mkWorkspace(t *testing.T, dir string) {
@@ -110,6 +130,7 @@ func newActionFixture(t *testing.T, resume string) *actionFixture {
 		ids:      map[string]string{},
 		launcher: &fakeLauncher{},
 		acker:    &fakeAcker{},
+		logs:     &logBuf{},
 	}
 	f.main = filepath.Join(f.root, "mains", "acme", "wgo")
 	f.ws = filepath.Join(f.root, "worktrees", "gh-70-dash", "acme", "wgo")
@@ -158,6 +179,7 @@ func newActionFixture(t *testing.T, resume string) *actionFixture {
 		Source: emptySource{},
 		Token:  testToken,
 		Ack:    f.acker,
+		Logf:   f.logs.logf,
 		Actions: &ActionOptions{
 			Resolver: f.resolver,
 			Launcher: f.launcher,
@@ -222,6 +244,10 @@ func assertNoCORS(t *testing.T, name string, h http.Header) {
 func TestActionSecurityMatrix(t *testing.T) {
 	f := newActionFixture(t, "claude")
 	_, port, _ := strings.Cut(f.srv.Listener.Addr().String(), ":")
+	otherPort := "1"
+	if port == "1" {
+		otherPort = "2"
+	}
 	good := actionBody("terminal", f.ids["ws"])
 	cases := []struct {
 		name   string
@@ -245,6 +271,8 @@ func TestActionSecurityMatrix(t *testing.T) {
 		{"foreign origin", "", ActionPath, good, func(r *http.Request) { r.Header.Set("Origin", "https://evil.example") }, 403},
 		{"localhost origin", "", ActionPath, good, func(r *http.Request) { r.Header.Set("Origin", "http://localhost:"+port) }, 403},
 		{"origin with path", "", ActionPath, good, func(r *http.Request) { r.Header.Set("Origin", f.srv.URL+"/") }, 403},
+		{"other port origin", "", ActionPath, good, func(r *http.Request) { r.Header.Set("Origin", "http://127.0.0.1:"+otherPort) }, 403},
+		{"ipv6 loopback origin", "", ActionPath, good, func(r *http.Request) { r.Header.Set("Origin", "http://[::1]:"+port) }, 403},
 		{"https origin", "", ActionPath, good, func(r *http.Request) { r.Header.Set("Origin", strings.Replace(f.srv.URL, "http:", "https:", 1)) }, 403},
 		{"cross-site fetch metadata", "", ActionPath, good, func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") }, 403},
 		{"dns rebinding host", "", ActionPath, good, func(r *http.Request) { r.Host = "evil.example:" + port }, 403},
@@ -256,6 +284,7 @@ func TestActionSecurityMatrix(t *testing.T) {
 		{"form", "", ActionPath, "kind=terminal&workspace_id=" + f.ids["ws"], func(r *http.Request) { r.Header.Set("Content-Type", "application/x-www-form-urlencoded") }, 415},
 		{"multipart", "", ActionPath, good, func(r *http.Request) { r.Header.Set("Content-Type", "multipart/form-data; boundary=x") }, 415},
 		{"no content type", "", ActionPath, good, func(r *http.Request) { r.Header.Del("Content-Type") }, 415},
+		{"json latin-1", "", ActionPath, good, func(r *http.Request) { r.Header.Set("Content-Type", "application/json; charset=iso-8859-1") }, 415},
 		{"json with odd param", "", ActionPath, good, func(r *http.Request) { r.Header.Set("Content-Type", "application/json; foo=bar") }, 415},
 		{"malformed json", "", ActionPath, `{"kind":"terminal",`, nil, 400},
 		{"json array", "", ActionPath, `["terminal"]`, nil, 400},
@@ -575,5 +604,95 @@ func TestAckOnlyByPost(t *testing.T) {
 	}
 	if d.Current().Delta.Status == DeltaNoPreviousLook {
 		t.Fatal("delta still has no previous look after ack")
+	}
+}
+
+func TestActionAcceptsUTF8Charset(t *testing.T) {
+	f := newActionFixture(t, "")
+	for _, ct := range []string{"application/json; charset=UTF-8", "application/json;charset=utf-8", "Application/JSON"} {
+		status, _, out := f.post(t, ActionPath, actionBody("reveal", f.ids["ws"]), func(r *http.Request) { r.Header.Set("Content-Type", ct) })
+		if status != 200 || out["ok"] != true {
+			t.Errorf("%q: %d %v", ct, status, out)
+		}
+	}
+	if n := len(f.launcher.launches()); n != 3 {
+		t.Fatalf("launches = %d", n)
+	}
+}
+
+func TestPlanActionToleratesGarbagePlan(t *testing.T) {
+	f := newActionFixture(t, "")
+	for name, content := range map[string]string{
+		"binary":     "\x00\xff\xfe## Active Branches\x00\n- **\n",
+		"no entries": "just some notes\n# not a plan\n",
+		"broken":     "## Active Branches\n- **acme/wgo:gh-70-dash\n- ** — \n- **:** —\n## Active Branches\n",
+		"empty":      "",
+	} {
+		writeFile(t, f.planPath, content)
+		before := len(f.launcher.launches())
+		status, _, out := f.post(t, ActionPath, actionBody("plan", f.ids["ws"]), nil)
+		if status != 200 || out["ok"] != true {
+			t.Fatalf("%s: %d %v", name, status, out)
+		}
+		got := f.launcher.launches()
+		if len(got) != before+1 || got[before] != (launch.Action{Kind: launch.KindFile, File: f.planPath}) {
+			t.Fatalf("%s: launched %+v", name, got[len(got)-1])
+		}
+		if !strings.Contains(out["message"].(string), "No Active Branches entry") {
+			t.Errorf("%s: no note in %q", name, out["message"])
+		}
+	}
+}
+
+func TestUnreadableDiscoveryRootIsNamed(t *testing.T) {
+	f := newActionFixture(t, "")
+	missing := filepath.Join(filepath.Dir(f.root), "missing")
+	// The outside workspace is under no root; one root does not exist.
+	status, _, out := f.post(t, ActionPath, actionBody("terminal", f.ids["outside"]), nil)
+	msg, _ := out["error"].(string)
+	if status != 404 || !strings.Contains(msg, missing) || !strings.Contains(msg, "could not be read") || strings.Contains(msg, "not under a configured discovery root") {
+		t.Fatalf("%d %q", status, msg)
+	}
+	if logs := f.logs.String(); !strings.Contains(logs, missing) || !strings.Contains(logs, f.ids["outside"]) {
+		t.Fatalf("logs = %q", logs)
+	}
+	if n := len(f.launcher.launches()); n != 0 {
+		t.Fatalf("launched %d", n)
+	}
+	// With every root readable, the plain message stands.
+	if _, err := containedWorkspace(f.outside, []string{f.root}); err == nil || !strings.Contains(err.Error(), "not under a configured discovery root") {
+		t.Fatalf("readable roots: %v", err)
+	}
+}
+
+func TestNewHandlerFailsWithoutToken(t *testing.T) {
+	old := newToken
+	newToken = func() (string, error) { return "", errors.New("entropy unavailable") }
+	t.Cleanup(func() { newToken = old })
+	for name, opts := range map[string]HandlerOptions{
+		"actions": {Source: emptySource{}, Actions: &ActionOptions{}},
+		"ack":     {Source: emptySource{}, Ack: &fakeAcker{}},
+	} {
+		h, err := NewHandler(opts)
+		if err == nil || h != nil || !strings.Contains(err.Error(), "entropy unavailable") {
+			t.Errorf("%s: %v %v", name, h, err)
+		}
+	}
+	// Read-only needs no token, and an explicit token skips generation.
+	if _, err := NewHandler(HandlerOptions{Source: emptySource{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewHandler(HandlerOptions{Source: emptySource{}, Ack: &fakeAcker{}, Token: testToken}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWriteJSONLogsEncodeFailure(t *testing.T) {
+	var logs logBuf
+	s := &server{opts: HandlerOptions{Logf: logs.logf}}
+	rec := httptest.NewRecorder()
+	s.writeJSON(rec, http.StatusOK, map[string]any{"bad": make(chan int)})
+	if !strings.Contains(logs.String(), "write a 200 JSON response") {
+		t.Fatalf("logs = %q", logs.String())
 	}
 }

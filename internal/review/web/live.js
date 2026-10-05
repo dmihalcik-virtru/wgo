@@ -350,6 +350,14 @@
     return "Marked generation " + ((res && res.generation) || "?") + " seen; changes are now counted from here (in every open tab).";
   };
 
+  // localURL returns u when it is a same-origin path, else "". It rejects
+  // protocol-relative "//host", "/\\host" (browsers treat \\ as /), any
+  // backslash, and whitespace or control characters, which browsers strip
+  // from URLs (so "/\t/host" would become "//host").
+  L.localURL = function (u) {
+    return typeof u === "string" && u.charAt(0) === "/" && u.charAt(1) !== "/" && !/[\\\u0000-\u0020\u007f]/.test(u) ? u : "";
+  };
+
   if (typeof window !== "undefined") window.WGOLive = L;
   if (typeof module !== "undefined" && module.exports) module.exports = L;
   if (typeof document === "undefined") return;
@@ -380,7 +388,7 @@
     return e;
   }
   function safeURL(u) { return typeof u === "string" && /^https?:\/\//i.test(u) ? u : ""; }
-  function localURL(u) { return typeof u === "string" && /^\/(?!\/)/.test(u) ? u : ""; }
+  var localURL = L.localURL;
   function link(parent, text, url) {
     var u = safeURL(url);
     if (!u) { parent.appendChild(document.createTextNode(text)); return null; }
@@ -1290,7 +1298,10 @@
       store.actionResult = { wsId: wsId, label: a.label, ok: v.ok, text: v.text, copy: v.copy, tried: v.tried };
     }, function (e) {
       store.actionResult = { wsId: wsId, label: a.label, ok: false, text: L.actionError(e) };
-    }).then(function () { store.busy.delete(key); renderDetail(); });
+    }).then(function () { store.busy.delete(key); renderDetail(); }, function (e) {
+      store.busy.delete(key); renderDetail();
+      if (window.console) console.error("wgo dash:", e);
+    });
   }
 
   // ---------- polling ----------

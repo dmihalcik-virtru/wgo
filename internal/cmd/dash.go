@@ -154,6 +154,7 @@ func runDash(ctx context.Context, out io.Writer) error {
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		lcfg := dashLaunchConfig(cfg.Dash, os.Stderr)
+		logf := prefixLogf(os.Stderr)
 		readOnly := jj.NewCLI().ReadOnly()
 		return serveDash(ctx, out, ln, dashServer{
 			source:  d,
@@ -164,9 +165,10 @@ func runDash(ctx context.Context, out io.Writer) error {
 			interval: dashInterval(cfg.Dash),
 			open:     !dashNoOpen,
 			ack:      d,
+			logf:     logf,
 			actions: &dash.ActionOptions{
 				Resolver: d,
-				Launcher: launch.NewSystem(lcfg, launch.ExecRunner{}),
+				Launcher: launch.NewSystem(lcfg, launch.ExecRunner{Logf: logf}),
 				Roots:    cfg.Discovery.BaseDirs,
 				PlanPath: st.PlanPath(),
 				Resume:   lcfg.Resume,
@@ -296,6 +298,13 @@ type dashServer struct {
 	errOut   io.Writer           // refresh and scan failures; nil means stderr
 	actions  *dash.ActionOptions // nil disables /api/action
 	ack      dash.Acker          // nil disables /api/ack
+	// logf receives server and launcher faults; nil writes them to errOut.
+	logf func(format string, args ...any)
+}
+
+// prefixLogf logs "wgo dash: ..." lines to w.
+func prefixLogf(w io.Writer) func(format string, args ...any) {
+	return func(format string, args ...any) { fmt.Fprintf(w, "wgo dash: "+format+"\n", args...) }
 }
 
 // serveDash serves the dashboard on ln until ctx is done, running
@@ -303,23 +312,29 @@ type dashServer struct {
 // read what the loop last published.
 func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServer) error {
 	host := ln.Addr().String()
-	srv := &http.Server{
-		Handler: dash.NewHandler(dash.HandlerOptions{
-			Source:  ds.source,
-			Host:    host,
-			Reviews: ds.reviews,
-			Actions: ds.actions,
-			Ack:     ds.ack,
-		}),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	served := make(chan error, 1)
-	go func() { served <- srv.Serve(ln) }()
-
 	errOut := ds.errOut
 	if errOut == nil {
 		errOut = os.Stderr
 	}
+	logf := ds.logf
+	if logf == nil {
+		logf = prefixLogf(errOut)
+	}
+	handler, err := dash.NewHandler(dash.HandlerOptions{
+		Source:  ds.source,
+		Host:    host,
+		Reviews: ds.reviews,
+		Actions: ds.actions,
+		Ack:     ds.ack,
+		Logf:    logf,
+	})
+	if err != nil {
+		ln.Close()
+		return err
+	}
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
 	loopCtx, stopLoop := context.WithCancel(ctx)
 	loopDone := make(chan struct{})
 	go func() {
@@ -356,7 +371,6 @@ func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServe
 		}
 	}
 
-	var err error
 	select {
 	case <-ctx.Done():
 	case err = <-served:
