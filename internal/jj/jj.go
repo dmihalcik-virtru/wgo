@@ -83,6 +83,13 @@ type CLIClient struct {
 	// Binary is the path or name of the jj executable. Defaults to "jj".
 	Binary string
 
+	// IgnoreWorkingCopy passes jj's global --ignore-working-copy flag to
+	// every invocation, so jj neither snapshots nor updates any working copy.
+	// Reads then see each workspace's @ as of its last snapshot. Set it only
+	// through ReadOnly; it is meant for viewers (wgo dash) that must never
+	// create an operation just by looking.
+	IgnoreWorkingCopy bool
+
 	// ctx cancels in-flight jj subprocesses. Nil means uncancellable, which
 	// is what every read-only caller wants. Set it with WithContext.
 	ctx context.Context
@@ -114,12 +121,27 @@ func (c *CLIClient) WithContext(ctx context.Context) *CLIClient {
 	return &clone
 }
 
+// ReadOnly returns a shallow copy of c that runs every jj command with
+// --ignore-working-copy. Use it for read queries that must not snapshot a
+// workspace: an ordinary jj read of a workspace with edited files records a
+// snapshot operation, which a passive viewer must never cause. The copy is
+// for reads only; mutations through it would act on stale working-copy state.
+// c itself is unchanged, so other callers keep jj's default behaviour.
+func (c *CLIClient) ReadOnly() *CLIClient {
+	clone := *c
+	clone.IgnoreWorkingCopy = true
+	return &clone
+}
+
 // command builds the exec.Cmd for a jj invocation, wiring cancellation when
 // the client carries a context.
 func (c *CLIClient) command(dir string, args ...string) *exec.Cmd {
 	binary := c.Binary
 	if binary == "" {
 		binary = "jj"
+	}
+	if c.IgnoreWorkingCopy {
+		args = append([]string{"--ignore-working-copy"}, args...)
 	}
 	var cmd *exec.Cmd
 	if c.ctx != nil {
