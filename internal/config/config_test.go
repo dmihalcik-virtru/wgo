@@ -210,11 +210,25 @@ func captureWarnings(t *testing.T) *bytes.Buffer {
 func TestDashConfig(t *testing.T) {
 	writeConfig(t, `[dash]
 port = 8799
+terminal = "command"
+terminal_command = ["wezterm", "start", "--cwd", "{workspace}"]
+resume = "claude"
+editor = "~/bin/myedit"
 refresh_seconds = 45
 days = 21
 `)
 	require.NoError(t, Init())
-	assert.Equal(t, DashConfig{Port: 8799, RefreshSeconds: 45, Days: 21}, Get().Dash)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	assert.Equal(t, DashConfig{
+		Port:            8799,
+		Terminal:        "command",
+		TerminalCommand: []string{"wezterm", "start", "--cwd", "{workspace}"},
+		Resume:          "claude",
+		Editor:          filepath.Join(home, "bin", "myedit"),
+		RefreshSeconds:  45,
+		Days:            21,
+	}, Get().Dash)
 
 	// A fresh HOME: Init writes the template and reads it back, so no earlier
 	// read may leak in and the template itself must decode without warnings.

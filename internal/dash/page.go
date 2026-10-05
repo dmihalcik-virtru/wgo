@@ -24,6 +24,13 @@ type liveBoot struct {
 	// Entity is the identifier the user asked /lookup for.
 	Focus  string `json:"focus,omitempty"`
 	Entity string `json:"entity,omitempty"`
+	// Token is the per-launch action token, sent back in TokenHeader.
+	// ActionAPI and AckAPI are set when actions and Mark seen are enabled;
+	// Resume names the configured resume tool (empty hides Resume).
+	Token     string `json:"token,omitempty"`
+	ActionAPI string `json:"action_api,omitempty"`
+	AckAPI    string `json:"ack_api,omitempty"`
+	Resume    string `json:"resume,omitempty"`
 }
 
 // page is a rendered explorer page with its Content-Security-Policy. The

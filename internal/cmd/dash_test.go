@@ -20,6 +20,7 @@ import (
 
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/dash"
+	"github.com/virtru/wgo/internal/launch"
 )
 
 func TestDashRejectsBadFlags(t *testing.T) {
@@ -454,4 +455,86 @@ func TestDashCobraWiring(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDashLaunchConfigDegrades(t *testing.T) {
+	var warn bytes.Buffer
+	good := config.DashConfig{Terminal: "command", TerminalCommand: []string{"wezterm", "start", "--cwd", "{workspace}"}, Resume: "claude", Editor: "/usr/local/bin/zed"}
+	if got := dashLaunchConfig(good, &warn); got.Terminal != "command" || got.Resume != "claude" || got.Editor != good.Editor || warn.Len() != 0 {
+		t.Fatalf("good config: %+v %q", got, warn.String())
+	}
+	got := dashLaunchConfig(config.DashConfig{Terminal: "kitty", Resume: "bash -c evil", Editor: "zed"}, &warn)
+	if got.Terminal != "" || got.TerminalCommand != nil || got.Resume != "" || got.Editor != "zed" {
+		t.Fatalf("degraded = %+v", got)
+	}
+	for _, want := range []string{"ignoring [dash] resume", "ignoring [dash] terminal"} {
+		if !strings.Contains(warn.String(), want) {
+			t.Errorf("warnings lack %q: %s", want, warn.String())
+		}
+	}
+	warn.Reset()
+	got = dashLaunchConfig(config.DashConfig{Terminal: "ghostty", TerminalCommand: []string{"wezterm", "--cwd={workspace}"}, Resume: "codex"}, &warn)
+	if got.Terminal != "" || got.TerminalCommand != nil || got.Resume != "codex" || !strings.Contains(warn.String(), "whole argument") {
+		t.Fatalf("partial = %+v %q", got, warn.String())
+	}
+}
+
+// TestServeDashActionsNeedPageToken checks the wired server refuses an
+// action without the page token and launches nothing.
+func TestServeDashActionsNeedPageToken(t *testing.T) {
+	ln, err := listenDash(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	out := &syncBuffer{}
+	done := make(chan error, 1)
+	fl := &recordingLauncher{}
+	go func() {
+		done <- serveDash(ctx, out, ln, dashServer{
+			source:   nilSource{},
+			refresh:  func(context.Context) error { return nil },
+			interval: time.Hour,
+			errOut:   io.Discard,
+			actions:  &dash.ActionOptions{Resolver: noResolver{}, Launcher: fl},
+		})
+	}()
+	base := "http://" + ln.Addr().String()
+	var resp *http.Response
+	for i := 0; i < 100; i++ {
+		req, _ := http.NewRequest(http.MethodPost, base+dash.ActionPath, strings.NewReader(`{"kind":"terminal","workspace_id":"ws-0000000000000000"}`))
+		req.Header.Set("Origin", base)
+		req.Header.Set("Content-Type", "application/json")
+		if resp, err = http.DefaultClient.Do(req); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || fl.n.Load() != 0 {
+		t.Fatalf("tokenless action: %d, %d launches", resp.StatusCode, fl.n.Load())
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "actions enabled for this page only") {
+		t.Fatalf("banner: %q", out.String())
+	}
+}
+
+type recordingLauncher struct{ n atomic.Int32 }
+
+func (r *recordingLauncher) Launch(context.Context, launch.Action) launch.Result {
+	r.n.Add(1)
+	return launch.Result{}
+}
+
+type noResolver struct{}
+
+func (noResolver) Resolve(string) (dash.Target, error) {
+	return dash.Target{}, dash.ErrUnknownWorkspace
 }

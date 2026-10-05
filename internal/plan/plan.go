@@ -432,3 +432,23 @@ func (p *Plan) GetTasksForBranch(repo, branch string) []bujo.Task {
 	}
 	return out
 }
+
+// FindBranchLine returns the first Active Branches entry, in file order, for
+// which match is true, and its 1-based line in the file Parse was given. It
+// returns 0 when no entry matches or the plan was not parsed from a file.
+func (p *Plan) FindBranchLine(match func(BranchEntry) bool) (BranchEntry, int) {
+	if p.doc == nil {
+		return BranchEntry{}, 0
+	}
+	for _, sec := range p.doc.sections {
+		if !sec.owned || sec.name != sectionActiveBranches {
+			continue
+		}
+		for i, key := range sec.branchKey {
+			if e, ok := p.ActiveBranches[key]; ok && match(e) {
+				return e, sec.start + 1 + sec.entryIdx[i] + 1
+			}
+		}
+	}
+	return BranchEntry{}, 0
+}
