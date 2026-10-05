@@ -153,7 +153,11 @@ func renderStatuslineLine(w io.Writer, c *models.Context, rich bool) error {
 	}
 
 	if c.Agent != nil {
-		parts = append(parts, colorize("🤖 "+c.Agent.Name, colMagenta, rich))
+		glyph := "🤖 " + c.Agent.Name
+		if c.Agent.Uncertain {
+			glyph += "?"
+		}
+		parts = append(parts, colorize(glyph, colMagenta, rich))
 	}
 
 	_, err := fmt.Fprintln(w, strings.Join(parts, " "))

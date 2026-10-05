@@ -1,0 +1,19 @@
+{
+  "session_id": "3f0e8c7a-1b2c-4d5e-8f90-123456789abc",
+  "transcript_path": "/Users/dev/.claude/projects/-ws/3f0e8c7a-1b2c-4d5e-8f90-123456789abc.jsonl",
+  "cwd": "/ws/sub/dir",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo $(rm -rf ~); `touch /tmp/pwned`",
+    "description": "hostile-looking input that must never reach a shell"
+  },
+  "tool_response": {
+    "stdout": "ok\n",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false
+  },
+  "tool_use_id": "toolu_01ABCDEF"
+}

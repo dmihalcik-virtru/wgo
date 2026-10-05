@@ -243,9 +243,10 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 		}
 	}
 
-	// Agent session for this workspace. The env-detected heartbeat keeps a live
-	// Claude Code session fresh; resolveAgent then surfaces any non-stale one.
-	heartbeatAgent(wsRoot, branch)
+	// Agent session for this workspace. The env-detected heartbeat refreshes
+	// the Claude Code session here (or keeps an inferred one); resolveAgent
+	// then surfaces the most recently active visible session.
+	heartbeatAgent(wsRoot, repoPath, branch)
 	ctx.Agent = resolveAgent(wsRoot)
 
 	// A rig checkout is pinned, bookmark-less source, so most of the above
@@ -389,7 +390,8 @@ func renderText(w io.Writer, c *models.Context, tty bool) {
 	}
 
 	if c.Agent != nil {
-		fmt.Fprintf(w, "agent:  🤖 %s (since %s)\n", c.Agent.Name, formatTime(c.Agent.Since))
+		fmt.Fprintf(w, "agent:  🤖 %s%s (since %s)%s\n", c.Agent.Name, agentStatusSuffix(c.Agent),
+			formatTime(c.Agent.Since), agentOthersSuffix(c.Agent))
 	}
 
 	if len(c.Siblings) > 0 {
@@ -545,6 +547,26 @@ func truncateHash(hash string) string {
 		return hash[:7]
 	}
 	return hash
+}
+
+// agentStatusSuffix renders a session's reported status for `wgo .`, e.g.
+// " waiting" or " (uncertain)". Unknown status renders nothing.
+func agentStatusSuffix(a *models.AgentRef) string {
+	out := ""
+	if a.Status != "" && a.Status != "unknown" {
+		out += " " + a.Status
+	}
+	if a.Uncertain {
+		out += " (uncertain)"
+	}
+	return out
+}
+
+func agentOthersSuffix(a *models.AgentRef) string {
+	if a.Others == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" +%d more (wgo agent status)", a.Others)
 }
 
 func formatTime(t time.Time) string {
