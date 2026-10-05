@@ -50,8 +50,15 @@ func largeDash(t testing.TB) *Dash {
 // newServer starts src behind Handler bound to the server's own address.
 func newServer(t testing.TB, src ViewSource) *httptest.Server {
 	t.Helper()
+	return newServerOpts(t, HandlerOptions{Source: src})
+}
+
+// newServerOpts serves NewHandler(opts) with Host set to the listener.
+func newServerOpts(t testing.TB, opts HandlerOptions) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewUnstartedServer(nil)
-	srv.Config.Handler = Handler(src, srv.Listener.Addr().String())
+	opts.Host = srv.Listener.Addr().String()
+	srv.Config.Handler = NewHandler(opts)
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv

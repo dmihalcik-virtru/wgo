@@ -24,6 +24,8 @@ type HandlerOptions struct {
 	// PollInterval is how often the live page asks for /api/snapshot;
 	// zero means DefaultPollInterval.
 	PollInterval time.Duration
+	// Reviews, when set, enables the /review/ routes and review cross-links.
+	Reviews *ReviewIndex
 	// Logf receives server faults, such as a page that fails to render;
 	// nil writes them to stderr.
 	Logf func(format string, args ...any)
@@ -63,6 +65,9 @@ func NewHandler(opts HandlerOptions) http.Handler {
 	}
 	s := &server{opts: opts}
 	s.boot = liveBoot{Mode: string(review.ModeLive), API: "/api/snapshot", PollMS: opts.PollInterval.Milliseconds()}
+	if opts.Reviews != nil {
+		s.boot.Links = "/api/review-links"
+	}
 	s.live, s.err = newPage(review.Page{Mode: review.ModeLive, Title: "live work", Boot: s.boot})
 	if s.err != nil {
 		opts.Logf("render the live page: %v", s.err)
@@ -71,6 +76,14 @@ func NewHandler(opts HandlerOptions) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) { s.serveLive(w, s.boot, http.StatusOK) })
 	mux.HandleFunc("/api/snapshot", s.serveSnapshot)
+	mux.HandleFunc("/lookup", s.serveLookup)
+	if opts.Reviews != nil {
+		mux.HandleFunc("/api/review-links", s.serveReviewLinks)
+		mux.HandleFunc("/review/{$}", s.serveReviewIndex)
+		mux.HandleFunc("/review/{label}", s.serveReviewRedirect)
+		mux.HandleFunc("/review/{label}/{$}", s.serveReviewPage)
+		mux.HandleFunc("/review/{label}/graph.json", s.serveReviewJSON)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Cache-Control", "no-store")

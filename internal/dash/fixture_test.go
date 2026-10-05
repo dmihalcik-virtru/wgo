@@ -119,12 +119,12 @@ func TestServeFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	runs := t.TempDir()
+	writeReviewRun(t, runs, "2026-test", time.Now().Add(-time.Hour))
+	ix := NewReviewIndex(runs)
+	if err := ix.Scan(); err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("serving the fixture on http://%s/", addr)
-	_ = http.Serve(ln, fixtureHandler(t, addr))
-}
-
-// fixtureHandler is the handler TestServeFixture serves; later slices extend
-// its options.
-func fixtureHandler(t testing.TB, host string) http.Handler {
-	return NewHandler(HandlerOptions{Source: fixtureDash(t), Host: host})
+	_ = http.Serve(ln, NewHandler(HandlerOptions{Source: fixtureDash(t), Host: addr, Reviews: ix}))
 }
