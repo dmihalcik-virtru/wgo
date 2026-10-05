@@ -40,14 +40,18 @@ workspace under a [discovery] base_dirs root. The first time a link opens a
 workspace (and again whenever its path changes), wgo shows a macOS dialog
 with the full path, defaulting to Cancel; without a dialog it asks y/N on a
 terminal, and otherwise refuses. Accepted workspaces are remembered in
-~/.wgo/url-handler-approvals.json.
+~/.wgo/url-handler-approvals.json. A path with control or invisible
+formatting characters is refused rather than shown.
+
+Only one wgo open runs at a time: while one is handling a link (say, its
+dialog is up), another exits at once and drops its link.
 
 The tab opens with the same launcher as wgo dash's Open tab ([dash]
 terminal settings); when no terminal can be opened it prints a cd command
 to copy.`,
 	Args: cobra.ExactArgs(1),
 	// The error says what to do; usage text would bury it (and the
-	// applet shows it in an alert).
+	// applet shows it in a notification).
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runOpen(cmd.Context(), args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -64,7 +68,7 @@ func runOpen(ctx context.Context, raw string, out, errOut io.Writer) error {
 	}
 	// Reject a malformed link before loading config or running discovery.
 	if _, err := urlhandler.ParseOpenURL(raw); err != nil {
-		return fmt.Errorf("wgo open: rejected wgo:// link: %w; nothing was opened", err)
+		return fmt.Errorf("wgo open: rejected wgo:// link: %w. Only %s is accepted; nothing was opened", err, urlhandler.AcceptedForm)
 	}
 	if err := config.Init(); err != nil {
 		return err
@@ -93,7 +97,10 @@ func runOpen(ctx context.Context, raw string, out, errOut io.Writer) error {
 			Prompt: errOut,
 		},
 		Approvals: urlhandler.NewApprovals(urlhandler.ApprovalsPath(st.BaseDir())),
-		Warnf:     logf,
+		Lock: func() (func(), error) {
+			return urlhandler.TryLock(urlhandler.LockPath(st.BaseDir()))
+		},
+		Warnf: logf,
 	})
 }
 

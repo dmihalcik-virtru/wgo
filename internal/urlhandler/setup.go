@@ -53,8 +53,8 @@ func AppleScriptString(s string) (string, error) {
 // AppletSource is the applet's AppleScript. wgoPath (absolute) and pathEnv
 // are fixed at install time as string literals. A received URL is handed to
 // `wgo open` as exactly one shell-quoted argument; wgo decides everything
-// else. A failure (a rejected link, an unknown workspace) is shown in an
-// alert.
+// else. A failure (a rejected link, an unknown workspace) is shown in a
+// notification, never a modal alert.
 func AppletSource(wgoPath, pathEnv string) (string, error) {
 	if !filepath.IsAbs(wgoPath) {
 		return "", fmt.Errorf("the wgo executable path %q is not absolute", wgoPath)
@@ -79,7 +79,9 @@ on open location theURL
 	try
 		do shell script "PATH=" & quoted form of envPath & " " & quoted form of wgoPath & " open " & quoted form of theURL
 	on error errMsg
-		display alert "wgo did not open the link" message errMsg as critical
+		-- A notification, not a modal alert: a web page can trigger this
+		-- without any user interaction. wgo's messages never quote the URL.
+		display notification errMsg with title "wgo did not open the link"
 	end try
 end open location
 
@@ -210,6 +212,11 @@ func (in *Installer) Install(ctx context.Context) error {
 	}
 	_, statErr := os.Lstat(app)
 	exists := statErr == nil
+	// created records that the app path is ours to clean up: it did not
+	// exist when the build started (any earlier applet carried the wgo
+	// marker and was removed above), so whatever is there after a failed
+	// step was made by this install.
+	created := false
 	if exists {
 		if in.DryRun {
 			fmt.Fprintf(in.Out, "  verify %s carries the %s marker, then remove it to replace it\n", app, MarkerKey)
@@ -227,8 +234,25 @@ func (in *Installer) Install(ctx context.Context) error {
 	} else if err := in.MkdirAll(filepath.Dir(app), 0o755); err != nil {
 		return err
 	}
+	if !in.DryRun {
+		if _, err := os.Lstat(app); errors.Is(err, fs.ErrNotExist) {
+			created = true
+		}
+	}
+	cleanup := func(err error, what string) error {
+		if !created {
+			return fmt.Errorf("%s failed: %w", what, err)
+		}
+		if _, serr := os.Lstat(app); errors.Is(serr, fs.ErrNotExist) {
+			return fmt.Errorf("%s failed: %w", what, err)
+		}
+		if rerr := in.RemoveAll(app); rerr != nil {
+			return fmt.Errorf("%s failed: %w (and removing the partial %s failed: %v)", what, err, app, rerr)
+		}
+		return fmt.Errorf("%s failed: %w; the partial applet was removed", what, err)
+	}
 	if err := in.run(ctx, OsacompileArgv(app, src)); err != nil {
-		return fmt.Errorf("compile the applet: %w", err)
+		return cleanup(err, "compiling the applet")
 	}
 	steps := append(PlistArgvs(app),
 		// Editing Info.plist invalidates the applet's signature; re-sign it
@@ -240,10 +264,7 @@ func (in *Installer) Install(ctx context.Context) error {
 		if err := in.run(ctx, argv); err != nil {
 			// The applet is ours and half-built: remove it rather than
 			// leave a handler that does not work.
-			if rerr := in.RemoveAll(app); rerr != nil {
-				return fmt.Errorf("%s failed: %w (and removing the partial %s failed: %v)", argv[0], err, app, rerr)
-			}
-			return fmt.Errorf("%s failed: %w; the partial applet was removed", argv[0], err)
+			return cleanup(err, filepath.Base(argv[0]))
 		}
 	}
 	if in.DryRun {
@@ -278,7 +299,7 @@ func (in *Installer) Uninstall(ctx context.Context) error {
 		return fmt.Errorf("unregister %s: %w; it was not removed", app, err)
 	}
 	if err := in.RemoveAll(app); err != nil {
-		return fmt.Errorf("remove %s: %w", app, err)
+		return fmt.Errorf("unregistered %s, so wgo:// links no longer open it, but could not delete it: %w; remove it manually", app, err)
 	}
 	fmt.Fprintf(in.Out, "Removed %s; wgo:// links no longer open anything.\n", app)
 	return nil

@@ -34,6 +34,9 @@ func OpenURL(id string) string {
 	return u.String()
 }
 
+// AcceptedForm is the only wgo:// link wgo open accepts, for messages.
+const AcceptedForm = "wgo://open?ws=<workspace-id>"
+
 // ParseOpenURL accepts exactly wgo://open?ws=<id>, where id has the shape of
 // a dashboard workspace ID (ws- and 16 lowercase hex digits), and returns
 // the ID. Everything else is rejected with a reason: other schemes, hosts,
@@ -41,13 +44,16 @@ func OpenURL(id string) string {
 // parameters, percent-encoding, '+', control characters and spaces. As a
 // final guard the input must equal the re-serialized canonical form, so no
 // url.Parse leniency can widen what is accepted.
+//
+// Error messages are fixed text: they never quote any part of raw, because
+// the applet shows them to the user and a web page chooses raw.
 func ParseOpenURL(raw string) (string, error) {
 	if len(raw) > MaxURLLen {
-		return "", fmt.Errorf("the URL is %d bytes long; a wgo:// link is at most %d", len(raw), MaxURLLen)
+		return "", errors.New("the link is too long")
 	}
 	for _, r := range raw {
 		if r <= ' ' || r >= 0x7f {
-			return "", errors.New("the URL contains a space, control or non-ASCII character")
+			return "", errors.New("the link contains a space, control or non-ASCII character")
 		}
 	}
 	switch {
@@ -76,11 +82,11 @@ func ParseOpenURL(raw string) (string, error) {
 	case strings.Contains(u.Host, ":"):
 		return "", errors.New("a wgo:// link cannot carry a port")
 	case u.Host != openHost:
-		return "", fmt.Errorf("unsupported action %q: the only wgo:// link is wgo://open?ws=<workspace-id>", u.Host)
+		return "", errors.New("unsupported link host")
 	case u.Path != "" || u.RawPath != "":
-		return "", errors.New("a wgo:// link cannot carry a path; use wgo://open?ws=<workspace-id>")
+		return "", errors.New("a wgo:// link cannot carry a path")
 	case u.RawQuery == "":
-		return "", errors.New("the link names no workspace; use wgo://open?ws=<workspace-id>")
+		return "", errors.New("the link names no workspace")
 	}
 	id := ""
 	seen := false
@@ -90,7 +96,7 @@ func ParseOpenURL(raw string) (string, error) {
 		}
 		k, v, _ := strings.Cut(p, "=")
 		if k != "ws" {
-			return "", fmt.Errorf("query parameter %q is not accepted: wgo://open takes only ws, and a link can never carry a command", k)
+			return "", errors.New("unexpected query parameter; a link can never carry a command")
 		}
 		if seen {
 			return "", errors.New("the link names ws more than once")
@@ -102,10 +108,10 @@ func ParseOpenURL(raw string) (string, error) {
 		return "", errors.New("the ws parameter is empty")
 	}
 	if !dash.ValidWorkspaceID(id) {
-		return "", errors.New("ws is not a workspace ID (ws- followed by 16 lowercase hex digits, as shown by wgo dash)")
+		return "", errors.New("ws is not a workspace ID (ws- followed by 16 lowercase hex digits, as shown by wgo dash --json)")
 	}
 	if raw != OpenURL(id) {
-		return "", errors.New("the link is not in canonical form wgo://open?ws=<workspace-id>")
+		return "", errors.New("the link is not in canonical form")
 	}
 	return id, nil
 }
