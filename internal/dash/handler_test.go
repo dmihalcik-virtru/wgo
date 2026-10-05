@@ -151,7 +151,7 @@ func TestHandlerEmptyStateAndPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != 200 || resp.Header.Get("Content-Security-Policy") != "default-src 'none'" {
+	if csp := resp.Header.Get("Content-Security-Policy"); resp.StatusCode != 200 || !strings.HasPrefix(csp, "default-src 'none'; script-src 'sha256-") {
 		t.Fatalf("page: %d %v", resp.StatusCode, resp.Header)
 	}
 	resp, err = srv.Client().Post(srv.URL+"/api/snapshot", "application/json", nil)

@@ -117,15 +117,21 @@ func renderShell(shellName string, styleNames []string, appName string, p Page, 
 		}
 	}
 
-	var extra strings.Builder
+	// The bootstrap goes where the shell marks it (live mode needs it before
+	// its app runs) or, for shells without the marker, before </body>.
+	var bootEl, extra strings.Builder
 	if p.Boot != nil {
 		boot, err := json.Marshal(p.Boot)
 		if err != nil {
 			return nil, err
 		}
-		extra.WriteString(`<script id="wgo-boot" type="application/json">`)
-		extra.Write(boot)
-		extra.WriteString("</script>\n")
+		bootEl.WriteString(`<script id="wgo-boot" type="application/json">`)
+		bootEl.Write(boot)
+		bootEl.WriteString("</script>")
+		if !strings.Contains(shell, bootMarker) {
+			extra.WriteString(bootEl.String())
+			extra.WriteString("\n")
+		}
 	}
 	for _, name := range p.Addons {
 		if !strings.HasPrefix(name, "web/") || !strings.HasSuffix(name, ".js") || strings.Contains(name, "/vendor/") {
@@ -152,7 +158,14 @@ func renderShell(shellName string, styleNames []string, appName string, p Page, 
 		"/*WGO_APP*/", app,
 		"/*WGO_DATA*/", string(data),
 	)
-	out := r.Replace(shell)
+	var out string
+	if i := strings.Index(shell, bootMarker); i >= 0 {
+		// Split on the shell's own marker before substituting, so marker-like
+		// text in the inlined content is never mistaken for it.
+		out = r.Replace(shell[:i]) + bootEl.String() + r.Replace(shell[i+len(bootMarker):])
+	} else {
+		out = r.Replace(shell)
+	}
 	if extra.Len() > 0 {
 		i := strings.LastIndex(out, "</body>")
 		if i < 0 {
@@ -162,6 +175,9 @@ func renderShell(shellName string, styleNames []string, appName string, p Page, 
 	}
 	return []byte(out), nil
 }
+
+// bootMarker marks where a shell wants the bootstrap element.
+const bootMarker = "<!--WGO_BOOT-->"
 
 func vendorScripts() (string, error) {
 	names, err := fs.Glob(webFS, "web/vendor/*.js")
