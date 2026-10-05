@@ -1039,6 +1039,96 @@ with `--ignore-working-copy` so it never snapshots a workspace. It also
 refreshes stale PR, Jira and GitHub issue data. Year-in-review runs are
 served under `/review/`. Stop the server with Ctrl-C.
 
+### Actions
+
+Select a workspace to get these buttons:
+
+| Button | What it does |
+|--------|--------------|
+| **Open tab** | Opens a new terminal tab in the workspace. |
+| **Resume** | Opens a tab and runs `claude --continue` or `codex resume --last` there. Shown only when `[dash] resume` is set. |
+| **Editor** | Opens the workspace in your editor. |
+| **Finder** | Reveals the workspace in Finder. |
+| **Plan** | Opens `~/.wgo/plan.md` at this bookmark's Active Branches line. |
+| **Spec** | Opens `spec/<ticket>.md` for the ticket in the bookmark name. |
+
+**Mark seen** in the *Since last look* box makes the current snapshot the
+baseline for counting changes.
+
+Each button reports what happened under it:
+
+- which launcher it used;
+- which launchers it tried first, and why they failed;
+- when nothing could be launched, a shell-quoted `cd '<path>'` (or a
+  path) with a **Copy** button.
+
+Errors appear in the same place, for example a workspace that no longer
+exists or a ticket with no spec ("create it with `wgo spec new GH-70`").
+
+A launch never changes jj, the plan or agent state.
+
+**Launch order:**
+
+- **Open tab:** Ghostty, then `terminal_command` if set, then the `cd`
+  command to copy. Set `terminal = "iterm"` or `"terminal"` to use iTerm or
+  Terminal.app instead.
+- **Resume:** runs in a Ghostty tab. With any other terminal, wgo opens the
+  tab and gives you the command to paste.
+- **Editor, Plan and Spec:** `[dash] editor`, then `code`, then `xed`, then
+  Finder, then the path to copy. Plan and Spec open at the right line with
+  `code -g file:line` or `xed -l line`.
+
+**When the baseline moves.** Only Mark seen moves it. Loading the page,
+reloading it or closing it never does. The baseline is shared by every tab,
+so a page-close acknowledgement would quietly reset the counts that another
+open tab is still showing.
+
+### Security model
+
+The action endpoints only accept requests from the page that this
+`wgo dash` launch served:
+
+- **Page token.** Each launch makes a random 256-bit token. It is embedded
+  only in the served page, never in a URL or a log, and pages carry
+  `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. The page
+  sends it in an `X-Wgo-Token` header, which the server compares in
+  constant time. Reload the page after restarting `wgo dash`.
+- **Origin and Host.** `POST /api/action` and `POST /api/ack` also require:
+  - an `Origin` exactly equal to `http://127.0.0.1:<port>`;
+  - the exact `Host`, which defeats DNS rebinding;
+  - `Content-Type: application/json`;
+  - a body of at most 4 KiB;
+  - no unknown JSON fields.
+- **No cross-origin access.** There are no CORS headers, and a preflight
+  gets 405.
+- **IDs, not paths.** A request names only an action kind and a workspace
+  ID. The server re-resolves the ID through discovery every time. It checks
+  that the directory is a real jj workspace inside a `[discovery] base_dirs`
+  root, after resolving symlinks. It then derives every path itself. An
+  unknown or stale ID gets a 404 and launches nothing.
+- **No shell.** Launchers run as argv lists. Ghostty is driven by a fixed
+  AppleScript that receives the path as an argument and never interpolates
+  it. Resume runs only an allowlisted tool.
+
+### macOS Automation prompt
+
+The first Open tab or Resume with Ghostty runs `osascript`. macOS then asks
+whether **"wgo" wants to control "Ghostty"**; the prompt may name your
+terminal or `osascript` instead. Click **Allow**. If you click **Don't
+Allow**, or the prompt times out, wgo falls back to the next launcher.
+The error message says how to fix the permission.
+
+To change your answer, open **System Settings > Privacy & Security >
+Automation**, expand the app that ran `wgo dash`, and toggle **Ghostty**. To
+be asked again, reset Apple Events consent for all apps:
+
+```
+tccutil reset AppleEvents
+```
+
+Ghostty needs version 1.3 or newer with `macos-applescript` enabled, which
+is the default.
+
 ### Dashboard configuration
 
 All `[dash]` keys in `~/.wgo/config.toml` are optional:
@@ -1048,11 +1138,20 @@ All `[dash]` keys in `~/.wgo/config.toml` are optional:
 port = 8766                # loopback port; --port wins
 days = 14                  # activity window; --days wins
 refresh_seconds = 30       # background re-collection interval (5 to 3600)
+terminal = "ghostty"       # Open tab: ghostty | iterm | terminal | command
+# argv for terminal = "command", and the fallback after Ghostty when set.
+# An element that is exactly "{workspace}" becomes the workspace path; no shell.
+terminal_command = ["wezterm", "start", "--cwd", "{workspace}"]
+resume = "claude"          # Resume: "claude" or "codex"; unset hides Resume
+editor = "zed"             # preferred over code and xed
 ```
 
-An out-of-range value stops `wgo dash` with an error naming the setting;
-values are never silently adjusted. `--json` ignores `port` and
-`refresh_seconds`, since it prints one snapshot without serving.
+An out-of-range `port`, `days` or `refresh_seconds` stops `wgo dash` with
+an error naming the setting; these are never silently adjusted. `--json`
+ignores `port` and `refresh_seconds`, since it prints one snapshot without
+serving. An invalid `terminal`, `terminal_command` or `resume` setting does
+not stop the dashboard. `wgo dash` prints a warning on stderr and uses the
+default for that setting.
 
 ---
 
@@ -1081,7 +1180,7 @@ values are never silently adjusted. `--json` ignores `port` and
 | `wgo status --filter dirty` | Show only repos with uncommitted changes |
 | `wgo status --filter stale` | Show only repos with no recent activity |
 | `wgo status --sort activity` | Sort repos by last commit time |
-| `wgo dash` | Live web dashboard of all ongoing work ([details](#live-dashboard-with-wgo-dash)) |
+| `wgo dash` | Live web dashboard of all ongoing work, with workspace actions ([details](#live-dashboard-with-wgo-dash)) |
 | `wgo dash --json` | One dashboard snapshot as JSON |
 | `wgo today` | Morning review: commits, PRs, branches, tasks |
 | `wgo today --yesterday` | Review the previous day |
