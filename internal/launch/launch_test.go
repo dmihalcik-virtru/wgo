@@ -3,10 +3,12 @@ package launch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeRunner records every process it is asked to run and never runs one.
@@ -329,5 +331,37 @@ func TestAutomationHint(t *testing.T) {
 	other := errors.New("exit status 1: syntax error")
 	if automationHint(other) != other {
 		t.Fatal("unrelated error gained a hint")
+	}
+}
+
+func TestExecRunnerLogsLateFailure(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	old := startGrace
+	startGrace = 50 * time.Millisecond
+	t.Cleanup(func() { startGrace = old })
+	logged := make(chan string, 1)
+	r := ExecRunner{Logf: func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }}
+	// Outlives the grace, then fails: reported as opened, then logged.
+	if err := r.Start("", []string{"sh", "-c", "sleep 0.3; echo boom >&2; exit 3"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case msg := <-logged:
+		if !strings.Contains(msg, "sh exited after it was reported as opened") || !strings.Contains(msg, "exit status 3") || !strings.Contains(msg, "boom") {
+			t.Fatalf("log = %q", msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("late failure was not logged")
+	}
+	// A late success logs nothing.
+	if err := r.Start("", []string{"sh", "-c", "sleep 0.2"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case msg := <-logged:
+		t.Fatalf("success logged %q", msg)
+	case <-time.After(600 * time.Millisecond):
 	}
 }

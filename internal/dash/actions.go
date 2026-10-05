@@ -48,6 +48,9 @@ var actionKinds = map[string]bool{
 	ActionReveal: true, ActionPlan: true, ActionSpec: true,
 }
 
+// newToken is NewToken; tests replace it to simulate a failure.
+var newToken = NewToken
+
 // NewToken returns a fresh random action token (256 bits, URL-safe).
 func NewToken() (string, error) {
 	b := make([]byte, 32)
@@ -119,14 +122,16 @@ func reject(status int, format string, args ...any) *httpError {
 	return &httpError{status: status, msg: fmt.Sprintf(format, args...)}
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func (s *server) writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		s.opts.Logf("write a %d JSON response: %v", status, err)
+	}
 }
 
-func writeError(w http.ResponseWriter, e *httpError) {
-	writeJSON(w, e.status, map[string]any{"ok": false, "error": e.msg})
+func (s *server) writeError(w http.ResponseWriter, e *httpError) {
+	s.writeJSON(w, e.status, map[string]any{"ok": false, "error": e.msg})
 }
 
 // checkPost enforces everything a state-changing request must satisfy
@@ -178,20 +183,20 @@ func (s *server) checkPost(w http.ResponseWriter, r *http.Request, dst any) *htt
 func (s *server) serveAction(w http.ResponseWriter, r *http.Request) {
 	var req actionRequest
 	if e := s.checkPost(w, r, &req); e != nil {
-		writeError(w, e)
+		s.writeError(w, e)
 		return
 	}
 	a := s.opts.Actions
 	if a == nil || a.Resolver == nil || a.Launcher == nil {
-		writeError(w, reject(http.StatusNotFound, "browser actions are not enabled in this wgo dash"))
+		s.writeError(w, reject(http.StatusNotFound, "browser actions are not enabled in this wgo dash"))
 		return
 	}
 	if !actionKinds[req.Kind] {
-		writeError(w, reject(http.StatusBadRequest, "unknown action %q", req.Kind))
+		s.writeError(w, reject(http.StatusBadRequest, "unknown action %q", req.Kind))
 		return
 	}
 	if req.Kind == ActionResume && a.Resume == "" {
-		writeError(w, reject(http.StatusBadRequest, `Resume is not configured: set resume = "claude" under [dash] in ~/.wgo/config.toml`))
+		s.writeError(w, reject(http.StatusBadRequest, `Resume is not configured: set resume = "claude" under [dash] in ~/.wgo/config.toml`))
 		return
 	}
 	// The request was accepted; a disconnecting browser must not abort a
@@ -199,14 +204,14 @@ func (s *server) serveAction(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	act, extra, e := s.planAction(ctx, req)
 	if e != nil {
-		writeError(w, e)
+		s.writeError(w, e)
 		return
 	}
 	res := a.Launcher.Launch(ctx, act)
 	if extra != "" {
 		res.Message = strings.TrimSpace(res.Message + " " + extra)
 	}
-	writeJSON(w, http.StatusOK, actionResponse{OK: true, Kind: req.Kind, WorkspaceID: req.WorkspaceID, Result: res})
+	s.writeJSON(w, http.StatusOK, actionResponse{OK: true, Kind: req.Kind, WorkspaceID: req.WorkspaceID, Result: res})
 }
 
 // planAction resolves req to a launch: the workspace is looked up in
@@ -224,6 +229,10 @@ func (s *server) planAction(ctx context.Context, req actionRequest) (launch.Acti
 		return launch.Action{}, "", reject(http.StatusInternalServerError, "could not run discovery: %v", err)
 	}
 	dir, err := containedWorkspace(t.Root, a.Roots)
+	var ue *unreadableRootsError
+	if errors.As(err, &ue) {
+		s.opts.Logf("workspace %s (%s) is under no readable discovery root; unreadable: %s", req.WorkspaceID, t.Root, ue.list())
+	}
 	if err != nil {
 		return launch.Action{}, "", reject(http.StatusNotFound, "workspace %q cannot be opened: %v", req.WorkspaceID, err)
 	}
@@ -332,19 +341,45 @@ func containedWorkspace(root string, roots []string) (string, error) {
 	if err != nil || !fi.IsDir() {
 		return "", errors.New("it is no longer a jj workspace")
 	}
+	var unreadable []string
 	for _, r := range roots {
 		if r == "" || !filepath.IsAbs(r) {
 			continue
 		}
 		rr, err := filepath.EvalSymlinks(r)
 		if err != nil {
+			unreadable = append(unreadable, fmt.Sprintf("%s (%v)", r, unwrapPathError(err)))
 			continue
 		}
 		if within(real, rr) {
 			return real, nil
 		}
 	}
+	if len(unreadable) > 0 {
+		return "", &unreadableRootsError{roots: unreadable}
+	}
 	return "", errors.New("it is not under a configured discovery root (discovery.base_dirs)")
+}
+
+// unreadableRootsError is a containment failure where some discovery roots
+// could not be resolved (an unmounted volume, a permission error), so the
+// workspace may well be under one of them.
+type unreadableRootsError struct{ roots []string }
+
+func (e *unreadableRootsError) list() string { return strings.Join(e.roots, ", ") }
+
+func (e *unreadableRootsError) Error() string {
+	return "it is not under any readable discovery root, and these discovery.base_dirs could not be read (unmounted or inaccessible?): " + e.list()
+}
+
+// unwrapPathError drops the path from a *fs.PathError, which the caller
+// already names.
+func unwrapPathError(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }
 
 // within reports whether p is base or beneath it. Both are clean and
@@ -362,24 +397,24 @@ func within(p, base string) bool {
 func (s *server) serveAck(w http.ResponseWriter, r *http.Request) {
 	var req ackRequest
 	if e := s.checkPost(w, r, &req); e != nil {
-		writeError(w, e)
+		s.writeError(w, e)
 		return
 	}
 	if s.opts.Ack == nil {
-		writeError(w, reject(http.StatusNotFound, "Mark seen is not enabled in this wgo dash"))
+		s.writeError(w, reject(http.StatusNotFound, "Mark seen is not enabled in this wgo dash"))
 		return
 	}
 	err := s.opts.Ack.Acknowledge(req.Generation)
 	switch {
 	case errors.Is(err, ErrUnknownGen):
-		writeError(w, reject(http.StatusConflict, "generation %d is too old to mark seen; the page will catch up on its next refresh, then try again", req.Generation))
+		s.writeError(w, reject(http.StatusConflict, "generation %d is too old to mark seen; the page will catch up on its next refresh, then try again", req.Generation))
 		return
 	case errors.Is(err, ErrOldGeneration):
-		writeError(w, reject(http.StatusConflict, "a newer generation has already been marked seen (perhaps in another tab)"))
+		s.writeError(w, reject(http.StatusConflict, "a newer generation has already been marked seen (perhaps in another tab)"))
 		return
 	case err != nil:
-		writeError(w, reject(http.StatusInternalServerError, "could not save the last-seen baseline: %v", err))
+		s.writeError(w, reject(http.StatusInternalServerError, "could not save the last-seen baseline: %v", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "generation": req.Generation})
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "generation": req.Generation})
 }

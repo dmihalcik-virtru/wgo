@@ -126,5 +126,9 @@ func TestServeFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("serving the fixture on http://%s/", addr)
-	_ = http.Serve(ln, NewHandler(HandlerOptions{Source: fixtureDash(t), Host: addr, Reviews: ix}))
+	h, err := NewHandler(HandlerOptions{Source: fixtureDash(t), Host: addr, Reviews: ix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = http.Serve(ln, h)
 }

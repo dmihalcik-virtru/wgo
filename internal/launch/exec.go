@@ -18,10 +18,14 @@ const RunTimeout = 2 * time.Minute
 
 // startGrace is how long Start waits for a detached process to fail fast
 // (a bad flag, a missing display) before reporting it as running.
-const startGrace = 1500 * time.Millisecond
+var startGrace = 1500 * time.Millisecond
 
 // ExecRunner runs processes with os/exec: argv only, never a shell.
-type ExecRunner struct{}
+type ExecRunner struct {
+	// Logf, when set, receives failures nobody else can report: a process
+	// Start already reported as running that later exits non-zero.
+	Logf func(format string, args ...any)
+}
 
 // Run implements Runner.
 func (ExecRunner) Run(ctx context.Context, dir string, argv []string) error {
@@ -42,7 +46,7 @@ func (ExecRunner) Run(ctx context.Context, dir string, argv []string) error {
 
 // Start implements Runner. The process gets its own process group, so
 // stopping wgo dash does not close the terminal it opened.
-func (ExecRunner) Start(dir string, argv []string) error {
+func (e ExecRunner) Start(dir string, argv []string) error {
 	if len(argv) == 0 {
 		return errors.New("empty command")
 	}
@@ -63,7 +67,14 @@ func (ExecRunner) Start(dir string, argv []string) error {
 		}
 		return nil
 	case <-time.After(startGrace):
-		return nil // still running: it opened; Wait reaps it later
+		// Still running, so it is reported as opened. A later failure has
+		// no request left to answer; log it.
+		go func() {
+			if err := <-done; err != nil && e.Logf != nil {
+				e.Logf("%s exited after it was reported as opened: %v", argv[0], describe(err, stderr.String()))
+			}
+		}()
+		return nil
 	}
 }
 

@@ -322,11 +322,15 @@
     }
     return "wgo dash returned an unexpected response (status " + JSON.stringify(p.status) + ")" + showing + ".";
   };
-  // safeURL passes only absolute http(s) URLs; localURL only same-origin
-  // paths. "//host" and "/\host" are protocol-relative to a browser, so
-  // neither counts as local.
+  // safeURL passes only absolute http(s) URLs.
   L.safeURL = function (u) { return typeof u === "string" && /^https?:\/\//i.test(u) ? u : ""; };
-  L.localURL = function (u) { return typeof u === "string" && /^\/(?![\/\\])/.test(u) ? u : ""; };
+  // localURL returns u when it is a same-origin path, else "". It rejects
+  // protocol-relative "//host", "/\\host" (browsers treat \\ as /), any
+  // backslash, and whitespace or control characters, which browsers strip
+  // from URLs (so "/\t/host" would become "//host").
+  L.localURL = function (u) {
+    return typeof u === "string" && u.charAt(0) === "/" && u.charAt(1) !== "/" && !/[\\\u0000-\u0020\u007f]/.test(u) ? u : "";
+  };
   // warnings lists the diagnostics shown under the header: the view's, the
   // snapshot's, review-run scan errors, and an unavailable links note.
   L.warnings = function (payload, snap, links, linksError) {
@@ -1314,7 +1318,10 @@
       store.actionResult = { wsId: wsId, label: a.label, ok: v.ok, text: v.text, copy: v.copy, tried: v.tried };
     }, function (e) {
       store.actionResult = { wsId: wsId, label: a.label, ok: false, text: L.actionError(e) };
-    }).then(function () { store.busy.delete(key); renderDetail(); });
+    }).then(function () { store.busy.delete(key); renderDetail(); }, function (e) {
+      store.busy.delete(key); renderDetail();
+      if (window.console) console.error("wgo dash:", e);
+    });
   }
 
   // ---------- polling ----------
