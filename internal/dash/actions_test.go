@@ -411,9 +411,9 @@ func TestActionsDisabled(t *testing.T) {
 	if resp.StatusCode != 403 {
 		t.Fatalf("no token configured: %d", resp.StatusCode)
 	}
-	body := getBody(t, srv, "/")
-	if strings.Contains(body, `"token"`) || strings.Contains(body, "action_api") {
-		t.Fatal("a read-only page carries a token")
+	m := bootRe.FindStringSubmatch(getBody(t, srv, "/"))
+	if m == nil || strings.Contains(m[1], "token") || strings.Contains(m[1], "action_api") || strings.Contains(m[1], "ack_api") {
+		t.Fatalf("a read-only page carries a token: %v", m)
 	}
 }
 

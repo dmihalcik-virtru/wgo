@@ -216,15 +216,25 @@ func setInJSON(vs []any, path []string) bool {
 	return setInJSON(next, path[1:])
 }
 
-// TestLiveAppIssuesOnlyGets: until the page has an action endpoint, live.js
-// sends nothing but GETs and writes no markup from strings.
-func TestLiveAppIssuesOnlyGets(t *testing.T) {
+// TestLiveAppKeepsTheTokenInAHeader: the only POSTs are the token-guarded
+// actions and Mark seen; the token goes in a header, never a URL, storage, a
+// beacon or a log, and live.js writes no markup from strings.
+func TestLiveAppKeepsTheTokenInAHeader(t *testing.T) {
 	app := liveAppSource(t)
-	for _, bad := range []string{`method\s*:`, `\bPOST\b`, `XMLHttpRequest`, `sendBeacon`, `\btoken\b`, `\beval\(`, `new Function`,
-		`\.innerHTML`, `\.outerHTML`, `insertAdjacentHTML`, `document\.write`, `\.submit\(`} {
+	for _, bad := range []string{`XMLHttpRequest`, `sendBeacon`, `localStorage`, `sessionStorage`, `document\.cookie`, `token=`, `\?token`, `console\.log`,
+		`\beval\(`, `new Function`, `\.innerHTML`, `\.outerHTML`, `insertAdjacentHTML`, `document\.write`, `\.submit\(`, `Access-Control`} {
 		if loc := regexp.MustCompile(bad).FindStringIndex(app); loc != nil {
 			t.Errorf("live app matches %s: %q", bad, app[max(0, loc[0]-40):min(len(app), loc[1]+40)])
 		}
+	}
+	if n := strings.Count(app, `method: "POST"`); n != 1 {
+		t.Errorf("want exactly one POST (postJSON), found %d", n)
+	}
+	if !strings.Contains(app, `"X-Wgo-Token": BOOT.token`) {
+		t.Error("postJSON does not send the token header")
+	}
+	if strings.Count(app, "BOOT.token") != strings.Count(app, "!BOOT.token")+strings.Count(app, `"X-Wgo-Token": BOOT.token`) {
+		t.Error("BOOT.token is used somewhere other than the header and enablement checks")
 	}
 }
 
