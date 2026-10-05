@@ -40,8 +40,9 @@ func seedAgentSession(t *testing.T, wsRoot, tool, branch string) {
 	state, err := s.LoadState()
 	require.NoError(t, err)
 	now := time.Now()
-	state.AgentSessions[wsRoot] = store.AgentSession{
-		Tool: tool, WorktreePath: wsRoot, Branch: branch, StartTime: now, LastActivity: now,
+	id := store.NewAgentSessionID(tool)
+	state.AgentSessions[id] = store.AgentSession{
+		ID: id, Source: store.SourceExplicit, Tool: tool, WorktreePath: wsRoot, Branch: branch, StartTime: now, LastActivity: now,
 	}
 	require.NoError(t, s.SaveState(state))
 }
@@ -71,13 +72,13 @@ func TestHeartbeatAgentWritesThenThrottles(t *testing.T) {
 	require.NoError(t, err)
 	state, err := s.LoadState()
 	require.NoError(t, err)
-	firstSeen := state.AgentSessions["/ws"].LastActivity
+	firstSeen := state.AgentSessions[store.InferredAgentSessionID("claude", "/ws")].LastActivity
 
 	// Second heartbeat within the throttle window: no rewrite.
 	heartbeatAgent("/ws", "WGO-134")
 	state, err = s.LoadState()
 	require.NoError(t, err)
-	assert.Equal(t, firstSeen, state.AgentSessions["/ws"].LastActivity,
+	assert.Equal(t, firstSeen, state.AgentSessions[store.InferredAgentSessionID("claude", "/ws")].LastActivity,
 		"a heartbeat within the throttle window must not rewrite the session")
 }
 
@@ -100,7 +101,8 @@ func TestResolveAgentStaleReturnsNil(t *testing.T) {
 	state, err := s.LoadState()
 	require.NoError(t, err)
 	old := time.Now().Add(-2 * agentStaleAfter)
-	state.AgentSessions["/ws"] = store.AgentSession{
+	state.AgentSessions["claude-old"] = store.AgentSession{
+		ID: "claude-old", Source: store.SourceInferred,
 		Tool: "claude", WorktreePath: "/ws", StartTime: old, LastActivity: old,
 	}
 	require.NoError(t, s.SaveState(state))

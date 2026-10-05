@@ -82,17 +82,24 @@ func (fs *FileStore) LoadState() (*State, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to parse state file: %w", err)
 	}
-	if state.Version > 0 && state.Version < StateVersion {
+	switch {
+	case state.Version > 0 && state.Version < 2:
 		return nil, fmt.Errorf(
 			"state file %s is at schema version %d; wgo expects version %d. "+
 				"This file was produced by the pre-jj wgo and is no longer migratable. "+
 				"Delete it and let wgo start fresh: rm %s",
 			fs.stateFile, state.Version, StateVersion, fs.stateFile,
 		)
-	}
-	if state.Version == 0 {
+	case state.Version == 0:
+		state.Version = StateVersion
+	case state.Version == 2:
+		// Version 2 keyed agent sessions by workspace root; the normalization
+		// below rekeys them by ID. The file itself is rewritten at version 3
+		// on the next save.
 		state.Version = StateVersion
 	}
+	// state.Version > StateVersion loads for reading; SaveState and
+	// MutateState refuse to write it (see NewerStateError).
 
 	if state.Repos == nil {
 		state.Repos = make(map[string]RepoInfo)
@@ -103,11 +110,32 @@ func (fs *FileStore) LoadState() (*State, error) {
 	if state.Efforts == nil {
 		state.Efforts = make(map[string]Effort)
 	}
-	if state.AgentSessions == nil {
-		state.AgentSessions = make(map[string]AgentSession)
-	}
+	state.AgentSessions = normalizeAgentSessions(state.AgentSessions)
 
 	return &state, nil
+}
+
+// NewerStateError reports a state file written by a newer wgo. Writing it back
+// would drop or corrupt fields this binary does not understand, so writes are
+// refused; reads still work.
+type NewerStateError struct {
+	Path    string
+	Version int
+}
+
+func (e *NewerStateError) Error() string {
+	return fmt.Sprintf(
+		"state file %s is at schema version %d, newer than this wgo understands (version %d); "+
+			"refusing to write it. Upgrade wgo (go install github.com/virtru/wgo/cmd/wgo@latest), "+
+			"and check `which -a wgo` for an older binary earlier on PATH, such as one run by a hook",
+		e.Path, e.Version, StateVersion)
+}
+
+func (fs *FileStore) checkWritable(state *State) error {
+	if state != nil && state.Version > StateVersion {
+		return &NewerStateError{Path: fs.stateFile, Version: state.Version}
+	}
+	return nil
 }
 
 // lockPath is the advisory-lock file guarding read-modify-write of state.json.
@@ -135,6 +163,11 @@ func (fs *FileStore) MutateState(fn func(*State) (changed bool, err error)) erro
 	if err != nil {
 		return err
 	}
+	// Refuse before running fn, so a newer state file is never even
+	// partially acted on by a binary that cannot write it back.
+	if err := fs.checkWritable(state); err != nil {
+		return err
+	}
 
 	changed, err := fn(state)
 	if err != nil {
@@ -149,6 +182,9 @@ func (fs *FileStore) MutateState(fn func(*State) (changed bool, err error)) erro
 
 // SaveState saves the state to disk atomically.
 func (fs *FileStore) SaveState(state *State) error {
+	if err := fs.checkWritable(state); err != nil {
+		return err
+	}
 	if err := fs.EnsureDir(); err != nil {
 		return err
 	}

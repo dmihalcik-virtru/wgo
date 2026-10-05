@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "repos": {
+    "/Users/dev/src/wgo": {
+      "remote_url": "https://github.com/virtru/wgo.git",
+      "last_seen": "2026-09-20T10:00:00Z"
+    }
+  },
+  "annotations": {
+    "/Users/dev/src/wgo:WGO-134": {
+      "purpose": "agent heartbeat",
+      "created_at": "2026-09-20T10:00:00Z",
+      "updated_at": "2026-09-20T10:00:00Z"
+    }
+  },
+  "efforts": {},
+  "agent_sessions": {
+    "/Users/dev/src/wgo": {
+      "tool": "claude",
+      "worktree_path": "/Users/dev/src/wgo",
+      "branch": "WGO-134",
+      "start_time": "2026-09-20T10:00:00Z",
+      "last_activity": "2026-09-20T10:05:00Z",
+      "pid": 4242
+    },
+    "/Users/dev/worktrees/wgo-gh-9": {
+      "tool": "codex",
+      "worktree_path": "/Users/dev/worktrees/wgo-gh-9",
+      "branch": "gh-9-stacked-prs",
+      "start_time": "2026-09-20T11:00:00Z",
+      "last_activity": "2026-09-20T11:30:00Z"
+    }
+  }
+}

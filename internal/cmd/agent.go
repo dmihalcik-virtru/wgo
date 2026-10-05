@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/jj"
+	"github.com/virtru/wgo/internal/proc"
 	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
 )
@@ -23,6 +24,17 @@ const (
 	// heartbeat; once an agent stops running wgo, its session expires.
 	agentStaleAfter = 10 * time.Minute
 )
+
+// agentMaxAge bounds how long a session without a verifiable process is kept
+// after its last activity.
+const agentMaxAge = 24 * time.Hour
+
+// procInspector verifies recorded agent processes; tests substitute a fake.
+var procInspector proc.Inspector = proc.System()
+
+func agentPolicy() store.AgentPolicy {
+	return store.AgentPolicy{Window: agentStaleAfter, MaxAge: agentMaxAge, Procs: procInspector}
+}
 
 // agentCmd is the parent for agent-session tracking.
 var agentCmd = &cobra.Command{
@@ -108,9 +120,13 @@ func runAgentStart(name string) error {
 		return err
 	}
 	if err := s.MutateState(func(state *store.State) (bool, error) {
-		state.PruneStaleAgentSessions(agentStaleAfter)
-		state.UpsertAgentSession(wsRoot, name, branch, os.Getppid())
-		return true, nil
+		now := time.Now()
+		state.PruneAgentSessions(now, agentPolicy())
+		_, err := state.UpsertAgentSession(store.AgentSession{
+			ID: store.NewAgentSessionID(name), Tool: name, WorktreePath: wsRoot,
+			Branch: branch, Source: store.SourceExplicit,
+		}, now)
+		return err == nil, err
 	}); err != nil {
 		return err
 	}
@@ -129,12 +145,10 @@ func runAgentStop() error {
 	}
 	hadSession := false
 	if err := s.MutateState(func(state *store.State) (bool, error) {
-		if state.GetAgentSession(wsRoot) == nil {
-			return false, nil
+		for _, sess := range state.AgentSessionsIn(wsRoot) {
+			hadSession = state.RemoveAgentSession(sess.ID) || hadSession
 		}
-		state.RemoveAgentSession(wsRoot)
-		hadSession = true
-		return true, nil
+		return hadSession, nil
 	}); err != nil {
 		return err
 	}
@@ -155,7 +169,7 @@ func runAgentStatus() error {
 	if err != nil {
 		return err
 	}
-	active := state.ActiveAgentSessions(agentStaleAfter)
+	active := state.ObserveAgentSessions(time.Now(), agentPolicy())
 	if len(active) == 0 {
 		fmt.Println("No active agent sessions.")
 		return nil
@@ -164,14 +178,9 @@ func runAgentStatus() error {
 	// Mark the current workspace when it is a jj repo (best-effort).
 	current, _ := workspaceRoot()
 
-	roots := make([]string, 0, len(active))
-	for root := range active {
-		roots = append(roots, root)
-	}
-	sort.Strings(roots)
-
-	for _, root := range roots {
-		sess := active[root]
+	sort.SliceStable(active, func(i, j int) bool { return active[i].WorktreePath < active[j].WorktreePath })
+	for _, sess := range active {
+		root := sess.WorktreePath
 		marker := ""
 		if root == current {
 			marker = " (current)"
@@ -218,15 +227,19 @@ func heartbeatAgent(wsRoot, branch string) {
 		// Opportunistically reap orphaned sessions while we hold the lock, so
 		// state.json doesn't grow unbounded from deleted worktrees or agents
 		// that never called stop.
-		pruned := state.PruneStaleAgentSessions(agentStaleAfter)
-		if existing := state.GetAgentSession(wsRoot); existing != nil &&
-			existing.Tool == name && time.Since(existing.LastActivity) < heartbeatThrottle {
+		now := time.Now()
+		pruned := state.PruneAgentSessions(now, agentPolicy())
+		id := store.InferredAgentSessionID(name, wsRoot)
+		if existing := state.GetAgentSession(id); existing != nil &&
+			now.Sub(existing.LastActivity) < heartbeatThrottle {
 			// Throttled heartbeat: skip the session write, but still persist if
 			// this pass reaped stale sessions.
 			return pruned > 0, nil
 		}
-		state.UpsertAgentSession(wsRoot, name, branch, os.Getppid())
-		return true, nil
+		_, err := state.UpsertAgentSession(store.AgentSession{
+			ID: id, Tool: name, WorktreePath: wsRoot, Branch: branch, Source: store.SourceInferred,
+		}, now)
+		return err == nil, err
 	})
 	if err != nil {
 		debugf("agent heartbeat: %v", err)
@@ -248,9 +261,10 @@ func resolveAgent(wsRoot string) *models.AgentRef {
 		debugf("resolve agent: %v", err)
 		return nil
 	}
-	sess := state.GetAgentSession(wsRoot)
-	if sess == nil || time.Since(sess.LastActivity) > agentStaleAfter {
-		return nil
+	for _, o := range state.ObserveAgentSessions(time.Now(), agentPolicy()) {
+		if o.WorktreePath == wsRoot {
+			return &models.AgentRef{Name: o.Tool, Since: o.StartTime}
+		}
 	}
-	return &models.AgentRef{Name: sess.Tool, Since: sess.StartTime}
+	return nil
 }

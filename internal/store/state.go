@@ -6,8 +6,10 @@ import (
 )
 
 // StateVersion is the current schema version. Bumped to 2 for the jj
-// migration; older state files (Version <= 1) are refused on load.
-const StateVersion = 2
+// migration; older state files (Version <= 1) are refused on load. Bumped to 3
+// when agent sessions became keyed by session ID instead of workspace root;
+// version-2 files are migrated on load (see migrateAgentSessionsV2).
+const StateVersion = 3
 
 // State represents the persistent state for wgo.
 //
@@ -16,10 +18,12 @@ const StateVersion = 2
 // single source of truth for stack topology; wgo annotations only carry
 // metadata that isn't derivable from jj (Purpose, SpecPath, SpecState).
 type State struct {
-	Version       int                     `json:"version"`
-	Repos         map[string]RepoInfo     `json:"repos"`
-	Annotations   map[string]Annotation   `json:"annotations"`
-	Efforts       map[string]Effort       `json:"efforts"`
+	Version     int                   `json:"version"`
+	Repos       map[string]RepoInfo   `json:"repos"`
+	Annotations map[string]Annotation `json:"annotations"`
+	Efforts     map[string]Effort     `json:"efforts"`
+	// AgentSessions is keyed by AgentSession.ID (version 3). Version 2 keyed
+	// it by workspace root.
 	AgentSessions map[string]AgentSession `json:"agent_sessions"`
 }
 
@@ -47,87 +51,6 @@ type Effort struct {
 	Branches    []string  `json:"branches"` // Keys in format "repo:branch"
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
-}
-
-// AgentSession represents an active AI agent session. Sessions are keyed by
-// workspace root (one agent per workspace); staleness is determined by
-// LastActivity, which the hot-path heartbeat refreshes while an agent is live.
-type AgentSession struct {
-	Tool         string    `json:"tool"` // e.g., "claude", "codex", "cursor"
-	WorktreePath string    `json:"worktree_path"`
-	Branch       string    `json:"branch"`
-	StartTime    time.Time `json:"start_time"`
-	LastActivity time.Time `json:"last_activity"`
-	// PID is the recording process's parent PID, informational only; staleness
-	// (LastActivity) is the authoritative liveness signal.
-	PID int `json:"pid,omitempty"`
-}
-
-// UpsertAgentSession records or refreshes the agent session for a workspace
-// root. An existing session's StartTime is preserved (so "since" is stable) and
-// LastActivity is bumped to now; a new session stamps both to now.
-//
-// An empty tool or workspace root is rejected (no-op): callers validate these,
-// so this is defense-in-depth against writing a nameless or unkeyed session.
-func (s *State) UpsertAgentSession(wsRoot, tool, branch string, pid int) {
-	if tool == "" || wsRoot == "" {
-		return
-	}
-	now := time.Now()
-	sess := AgentSession{
-		Tool:         tool,
-		WorktreePath: wsRoot,
-		Branch:       branch,
-		StartTime:    now,
-		LastActivity: now,
-		PID:          pid,
-	}
-	if existing, ok := s.AgentSessions[wsRoot]; ok && !existing.StartTime.IsZero() {
-		sess.StartTime = existing.StartTime
-	}
-	s.AgentSessions[wsRoot] = sess
-}
-
-// GetAgentSession retrieves the agent session for a workspace root.
-func (s *State) GetAgentSession(wsRoot string) *AgentSession {
-	if sess, ok := s.AgentSessions[wsRoot]; ok {
-		return &sess
-	}
-	return nil
-}
-
-// RemoveAgentSession removes the agent session for a workspace root.
-func (s *State) RemoveAgentSession(wsRoot string) {
-	delete(s.AgentSessions, wsRoot)
-}
-
-// ActiveAgentSessions returns the agent sessions whose LastActivity is within
-// window (i.e. non-stale), keyed by workspace root.
-func (s *State) ActiveAgentSessions(window time.Duration) map[string]AgentSession {
-	active := make(map[string]AgentSession)
-	for root, sess := range s.AgentSessions {
-		if time.Since(sess.LastActivity) <= window {
-			active[root] = sess
-		}
-	}
-	return active
-}
-
-// PruneStaleAgentSessions deletes sessions whose LastActivity is older than
-// window and returns how many were removed. Sessions are only ever filtered on
-// read, so without this they accumulate forever (deleted worktrees, agents that
-// never call stop); callers holding the state lock invoke it to garbage-collect.
-// The strict > matches resolveAgent's staleness test, so a boundary session
-// ActiveAgentSessions still reports (<= window) is never pruned.
-func (s *State) PruneStaleAgentSessions(window time.Duration) int {
-	removed := 0
-	for root, sess := range s.AgentSessions {
-		if time.Since(sess.LastActivity) > window {
-			delete(s.AgentSessions, root)
-			removed++
-		}
-	}
-	return removed
 }
 
 // NewState creates a new empty State at the current schema version.
