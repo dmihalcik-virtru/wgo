@@ -79,4 +79,10 @@ table.live tbody tr:focus { outline: 2px solid var(--accent); outline-offset: -2
 .loading { padding: 24px; color: var(--ink2); }
 .actions { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
 .actions button[disabled] { opacity: .5; cursor: not-allowed; }
+.act-result { margin-top: 4px; padding: 4px 8px; border: 1px solid var(--s-good); border-radius: 6px; background: var(--plane); font-size: 12px; overflow-wrap: anywhere; }
+.act-result.err { border-color: var(--s-critical); border-style: dotted; }
+.act-result.err::before { content: "⚠ "; color: var(--s-critical); }
+.act-result .meta { color: var(--ink2); }
+.copyrow { display: flex; gap: 6px; align-items: center; margin-top: 3px; }
+.copyrow code { flex: 1; min-width: 0; padding: 1px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); white-space: pre-wrap; word-break: break-all; user-select: all; }
 @media (max-width: 1000px) { .lv-main { flex-direction: column; } .efforts { width: auto; max-height: 35%; border-right: 0; border-bottom: 1px solid var(--border); } }

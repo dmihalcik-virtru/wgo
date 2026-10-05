@@ -143,4 +143,38 @@ test("warnings include review-run errors and an unavailable-links note", () => {
   assert.deepEqual(L.warnings(null, null, null, ""), []);
 });
 
+test("action buttons need the page token; Resume only when configured", () => {
+  assert.deepEqual(L.actionButtons(null), []);
+  assert.deepEqual(L.actionButtons({ action_api: "/api/action" }), [], "no token: read-only");
+  assert.deepEqual(L.actionButtons({ token: "t" }), [], "no action endpoint");
+  const kinds = (b) => L.actionButtons(b).map((a) => a.kind);
+  assert.deepEqual(kinds({ token: "t", action_api: "/api/action" }), ["terminal", "editor", "reveal", "plan", "spec"]);
+  assert.deepEqual(kinds({ token: "t", action_api: "/api/action", resume: "claude" }), ["terminal", "resume", "editor", "reveal", "plan", "spec"]);
+  assert.equal(L.actionButtons({ token: "t", action_api: "/a", resume: "claude" })[1].label, "Resume claude");
+  assert.equal(L.actionButtons({ token: "t", action_api: "/a" })[0].label, "Open tab");
+});
+
+test("action results show the method, fallbacks and what to copy", () => {
+  const ok = L.actionResult({ launched: true, method: "ghostty", message: "Opened a new Ghostty tab." });
+  assert.deepEqual(ok, { ok: true, text: "Opened a new Ghostty tab.", copy: "", tried: "" });
+  const fell = L.actionResult({ launched: true, method: "terminal_command", message: "Opened with wezterm.", fallbacks: ["ghostty: not installed"] });
+  assert.equal(fell.tried, "Tried first: ghostty: not installed");
+  const copy = L.actionResult({ launched: false, method: "copy", message: "No terminal could be opened.", copy: "cd '/tmp/it'\\''s'", fallbacks: ["ghostty: not installed", "terminal_command: not found"] });
+  assert.equal(copy.ok, false);
+  assert.equal(copy.copy, "cd '/tmp/it'\\''s'");
+  assert.equal(copy.tried, "Tried first: ghostty: not installed; terminal_command: not found");
+  assert.equal(L.actionResult({ launched: true, method: "code" }).text, "Opened with code.");
+  assert.equal(L.actionResult({}).text, "Nothing could be launched.");
+  assert.equal(L.actionResult(null).ok, false);
+});
+
+test("action errors prefer the server's explanation", () => {
+  assert.equal(L.actionError({ status: 404, detail: "workspace ws-1 is no longer discovered; refresh" }), "workspace ws-1 is no longer discovered; refresh (HTTP 404)");
+  assert.match(L.actionError({ status: 403 }), /refused the request \(HTTP 403\); reload the page/);
+  assert.equal(L.actionError({ status: 500 }), "wgo dash returned HTTP 500");
+  assert.equal(L.actionError(new TypeError("Failed to fetch")), "Cannot reach wgo dash");
+  assert.equal(L.actionError({ unreadable: true }), "wgo dash returned an unreadable response");
+  assert.match(L.ackText({ ok: true, generation: 7 }), /^Marked generation 7 seen/);
+});
+
 console.log("ok " + n);

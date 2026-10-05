@@ -314,6 +314,42 @@
     return out;
   };
 
+  // actionButtons lists the workspace action buttons the page offers: none
+  // without a page token (a read-only server), and Resume only when wgo dash
+  // has an allowlisted resume tool configured.
+  L.actionButtons = function (boot) {
+    if (!boot || !boot.token || !boot.action_api) return [];
+    var out = [{ kind: "terminal", label: "Open tab", title: "Open a terminal tab in this workspace" }];
+    if (boot.resume) out.push({ kind: "resume", label: "Resume " + boot.resume, title: "Open a terminal tab here and resume the last " + boot.resume + " session" });
+    out.push({ kind: "editor", label: "Editor", title: "Open this workspace in your editor" });
+    out.push({ kind: "reveal", label: "Finder", title: "Reveal this workspace in Finder" });
+    out.push({ kind: "plan", label: "Plan", title: "Open this bookmark's entry in ~/.wgo/plan.md" });
+    out.push({ kind: "spec", label: "Spec", title: "Open spec/<ticket>.md for this bookmark's ticket" });
+    return out;
+  };
+  // actionResult turns an action response into what the page shows: ok is
+  // false when nothing was launched (only something to copy), text is the
+  // launcher's account, copy is the command or path to copy, and tried
+  // names the methods that failed first.
+  L.actionResult = function (res) {
+    res = res || {};
+    var ok = !!res.launched;
+    var text = res.message || (ok ? "Opened with " + (res.method || "the launcher") + "." : "Nothing could be launched.");
+    var fb = res.fallbacks || [];
+    return { ok: ok, text: text, copy: res.copy || "", tried: fb.length ? "Tried first: " + fb.join("; ") : "" };
+  };
+  // actionError names why an action or Mark seen request failed: the
+  // server's own explanation when it sent one, otherwise the cause.
+  L.actionError = function (e) {
+    if (e && e.detail) return e.detail + (e.status ? " (HTTP " + e.status + ")" : "");
+    if (e && e.status === 403) return "wgo dash refused the request (HTTP 403); reload the page, since each wgo dash launch issues a new token";
+    return L.fetchFailure(e);
+  };
+  // ackText reports a Mark seen outcome.
+  L.ackText = function (res) {
+    return "Marked generation " + ((res && res.generation) || "?") + " seen; changes are now counted from here (in every open tab).";
+  };
+
   if (typeof window !== "undefined") window.WGOLive = L;
   if (typeof module !== "undefined" && module.exports) module.exports = L;
   if (typeof document === "undefined") return;
@@ -367,6 +403,7 @@
     payload: null, snap: null, idx: L.index(null), rows: [], links: null, linksError: "",
     selection: new Set(), filter: null, vis: null, hover: null,
     view: "graph", fetchedAt: 0, error: "", focusMissing: "",
+    busy: new Set(), actionResult: null, ackResult: null,
     subs: [],
     subscribe: function (fn) { this.subs.push(fn); },
     notify: function (reason) { for (var i = 0; i < this.subs.length; i++) this.subs[i](reason); },
@@ -583,8 +620,27 @@
       }
     }
     var acts = el("div", "actions", null, sinceEl);
+    var gen = store.payload && store.payload.generation;
     var mark = button(acts, "Mark seen", null, null);
-    mark.disabled = true; mark.title = "Marking a snapshot seen arrives with browser actions in a later wgo dash release.";
+    if (!BOOT.token || !BOOT.ack_api) {
+      mark.disabled = true; mark.title = "This wgo dash server does not accept Mark seen.";
+    } else {
+      mark.title = "Count changes from this snapshot (generation " + gen + ") from now on. Only this button moves the baseline; loading or reloading the page never does.";
+      mark.disabled = store.busy.has("ack") || !gen;
+      mark.addEventListener("click", function () {
+        store.busy.add("ack"); store.ackResult = null; renderSince();
+        postJSON(BOOT.ack_api, { generation: gen }).then(function (res) {
+          store.ackResult = { ok: true, text: L.ackText(res) };
+          return getJSON(API).then(applyPayload);
+        }, function (e) {
+          store.ackResult = { ok: false, text: "Mark seen failed: " + L.actionError(e) };
+        }).then(function () { store.busy.delete("ack"); renderSince(); }, function (e) {
+          store.busy.delete("ack"); renderSince();
+          if (window.console) console.error("wgo dash:", e);
+        });
+      });
+    }
+    if (store.ackResult) el("div", store.ackResult.ok ? "act-result" : "act-result err", store.ackResult.text, sinceEl).setAttribute("role", "status");
   }
 
   // ---------- small multiples ----------
@@ -817,9 +873,7 @@
         kv(detailBox, "Visible changes", (w.changes || []).length + (w.changes_truncated ? " (+" + w.changes_truncated + " beyond the window)" : ""));
         kv(detailBox, "Last activity", w.last_activity ? fmtTime(w.last_activity) : "");
         if (w.error) el("div", "err", "jj unavailable: " + w.error, detailBox);
-        var acts = el("div", "actions", null, detailBox);
-        var ob = button(acts, "Open tab", null, null); ob.disabled = true;
-        ob.title = "Opening a terminal tab arrives with browser actions in a later wgo dash release.";
+        renderActions(detailBox, n.id);
       } else if (n.bookmark) {
         kv(detailBox, "Repository", n.bookmark.repo); kv(detailBox, "PR lookup", L.bookmarkPRText(n.bookmark));
         kv(detailBox, "Fetched", n.bookmark.pr_fetched_at ? fmtTime(n.bookmark.pr_fetched_at) : "never");
@@ -1169,6 +1223,74 @@
   if (window.matchMedia) {
     var mq = matchMedia("(prefers-color-scheme: dark)");
     if (mq.addEventListener) mq.addEventListener("change", function () { readTheme(); buildLegend(); renderMultiples(); dirty = true; });
+  }
+
+  // ---------- actions ----------
+  // postJSON posts body with the page token in a header (never in the URL).
+  // Failures carry e.status and e.detail (the server's error message) for
+  // L.actionError, or e.unreadable / a network error for L.fetchFailure.
+  function postJSON(url, body) {
+    return fetch(url, {
+      method: "POST", cache: "no-store", credentials: "same-origin", referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json", "X-Wgo-Token": BOOT.token || "" },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok || !j || j.ok === false) { var e = new Error((j && j.error) || "HTTP " + r.status); e.status = r.status; e.detail = j && j.error; throw e; }
+        return j;
+      }, function (e) {
+        if (!r.ok) { var x = new Error("HTTP " + r.status); x.status = r.status; throw x; }
+        e.unreadable = true; throw e;
+      });
+    });
+  }
+  function copyBox(parent, text) {
+    var row = el("div", "copyrow", null, parent);
+    var code = el("code", null, text, row);
+    var b = button(row, "Copy", null, function () {
+      var done = function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1500); };
+      var manual = function () {
+        // No clipboard access: select the text so Cmd-C copies it.
+        var range = document.createRange(); range.selectNodeContents(code);
+        var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+        b.textContent = "Press ⌘C";
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, manual); else manual();
+    }, "Copy " + text);
+  }
+  function renderActions(parent, wsId) {
+    var specs = L.actionButtons(BOOT);
+    var acts = el("div", "actions", null, parent);
+    if (!specs.length) {
+      var ob = button(acts, "Open tab", null, null); ob.disabled = true;
+      ob.title = "This wgo dash server is read-only.";
+      return;
+    }
+    specs.forEach(function (a) {
+      var key = a.kind + "\n" + wsId;
+      var b = button(acts, a.label, null, function () { runAction(a, wsId); }, a.label + " for this workspace");
+      b.title = a.title;
+      b.disabled = store.busy.has(key);
+    });
+    var r = store.actionResult;
+    if (!r || r.wsId !== wsId) return;
+    var box = el("div", r.ok ? "act-result" : "act-result err", null, parent);
+    box.setAttribute("role", "status");
+    el("div", null, r.label + ": " + r.text, box);
+    if (r.tried) el("div", "meta", r.tried, box);
+    if (r.copy) copyBox(box, r.copy);
+  }
+  function runAction(a, wsId) {
+    var key = a.kind + "\n" + wsId;
+    store.busy.add(key);
+    store.actionResult = { wsId: wsId, label: a.label, ok: true, text: "working…" };
+    renderDetail();
+    postJSON(BOOT.action_api, { kind: a.kind, workspace_id: wsId }).then(function (res) {
+      var v = L.actionResult(res);
+      store.actionResult = { wsId: wsId, label: a.label, ok: v.ok, text: v.text, copy: v.copy, tried: v.tried };
+    }, function (e) {
+      store.actionResult = { wsId: wsId, label: a.label, ok: false, text: L.actionError(e) };
+    }).then(function () { store.busy.delete(key); renderDetail(); });
   }
 
   // ---------- polling ----------
