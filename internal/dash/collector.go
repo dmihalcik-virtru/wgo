@@ -503,6 +503,22 @@ func (c *Collector) Discovered() (map[string]Target, error) {
 	return out, nil
 }
 
+// Resolve implements Resolver from discovery alone, without a snapshot: an
+// ID that is not discovered now is ErrUnknownWorkspace. `wgo open` uses it.
+func (c *Collector) Resolve(id string) (Target, error) {
+	if !ValidWorkspaceID(id) {
+		return Target{}, ErrUnknownWorkspace
+	}
+	found, err := c.Discovered()
+	if err != nil {
+		return Target{}, err
+	}
+	if t, ok := found[id]; ok {
+		return t, nil
+	}
+	return Target{}, ErrUnknownWorkspace
+}
+
 // Target is a resolved workspace.
 type Target struct {
 	ID        string
