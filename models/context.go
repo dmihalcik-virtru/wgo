@@ -65,10 +65,18 @@ type RigRef struct {
 	Pin string `json:"pin,omitempty"`
 }
 
-// AgentRef is the active AI agent session for the current workspace.
+// AgentRef is the most recently active AI agent session for the current
+// workspace.
 type AgentRef struct {
-	Name  string    `json:"name"`  // e.g. "claude"
-	Since time.Time `json:"since"` // when the session started
+	Name    string    `json:"name"`              // e.g. "claude"
+	Since   time.Time `json:"since"`             // when the session started
+	Session string    `json:"session,omitempty"` // session ID
+	Status  string    `json:"status,omitempty"`  // working, waiting, idle or unknown
+	// Uncertain is set when the session has gone quiet and has no process to
+	// verify, so it may have ended without saying so.
+	Uncertain bool `json:"uncertain,omitempty"`
+	// Others counts further visible sessions in the same workspace.
+	Others int `json:"others,omitempty"`
 }
 
 // SpecRef references the spec file associated with the current ticket branch.

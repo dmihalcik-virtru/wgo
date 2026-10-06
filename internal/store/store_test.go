@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -154,22 +155,101 @@ func TestLoadStateCorruptJSON(t *testing.T) {
 	assert.Contains(t, err.Error(), "parse state file")
 }
 
-// TestLoadStateAcceptsCurrentAndNewerVersion: the current version loads, and a
-// future version is not rejected by the old-version guard (which only fires
-// below StateVersion).
-func TestLoadStateAcceptsCurrentAndNewerVersion(t *testing.T) {
+// TestLoadStateAcceptsCurrentVersion: the current version loads with its maps
+// initialized.
+func TestLoadStateAcceptsCurrentVersion(t *testing.T) {
 	dir := t.TempDir()
 	s := NewWithDir(dir)
 	require.NoError(t, s.EnsureDir())
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "state.json"),
+		fmt.Appendf(nil, `{"version":%d}`, StateVersion), 0o644))
+	state, err := s.LoadState()
+	require.NoError(t, err)
+	assert.NotNil(t, state.AgentSessions, "maps should be initialized on load")
+}
 
-	for _, v := range []int{StateVersion, StateVersion + 1} {
-		require.NoError(t, os.WriteFile(
-			filepath.Join(dir, "state.json"),
-			fmt.Appendf(nil, `{"version":%d}`, v), 0o644))
-		state, err := s.LoadState()
-		require.NoError(t, err, "version %d should load", v)
-		assert.NotNil(t, state.AgentSessions, "maps should be initialized on load")
+// TestLoadStateMigratesV2: workspace-keyed version-2 agent sessions become
+// distinct ID-keyed sessions, other state survives, and the next save writes
+// version 3.
+func TestLoadStateMigratesV2(t *testing.T) {
+	dir := t.TempDir()
+	s := NewWithDir(dir)
+	fixture, err := os.ReadFile(filepath.Join("testdata", "state-v2.json"))
+	require.NoError(t, err)
+	require.NoError(t, s.EnsureDir())
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), fixture, 0o644))
+
+	state, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Equal(t, StateVersion, state.Version)
+	require.Len(t, state.AgentSessions, 2, "both v2 entries survive as distinct sessions")
+
+	byPath := map[string]AgentSession{}
+	for id, sess := range state.AgentSessions {
+		assert.Equal(t, id, sess.ID, "sessions are keyed by their ID")
+		assert.NotContains(t, id, "/", "IDs are no longer workspace paths")
+		byPath[sess.WorktreePath] = sess
 	}
+	claude := byPath["/Users/dev/src/wgo"]
+	assert.Equal(t, "claude", claude.Tool)
+	assert.Equal(t, "WGO-134", claude.Branch)
+	assert.True(t, strings.HasPrefix(claude.ID, "claude-"))
+	assert.Equal(t, SourceExplicit, claude.Source)
+	assert.Equal(t, AgentUnknown, claude.Status)
+	assert.Zero(t, claude.PID, "a v2 PID was the transient shell and cannot be verified")
+	codex := byPath["/Users/dev/worktrees/wgo-gh-9"]
+	assert.Equal(t, "codex", codex.Tool)
+	assert.True(t, strings.HasPrefix(codex.ID, "codex-"))
+	assert.NotNil(t, state.GetAnnotation("/Users/dev/src/wgo", "WGO-134"), "non-agent state survives")
+
+	// Migration is deterministic, so reloading gives the same IDs.
+	again, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Equal(t, state.AgentSessions, again.AgentSessions)
+
+	require.NoError(t, s.SaveState(state))
+	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"version": 3`)
+	reloaded, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Equal(t, state.AgentSessions, reloaded.AgentSessions)
+}
+
+// TestNewerStateIsReadOnly: state from a newer wgo still loads for reading,
+// but neither SaveState nor MutateState will write it, and the error tells the
+// user to upgrade.
+func TestNewerStateIsReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	s := NewWithDir(dir)
+	require.NoError(t, s.EnsureDir())
+	path := filepath.Join(dir, "state.json")
+	body := fmt.Appendf(nil, `{"version":%d,"agent_sessions":{"claude-abc123":{"id":"claude-abc123","tool":"claude","worktree_path":"/ws"}}}`, StateVersion+1)
+	require.NoError(t, os.WriteFile(path, body, 0o644))
+
+	state, err := s.LoadState()
+	require.NoError(t, err, "reads of newer state still work")
+	assert.Equal(t, StateVersion+1, state.Version)
+	assert.NotNil(t, state.GetAgentSession("claude-abc123"))
+
+	err = s.SaveState(state)
+	var newer *NewerStateError
+	require.ErrorAs(t, err, &newer)
+	assert.Contains(t, err.Error(), "Upgrade wgo")
+
+	called := false
+	err = s.MutateState(func(st *State) (bool, error) {
+		called = true
+		st.AddRepo("/a", "")
+		return true, nil
+	})
+	require.ErrorAs(t, err, &newer)
+	assert.False(t, called, "the mutation must not run against state it cannot write")
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, body, after, "the newer file is untouched")
 }
 
 // TestMutateStateErrorDoesNotPersist: when the callback returns an error, the

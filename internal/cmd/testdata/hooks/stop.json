@@ -1,0 +1,8 @@
+{
+  "session_id": "3f0e8c7a-1b2c-4d5e-8f90-123456789abc",
+  "transcript_path": "/Users/dev/.claude/projects/-ws/3f0e8c7a-1b2c-4d5e-8f90-123456789abc.jsonl",
+  "cwd": "/ws",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false
+}
