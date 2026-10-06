@@ -1,12 +1,14 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -300,4 +302,92 @@ func TestCreatePlanSymlink(t *testing.T) {
 	info, err := os.Lstat(symlinkPath)
 	require.NoError(t, err, "failed to stat symlink")
 	assert.NotEqual(t, os.FileMode(0), info.Mode()&os.ModeSymlink, "expected symlink, got regular file")
+}
+
+// TestAgentSessionsStoredAsArray: version 3 writes agent sessions as an array
+// sorted by ID, and the save/load round trip is lossless.
+func TestAgentSessionsStoredAsArray(t *testing.T) {
+	dir := t.TempDir()
+	s := NewWithDir(dir)
+	require.NoError(t, s.EnsureDir())
+	state := NewState()
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, id := range []string{"claude-b", "claude-a"} {
+		_, err := state.UpsertAgentSession(AgentSession{
+			ID: id, Tool: "claude", Source: SourceHook, WorktreePath: "/ws/" + id, Branch: "main",
+		}, now)
+		require.NoError(t, err)
+	}
+	require.NoError(t, s.SaveState(state))
+
+	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	require.NoError(t, err)
+	var onDisk struct {
+		AgentSessions []AgentSession `json:"agent_sessions"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &onDisk), "agent_sessions is a JSON array")
+	require.Len(t, onDisk.AgentSessions, 2)
+	assert.Equal(t, "claude-a", onDisk.AgentSessions[0].ID, "entries are sorted by ID")
+	assert.Equal(t, "claude-b", onDisk.AgentSessions[1].ID)
+
+	loaded, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Equal(t, state.AgentSessions, loaded.AgentSessions)
+}
+
+// TestPreV3DecodeFailsOnArray: a pre-v3 binary decodes agent_sessions into a
+// map, so it cannot parse a v3 file and so never rewrites one. This is what
+// keeps an old wgo from stripping v3 session fields.
+func TestPreV3DecodeFailsOnArray(t *testing.T) {
+	state := NewState()
+	_, err := state.UpsertAgentSession(AgentSession{
+		ID: "claude-a", Tool: "claude", Source: SourceHook, WorktreePath: "/ws",
+	}, time.Now())
+	require.NoError(t, err)
+	raw, err := json.Marshal(state)
+	require.NoError(t, err)
+
+	var v2 struct {
+		Version       int                        `json:"version"`
+		AgentSessions map[string]json.RawMessage `json:"agent_sessions"`
+	}
+	err = json.Unmarshal(raw, &v2)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot unmarshal array")
+}
+
+// TestLoadStateReadsObjectAndArray: both the v2-style object form (also what a
+// pre-v3 binary wrote back before this format existed) and the v3 array load.
+// Duplicate or missing IDs in an array are kept and renamed, not dropped.
+func TestLoadStateReadsObjectAndArray(t *testing.T) {
+	tests := []struct {
+		name     string
+		sessions string
+		wantLen  int
+	}{
+		{"object", `{"claude-a":{"id":"claude-a","tool":"claude","worktree_path":"/ws"}}`, 1},
+		{"array", `[{"id":"claude-a","tool":"claude","worktree_path":"/ws"}]`, 1},
+		{"array with duplicate ID", `[{"id":"claude-a","tool":"claude","worktree_path":"/a"},{"id":"claude-a","tool":"claude","worktree_path":"/b"}]`, 2},
+		{"array with missing ID", `[{"tool":"claude","worktree_path":"/a"},{"tool":"claude","worktree_path":"/b"}]`, 2},
+		{"null", `null`, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := NewWithDir(dir)
+			require.NoError(t, s.EnsureDir())
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"),
+				fmt.Appendf(nil, `{"version":%d,"agent_sessions":%s}`, StateVersion, tt.sessions), 0o644))
+			state, err := s.LoadState()
+			require.NoError(t, err)
+			require.Len(t, state.AgentSessions, tt.wantLen)
+			paths := map[string]bool{}
+			for id, sess := range state.AgentSessions {
+				assert.Equal(t, id, sess.ID, "sessions are keyed by their ID")
+				assert.True(t, ValidAgentSessionID(id), "normalized ID %q is valid", id)
+				paths[sess.WorktreePath] = true
+			}
+			assert.Len(t, paths, tt.wantLen, "no session was lost to a key collision")
+		})
+	}
 }
