@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/virtru/wgo/internal/proc"
 	"github.com/virtru/wgo/internal/store"
 )
 
@@ -106,4 +108,87 @@ func TestHookActionFor(t *testing.T) {
 	assert.Equal(t, store.AgentWaiting, hookActionFor("Stop").status)
 	assert.True(t, hookActionFor("SessionEnd").remove)
 	assert.Equal(t, hookAction{}, hookActionFor("SomethingNew"))
+}
+
+// TestAgentHookResumedSessionFindsNewProcess: claude --resume keeps the
+// session ID but runs a new process. The next event records the new process,
+// so the session survives going quiet instead of being pruned (#61).
+func TestAgentHookResumedSessionFindsNewProcess(t *testing.T) {
+	e := newAgentEnv(t)
+	runHookFixture(t, "stop.json", "Stop")
+	require.Equal(t, fakeClaudePID, loadState(t).GetAgentSession(hookSessionID).PID)
+
+	// The original claude exits; a resumed one takes over under a new PID.
+	delete(e.procs, fakeClaudePID)
+	e.procs[201] = proc.Info{PID: 201, PPID: 1, Name: "claude", Start: 515151}
+	e.procs[fakeShellPID] = proc.Info{PID: fakeShellPID, PPID: 201, Name: "zsh", Start: 9}
+
+	e.advance(2 * time.Minute)
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	sess := loadState(t).GetAgentSession(hookSessionID)
+	require.NotNil(t, sess)
+	assert.Equal(t, 201, sess.PID)
+	assert.Equal(t, int64(515151), sess.ProcStart)
+
+	e.advance(agentStaleAfter + time.Hour)
+	startAgent(t, agentStartOpts{Tool: "codex", Session: "x"}) // prunes
+	require.NotNil(t, loadState(t).GetAgentSession(hookSessionID), "a quiet resumed session stays live")
+}
+
+// TestAgentHookAfterPruneRecreatesSession: a non-refresh event from a session
+// that was pruned while quiet re-creates it in its old workspace rather than
+// failing silently.
+func TestAgentHookAfterPruneRecreatesSession(t *testing.T) {
+	e := newAgentEnv(t)
+	e.noAgentProcess()
+	runHookFixture(t, "stop.json", "Stop")
+	e.advance(agentMaxAge + time.Hour) // past the max age: prunable
+
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	sess := loadState(t).GetAgentSession(hookSessionID)
+	require.NotNil(t, sess)
+	assert.Equal(t, "/ws", sess.WorktreePath)
+	assert.Equal(t, store.AgentWorking, sess.Status)
+	assert.Empty(t, e.warnings.String())
+}
+
+// TestAgentHookBookmark: a fresh lookup that finds no bookmark clears the
+// recorded one; a failed bookmark lookup keeps it.
+func TestAgentHookBookmark(t *testing.T) {
+	e := newAgentEnv(t)
+	runHookFixture(t, "stop.json", "Stop")
+	require.Equal(t, "feat", loadState(t).GetAgentSession(hookSessionID).Branch)
+
+	ws := e.workspaces["/ws"]
+	ws.Branch, ws.BranchUnknown = "", true
+	e.workspaces["/ws"] = ws
+	e.advance(time.Second)
+	runHookFixture(t, "stop.json", "Stop")
+	assert.Equal(t, "feat", loadState(t).GetAgentSession(hookSessionID).Branch, "a failed lookup is not \"no bookmark\"")
+
+	ws.BranchUnknown = false
+	e.workspaces["/ws"] = ws
+	e.advance(time.Second)
+	runHookFixture(t, "stop.json", "Stop")
+	assert.Empty(t, loadState(t).GetAgentSession(hookSessionID).Branch)
+}
+
+// TestAgentHookReportsStateProblems: a state file the hook cannot write is
+// reported on stderr (still exit 0); a cwd outside jj is skipped quietly.
+func TestAgentHookReportsStateProblems(t *testing.T) {
+	e := newAgentEnv(t)
+	home, _ := os.UserHomeDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".wgo"), 0o755))
+	path := filepath.Join(home, ".wgo", "state.json")
+	require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, `{"version":%d}`, store.StateVersion+1), 0o644))
+
+	runHookFixture(t, "stop.json", "Stop")
+	assert.Contains(t, e.warnings.String(), "Upgrade wgo")
+
+	require.NoError(t, os.Remove(path))
+	e.warnings.Reset()
+	agentStateWarned = false
+	require.NoError(t, runAgentHook(strings.NewReader(`{"session_id":"s1","cwd":"/nowhere"}`), "Stop", "claude"))
+	assert.Empty(t, e.warnings.String(), "outside a jj workspace is expected, not a warning")
+	assert.Nil(t, loadState(t).GetAgentSession("s1"))
 }

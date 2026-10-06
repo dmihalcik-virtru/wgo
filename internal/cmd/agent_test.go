@@ -61,6 +61,7 @@ type agentEnv struct {
 	procs      fakeProcs
 	workspaces map[string]workspaceInfo // dir -> workspace
 	cwd        string
+	warnings   *bytes.Buffer // what warnAgentState printed
 }
 
 // The fake process tree: a shell (300) under a claude process (200).
@@ -86,8 +87,12 @@ func newAgentEnv(t *testing.T) *agentEnv {
 			"/wt/feat":    {Root: "/wt/feat", Repo: "/ws", Branch: "feat"},
 			"/wt/other":   {Root: "/wt/other", Repo: "/ws", Branch: "other"},
 		},
-		cwd: "/ws",
+		cwd:      "/ws",
+		warnings: &bytes.Buffer{},
 	}
+	oldWarnOut := agentWarnOut
+	agentWarnOut, agentStateWarned = e.warnings, false
+	t.Setenv("WGO_DEBUG", "")
 	oldNow, oldProcs, oldPPID, oldLookup, oldRoot, oldCur := agentNow, procInspector, agentParentPID, lookupWorkspace, workspaceRoot, currentWorkspace
 	agentNow = func() time.Time { return e.now }
 	procInspector = e.procs
@@ -105,6 +110,7 @@ func newAgentEnv(t *testing.T) *agentEnv {
 	currentWorkspace = func() (workspaceInfo, error) { return lookupWorkspace(e.cwd) }
 	t.Cleanup(func() {
 		agentNow, procInspector, agentParentPID, lookupWorkspace, workspaceRoot, currentWorkspace = oldNow, oldProcs, oldPPID, oldLookup, oldRoot, oldCur
+		agentWarnOut, agentStateWarned = oldWarnOut, false
 	})
 	return e
 }
@@ -472,10 +478,19 @@ func TestNewerStateRefusesWrites(t *testing.T) {
 	assert.Contains(t, err.Error(), "Upgrade wgo")
 
 	t.Setenv("CLAUDECODE", "1")
-	heartbeatAgent("/ws", "/ws", "feat") // logs, never fails the hot path
+	e := heartbeatEnvWarnings(t)
+	heartbeatAgent("/ws", "/ws", "feat") // never fails the hot path...
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, body, after)
+	assert.Contains(t, e.String(), "Upgrade wgo", "...but says why tracking stopped")
+}
+
+func heartbeatEnvWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	b, ok := agentWarnOut.(*bytes.Buffer)
+	require.True(t, ok, "newAgentEnv captures warnings")
+	return b
 }
 
 // TestStatuslineHeartbeatRespectsExplicitSession: after an explicit
@@ -498,4 +513,119 @@ func TestStatuslineHeartbeatRespectsExplicitSession(t *testing.T) {
 	assert.Equal(t, store.AgentWaiting, sess.Status, "the statusline never clobbers the explicit status")
 	assert.Equal(t, store.SourceExplicit, sess.Source)
 	assert.Equal(t, e.now, sess.LastActivity.UTC(), "but it does refresh activity")
+}
+
+// TestUnverifiableProcessIsUncertainNotGone: when the process table cannot be
+// read (sandbox, hidepid, another machine), a quiet session with a recorded
+// process is shown as uncertain rather than deleted.
+func TestUnverifiableProcessIsUncertainNotGone(t *testing.T) {
+	e := newAgentEnv(t)
+	startAgent(t, agentStartOpts{Tool: "claude", Session: "a"})
+	require.True(t, loadState(t).GetAgentSession("a").HasProcess())
+
+	procInspector = deniedProcs{}
+	e.advance(agentStaleAfter + time.Hour)
+	startAgent(t, agentStartOpts{Tool: "codex", Session: "b"}) // prunes
+	require.NotNil(t, loadState(t).GetAgentSession("a"), "an unverifiable process is not proof it exited")
+	assert.Contains(t, agentStatusOut(t), "uncertain")
+}
+
+// deniedProcs fails every lookup without saying the process is gone.
+type deniedProcs struct{}
+
+func (deniedProcs) Lookup(int) (proc.Info, error) {
+	return proc.Info{}, fmt.Errorf("operation not permitted")
+}
+func (deniedProcs) Args(int) ([]string, error) { return nil, fmt.Errorf("operation not permitted") }
+
+// TestAgentStartWithPID: --pid records that process's start token; an
+// unknown PID records no identity rather than a half one.
+func TestAgentStartWithPID(t *testing.T) {
+	e := newAgentEnv(t)
+	e.procs[777] = proc.Info{PID: 777, PPID: 1, Name: "mytool", Start: 31337}
+	startAgent(t, agentStartOpts{Tool: "mytool", Session: "a", PID: 777})
+	sess := loadState(t).GetAgentSession("a")
+	assert.Equal(t, 777, sess.PID)
+	assert.Equal(t, int64(31337), sess.ProcStart)
+
+	startAgent(t, agentStartOpts{Tool: "mytool", Session: "b", PID: 778})
+	sess = loadState(t).GetAgentSession("b")
+	assert.False(t, sess.HasProcess())
+	assert.Zero(t, sess.PID)
+}
+
+// TestAgentStopUnknownSessionFails: naming a session that does not exist is an
+// error, so a typo in a script does not pass silently.
+func TestAgentStopUnknownSessionFails(t *testing.T) {
+	newAgentEnv(t)
+	err := runAgentStop(io.Discard, "nope")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wgo agent status")
+}
+
+// TestHeartbeatTracksBookmark: a bookmark change is recorded even inside the
+// throttle window; moving off every bookmark clears it; a failed lookup ("")
+// keeps the recorded one.
+func TestHeartbeatTracksBookmark(t *testing.T) {
+	e := newAgentEnv(t)
+	startAgent(t, agentStartOpts{Tool: "claude", Session: "a"})
+	t.Setenv("CLAUDECODE", "1")
+
+	e.advance(time.Second)
+	heartbeatAgent("/ws", "/ws", "next")
+	assert.Equal(t, "next", loadState(t).GetAgentSession("a").Branch, "a bookmark change bypasses the throttle")
+
+	e.advance(time.Second)
+	heartbeatAgent("/ws", "/ws", "")
+	assert.Equal(t, "next", loadState(t).GetAgentSession("a").Branch, "an unknown bookmark keeps the recorded one")
+
+	e.advance(time.Second)
+	heartbeatAgent("/ws", "/ws", "(no bookmark)")
+	assert.Empty(t, loadState(t).GetAgentSession("a").Branch, "no bookmark clears it, so it cannot cause a false conflict")
+}
+
+// TestHeartbeatRefreshesOwnSession: with two managed sessions of one tool in a
+// workspace, the statusline refreshes the one whose process it runs under, so
+// a crashed sibling still ages out.
+func TestHeartbeatRefreshesOwnSession(t *testing.T) {
+	e := newAgentEnv(t)
+	state := loadState(t)
+	for _, sess := range []store.AgentSession{
+		{ID: "mine", Tool: "claude", Source: store.SourceHook, WorktreePath: "/ws", PID: fakeClaudePID, ProcStart: fakeClaudeTok},
+		{ID: "other", Tool: "claude", Source: store.SourceHook, WorktreePath: "/ws"},
+	} {
+		_, err := state.UpsertAgentSession(sess, e.now)
+		require.NoError(t, err)
+	}
+	saveState(t, state)
+	e.advance(time.Minute)
+	// "other" is now the more recent, which the old code would have picked.
+	state = loadState(t)
+	_, err := state.UpsertAgentSession(store.AgentSession{ID: "other", Tool: "claude", WorktreePath: "/ws"}, e.now)
+	require.NoError(t, err)
+	saveState(t, state)
+	before := loadState(t).GetAgentSession("other").LastActivity
+
+	t.Setenv("CLAUDECODE", "1")
+	e.advance(5 * time.Minute)
+	heartbeatAgent("/ws", "/ws", "feat")
+	state = loadState(t)
+	assert.Equal(t, e.now, state.GetAgentSession("mine").LastActivity.UTC())
+	assert.Equal(t, before, state.GetAgentSession("other").LastActivity)
+}
+
+// TestToolNamesCompareNormalized: a hook sent with --tool Claude is the same
+// tool the statusline detects, so no inferred duplicate appears.
+func TestToolNamesCompareNormalized(t *testing.T) {
+	e := newAgentEnv(t)
+	f, err := os.Open(filepath.Join("testdata", "hooks", "stop.json"))
+	require.NoError(t, err)
+	defer f.Close()
+	require.NoError(t, runAgentHook(f, "Stop", " Claude "))
+	assert.Equal(t, "claude", loadState(t).GetAgentSession(hookSessionID).Tool)
+
+	t.Setenv("CLAUDECODE", "1")
+	e.advance(5 * time.Minute)
+	heartbeatAgent("/ws", "/ws", "feat")
+	assert.Len(t, loadState(t).AgentSessions, 1)
 }

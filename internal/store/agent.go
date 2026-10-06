@@ -24,13 +24,14 @@ const (
 	AgentUnknown AgentStatus = "unknown"
 )
 
-// ParseAgentStatus validates a user-supplied status.
+// ParseAgentStatus validates a user-supplied status. Unknown is not accepted:
+// it is what wgo records when nothing has reported a status.
 func ParseAgentStatus(s string) (AgentStatus, error) {
 	switch st := AgentStatus(strings.ToLower(strings.TrimSpace(s))); st {
-	case AgentWorking, AgentWaiting, AgentIdle, AgentUnknown:
+	case AgentWorking, AgentWaiting, AgentIdle:
 		return st, nil
 	}
-	return "", fmt.Errorf("invalid status %q (want working, waiting, idle or unknown)", s)
+	return "", fmt.Errorf("invalid status %q (want working, waiting or idle)", s)
 }
 
 // AgentSource records who manages a session, which decides how it ages.
@@ -81,11 +82,12 @@ const (
 	LivenessActive AgentLiveness = "active"
 	// LivenessLive: quiet, but its recorded process is verified alive.
 	LivenessLive AgentLiveness = "live"
-	// LivenessUncertain: quiet with nothing to verify. Shown, not deleted.
+	// LivenessUncertain: quiet, and there is no process identity or it could
+	// not be checked. Shown, not deleted.
 	LivenessUncertain AgentLiveness = "uncertain"
 	// LivenessGone: prunable. An inferred session past the window, a
-	// session whose recorded process exited (or whose PID was reused), or an
-	// unverifiable session past the maximum age.
+	// session whose recorded process definitely exited (or whose PID was
+	// reused), or an unverifiable session past the maximum age.
 	LivenessGone AgentLiveness = "gone"
 )
 
@@ -99,25 +101,32 @@ type AgentPolicy struct {
 	// MaxAge bounds how long an unverifiable (no process identity) explicit or
 	// hook session is kept after its last activity.
 	MaxAge time.Duration
-	// Procs verifies recorded process identities. Nil verifies nothing.
+	// Procs verifies recorded process identities. Nil verifies nothing, so
+	// every recorded identity counts as unverifiable rather than exited.
 	Procs proc.Inspector
 }
 
 // Liveness classifies a session. A verified live process always wins over
 // quiet time, so a long-running quiet agent never expires (#61); a recorded
-// process that is gone or reused never counts as live.
+// process that definitely exited or was reused makes the session gone. When
+// the process cannot be checked (sandboxed lookup, unsupported platform, a
+// PID recorded on another machine), the session is treated as having no
+// identity: uncertain, never deleted on that basis alone.
 func (s AgentSession) Liveness(now time.Time, p AgentPolicy) AgentLiveness {
 	quiet := now.Sub(s.LastActivity)
 	if quiet <= p.Window {
 		return LivenessActive
 	}
-	if s.HasProcess() && proc.Alive(p.Procs, s.PID, s.ProcStart) {
-		return LivenessLive
+	if s.HasProcess() {
+		switch proc.Check(p.Procs, s.PID, s.ProcStart) {
+		case proc.Running:
+			return LivenessLive
+		case proc.Exited:
+			return LivenessGone
+		}
 	}
 	switch {
 	case s.Source == SourceInferred:
-		return LivenessGone
-	case s.HasProcess():
 		return LivenessGone
 	case p.MaxAge > 0 && quiet > p.MaxAge:
 		return LivenessGone
@@ -132,13 +141,20 @@ type ObservedSession struct {
 }
 
 // UpsertAgentSession inserts sess, or merges it into the existing session with
-// the same ID. On merge StartTime, ThemeID, RepoPath, Branch, Status and
-// process identity are kept unless sess supplies a new value, and Source is
-// only ever upgraded from inferred. LastActivity is set to now. Sessions
+// the same ID. Tool and WorktreePath are always taken from sess (Tool is
+// normalized to lower case). On merge StartTime, ThemeID, RepoPath, Branch,
+// Status and process identity are kept unless sess supplies a new value, so an
+// empty field never clears one; use SetAgentBookmark to clear a bookmark.
+// Source is never downgraded to inferred. A PID without a start token is
+// dropped, since it cannot be verified. LastActivity is set to now. Sessions
 // without an ID, tool or workspace are rejected.
 func (s *State) UpsertAgentSession(sess AgentSession, now time.Time) (AgentSession, error) {
 	if !ValidAgentSessionID(sess.ID) {
 		return AgentSession{}, fmt.Errorf("invalid agent session ID %q", sess.ID)
+	}
+	sess.Tool = NormalizeAgentTool(sess.Tool)
+	if !sess.HasProcess() {
+		sess.PID, sess.ProcStart = 0, 0
 	}
 	if sess.Tool == "" || sess.WorktreePath == "" {
 		return AgentSession{}, fmt.Errorf("agent session %s needs a tool and a workspace", sess.ID)
@@ -178,6 +194,26 @@ func (s *State) UpsertAgentSession(sess AgentSession, now time.Time) (AgentSessi
 	sess.LastActivity = now
 	s.AgentSessions[sess.ID] = sess
 	return sess, nil
+}
+
+// SetAgentBookmark records branch as the session's bookmark, including ""
+// for "no bookmark", which UpsertAgentSession's merge cannot express. It
+// reports whether the session exists.
+func (s *State) SetAgentBookmark(id, branch string) bool {
+	sess, ok := s.AgentSessions[id]
+	if !ok {
+		return false
+	}
+	sess.Branch = branch
+	s.AgentSessions[id] = sess
+	return true
+}
+
+// NormalizeAgentTool is the canonical form of a tool name ("Claude " ->
+// "claude"), so sessions from hooks, commands and the statusline compare
+// equal.
+func NormalizeAgentTool(tool string) string {
+	return strings.ToLower(strings.TrimSpace(tool))
 }
 
 // GetAgentSession returns the session with the given ID, or nil.
@@ -379,7 +415,8 @@ func normalizeAgentSessions(in map[string]AgentSession) map[string]AgentSession 
 			if _, taken := out[id]; !taken {
 				break
 			}
-			id = fmt.Sprintf("%s-%d", sess.ID, n)
+			suffix := fmt.Sprintf("-%d", n)
+			id = sess.ID[:min(len(sess.ID), 128-len(suffix))] + suffix
 		}
 		sess.ID = id
 		out[id] = sess
