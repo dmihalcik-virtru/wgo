@@ -59,18 +59,22 @@ per-tool cost stays small.
   shell. Session IDs are restricted to `[A-Za-z0-9._:-]`.
 - **Quiet output.** The hook prints nothing on stdout (for `SessionStart` and
   `UserPromptSubmit`, Claude Code would add stdout to the conversation).
-- **It never breaks your session.** Malformed JSON or a missing `session_id`
-  exits non-zero, which Claude Code shows as a non-blocking hook error. Every
-  other failure, such as a `cwd` outside a jj workspace or an unwritable
-  state file, is swallowed and exits 0. Run with `WGO_DEBUG=1` to see it.
-- **Liveness without timers.** On the first event wgo walks up from the hook's
-  parent process to the `claude` process and records its PID and start time.
-  While that process is running, the session stays listed however long Claude
-  works quietly. If the PID is later reused by another process, the start
-  time no longer matches and the session is not treated as live. When no
-  `claude` process is found, no identity is recorded, and after 10 quiet
-  minutes the session is shown as *uncertain* rather than deleted; it is
-  removed after 24 hours, by `SessionEnd`, or by `wgo agent stop`.
+- **It never breaks your session.** Malformed JSON, a missing or invalid
+  `session_id`, or no event exits non-zero, which Claude Code shows as a
+  non-blocking hook error. Everything else exits 0. A `cwd` outside a jj
+  workspace is skipped silently (run with `WGO_DEBUG=1` to see it). A state
+  file wgo cannot read or write, such as one from a newer wgo, is reported
+  once on stderr, because it means sessions are not being tracked.
+- **Liveness without timers.** wgo walks up from the hook's parent process to
+  the `claude` process and records its PID and start time; it does this on
+  each event until the process is found, and again when the recorded one has
+  exited (`claude --resume` keeps the session but starts a new process). While
+  that process is running, the session stays listed however long Claude works
+  quietly. After 10 quiet minutes, a session whose process has exited, or
+  whose PID now belongs to a different process (the start time no longer
+  matches), is removed. A session with no recorded process, or one whose
+  process cannot be checked, is shown as *uncertain* rather than deleted; it
+  is removed after 24 hours, by `SessionEnd`, or by `wgo agent stop`.
 
 ## Alongside the statusline
 
@@ -84,8 +88,11 @@ expires 10 minutes after the statusline stops rendering.
 
 Hooks run whichever `wgo` is first on Claude Code's `PATH`. A `wgo` that finds
 state written by a newer version refuses to write it and asks you to upgrade.
-Builds from before session IDs (state version 2) predate that guard, so make
-sure an old binary is not shadowing the current one: `which -a wgo`.
+Builds from before session IDs (state version 2) predate that guard, so state
+version 3 stores agent sessions as a JSON array, which those builds cannot
+parse: they fail with `failed to parse state file: ... cannot unmarshal array`
+and leave the file alone. If you see that error, an old binary is shadowing
+the current one; find it with `which -a wgo`.
 
 ## Checking it
 
