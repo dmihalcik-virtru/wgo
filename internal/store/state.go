@@ -1,6 +1,10 @@
 package store
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -8,7 +12,13 @@ import (
 // StateVersion is the current schema version. Bumped to 2 for the jj
 // migration; older state files (Version <= 1) are refused on load. Bumped to 3
 // when agent sessions became keyed by session ID instead of workspace root;
-// version-2 files are migrated on load (see migrateAgentSessionsV2).
+// version-2 files are migrated on load (see normalizeAgentSessions).
+//
+// Version 3 also writes agent_sessions as a JSON array rather than an object.
+// Version-2 binaries decode that field into a map, so they fail to parse a
+// version-3 file and never rewrite it: an older wgo on PATH (one run by a
+// hook, say) cannot strip the new session fields. Binaries from version 3 on
+// refuse newer files explicitly (see NewerStateError).
 const StateVersion = 3
 
 // State represents the persistent state for wgo.
@@ -23,8 +33,64 @@ type State struct {
 	Annotations map[string]Annotation `json:"annotations"`
 	Efforts     map[string]Effort     `json:"efforts"`
 	// AgentSessions is keyed by AgentSession.ID (version 3). Version 2 keyed
-	// it by workspace root.
+	// it by workspace root. On disk it is an array sorted by ID (see
+	// MarshalJSON); version-2 objects are still read.
 	AgentSessions map[string]AgentSession `json:"agent_sessions"`
+}
+
+// stateJSON is State without its JSON methods, so they can delegate to the
+// default encoding for every other field.
+type stateJSON State
+
+// MarshalJSON writes AgentSessions as an array sorted by ID, which keeps the
+// git-versioned file's diffs stable and makes it unreadable to version-2
+// binaries (see StateVersion).
+func (s State) MarshalJSON() ([]byte, error) {
+	sessions := make([]AgentSession, 0, len(s.AgentSessions))
+	for _, sess := range s.AgentSessions {
+		sessions = append(sessions, sess)
+	}
+	sort.Slice(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })
+	return json.Marshal(struct {
+		stateJSON
+		AgentSessions []AgentSession `json:"agent_sessions"`
+	}{stateJSON(s), sessions})
+}
+
+// UnmarshalJSON reads AgentSessions as either the version-3 array or the
+// version-2 object. Array entries are keyed by ID here; LoadState's
+// normalization repairs missing or duplicate IDs.
+func (s *State) UnmarshalJSON(data []byte) error {
+	aux := struct {
+		*stateJSON
+		AgentSessions json.RawMessage `json:"agent_sessions"`
+	}{stateJSON: (*stateJSON)(s)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	raw := bytes.TrimSpace(aux.AgentSessions)
+	s.AgentSessions = nil
+	switch {
+	case len(raw) == 0 || bytes.Equal(raw, []byte("null")):
+	case raw[0] == '[':
+		var list []AgentSession
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return fmt.Errorf("agent_sessions: %w", err)
+		}
+		s.AgentSessions = make(map[string]AgentSession, len(list))
+		for i, sess := range list {
+			key := sess.ID
+			if _, taken := s.AgentSessions[key]; taken || key == "" {
+				key = fmt.Sprintf("%s#%d", sess.ID, i) // keeps both; normalization renames
+			}
+			s.AgentSessions[key] = sess
+		}
+	default:
+		if err := json.Unmarshal(raw, &s.AgentSessions); err != nil {
+			return fmt.Errorf("agent_sessions: %w", err)
+		}
+	}
+	return nil
 }
 
 // RepoInfo contains information about a tracked repository.
