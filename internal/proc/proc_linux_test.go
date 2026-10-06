@@ -20,3 +20,9 @@ func TestParseStatCommWithSpacesAndParens(t *testing.T) {
 	_, err = parseStat(1, "1 (zombie) Z 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
+
+func TestParseStatMalformedIsNotGone(t *testing.T) {
+	_, err := parseStat(7, "7 (truncated")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNotFound, "an unreadable stat line is not proof the process exited")
+}

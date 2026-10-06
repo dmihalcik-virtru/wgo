@@ -125,7 +125,7 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 	}
 	repoName := filepath.Base(repoPath)
 
-	branch := currentBookmark(jjc, cwd)
+	branch, branchKnown := bookmarkOf(jjc, cwd)
 	if branch == "" {
 		branch = "(no bookmark)"
 	}
@@ -246,7 +246,11 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 	// Agent session for this workspace. The env-detected heartbeat refreshes
 	// the Claude Code session here (or keeps an inferred one); resolveAgent
 	// then surfaces the most recently active visible session.
-	heartbeatAgent(wsRoot, repoPath, branch)
+	hbBranch := branch
+	if !branchKnown {
+		hbBranch = "" // a failed lookup keeps the session's recorded bookmark
+	}
+	heartbeatAgent(wsRoot, repoPath, hbBranch)
 	ctx.Agent = resolveAgent(wsRoot)
 
 	// A rig checkout is pinned, bookmark-less source, so most of the above

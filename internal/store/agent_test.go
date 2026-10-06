@@ -1,6 +1,8 @@
 package store
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +22,15 @@ func (f fakeProcs) Lookup(pid int) (proc.Info, error) {
 }
 
 func (f fakeProcs) Args(int) ([]string, error) { return nil, proc.ErrNotFound }
+
+// deniedProcs fails every lookup without saying the process is gone, as a
+// sandboxed sysctl or a hidepid /proc does.
+type deniedProcs struct{}
+
+func (deniedProcs) Lookup(int) (proc.Info, error) {
+	return proc.Info{}, errors.New("operation not permitted")
+}
+func (deniedProcs) Args(int) ([]string, error) { return nil, errors.New("operation not permitted") }
 
 var t0 = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 
@@ -114,6 +125,17 @@ func TestLivenessRules(t *testing.T) {
 		})
 	}
 
+	// A process that cannot be checked is not proof it exited: the session is
+	// treated as having no identity (uncertain, then gone past the max age).
+	for name, in := range map[string]proc.Inspector{"denied": deniedProcs{}, "no inspector": nil} {
+		pd := policy(in)
+		hook := quiet(AgentSession{ID: "v", Source: SourceHook, PID: 100, ProcStart: 5000})
+		assert.Equal(t, LivenessUncertain, hook.Liveness(now, pd), name)
+		assert.Equal(t, LivenessGone, hook.Liveness(t0.Add(48*time.Hour), pd), name+": past the max age")
+		inferred := quiet(AgentSession{ID: "w", Source: SourceInferred, PID: 100, ProcStart: 5000})
+		assert.Equal(t, LivenessGone, inferred.Liveness(now, pd), name+": inferred still expires")
+	}
+
 	// Past the maximum age an unverifiable session is gone, a live one is not.
 	old := t0.Add(48 * time.Hour)
 	assert.Equal(t, LivenessGone, quiet(AgentSession{ID: "u", Source: SourceExplicit}).Liveness(old, p))
@@ -190,4 +212,63 @@ func TestNormalizeRepairsOldBinaryWrites(t *testing.T) {
 	legacy := out[legacyAgentSessionID("claude", "/ws")]
 	assert.Equal(t, "/ws", legacy.WorktreePath)
 	assert.Zero(t, legacy.PID)
+}
+
+// TestUpsertEnforcesInvariants: tool names are normalized, and a PID without
+// a start token is dropped rather than stored as a half identity.
+func TestUpsertEnforcesInvariants(t *testing.T) {
+	s := NewState()
+	got := mustUpsert(t, s, AgentSession{ID: "a", Tool: " Claude ", WorktreePath: "/ws", PID: 42}, t0)
+	assert.Equal(t, "claude", got.Tool)
+	assert.Zero(t, got.PID)
+	assert.False(t, got.HasProcess())
+}
+
+// TestSetAgentBookmarkClears: the merge keeps a bookmark when given "", so
+// clearing goes through SetAgentBookmark.
+func TestSetAgentBookmarkClears(t *testing.T) {
+	s := NewState()
+	mustUpsert(t, s, AgentSession{ID: "a", Tool: "claude", WorktreePath: "/ws", Branch: "feat"}, t0)
+	assert.Equal(t, "feat", mustUpsert(t, s, AgentSession{ID: "a", Tool: "claude", WorktreePath: "/ws"}, t0).Branch)
+	require.True(t, s.SetAgentBookmark("a", ""))
+	assert.Empty(t, s.GetAgentSession("a").Branch)
+	assert.False(t, s.SetAgentBookmark("missing", "x"))
+}
+
+func TestParseAgentStatusRejectsUnknown(t *testing.T) {
+	st, err := ParseAgentStatus(" Waiting ")
+	require.NoError(t, err)
+	assert.Equal(t, AgentWaiting, st)
+	_, err = ParseAgentStatus("unknown")
+	assert.Error(t, err, "unknown is recorded by wgo, not reported by users")
+}
+
+// TestNormalizeRepairsStrippedV3Entry: a pre-v3 binary that rewrote v3 state
+// drops id, source, status and proc_start but keeps the map key. The hook's
+// session ID survives as the key, so the next hook event finds the session.
+func TestNormalizeRepairsStrippedV3Entry(t *testing.T) {
+	const uuid = "3f0e8c7a-1b2c-4d5e-8f90-123456789abc"
+	out := normalizeAgentSessions(map[string]AgentSession{
+		uuid: {Tool: "claude", WorktreePath: "/ws", PID: 200},
+	})
+	sess, ok := out[uuid]
+	require.True(t, ok)
+	assert.Equal(t, uuid, sess.ID)
+	assert.Equal(t, SourceExplicit, sess.Source)
+	assert.Equal(t, AgentUnknown, sess.Status)
+	assert.Zero(t, sess.PID, "a PID without its start token cannot be verified")
+}
+
+// TestNormalizeCollisionSuffixKeepsIDValid: renaming a colliding ID never
+// produces one ValidAgentSessionID rejects.
+func TestNormalizeCollisionSuffixKeepsIDValid(t *testing.T) {
+	long := strings.Repeat("a", 128)
+	out := normalizeAgentSessions(map[string]AgentSession{
+		"k1": {ID: long, Tool: "claude", WorktreePath: "/ws"},
+		"k2": {ID: long, Tool: "claude", WorktreePath: "/ws2"},
+	})
+	require.Len(t, out, 2)
+	for id := range out {
+		assert.True(t, ValidAgentSessionID(id), id)
+	}
 }

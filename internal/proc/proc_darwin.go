@@ -5,6 +5,8 @@ package proc
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
 
 	"golang.org/x/sys/unix"
 )
@@ -14,12 +16,21 @@ const szomb = 5
 
 type systemInspector struct{}
 
+// Lookup reads kern.proc.pid. For a PID with no process the kernel returns
+// an empty result, which x/sys reports as EIO (a short read); ESRCH is
+// treated the same. Any other error (EPERM in a sandbox, say) means the
+// process could not be inspected, not that it is gone.
 func (systemInspector) Lookup(pid int) (Info, error) {
 	if pid <= 0 {
 		return Info{}, ErrNotFound
 	}
 	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
-	if err != nil || kp == nil || int(kp.Proc.P_pid) != pid || kp.Proc.P_stat == szomb {
+	switch {
+	case errors.Is(err, unix.EIO), errors.Is(err, unix.ESRCH):
+		return Info{}, ErrNotFound
+	case err != nil:
+		return Info{}, fmt.Errorf("sysctl kern.proc.pid %d: %w", pid, err)
+	case kp == nil || int(kp.Proc.P_pid) != pid || kp.Proc.P_stat == szomb:
 		return Info{}, ErrNotFound
 	}
 	comm := kp.Proc.P_comm[:]

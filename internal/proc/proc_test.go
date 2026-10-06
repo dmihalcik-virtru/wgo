@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"errors"
 	"os"
 	"testing"
 
@@ -28,13 +29,34 @@ func (f fakeInspector) Args(pid int) ([]string, error) {
 	return nil, ErrNotFound
 }
 
-func TestAliveRequiresMatchingStart(t *testing.T) {
+func TestCheckRequiresMatchingStart(t *testing.T) {
 	in := fakeInspector{procs: map[int]Info{42: {PID: 42, Start: 1000}}}
-	assert.True(t, Alive(in, 42, 1000))
-	assert.False(t, Alive(in, 42, 999), "a reused PID has a different start token")
-	assert.False(t, Alive(in, 43, 1000), "a missing PID is not alive")
-	assert.False(t, Alive(in, 42, 0), "no start token means no identity")
-	assert.False(t, Alive(in, 0, 1000))
+	assert.Equal(t, Running, Check(in, 42, 1000))
+	assert.Equal(t, Exited, Check(in, 42, 999), "a reused PID has a different start token")
+	assert.Equal(t, Exited, Check(in, 43, 1000), "a missing PID has exited")
+	assert.Equal(t, Unknown, Check(in, 42, 0), "no start token means no identity")
+	assert.Equal(t, Unknown, Check(in, 0, 1000))
+	assert.Equal(t, Unknown, Check(nil, 42, 1000), "no inspector verifies nothing")
+}
+
+// failingInspector fails every lookup without saying the process is gone, as a
+// sandboxed sysctl or a hidepid /proc does.
+type failingInspector struct{ err error }
+
+func (f failingInspector) Lookup(int) (Info, error)   { return Info{}, f.err }
+func (f failingInspector) Args(int) ([]string, error) { return nil, f.err }
+
+func TestCheckInspectionFailureIsUnknown(t *testing.T) {
+	denied := failingInspector{err: errors.New("permission denied")}
+	assert.Equal(t, Unknown, Check(denied, 42, 1000))
+	assert.Equal(t, Unknown, Check(failingInspector{err: ErrUnsupported}, 42, 1000))
+}
+
+func TestFindAncestorReportsFailedWalk(t *testing.T) {
+	denied := failingInspector{err: errors.New("permission denied")}
+	_, ok, err := FindAncestor(denied, 30, 8, func(Info) bool { return true })
+	assert.False(t, ok)
+	assert.ErrorContains(t, err, "pid 30: permission denied")
 }
 
 func TestFindAncestorWalksPastShells(t *testing.T) {
@@ -46,15 +68,17 @@ func TestFindAncestorWalksPastShells(t *testing.T) {
 		},
 	}
 	match := func(i Info) bool { return MatchesTool(in, i, "claude") }
-	got, ok := FindAncestor(in, 30, 8, match)
+	got, ok, err := FindAncestor(in, 30, 8, match)
+	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, 10, got.PID)
 
-	_, ok = FindAncestor(in, 30, 2, match)
+	_, ok, _ = FindAncestor(in, 30, 2, match)
 	assert.False(t, ok, "depth is bounded")
 
-	_, ok = FindAncestor(in, 30, 8, func(i Info) bool { return MatchesTool(in, i, "codex") })
+	_, ok, err = FindAncestor(in, 30, 8, func(i Info) bool { return MatchesTool(in, i, "codex") })
 	assert.False(t, ok, "no matching tool means no identity")
+	assert.NoError(t, err, "a walk that reaches PID 1 is a definite miss")
 }
 
 func TestMatchesToolScriptRuntime(t *testing.T) {
@@ -87,10 +111,21 @@ func TestSystemInspectorSelf(t *testing.T) {
 	assert.Equal(t, os.Getppid(), self.PPID)
 	assert.NotZero(t, self.Start)
 	assert.NotEmpty(t, self.Name)
-	assert.True(t, Alive(in, self.PID, self.Start))
-	assert.False(t, Alive(in, self.PID, self.Start+1))
+	assert.Equal(t, Running, Check(in, self.PID, self.Start))
+	assert.Equal(t, Exited, Check(in, self.PID, self.Start+1))
 
 	args, err := in.Args(os.Getpid())
 	require.NoError(t, err)
 	require.NotEmpty(t, args)
+}
+
+// TestSystemInspectorMissingPID checks that a PID with no process is reported
+// as ErrNotFound (gone), not as an inspection failure.
+func TestSystemInspectorMissingPID(t *testing.T) {
+	in := System()
+	if _, err := in.Lookup(os.Getpid()); err != nil {
+		t.Skipf("process inspection unsupported here: %v", err)
+	}
+	_, err := in.Lookup(99_999_999)
+	assert.ErrorIs(t, err, ErrNotFound)
 }

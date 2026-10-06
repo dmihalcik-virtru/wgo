@@ -23,8 +23,10 @@ const (
 	// alone.
 	heartbeatThrottle = 60 * time.Second
 	// agentStaleAfter is the quiet window. A session with activity inside it
-	// is active. Past it, a session with a verified live process stays live,
-	// an inferred session expires, and any other session becomes uncertain.
+	// is active. Past it, a session with a verified live process stays live; a
+	// session whose recorded process exited, or an inferred session, is
+	// removed; any other session (no process identity, or one that cannot be
+	// checked) becomes uncertain.
 	agentStaleAfter = 10 * time.Minute
 	// agentMaxAge bounds how long a session without a verifiable process is
 	// kept after its last activity, so abandoned sessions cannot accumulate.
@@ -72,8 +74,10 @@ effort. Sessions come from three places:
 
 Liveness: a session with activity in the last 10 minutes is active. After that,
 a session whose agent process is verified alive (PID and start time match)
-stays live however quiet it is; an inferred session expires; any other session
-is shown as uncertain and removed after 24 hours or by "wgo agent stop".`,
+stays live however quiet it is; a session whose recorded process has exited,
+and an inferred session, are removed; any other session (no recorded process,
+or one wgo cannot check) is shown as uncertain and removed after 24 hours or by
+"wgo agent stop".`,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return runAgentStatus(os.Stdout, false)
 	},
@@ -186,6 +190,9 @@ func workspaceRootOf(dir string) (string, error) {
 // workspaceInfo is what a new session records about where it runs.
 type workspaceInfo struct {
 	Root, Repo, Branch string
+	// BranchUnknown is set when the bookmark lookup failed, so Branch ""
+	// does not mean "no bookmark".
+	BranchUnknown bool
 }
 
 // lookupWorkspace resolves the workspace root, its repository's main root and
@@ -202,7 +209,20 @@ var lookupWorkspace = func(dir string) (workspaceInfo, error) {
 		debugf("agent: main workspace root for %s: %v; using the workspace itself, so conflicts with other workspaces of this repo go undetected", wsRoot, err)
 		repo = wsRoot
 	}
-	return workspaceInfo{Root: wsRoot, Repo: repo, Branch: currentBookmark(jjc, wsRoot)}, nil
+	branch, known := bookmarkOf(jjc, wsRoot)
+	return workspaceInfo{Root: wsRoot, Repo: repo, Branch: branch, BranchUnknown: !known}, nil
+}
+
+// bookmarkOf returns the workspace's nearest bookmark ("" for none). ok is
+// false when the lookup failed (jj busy, say), so callers keep what they
+// recorded instead of treating the failure as "no bookmark".
+func bookmarkOf(jjc jj.Client, workspacePath string) (bookmark string, ok bool) {
+	bm, err := jjc.NearestBookmark(workspacePath)
+	if err != nil {
+		debugf("agent: bookmark for %s: %v", workspacePath, err)
+		return "", false
+	}
+	return bm, true
 }
 
 var currentWorkspace = func() (workspaceInfo, error) {
@@ -226,9 +246,13 @@ func agentProcess(tool string, pid int) (int, int64) {
 		}
 		return info.PID, info.Start
 	}
-	info, ok := proc.FindAncestor(procInspector, agentParentPID(), agentAncestorDepth, func(i proc.Info) bool {
+	info, ok, err := proc.FindAncestor(procInspector, agentParentPID(), agentAncestorDepth, func(i proc.Info) bool {
 		return proc.MatchesTool(procInspector, i, tool)
 	})
+	if err != nil {
+		debugf("agent: process walk for %s failed (%v); recording no process identity", tool, err)
+		return 0, 0
+	}
 	if !ok {
 		debugf("agent: no %s process among ancestors; recording no process identity", tool)
 		return 0, 0
@@ -243,7 +267,7 @@ type agentStartOpts struct {
 }
 
 func runAgentStart(w io.Writer, o agentStartOpts) error {
-	tool := strings.TrimSpace(o.Tool)
+	tool := store.NormalizeAgentTool(o.Tool)
 	if tool == "" {
 		tool = detectAgent()
 	}
@@ -414,6 +438,9 @@ func runAgentStop(w io.Writer, id string) error {
 		return err
 	}
 	if !found {
+		if id != "" {
+			return fmt.Errorf("no agent session %s; list sessions with: wgo agent status", id)
+		}
 		fmt.Fprintf(w, "no agent session for %s\n", where)
 		return nil
 	}
@@ -482,7 +509,10 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 	}
 
 	// Mark the current workspace when it is a jj repo (best-effort).
-	current, _ := workspaceRoot()
+	current, err := workspaceRoot()
+	if err != nil {
+		current = ""
+	}
 	for _, o := range observed {
 		branch := o.Branch
 		if branch == "" {
@@ -501,7 +531,7 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 		if o.Source == store.SourceInferred {
 			notes = append(notes, "inferred")
 		}
-		if o.WorktreePath == current {
+		if current != "" && o.WorktreePath == current {
 			notes = append(notes, "current")
 		}
 		line := fmt.Sprintf("🤖 %-8s %-8s %s  %s  since %s  session %s",
@@ -534,22 +564,29 @@ func detectAgent() string {
 // It is env-detected, best-effort, throttled, and local-disk only (no network,
 // no subprocess).
 //
+// branch is the workspace's bookmark: "(no bookmark)" when it has none, and ""
+// when the lookup failed, which keeps the recorded bookmark rather than
+// clearing it.
+//
 // When a hook- or command-managed session for the same tool exists in the
-// workspace, it refreshes the most recent one (last activity and bookmark,
-// never its status) and drops any inferred duplicate. Otherwise it keeps a
-// single inferred session per tool and workspace, which expires on the quiet
-// timeout.
+// workspace, it refreshes that session (last activity and bookmark, never its
+// status) and drops any inferred duplicate. With several, it refreshes the one
+// whose recorded process is this heartbeat's own agent, so one agent's
+// statusline never keeps another, crashed, session looking active. Otherwise
+// it keeps a single inferred session per tool and workspace, which expires on
+// the quiet timeout.
 func heartbeatAgent(wsRoot, repoPath, branch string) {
 	name := detectAgent()
 	if name == "" || wsRoot == "" {
 		return
 	}
+	branchKnown := branch != ""
 	if branch == "(no bookmark)" {
 		branch = ""
 	}
 	s, err := store.New()
 	if err != nil {
-		debugf("agent heartbeat: %v", err)
+		warnAgentState("agent heartbeat", err)
 		return
 	}
 	// MutateState holds a lock across load+save so this hot-path write can't
@@ -559,17 +596,16 @@ func heartbeatAgent(wsRoot, repoPath, branch string) {
 		now := agentNow()
 		changed := state.PruneAgentSessions(now, agentPolicy()) > 0
 
-		var managed, inferred *store.AgentSession
+		var managed []store.AgentSession
+		var inferred *store.AgentSession
 		for _, sess := range state.AgentSessionsIn(wsRoot) {
 			if sess.Tool != name {
 				continue
 			}
-			if sess.Source == store.SourceInferred {
-				if inferred == nil {
-					inferred = &sess
-				}
-			} else if managed == nil {
-				managed = &sess
+			if sess.Source != store.SourceInferred {
+				managed = append(managed, sess)
+			} else if inferred == nil {
+				inferred = &sess
 			}
 		}
 		target := store.AgentSession{
@@ -577,26 +613,68 @@ func heartbeatAgent(wsRoot, repoPath, branch string) {
 			WorktreePath: wsRoot, RepoPath: repoPath, Branch: branch, Source: store.SourceInferred,
 		}
 		existing := inferred
-		if managed != nil {
+		if len(managed) > 0 {
 			if inferred != nil {
 				changed = dropInferredDuplicate(state, name, wsRoot) || changed
 			}
+			own := ownSession(managed, name)
 			// Refresh, don't clobber: only activity, bookmark and repo move.
-			target = store.AgentSession{ID: managed.ID, Tool: managed.Tool, WorktreePath: managed.WorktreePath, RepoPath: repoPath, Branch: branch}
-			existing = managed
+			target = store.AgentSession{ID: own.ID, Tool: own.Tool, WorktreePath: own.WorktreePath, RepoPath: repoPath, Branch: branch}
+			existing = &own
 		}
-		if existing != nil && now.Sub(existing.LastActivity) < heartbeatThrottle &&
-			(branch == "" || branch == existing.Branch) {
+		bookmarkChanged := branchKnown && (existing == nil || branch != existing.Branch)
+		if existing != nil && now.Sub(existing.LastActivity) < heartbeatThrottle && !bookmarkChanged {
 			return changed, nil
 		}
-		if _, err := state.UpsertAgentSession(target, now); err != nil {
+		saved, err := state.UpsertAgentSession(target, now)
+		if err != nil {
 			return false, err
+		}
+		if branchKnown {
+			state.SetAgentBookmark(saved.ID, branch)
 		}
 		return true, nil
 	})
 	if err != nil {
-		debugf("agent heartbeat: %v", err)
+		warnAgentState("agent heartbeat", err)
 	}
+}
+
+// ownSession picks, from managed sessions of one tool in one workspace (most
+// recent first), the one belonging to the agent this process runs under. The
+// process walk only happens when there is a choice to make; without a match
+// the most recently active session is used.
+func ownSession(managed []store.AgentSession, tool string) store.AgentSession {
+	if len(managed) == 1 {
+		return managed[0]
+	}
+	pid, start := agentProcess(tool, 0)
+	for _, sess := range managed {
+		if pid != 0 && sess.PID == pid && sess.ProcStart == start {
+			return sess
+		}
+	}
+	return managed[0]
+}
+
+// agentWarnOut receives warnings about agent-session state problems. A
+// variable so tests can capture it.
+var agentWarnOut io.Writer = os.Stderr
+
+var agentStateWarned bool
+
+// warnAgentState reports an error from the best-effort agent paths (hooks,
+// the `wgo .` heartbeat). These paths never fail their caller, but a state
+// file wgo cannot read or write (newer schema, unparseable, lock or write
+// failure) disables session tracking entirely, so it is printed even without
+// WGO_DEBUG, once per process.
+func warnAgentState(what string, err error) {
+	debugf("%s: %v", what, err)
+	if agentStateWarned || os.Getenv("WGO_DEBUG") != "" {
+		return
+	}
+	agentStateWarned = true
+	fmt.Fprintf(agentWarnOut, "wgo: %s: %v\n", what, err)
 }
 
 // resolveAgent returns the most recently active visible session in wsRoot for
@@ -607,12 +685,12 @@ func resolveAgent(wsRoot string) *models.AgentRef {
 	}
 	s, err := store.New()
 	if err != nil {
-		debugf("resolve agent: %v", err)
+		warnAgentState("resolve agent", err)
 		return nil
 	}
 	state, err := s.LoadState()
 	if err != nil {
-		debugf("resolve agent: %v", err)
+		warnAgentState("resolve agent", err)
 		return nil
 	}
 	var ref *models.AgentRef
