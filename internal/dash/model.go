@@ -22,8 +22,9 @@ const DefaultDays = 14
 
 // ChangeWindow bounds how many visible change IDs are kept per workspace, in
 // the snapshot and in the last-seen baseline. Only the newest ChangeWindow
-// mutable changes (those in trunk()..@) are listed; older ones are reported
-// as a truncated count and are not compared by the since-last-look delta.
+// unmerged changes (those in trunk()..@, pushed or not) are read; older ones
+// are reported as a truncated count and are not compared by the
+// since-last-look delta.
 const ChangeWindow = 200
 
 // Freshness is the state of a piece of data or of a whole source.
@@ -90,6 +91,7 @@ type SourceStatus struct {
 	Unknown int       `json:"unknown,omitempty"`
 	Error   int       `json:"error,omitempty"`
 	// OldestFetch is the oldest successful fetch time among cached items.
+	// The jira cache does not record one, so it is never set for jira.
 	OldestFetch time.Time `json:"oldest_fetch,omitzero"`
 	Detail      string    `json:"detail,omitempty"`
 }
@@ -157,7 +159,8 @@ type WorkspaceInfo struct {
 	// Changes are the visible, non-empty-or-described change IDs in
 	// trunk()..@, newest first, at most ChangeWindow of them.
 	Changes []string `json:"changes,omitempty"`
-	// ChangesTruncated counts changes beyond ChangeWindow.
+	// ChangesTruncated counts changes in trunk()..@ beyond the ChangeWindow
+	// read; it counts empty undescribed changes that Changes leaves out.
 	ChangesTruncated int       `json:"changes_truncated,omitempty"`
 	LastActivity     time.Time `json:"last_activity,omitzero"`
 	Annotation       string    `json:"annotation,omitempty"`
@@ -264,10 +267,13 @@ type Edge struct {
 type Counts struct {
 	// Days lists the window's dates (YYYY-MM-DD, local time), oldest first.
 	Days []string `json:"days"`
-	// Activity is the number of distinct local changes authored per day.
+	// Activity is the number of distinct changes authored per day among
+	// each workspace's listed Changes: unmerged work only, so changes drop
+	// out once they land in trunk.
 	Activity map[string][]int `json:"activity"`
 	// PRStates counts PRs by state (open, draft, merged, closed) plus
-	// bookmarks whose lookup is unknown or that have no PR (none).
+	// bookmarks whose lookup is unknown or failed (unknown) or that have no
+	// PR (none). A bookmark shared by several efforts counts under each.
 	PRStates map[string]map[string]int `json:"pr_states"`
 	// Agents counts agent sessions by liveness.
 	Agents map[string]map[string]int `json:"agents"`

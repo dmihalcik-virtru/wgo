@@ -38,7 +38,9 @@ var (
 )
 
 // View is an immutable published state: a snapshot, its delta against the
-// baseline, and both pre-encoded so serving them costs no encoding.
+// baseline, and both pre-encoded so serving them only encodes the small
+// diagnostics list. Treat every field as read-only: Snapshot and Delta are
+// shared with the encoded body.
 type View struct {
 	Snapshot *Snapshot
 	Delta    *Delta
@@ -46,9 +48,10 @@ type View struct {
 	// process.
 	Loaded bool
 	// Diagnostics are Dash-level problems the snapshot itself cannot carry:
-	// a persisted snapshot or baseline that could not be loaded, a failed
-	// snapshot write, or a failed background republish. They are served with
-	// the view and cleared once the condition clears.
+	// a persisted snapshot or baseline that could not be loaded (until a
+	// good one is written), a failed collection (until one succeeds), a
+	// failed snapshot write (until one succeeds), or failed remote lookups
+	// (until a refresh runs cleanly).
 	Diagnostics  []string
 	snapshotJSON []byte
 	deltaJSON    []byte
@@ -134,13 +137,14 @@ type Dash struct {
 	ring     []*Snapshot
 	baseline *Baseline
 
-	// Diagnostics records load problems (a corrupt snapshot, say). They are
-	// also served in every view's diagnostics.
-	Diagnostics []string
-	// persistErr and refreshErr are the current write and background
-	// republish failures, guarded by mu.
-	persistErr string
-	refreshErr string
+	// The current Dash-level problems, guarded by mu and served in every
+	// view's diagnostics; see View.Diagnostics. Each is cleared when its
+	// condition clears.
+	snapshotLoadErr string // persisted snapshot unreadable; cleared by a good write
+	baselineLoadErr string // last-seen.json unreadable; cleared by Acknowledge
+	collectErr      string // the last collection failed
+	persistErr      string // the last snapshot write failed
+	refreshErr      string // the last remote refresh had failures
 }
 
 // Logf, when set, receives Dash faults that have no caller to return to,
@@ -156,12 +160,20 @@ func logf(format string, args ...any) {
 // diagnosticsLocked lists the current Dash-level diagnostics. d.mu is held.
 func (d *Dash) diagnosticsLocked() []string {
 	var out []string
-	out = append(out, d.Diagnostics...)
+	if d.snapshotLoadErr != "" {
+		out = append(out, "ignoring persisted snapshot: "+d.snapshotLoadErr)
+	}
+	if d.baselineLoadErr != "" {
+		out = append(out, "ignoring last-seen baseline: "+d.baselineLoadErr)
+	}
+	if d.collectErr != "" {
+		out = append(out, d.collectErr)
+	}
 	if d.persistErr != "" {
 		out = append(out, "snapshot not saved: "+d.persistErr)
 	}
 	if d.refreshErr != "" {
-		out = append(out, "background refresh failed: "+d.refreshErr)
+		out = append(out, d.refreshErr)
 	}
 	return out
 }
@@ -173,7 +185,16 @@ func (d *Dash) restampLocked() {
 	}
 }
 
-// recordRefreshError makes a background failure visible in the view and
+// setDiagLocked sets one diagnostic field and republishes the current view
+// if it changed. d.mu is held.
+func (d *Dash) setDiagLocked(field *string, msg string) {
+	if *field != msg {
+		*field = msg
+		d.restampLocked()
+	}
+}
+
+// recordRefreshError makes a remote refresh failure visible in the view and
 // in the debug log; a nil err clears it.
 func (d *Dash) recordRefreshError(err error) {
 	d.mu.Lock()
@@ -181,12 +202,24 @@ func (d *Dash) recordRefreshError(err error) {
 	msg := ""
 	if err != nil {
 		msg = err.Error()
-		logf("dash: background refresh: %v", err)
+		logf("dash: %v", err)
 	}
-	if msg != d.refreshErr {
-		d.refreshErr = msg
-		d.restampLocked()
+	d.setDiagLocked(&d.refreshErr, msg)
+}
+
+// recordCollectError makes a failed collection visible on the view still
+// being served, which is then older than it looks; a nil err clears it.
+func (d *Dash) recordCollectError(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	msg := ""
+	if err != nil {
+		msg = "collection failed: " + err.Error()
+		if cur := d.view.Load(); cur != nil {
+			msg += "; showing the snapshot from " + cur.Snapshot.GeneratedAt.Format(time.RFC3339)
+		}
 	}
+	d.setDiagLocked(&d.collectErr, msg)
 }
 
 // Open loads the persisted snapshot and baseline, if any, and publishes the
@@ -198,7 +231,7 @@ func Open(opts Options) (*Dash, error) {
 	}
 	b, err := loadBaseline(filepath.Join(opts.Dir, BaselineFile))
 	if err != nil {
-		d.Diagnostics = append(d.Diagnostics, "ignoring last-seen baseline: "+err.Error())
+		d.baselineLoadErr = err.Error()
 		b = nil
 	}
 	d.baseline = b
@@ -207,7 +240,7 @@ func Open(opts Options) (*Dash, error) {
 	}
 	s, err := loadSnapshot(filepath.Join(opts.Dir, SnapshotFile))
 	if err != nil {
-		d.Diagnostics = append(d.Diagnostics, "ignoring persisted snapshot: "+err.Error())
+		d.snapshotLoadErr = err.Error()
 	}
 	if s != nil {
 		if s.Generation > d.gen {
@@ -273,11 +306,11 @@ func (d *Dash) Publish(s *Snapshot) error {
 	if werr != nil {
 		msg = werr.Error()
 		logf("dash: persist snapshot: %v", werr)
+	} else {
+		// A good snapshot.json replaced whatever could not be loaded.
+		d.setDiagLocked(&d.snapshotLoadErr, "")
 	}
-	if msg != d.persistErr {
-		d.persistErr = msg
-		d.restampLocked()
-	}
+	d.setDiagLocked(&d.persistErr, msg)
 	if werr != nil {
 		return fmt.Errorf("%w: %w", ErrPersist, werr)
 	}
@@ -297,11 +330,21 @@ type RefreshOptions struct {
 // Refresh collects local state, publishes a snapshot built from it and the
 // caches, and optionally refreshes remote caches. Collections are
 // serialized. It never advances the last-seen baseline.
+//
+// A failed or cancelled collection publishes nothing: the last good view
+// stays up, marked with the failure. With Wait, failed remote lookups are
+// returned as well as shown in the view.
 func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 	d.refreshMu.Lock()
 	defer d.refreshMu.Unlock()
 	c := d.opts.Collector
 	ls, err := c.collectLocal(ctx)
+	if err == nil {
+		// A cancelled collection marks every workspace unreadable; publishing
+		// it would replace the last good snapshot with an all-error one.
+		err = ctx.Err()
+	}
+	d.recordCollectError(err)
 	if err != nil {
 		return err
 	}
@@ -313,30 +356,47 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 	if persistErr != nil && !errors.Is(persistErr, ErrPersist) {
 		return persistErr
 	}
-	if !opts.Remote || d.opts.Refresher == nil || len(jobs) == 0 {
+	if !opts.Remote || d.opts.Refresher == nil {
+		return persistErr
+	}
+	if len(jobs) == 0 {
+		d.recordRefreshError(nil) // everything is fresh: nothing failed
 		return persistErr
 	}
 	done := d.opts.Refresher.Submit(jobs)
 	if opts.Wait {
+		var res BatchResult
 		select {
-		case <-done:
+		case res = <-done:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		remoteErr := res.Err()
+		d.recordRefreshError(remoteErr)
 		s, _ := c.assemble(ls)
-		return d.Publish(s)
+		if err := d.Publish(s); err != nil {
+			return errors.Join(err, remoteErr)
+		}
+		return remoteErr
 	}
 	go func() {
-		<-done
+		res := <-done
 		d.refreshMu.Lock()
 		defer d.refreshMu.Unlock()
 		if d.latest != ls {
-			return // a newer collection already read the warmed caches
+			// A newer collection superseded this one. Its own batch waits on
+			// any of these jobs still running and republishes their data.
+			return
 		}
 		// assemble only reads caches and reports misses as unknown, so it
-		// has no error to return; Publish can fail to encode or persist.
+		// has no error to return. A failed write is already shown as
+		// "snapshot not saved"; only an encoding failure needs recording.
 		s, _ := c.assemble(ls)
-		d.recordRefreshError(d.Publish(s))
+		err := res.Err()
+		if perr := d.Publish(s); perr != nil && !errors.Is(perr, ErrPersist) {
+			err = errors.Join(err, fmt.Errorf("background republish: %w", perr))
+		}
+		d.recordRefreshError(err)
 	}()
 	return persistErr
 }
@@ -366,6 +426,7 @@ func (d *Dash) Acknowledge(gen uint64) error {
 		}
 	}
 	d.baseline = b
+	d.baselineLoadErr = ""
 	if cur := d.view.Load(); cur != nil {
 		v, err := newView(cur.Snapshot, computeDelta(b, cur.Snapshot), cur.Loaded, d.diagnosticsLocked())
 		if err != nil {

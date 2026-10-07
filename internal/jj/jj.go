@@ -86,13 +86,13 @@ type CLIClient struct {
 
 	// IgnoreWorkingCopy passes jj's global --ignore-working-copy flag to
 	// every invocation, so jj neither snapshots nor updates any working copy.
-	// Reads then see each workspace's @ as of its last snapshot. Set it only
-	// through ReadOnly; it is meant for viewers (wgo dash) that must never
-	// create an operation just by looking.
+	// Reads then see each workspace's @ as of its last snapshot. ReadOnly
+	// returns a copy with it set; it is meant for viewers (wgo dash) that
+	// must not snapshot a workspace just by looking.
 	IgnoreWorkingCopy bool
 
-	// ctx cancels in-flight jj subprocesses. Nil means uncancellable, which
-	// is what every read-only caller wants. Set it with WithContext.
+	// ctx cancels in-flight jj subprocesses. Nil means uncancellable, the
+	// default for one-shot commands. Set it with WithContext.
 	ctx context.Context
 }
 
@@ -190,7 +190,7 @@ func (c *CLIClient) runIn(dir string, args ...string) (string, error) {
 }
 
 // CommandError is a jj invocation that exited non-zero. Error() carries the
-// full command line for logs; Brief() is jj's own message alone, for display
+// command line (without the global --ignore-working-copy flag) for logs; Brief() is jj's own message alone, for display
 // surfaces where a long -T template would bury it.
 type CommandError struct {
 	Args   []string

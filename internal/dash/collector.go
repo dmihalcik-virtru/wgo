@@ -80,11 +80,15 @@ func NewCollector(cfg Config) *Collector {
 // agent sessions. It is turned into a Snapshot by assemble, which adds the
 // cached remote data.
 type localState struct {
-	at          time.Time
-	days        int
-	workspaces  []*wsData
-	clones      []effort.MainCloneInfo
-	origins     map[string]string // main clone path -> origin URL
+	at         time.Time
+	days       int
+	workspaces []*wsData
+	clones     []effort.MainCloneInfo
+	origins    map[string]string // main clone path -> origin URL
+	// ghSlugs maps a main clone to the owner/repo of its GitHub origin. A
+	// clone without one is in noGitHub with the reason, for ticket lookups.
+	ghSlugs     map[string]string
+	noGitHub    map[string]string
 	attribution *effort.AttributionResult
 	themeIDs    map[string]string // effort keys a theme resolved to
 	sessions    []store.ObservedSession
@@ -159,14 +163,19 @@ func (c *Collector) discoverWorkspaces() (workspaceSet, error) {
 		for _, main := range mains {
 			wss, err := c.jj.ListWorkspaces(main)
 			if err != nil {
-				set.diags = append(set.diags, fmt.Sprintf("repo %s: could not list workspaces: %v", main, err))
+				set.diags = append(set.diags, fmt.Sprintf("repo %s: could not list workspaces: %s", main, jj.BriefError(err)))
 				continue
 			}
 			for _, w := range wss {
 				if w.Path == "" {
+					// jj reports no root once the workspace directory is gone.
+					set.diags = append(set.diags, fmt.Sprintf("repo %s: workspace %q is listed by jj but its directory is gone; if it was deleted, run: jj -R %s workspace forget %s",
+						main, w.Name, main, w.Name))
 					continue
 				}
 				if fi, err := os.Stat(filepath.Join(w.Path, ".jj")); err != nil || !fi.IsDir() {
+					set.diags = append(set.diags, fmt.Sprintf("repo %s: workspace %q is listed by jj but %s has no .jj directory; if it was deleted, run: jj -R %s workspace forget %s",
+						main, w.Name, w.Path, main, w.Name))
 					continue
 				}
 				add(w.Path, main)
@@ -183,6 +192,8 @@ func (c *Collector) collectLocal(ctx context.Context) (*localState, error) {
 		at:          c.cfg.Now(),
 		days:        c.cfg.Days,
 		origins:     map[string]string{},
+		ghSlugs:     map[string]string{},
+		noGitHub:    map[string]string{},
 		annotations: map[string]string{},
 		themeIDs:    map[string]string{},
 		sources:     map[string]SourceStatus{},
@@ -222,11 +233,21 @@ func (c *Collector) collectLocal(ctx context.Context) (*localState, error) {
 			Owner: filepath.Base(filepath.Dir(w.mainClone)),
 			Repo:  filepath.Base(w.mainClone),
 		}
+		ls.noGitHub[w.mainClone] = "no GitHub remote"
 		if c.jj != nil {
-			if remotes, err := c.jj.RemoteURLs(w.mainClone); err == nil {
+			remotes, err := c.jj.RemoteURLs(w.mainClone)
+			if err != nil {
+				// Not "no remote": jj failed, so say so rather than let every
+				// gh-N ticket claim the repo has no GitHub remote.
+				ls.diags = append(ls.diags, fmt.Sprintf("repo %s: could not read remotes: %s", w.mainClone, jj.BriefError(err)))
+				ls.noGitHub[w.mainClone] = "could not read remotes (jj git remote list failed)"
+			} else {
 				ls.origins[w.mainClone] = remotes["origin"]
-				if owner, repo, ok := strings.Cut(github.SlugFromRemoteURL(remotes["origin"]), "/"); ok {
+				slug := github.SlugFromRemoteURL(remotes["origin"])
+				if owner, repo, ok := strings.Cut(slug, "/"); ok {
 					clone.Owner, clone.Repo = owner, repo
+					ls.ghSlugs[w.mainClone] = slug
+					delete(ls.noGitHub, w.mainClone)
 				}
 			}
 		}
@@ -361,7 +382,8 @@ func (c *Collector) readWorkspaces(ctx context.Context, wss []*wsData) {
 	wg.Wait()
 }
 
-// mutableRange is the revset of a workspace's own unpublished history.
+// mutableRange is the revset of a workspace's unmerged history: ancestors of
+// @ not yet in trunk, pushed or not. It is not jj's mutable() set.
 const mutableRange = "trunk()..@"
 
 func readWorkspace(jjc *jj.CLIClient, w *wsData) error {

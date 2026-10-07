@@ -35,7 +35,9 @@ per-source freshness and a "since last look" delta.
 The local collection reads jj with --ignore-working-copy, so it never
 snapshots a workspace, and reads PR, Jira and GitHub issue data from wgo's
 caches only: anything not cached is reported as unknown. Pass --refresh to
-also fetch the missing or stale remote data before printing.
+also try to fetch the missing or stale remote data before printing; lookups
+that fail are listed in the output's diagnostics and make the command exit
+non-zero.
 
 The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.
 
@@ -83,8 +85,10 @@ func runDash(ctx context.Context, out io.Writer) error {
 		Days:        dashDays,
 		PRTTL:       prTTL(),
 		JiraTTL:     jiraTTL(),
-		IssueTTL:    jiraTTL(),
-		JiraSite:    cfg.Jira.Site,
+		// GitHub issue status moves at ticket speed, not PR speed, so it
+		// shares the Jira TTL rather than having its own setting.
+		IssueTTL: jiraTTL(),
+		JiraSite: cfg.Jira.Site,
 	})
 	opts := dash.Options{Dir: filepath.Join(st.BaseDir(), "cache", "dash"), Collector: collector}
 	if dashRefresh {
@@ -111,8 +115,9 @@ func runDash(ctx context.Context, out io.Writer) error {
 	if err := v.WriteJSON(out, time.Now()); err != nil {
 		return err
 	}
-	// A failed collection still printed the last good snapshot; say why it
-	// is old.
+	// Any refresh error (a failed collection, a snapshot that could not be
+	// saved, failed remote lookups) is also in the printed diagnostics; the
+	// error makes it visible to scripts through the exit status.
 	return refreshErr
 }
 

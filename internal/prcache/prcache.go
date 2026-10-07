@@ -82,6 +82,10 @@ type Result struct {
 	// alongside a populated PRs: a refresh failed, but last-known-good data
 	// survived it.
 	Err error
+	// WriteErr is set by a live fetch whose result could not be written to
+	// the cache: the result is still returned, but later reads will not see
+	// it. Read never sets it.
+	WriteErr error
 }
 
 // Read returns the cached PR refs for a branch and their freshness. It never

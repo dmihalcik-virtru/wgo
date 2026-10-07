@@ -168,7 +168,8 @@ func TestDeltaUnknownIsNotUnchanged(t *testing.T) {
 	dl := d.Current().Delta
 	// a unchanged; b unknown (unread at baseline); PR unknown (its
 	// bookmark's PR list was not known at baseline, so it is not "new").
-	if dl.Summary.Unchanged != 1 || dl.Summary.Unknown != 3 || dl.Summary.PRStateChanges != 0 || dl.Summary.NewChanges != 0 {
+	// The PR's unknown reviewers do not count a second time.
+	if dl.Summary.Unchanged != 1 || dl.Summary.Unknown != 2 || dl.Summary.PRStateChanges != 0 || dl.Summary.NewChanges != 0 {
 		t.Fatalf("summary: %+v", dl.Summary)
 	}
 	if len(dl.Workspaces) != 1 || dl.Workspaces[0].ID != wsB || dl.Workspaces[0].Status != ItemUnknown {
@@ -233,8 +234,8 @@ func TestCorruptSnapshotIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	d2 := openDash(t, dir)
-	if d2.Current() != nil || len(d2.Diagnostics) == 0 {
-		t.Fatalf("corrupt snapshot should be ignored with a diagnostic: %v", d2.Diagnostics)
+	if d2.Current() != nil || d2.snapshotLoadErr == "" {
+		t.Fatalf("corrupt snapshot should be ignored with a diagnostic: %q", d2.snapshotLoadErr)
 	}
 }
 
@@ -447,20 +448,23 @@ func TestBackgroundRepublishFailureIsVisible(t *testing.T) {
 		t.Fatalf("Refresh = %v, want ErrPersist", err)
 	}
 	g := d.Current().Snapshot.Generation
+	logsBefore := logs.Load()
 	close(bf.release)
 	deadline := time.Now().Add(30 * time.Second)
-	for {
-		v := d.Current()
-		if v.Snapshot.Generation != g && hasDiag(v, "background refresh failed") {
-			break
-		}
+	for d.Current().Snapshot.Generation == g {
 		if time.Now().After(deadline) {
-			t.Fatalf("background failure never surfaced: gen=%d diags=%v", v.Snapshot.Generation, v.Diagnostics)
+			t.Fatal("background refresh never republished")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if logs.Load() == 0 {
-		t.Fatal("background failure was not logged")
+	// The republished snapshot could not be saved either: that is shown
+	// once, as a write failure, not again as a refresh failure.
+	v := d.Current()
+	if !hasDiag(v, "snapshot not saved") || len(v.Diagnostics) != 1 {
+		t.Fatalf("background write failure: diags=%v", v.Diagnostics)
+	}
+	if logs.Load() == logsBefore {
+		t.Fatal("background write failure was not logged")
 	}
 }
 

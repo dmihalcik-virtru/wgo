@@ -79,9 +79,18 @@ type entry struct {
 // hit, so callers do not re-fetch a ticket that genuinely has no mappable
 // status.
 func Read(ticket string, ttl time.Duration) (Info, State) {
+	info, state, _ := ReadFailed(ticket, ttl)
+	return info, state
+}
+
+// ReadFailed is Read that also reports whether the entry is a negative one:
+// the last fetch of a cold key failed (acli absent, auth error), so it
+// carries no Info. Callers that must tell "lookup failing" apart from "no
+// mappable status" use this instead of checking for an empty status.
+func ReadFailed(ticket string, ttl time.Duration) (Info, State, bool) {
 	path, err := jiraPath(ticket)
 	if err != nil {
-		return Info{}, Miss
+		return Info{}, Miss, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -90,12 +99,12 @@ func Read(ticket string, ttl time.Duration) (Info, State) {
 		if !os.IsNotExist(err) {
 			logf("jira cache: read %s: %v", path, err)
 		}
-		return Info{}, Miss
+		return Info{}, Miss, false
 	}
 	var e entry
 	if err := json.Unmarshal(data, &e); err != nil {
 		logf("jira cache: corrupt entry %s: %v", path, err)
-		return Info{}, Miss
+		return Info{}, Miss, false
 	}
 	// A negative entry expires under the shorter negativeTTL; a normal entry
 	// under the caller's ttl.
@@ -104,9 +113,9 @@ func Read(ticket string, ttl time.Duration) (Info, State) {
 		effTTL = negativeTTL
 	}
 	if time.Since(e.FetchedAt) >= effTTL {
-		return e.Info, Stale
+		return e.Info, Stale, e.Failed
 	}
-	return e.Info, Fresh
+	return e.Info, Fresh, e.Failed
 }
 
 // Write stores the Jira info for a ticket, stamping the current time. The write

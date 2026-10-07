@@ -2,6 +2,7 @@ package jiracache
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"time"
@@ -66,7 +67,7 @@ func Resolve(f Fetcher, ticket string, opts Opts) (Info, State, error) {
 
 // fetchAndStore performs the live fetch and writes the result through the cache.
 // A fetch error is returned; a successful fetch is written so subsequent reads
-// are served locally. On error the cache is left untouched when a usable entry
+// are served locally (a failed write is returned alongside the info). On error the cache is left untouched when a usable entry
 // already exists (a transient Jira outage keeps serving the last-known status),
 // and only a cold key gets a short-lived negative entry so an environment
 // without acli doesn't respawn the background warmer on every render forever.
@@ -83,11 +84,12 @@ func fetchAndStore(f Fetcher, ticket string) (Info, State, error) {
 		}
 		return Info{}, Miss, err
 	}
-	// Ignore write errors on the command path, but surface them for diagnosis:
-	// a failed cache write must not fail the command, yet a silently unwritable
-	// cache would make the feature appear permanently broken.
+	// A failed cache write still returns the fetched info, but also the
+	// error: a silently unwritable cache would make the feature appear
+	// permanently broken. Command paths that only want the info ignore it.
 	if werr := Write(ticket, info); werr != nil {
 		logf("jira cache: write for %s: %v", ticket, werr)
+		return info, Fresh, fmt.Errorf("jira cache write: %w", werr)
 	}
 	return info, Fresh, nil
 }

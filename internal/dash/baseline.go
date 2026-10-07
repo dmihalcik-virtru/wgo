@@ -3,6 +3,7 @@ package dash
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"sort"
@@ -45,7 +46,7 @@ type BaselineBookmark struct {
 // BaselinePR records a PR's state and review requests.
 type BaselinePR struct {
 	BookmarkID         string   `json:"bookmark_id"`
-	State              string   `json:"state"` // open, draft, merged, closed
+	State              string   `json:"state"` // open, draft, merged, closed or unknown
 	ReviewDecision     string   `json:"review_decision,omitempty"`
 	RequestedReviewers []string `json:"requested_reviewers,omitempty"`
 	ReviewersKnown     bool     `json:"reviewers_known"`
@@ -111,7 +112,7 @@ func loadBaseline(path string) (*Baseline, error) {
 		return nil, err
 	}
 	if b.Schema != BaselineSchema {
-		return nil, errors.New("unsupported last-seen schema")
+		return nil, fmt.Errorf("last-seen schema %d, want %d", b.Schema, BaselineSchema)
 	}
 	return &b, nil
 }
@@ -155,8 +156,10 @@ type DeltaSummary struct {
 	NewChanges        int `json:"new_changes"`
 	PRStateChanges    int `json:"pr_state_changes"`
 	NewReviewRequests int `json:"new_review_requests"`
-	Unknown           int `json:"unknown"`
-	Unchanged         int `json:"unchanged"`
+	// Unknown counts workspaces and PRs that could not be compared. A known
+	// PR whose reviewers are unknown counts once here too.
+	Unknown   int `json:"unknown"`
+	Unchanged int `json:"unchanged"`
 	// Truncated counts workspaces with more changes than ChangeWindow; their
 	// older changes are not compared.
 	Truncated int `json:"truncated"`
@@ -288,7 +291,9 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 			d.Summary.NewReviewRequests += len(rd.Added)
 		}
 		if rd.Status != "" {
-			if rd.Status == ItemUnknown {
+			// Unknown reviewers on a PR already tallied unknown are one
+			// unknown item, not two.
+			if rd.Status == ItemUnknown && pd.Status != ItemUnknown {
 				d.Summary.Unknown++
 			}
 			d.ReviewRequests = append(d.ReviewRequests, rd)

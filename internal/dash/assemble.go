@@ -71,7 +71,8 @@ func (t remoteTally) status() SourceStatus {
 }
 
 // assemble turns local state into a snapshot, joining cached remote data.
-// It only reads caches: a miss is reported as Unknown and becomes a job.
+// It only reads caches: a miss is reported as Unknown, and every entry that
+// is not Fresh becomes a job.
 func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	b := &builder{nodes: map[string]*Node{}, edges: map[Edge]bool{}}
 	var jobs []Job
@@ -243,7 +244,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		}
 
 		// Ticket parsed from the bookmark.
-		tid := c.ticketNode(b, w.bookmark, cl.Owner, cl.Repo, repoSlug, &issueTally, &jiraTally, addJob)
+		tid := c.ticketNode(b, w.bookmark, cl.Name, ls.ghSlugs[w.mainClone], ls.noGitHub[w.mainClone], &issueTally, &jiraTally, addJob)
 		if tid == "" {
 			continue
 		}
@@ -338,7 +339,11 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 }
 
 // ticketNode adds the ticket parsed from a bookmark and returns its ID.
-func (c *Collector) ticketNode(b *builder, bookmark, owner, repo, repoSlug string, issues, jira *remoteTally, addJob func(Job)) string {
+// repoSlug is the owner/repo of the clone's GitHub origin; when it is empty,
+// noGitHub says why and gh-N tickets cannot be looked up. The clone's
+// directory-derived owner/repo is deliberately not used: a guessed repo would
+// fetch some other project's issue.
+func (c *Collector) ticketNode(b *builder, bookmark, repoName, repoSlug, noGitHub string, issues, jira *remoteTally, addJob func(Job)) string {
 	ticket := spec.ParseTicketFromBranch(bookmark)
 	if ticket == "" {
 		return ""
@@ -349,13 +354,15 @@ func (c *Collector) ticketNode(b *builder, bookmark, owner, repo, repoSlug strin
 			return ""
 		}
 		if repoSlug == "" {
-			// No GitHub remote: the issue cannot be looked up at all.
-			id := githubTicketID(repo, num)
+			// No GitHub remote (or jj could not say): the issue cannot be
+			// looked up at all.
+			id := githubTicketID(repoName, num)
 			b.node(Node{ID: id, Kind: KindTicket, Label: "gh-" + n, Ticket: &TicketInfo{
-				Key: "gh-" + n, System: "github", Freshness: Unknown, Error: "no GitHub remote"}})
+				Key: "gh-" + n, System: "github", Freshness: Unknown, Error: noGitHub}})
 			issues.add(Unknown, time.Time{})
 			return id
 		}
+		owner, repo, _ := strings.Cut(repoSlug, "/")
 		id := githubTicketID(repoSlug, num)
 		if _, done := b.nodes[id]; done {
 			return id
@@ -394,19 +401,22 @@ func (c *Collector) ticketNode(b *builder, bookmark, owner, repo, repoSlug strin
 	if _, done := b.nodes[id]; done {
 		return id
 	}
-	info, state := jiracache.Read(ticket, c.cfg.JiraTTL)
+	info, state, failed := jiracache.ReadFailed(ticket, c.cfg.JiraTTL)
 	ti := &TicketInfo{Key: ticket, System: "jira"}
 	switch {
-	case state == jiracache.Miss || info.Status == "":
-		// An empty status is jiracache's negative entry (the last fetch
-		// failed or acli is absent): no data, not a status.
+	case state == jiracache.Miss:
 		ti.Freshness = Unknown
+	case failed:
+		// A negative entry: the last lookup failed, so there is no status
+		// to show. A real ticket with an empty status is a normal hit.
+		ti.Freshness = Error
+		ti.Error = "Jira lookup failed; check acli is installed and authenticated (acli jira auth status)"
 	case state == jiracache.Fresh:
 		ti.Freshness = Fresh
 	default:
 		ti.Freshness = Stale
 	}
-	if ti.Freshness != Unknown {
+	if ti.Freshness == Fresh || ti.Freshness == Stale {
 		ti.Status, ti.Assignee = info.Status, info.Assignee
 	}
 	site := c.cfg.JiraSite
