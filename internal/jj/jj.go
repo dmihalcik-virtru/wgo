@@ -3,6 +3,7 @@ package jj
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -179,10 +180,46 @@ func (c *CLIClient) runIn(dir string, args ...string) (string, error) {
 		if ctxErr := c.ctxErr(); ctxErr != nil {
 			return stdout.String(), fmt.Errorf("jj %s: %w", strings.Join(args, " "), ctxErr)
 		}
-		return stdout.String(), fmt.Errorf("jj %s: %s: %w",
-			strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
+		return stdout.String(), &CommandError{
+			Args:   args,
+			Stderr: strings.TrimSpace(stderr.String()),
+			Err:    err,
+		}
 	}
 	return stdout.String(), nil
+}
+
+// CommandError is a jj invocation that exited non-zero. Error() carries the
+// full command line for logs; Brief() is jj's own message alone, for display
+// surfaces where a long -T template would bury it.
+type CommandError struct {
+	Args   []string
+	Stderr string
+	Err    error
+}
+
+func (e *CommandError) Error() string {
+	return fmt.Sprintf("jj %s: %s: %v", strings.Join(e.Args, " "), e.Stderr, e.Err)
+}
+
+func (e *CommandError) Unwrap() error { return e.Err }
+
+// Brief returns jj's stderr without the command line, falling back to the
+// exit error when jj printed nothing.
+func (e *CommandError) Brief() string {
+	if e.Stderr != "" {
+		return e.Stderr
+	}
+	return e.Err.Error()
+}
+
+// BriefError returns err's message with any jj command line stripped.
+func BriefError(err error) string {
+	var ce *CommandError
+	if errors.As(err, &ce) {
+		return ce.Brief()
+	}
+	return err.Error()
 }
 
 // ctxErr reports the client context's error, or nil when there is no context.

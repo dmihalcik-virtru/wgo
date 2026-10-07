@@ -1288,3 +1288,30 @@ func TestReadOnlyNeverSnapshots(t *testing.T) {
 		t.Fatalf("default client did not snapshot; op count stayed %d", got)
 	}
 }
+
+func TestBriefErrorStripsCommandLine(t *testing.T) {
+	jjtest.RequireJJ(t)
+	dir := t.TempDir() // not a jj repo
+	_, err := jj.NewCLI().Root(dir)
+	if err == nil {
+		t.Fatal("Root on a non-repo succeeded")
+	}
+	var ce *jj.CommandError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %T, want *jj.CommandError", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("CommandError does not unwrap to *exec.ExitError")
+	}
+	if !strings.HasPrefix(err.Error(), "jj root: ") {
+		t.Errorf("Error() = %q, want the command line prefix", err.Error())
+	}
+	brief := jj.BriefError(err)
+	if brief == "" || strings.Contains(brief, "jj root") {
+		t.Errorf("BriefError = %q, want jj's message without the command line", brief)
+	}
+	if got := jj.BriefError(errors.New("plain")); got != "plain" {
+		t.Errorf("BriefError(plain) = %q", got)
+	}
+}

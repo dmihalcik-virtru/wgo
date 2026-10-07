@@ -10,6 +10,7 @@ import (
 
 	"github.com/virtru/wgo/internal/issuecache"
 	"github.com/virtru/wgo/internal/jiracache"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/prcache"
 	"github.com/virtru/wgo/internal/spec"
 	"github.com/virtru/wgo/internal/store"
@@ -150,7 +151,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		}
 		wsByCanonical[w.canonical] = w.id
 		if w.err != nil {
-			wi.Error = w.err.Error()
+			wi.Error = jj.BriefError(w.err)
 		} else {
 			wi.Bookmark = w.bookmark
 			wi.ChangeID = w.current.ChangeID
