@@ -23,9 +23,10 @@ Writes into <run_dir>/:
 
 Usage: slice.py <run_dir> [--focus "term, synonym, TICKET-1" [--focus-limit 15]]
   --focus writes slices/focus-<slug>.json holding every item matching any
-  comma-separated term (all of a term's words) in a title, body, description,
-  ticket, repo, epic, component or label, ranked by terms matched then
-  complexity (for yir-deep-dive).
+  comma-separated term (all of a term's words, as case-insensitive substrings)
+  in a title, body, description, ticket, parent or epic key, epic summary,
+  repo, component or label, ranked by terms matched then complexity (for
+  yir-deep-dive).
 """
 
 from __future__ import annotations
@@ -39,6 +40,8 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from collect import is_bot
+
 MIN_ITEMS = 3
 MIN_PRS_TO_KEEP = 5
 MAX_ITEMS = 40
@@ -46,7 +49,7 @@ MAX_BYTES = 120_000  # roughly 30k tokens: one comfortable analyst read
 BANDS = ["L", "M", "H", "XL"]
 OUTCOME_RANK = ["shipped", "shipped-with-rework", "in-flight", "stalled", "reverted", "abandoned"]
 DONE = {"Done", "Fixed", "Resolved", "Complete", "Completed"}
-BOT_RE = re.compile(r"(\[bot\]$|bot$|^coderabbit|^copilot|automation|^github-actions|^renovate|^dependabot)", re.I)
+TRUNKS = {"main", "master", "develop", "trunk"}
 TRIM = {"node_id", "body_excerpt", "cross_refs", "description"}
 
 
@@ -79,6 +82,10 @@ def trim(r: dict) -> dict:
     return out
 
 
+def is_trunk(branch: str) -> bool:
+    return branch in TRUNKS or branch.startswith("release/")
+
+
 def quarter(ts: str) -> str:
     return f"{ts[:4]}-Q{(int(ts[5:7]) - 1) // 3 + 1}"
 
@@ -89,7 +96,9 @@ def build_items(ledger: list[dict]) -> list[dict]:
     heads: dict[tuple[str, str], str] = {}
     for r in ledger:
         dsu.find(rid(r))
-        if r["kind"] == "pr_authored" and r.get("head"):
+        # a release PR (develop -> main) or a fork's main is not a stack parent:
+        # every PR based on that trunk would chain into one item
+        if r["kind"] == "pr_authored" and r.get("head") and not is_trunk(r["head"]):
             heads[(r["repo"], r["head"])] = rid(r)
     for r in ledger:
         if r["kind"] in ("pr_reviewed", "pr_commented", "issue_commented"):
@@ -119,8 +128,11 @@ def summarize_item(members: list[dict]) -> dict:
     dates = sorted(filter(None, (m.get("created") for m in members)))
     ends = sorted(filter(None, (m.get("merged") or m.get("resolved") for m in members)))
 
-    band = max((BANDS.index(p["complexity"]) for p in prs), default=0)
-    drivers = [d for p in prs for d in p.get("complexity_drivers", [])]
+    banded = [p for p in prs if p.get("complexity")]  # unenriched PRs have no measured band
+    band = max((BANDS.index(p["complexity"]) for p in banded), default=0)
+    drivers = [d for p in banded for d in p.get("complexity_drivers", [])]
+    if len(banded) < len(prs):
+        drivers.append(f"{len(prs) - len(banded)} PRs not enriched")
     sp = sum(j.get("story_points") or 0 for j in jira)
     repos = sorted({m["repo"] for m in members if m.get("repo")})
     if len(prs) >= 4 or len(repos) >= 2:  # breadth the per-PR score cannot see
@@ -130,19 +142,24 @@ def summarize_item(members: list[dict]) -> dict:
         band = 2
         drivers.append(f"{sp} story points")
 
-    # a ticket only *cited* by my PRs counts as my delivery only if one of them merged
-    mine_done = any(j.get("resolution") in DONE and j.get("signals") != ["linked"] for j in jira)
+    # A ticket is my work if I resolved it or moved it. One I only reported or
+    # only cited counts as my delivery only if one of my PRs on it merged.
+    def worked(j: dict) -> bool:
+        return bool({"resolved", "transitioned"} & set(j.get("signals", [])))
+
+    mine_done = any(j.get("resolution") in DONE and worked(j) for j in jira)
     linked_done = any(j.get("resolution") in DONE for j in jira) and any(p.get("merged") for p in prs)
+    rework = any(p["outcome"] in ("shipped-with-rework", "reverted") for p in prs)
     if mine_done or linked_done:
-        outcome = "shipped"
-        if any(p["outcome"] in ("shipped-with-rework", "reverted") for p in prs):
-            outcome = "shipped-with-rework"
+        outcome = "shipped-with-rework" if rework else "shipped"
     elif prs:
         outcome = min((p["outcome"] for p in prs), key=OUTCOME_RANK.index)
-    elif jira and any(j.get("resolution") for j in jira):
-        outcome = "abandoned"  # resolved, but as Won't Do / Duplicate / etc.
-    elif jira and all(j.get("signals") == ["reported"] for j in jira):
-        outcome = "filed"  # triage/backlog work: written for someone else to pick up
+        if outcome == "shipped" and rework:  # one shipped PR must not hide a reverted sibling
+            outcome = "shipped-with-rework"
+    elif jira and not any(worked(j) for j in jira):
+        outcome = "filed"  # reported for someone else (or later) to pick up, whoever resolved it
+    elif any(j.get("resolution") for j in jira if worked(j)):
+        outcome = "abandoned"  # I resolved it, but as Won't Do / Duplicate / etc.
     elif jira:
         outcome = "in-flight"
     elif reviews:
@@ -228,6 +245,8 @@ def build_slices(items: list[dict]) -> dict[str, dict]:
                 break
         for b, its in parts.items():
             slices[f"{sid}-{b}"] = {**s, "id": f"{sid}-{b}", "items": its}
+            if too_big(its):
+                print(f"warning: slice {sid}-{b} is still over {MAX_ITEMS} items or {MAX_BYTES} bytes", file=sys.stderr)
     return slices
 
 
@@ -238,7 +257,6 @@ def summarize_slice(s: dict) -> dict:
         "items": len(its),
         "prs": sum(i["kinds"].get("pr_authored", 0) for i in its),
         "jira": sum(i["kinds"].get("jira", 0) for i in its),
-        "reviews": sum(i["kinds"].get("pr_reviewed", 0) for i in its),
         "repos": sorted({r for i in its for r in i["repos"]}),
         "span": [starts[0][:10], starts[-1][:10]] if starts else None,
         "complexity": dict(Counter(i["complexity"] for i in its)),
@@ -270,7 +288,7 @@ def review_digests(ledger: list[dict], people: dict) -> dict[str, dict]:
             "states": dict(sum((Counter(r.get("my_review_states") or {}) for r in reviews), Counter())),
             "by_repo": dict(Counter(r["repo"] for r in rs).most_common(15)),
             "by_author": [
-                {"login": l, "n": n, "teams": teams.get(l, []), "bot": bool(BOT_RE.search(l))}
+                {"login": l, "n": n, "teams": teams.get(l, []), "bot": is_bot(l)}
                 for l, n in authors.most_common(20)
             ],
             "by_month": dict(sorted(Counter((r.get("first_review") or r.get("created") or "")[:7] for r in rs).items())),
@@ -283,7 +301,7 @@ def review_digests(ledger: list[dict], people: dict) -> dict[str, dict]:
     return out
 
 
-def stats(ledger: list[dict], items: list[dict], people: dict) -> dict:
+def stats(ledger: list[dict], items: list[dict], people: dict, coverage: dict) -> dict:
     prs = [r for r in ledger if r["kind"] == "pr_authored"]
     merged = [p for p in prs if p.get("merged")]
     cycles = [p["cycle_hours"] for p in merged if p.get("cycle_hours") is not None]
@@ -291,6 +309,7 @@ def stats(ledger: list[dict], items: list[dict], people: dict) -> dict:
     cp = people.get("counterparts", {})
     teams = people.get("teams", {})
     my_teams = set(people.get("my_teams", []))
+    work = [i for i in items if i["outcome"] != "review"]
     return {
         "prs_authored": len(prs),
         "prs_merged": len(merged),
@@ -309,23 +328,42 @@ def stats(ledger: list[dict], items: list[dict], people: dict) -> dict:
         "jira_resolved_done": len(jira_done),
         "story_points_resolved": sum(j.get("story_points") or 0 for j in jira_done),
         "jira_reported": sum(1 for r in ledger if "reported" in r.get("signals", [])),
-        "work_items": sum(1 for i in items if i["outcome"] != "review"),
-        "work_items_by_complexity": dict(Counter(i["complexity"] for i in items if i["outcome"] != "review")),
-        "work_items_by_outcome": dict(Counter(i["outcome"] for i in items if i["outcome"] != "review")),
+        "prs_reverted": sum(1 for p in prs if p.get("reverted")),
+        "prs_with_followup_fixes": sum(1 for p in prs if p.get("followup_fixes")),
+        "work_items": len(work),
+        "work_items_by_complexity": dict(Counter(i["complexity"] for i in work)),
+        "work_items_by_outcome": dict(Counter(i["outcome"] for i in work)),
+        "shipped_by_complexity": dict(
+            Counter(i["complexity"] for i in work if i["outcome"] in ("shipped", "shipped-with-rework"))
+        ),
         "collaborators": len(cp),
         "collaborators_outside_my_teams": sum(1 for l in cp if teams.get(l) and not set(teams[l]) & my_teams),
         "prs_built_on_by_others": sum(1 for p in prs if p.get("downstream_others")),
+        # how far to trust the numbers above; details in coverage.json
+        "data_errors": len(coverage.get("errors", [])),
+        "truncated": len(coverage.get("truncation", [])),
+        "unenriched_prs": len(coverage.get("unenriched", [])),
+        "failed_months": sorted(coverage.get("failed_months", {})),
     }
 
 
 def focus_score(item: dict, needle: str) -> int:
     """How many comma-separated terms of needle the item matches (a term = all its words)."""
     hay = " ".join(
-        [item["title"] or "", item.get("epic_summary") or "", *item["tickets"], *item["repos"], *item["components"], *item["labels"]]
+        [item["title"] or "", item.get("epic") or "", item.get("epic_summary") or "",
+         *item["tickets"], *item["repos"], *item["components"], *item["labels"]]
+        + [m.get("parent") or "" for m in item["members"]]
         + [f"{m.get('title') or ''} {m.get('body') or ''} {m.get('description') or ''}" for m in item["members"]]
     ).lower()
     terms = [t.split() for t in needle.lower().split(",") if t.strip()]
     return sum(all(w in hay for w in t) for t in terms)
+
+
+def read_optional(path: Path) -> dict:
+    if not path.exists():
+        print(f"warning: {path} missing; numbers that depend on it read as 0", file=sys.stderr)
+        return {}
+    return json.loads(path.read_text())
 
 
 def main() -> None:
@@ -336,7 +374,8 @@ def main() -> None:
     a = ap.parse_args()
 
     ledger = [json.loads(l) for l in (a.run_dir / "ledger.jsonl").read_text().splitlines() if l.strip()]
-    people = json.loads((a.run_dir / "people.json").read_text()) if (a.run_dir / "people.json").exists() else {}
+    people = read_optional(a.run_dir / "people.json")
+    coverage = read_optional(a.run_dir / "coverage.json")
     items = build_items(ledger)
     out = a.run_dir / "slices"
     out.mkdir(exist_ok=True)
@@ -358,6 +397,8 @@ def main() -> None:
             old.unlink()
     rdir = a.run_dir / "reviews"
     rdir.mkdir(exist_ok=True)
+    for old in rdir.glob("*.json"):  # an org with no reviews this run must not keep last run's digest
+        old.unlink()
     for org, d in review_digests(ledger, people).items():
         (rdir / f"{org}.json").write_text(json.dumps(d, indent=1))
     slices = build_slices(items)
@@ -371,14 +412,14 @@ def main() -> None:
         index.append({k: s.get(k) for k in ("id", "basis", "org", "epic_summary", "hash")} | {"summary": s["summary"]})
     index.sort(key=lambda s: -s["summary"]["weight"])
     (out / "index.json").write_text(json.dumps(index, indent=1))
-    st = stats(ledger, items, people)
+    st = stats(ledger, items, people, coverage)
     (a.run_dir / "stats.json").write_text(json.dumps(st, indent=1))
     print(json.dumps({"slices": len(index), "work_items": st["work_items"], "index": str(out / "index.json"),
                       "review_digests": sorted(p.name for p in rdir.glob("*.json"))}))
     for s in index:
         sm = s["summary"]
-        print(f"  {s['id']:<48} {sm['items']:>3} items  {sm['prs']:>3} PRs  {sm['jira']:>3} jira  "
-              f"{sm['reviews']:>3} reviews  w={sm['weight']}", file=sys.stderr)
+        print(f"  {s['id']:<48} {sm['items']:>3} items  {sm['prs']:>3} PRs  {sm['jira']:>3} jira  w={sm['weight']}",
+              file=sys.stderr)
 
 
 if __name__ == "__main__":
