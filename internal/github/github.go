@@ -199,6 +199,33 @@ func SanitizeBranch(branch string) string {
 	return s
 }
 
+// PinBookmarkPrefix begins every name PinBookmark produces. A name is reserved
+// only if it has the full `pr-<N>-` shape; see IsPinBookmark.
+const PinBookmarkPrefix = "pr-"
+
+// PinBookmark names the wgo-owned local bookmark that pins PR n's head when the
+// head ref itself cannot be tracked. The PR number keeps it unique per repo
+// even when SanitizeBranch collapses two long head refs to the same slug.
+func PinBookmark(n int, branch string) string {
+	return fmt.Sprintf("%s%d-%s", PinBookmarkPrefix, n, SanitizeBranch(branch))
+}
+
+// IsPinBookmark reports whether name is in the reserved namespace — the shape
+// PinBookmark produces, `pr-<decimal>-<anything>`. The digits and the second
+// separator are both required so that ordinary branches which merely start with
+// "pr-" (pr-review-fixes) or happen to end there (pr-123) stay the user's own.
+func IsPinBookmark(name string) bool {
+	rest, ok := strings.CutPrefix(name, PinBookmarkPrefix)
+	if !ok {
+		return false
+	}
+	digits, _, ok := strings.Cut(rest, "-")
+	if !ok || digits == "" {
+		return false
+	}
+	return !strings.ContainsFunc(digits, func(r rune) bool { return r < '0' || r > '9' })
+}
+
 func slugify(s string) string {
 	s = strings.ToLower(s)
 	re := regexp.MustCompile(`[^a-z0-9]+`)
