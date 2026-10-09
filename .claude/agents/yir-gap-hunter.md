@@ -16,11 +16,13 @@ You hunt for missing data. A review built on incomplete data undersells the deve
 ## Inputs (inside the run directory)
 
 - `coverage.json`. Every number you need is already in this file, so copy numbers rather than working them out:
-  - `months`: per-source counts for each month. `monthly_activity` is authored + reviewed + Jira resolved per month, and `quiet_months` has already been computed.
+  - `months`: per-source counts for each month. A month with a `failed` list has zeros that mean "the query failed", not "nothing happened". `failed_months` collects them. `monthly_activity` is authored + reviewed + Jira resolved per month, and `quiet_months` has already been computed from the months with no failure.
   - `errors` and `truncation`: sources that failed or were cut off.
-  - `prs_authored` and `prs_without_ticket`: PRs whose title, branch, and body cite no known Jira key.
-  - `resolved_tickets_without_pr`: tickets resolved by you that no PR cites.
-  - `cited_tickets_unfetched`: tickets that PRs cite but that couldn't be fetched (deleted, no permission, or another site).
+  - `unenriched` and `reviewed_unenriched`: PRs whose details couldn't be fetched. Authored ones have no size, reviewers or band; reviewed ones were left out because they couldn't be dated.
+  - `jira_projects_inferred`: present when Jira was skipped or failed and project keys were guessed from ticket prefixes.
+  - `prs_authored` and `prs_without_ticket`: PRs whose title, branch, and first 400 characters of body cite no known Jira key.
+  - `resolved_tickets_without_pr`: tickets resolved by you that no record cites (no PR, commit message or issue).
+  - `cited_tickets_unfetched` and `cited_tickets_unfetched_count`: the primary tickets of your PRs that were looked up but couldn't be fetched (deleted, no permission, or another site). The list stops at 200; the count doesn't.
   - `dropped_ticket_prefixes`: `ABC-123`-shaped strings whose prefix isn't a known project, with a count for each.
   - `local_repos_without_github_activity`
   - `jira_projects`
@@ -32,11 +34,12 @@ You hunt for missing data. A review built on incomplete data undersells the deve
    - `collect.py --period P --refresh`
    - `gh auth refresh -s read:org`
    - `acli jira auth login`
-2. **Quiet months.** Report `quiet_months` exactly as given. For each one, suggest a likely cause to confirm with the user: leave, on-call, work in a system not covered, or a repo outside GitHub.
+2. **Quiet months.** Report `quiet_months` exactly as given. For each one, suggest a likely cause to confirm with the user: leave, on-call, work in a system not covered, or a repo outside GitHub. Report `failed_months` separately, as data gaps to re-run, never as quiet time.
 3. **Link gaps.**
    - Quote `prs_without_ticket` out of `prs_authored`.
    - List the `resolved_tickets_without_pr` keys, which may point to work outside GitHub or PRs that don't cite their ticket.
-   - Count `cited_tickets_unfetched`.
+   - Quote `cited_tickets_unfetched_count`.
+   - Quote the length of `unenriched` and `reviewed_unenriched`, if non-zero.
    - For `dropped_ticket_prefixes` that appear 3 or more times, recommend `--jira-projects A,B` if they look like real projects rather than something like `ML-KEM`.
 4. **Uncovered repos.** Among `local_repos_without_github_activity`, name the ones worth a manual check.
 5. **Confluence.**

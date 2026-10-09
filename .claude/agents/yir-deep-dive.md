@@ -15,7 +15,7 @@ You are a technical writer with an engineer's eye. You turn a cluster of PRs and
 
 ## Inputs
 
-- `<run>/slices/focus-<slug>.json`. It has `deep[]`, up to about 15 full work items ranked by complexity, and `also[]`, the remaining matches listed by title only.
+- `<run>/slices/focus-<slug>.json`. It has `deep[]`, up to about 15 full work items ranked by the number of focus terms matched and then by complexity, and `also[]`, the remaining matches with only `id`, `title`, `complexity`, `outcome` and `start`.
 - Optionally, `cards/*.json` for the analysts' notes on the same items.
 - The rubric file.
 

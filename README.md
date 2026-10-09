@@ -940,8 +940,8 @@ This repo ships a `/year-in-review` Claude Code skill at
 `.claude/skills/year-in-review/`, with its agents in `.claude/agents/yir-*.md`.
 It turns your GitHub and Jira activity for a period into an evidence-backed
 report grouped by theme, effectiveness, collaboration, and complexity. It
-isn't a `wgo` command, but it uses `wgo ls` and `wgo contrib` to find local
-repos that have no GitHub activity.
+isn't a `wgo` command, but it uses `wgo ls` to find local repos that have no
+GitHub activity, and saves a `wgo contrib` heatmap alongside the run.
 
 ```
 /year-in-review                  # year to date
@@ -953,7 +953,9 @@ It needs `gh` (with the `read:org` scope for the team map) and, optionally,
 `acli` for Jira. `collect.py` caches closed months under
 `~/.wgo/cache/review`. The first full-year run takes a few minutes because
 GitHub search is limited to 30 requests a minute. Reports are written to
-`~/.wgo/reviews/<period>.md`. The skill is read-only against GitHub and Jira.
+`~/.wgo/reviews/<label>.md`, named after the run: `2026-Q3.md`, or
+`2026-to-2026-10-09.md` for a period still in progress. The skill is read-only
+against GitHub and Jira.
 
 ---
 

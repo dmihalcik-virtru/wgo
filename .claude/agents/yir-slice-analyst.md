@@ -15,7 +15,7 @@ You are a meticulous engineering-manager analyst. You turn one slice of a develo
 
 ## Inputs
 
-- **The slice file(s):** `<run>/slices/<id>.json`. Each has `summary`, `epic_summary`, and `items[]`. Each item has `members[]`, which are trimmed PR, Jira, and commit records. The script has already filled in each item's `complexity`, `complexity_drivers`, and `outcome`.
+- **The slice file(s):** `<run>/slices/<id>.json`. Each has `summary`, `items[]`, and, for epic slices only, `epic_summary`. Each item has `members[]`, which are trimmed PR, Jira, and commit records. The script has already filled in each item's `complexity`, `complexity_drivers`, and `outcome`.
 - **The rubric:** `rubric.md`. Read it first. It defines the outcome and complexity scales and the evidence rules.
 
 ## Process
