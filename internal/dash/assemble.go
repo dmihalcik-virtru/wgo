@@ -141,42 +141,8 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		if eff == "" {
 			eff = effortNode(GroupUngrouped)
 		}
-		wi := &WorkspaceInfo{
-			Slug:      filepath.Base(w.root),
-			Repo:      cl.Name,
-			RepoSlug:  repoSlug,
-			Path:      w.root,
-			MainClone: w.mainClone,
-			IsMain:    w.isMain,
-			EffortID:  eff,
-		}
+		wi := workspaceInfo(w, cl.Name, repoSlug, eff, ls.annotations)
 		wsByCanonical[w.canonical] = w.id
-		if w.err != nil {
-			wi.Error = jj.BriefError(w.err)
-		} else {
-			wi.Bookmark = w.bookmark
-			wi.ChangeID = w.current.ChangeID
-			wi.LastActivity = w.current.AuthorTimestamp
-			for _, ch := range w.changes {
-				wi.Changes = append(wi.Changes, ch.ChangeID)
-				if wi.Description == "" && strings.TrimSpace(ch.Description) != "" {
-					wi.Description = firstLine(ch.Description)
-				}
-				if ch.AuthorTimestamp.After(wi.LastActivity) {
-					wi.LastActivity = ch.AuthorTimestamp
-				}
-			}
-			wi.ChangesTruncated = w.truncated
-			if w.bookmark != "" {
-				for i, name := range w.stack {
-					if name == w.bookmark {
-						wi.Stack = &StackPosition{Position: i + 1, Size: len(w.stack), Bookmarks: append([]string(nil), w.stack...)}
-						break
-					}
-				}
-				wi.Annotation = ls.annotations[store.AnnotationKey(w.mainClone, w.bookmark)]
-			}
-		}
 		label := wi.Slug
 		if !strings.EqualFold(wi.Slug, cl.Name) {
 			label = cl.Name + "/" + wi.Slug
@@ -216,7 +182,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 			repoKey = cl.Name
 		}
 		var prIDs []string
-		if bi.PRLookup == Fresh || bi.PRLookup == Stale {
+		if bi.PRLookup.hasData() {
 			for _, pr := range res.PRs {
 				id := prNodeID(repoKey, pr.Number)
 				prIDs = append(prIDs, id)
@@ -338,6 +304,48 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	return s, jobs
 }
 
+// workspaceInfo describes workspace w of repository repo, attributed to the
+// effort node effortID. The jj-derived fields are left empty when w could
+// not be read.
+func workspaceInfo(w *wsData, repo, repoSlug, effortID string, annotations map[string]string) *WorkspaceInfo {
+	wi := &WorkspaceInfo{
+		Slug:      filepath.Base(w.root),
+		Repo:      repo,
+		RepoSlug:  repoSlug,
+		Path:      w.root,
+		MainClone: w.mainClone,
+		IsMain:    w.isMain,
+		EffortID:  effortID,
+	}
+	if w.err != nil {
+		wi.Error = jj.BriefError(w.err)
+		return wi
+	}
+	wi.Bookmark = w.bookmark
+	wi.ChangeID = w.current.ChangeID
+	wi.LastActivity = w.current.AuthorTimestamp
+	for _, ch := range w.changes {
+		wi.Changes = append(wi.Changes, ch.ChangeID)
+		if wi.Description == "" && strings.TrimSpace(ch.Description) != "" {
+			wi.Description = firstLine(ch.Description)
+		}
+		if ch.AuthorTimestamp.After(wi.LastActivity) {
+			wi.LastActivity = ch.AuthorTimestamp
+		}
+	}
+	wi.ChangesTruncated = w.truncated
+	if w.bookmark != "" {
+		for i, name := range w.stack {
+			if name == w.bookmark {
+				wi.Stack = &StackPosition{Position: i + 1, Size: len(w.stack), Bookmarks: append([]string(nil), w.stack...)}
+				break
+			}
+		}
+		wi.Annotation = annotations[store.AnnotationKey(w.mainClone, w.bookmark)]
+	}
+	return wi
+}
+
 // ticketNode adds the ticket parsed from a bookmark and returns its ID.
 // repoSlug is the owner/repo of the clone's GitHub origin; when it is empty,
 // noGitHub says why and gh-N tickets cannot be looked up. The clone's
@@ -369,22 +377,11 @@ func (c *Collector) ticketNode(b *builder, bookmark, repoName, repoSlug, noGitHu
 		}
 		k := issuecache.Key{Owner: owner, Repo: repo, Number: num}
 		res := issuecache.Read(k, c.cfg.IssueTTL)
-		ti := &TicketInfo{Key: "gh-" + n, System: "github", FetchedAt: res.FetchedAt}
-		switch res.State {
-		case issuecache.Fresh:
-			ti.Freshness = Fresh
-		case issuecache.Stale:
-			ti.Freshness = Stale
-		default:
-			ti.Freshness = Unknown
-			if res.Err != nil {
-				ti.Freshness = Error
-			}
-		}
+		ti := &TicketInfo{Key: "gh-" + n, System: "github", FetchedAt: res.FetchedAt, Freshness: issueFreshness(res)}
 		if res.Err != nil {
 			ti.Error = res.Err.Error()
 		}
-		if ti.Freshness == Fresh || ti.Freshness == Stale {
+		if ti.Freshness.hasData() {
 			ti.Status, ti.Title, ti.URL = res.Info.State, res.Info.Title, res.Info.URL
 		}
 		if ti.URL == "" {
@@ -416,7 +413,7 @@ func (c *Collector) ticketNode(b *builder, bookmark, repoName, repoSlug, noGitHu
 	default:
 		ti.Freshness = Stale
 	}
-	if ti.Freshness == Fresh || ti.Freshness == Stale {
+	if ti.Freshness.hasData() {
 		ti.Status, ti.Assignee = info.Status, info.Assignee
 	}
 	site := c.cfg.JiraSite
@@ -442,7 +439,24 @@ func prFreshness(r prcache.Result) Freshness {
 	case prcache.Stale:
 		return Stale
 	}
-	if r.Err != nil {
+	return missFreshness(r.Err)
+}
+
+// issueFreshness maps a GitHub issue cache result onto a Freshness.
+func issueFreshness(r issuecache.Result) Freshness {
+	switch r.State {
+	case issuecache.Fresh:
+		return Fresh
+	case issuecache.Stale:
+		return Stale
+	}
+	return missFreshness(r.Err)
+}
+
+// missFreshness is the Freshness of a cache miss: Error when the last
+// lookup failed, otherwise Unknown.
+func missFreshness(err error) Freshness {
+	if err != nil {
 		return Error
 	}
 	return Unknown

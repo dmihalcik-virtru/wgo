@@ -78,7 +78,7 @@ func baselineFrom(s *Snapshot, at time.Time) *Baseline {
 				Known:     w.Error == "",
 			}
 		case n.Bookmark != nil:
-			b.Bookmarks[n.ID] = BaselineBookmark{PRsKnown: n.Bookmark.PRLookup == Fresh || n.Bookmark.PRLookup == Stale}
+			b.Bookmarks[n.ID] = BaselineBookmark{PRsKnown: n.Bookmark.PRLookup.hasData()}
 		case n.PR != nil:
 			b.PRs[n.ID] = BaselinePR{
 				BookmarkID:         n.PR.BookmarkID,

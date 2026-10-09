@@ -190,8 +190,9 @@ func (c *CLIClient) runIn(dir string, args ...string) (string, error) {
 }
 
 // CommandError is a jj invocation that exited non-zero. Error() carries the
-// command line (without the global --ignore-working-copy flag) for logs; Brief() is jj's own message alone, for display
-// surfaces where a long -T template would bury it.
+// command line (without the global --ignore-working-copy flag) for logs;
+// Brief() is jj's own message alone, for display surfaces where a long -T
+// template would bury it.
 type CommandError struct {
 	Args   []string
 	Stderr string

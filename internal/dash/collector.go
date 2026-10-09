@@ -90,7 +90,6 @@ type localState struct {
 	ghSlugs     map[string]string
 	noGitHub    map[string]string
 	attribution *effort.AttributionResult
-	themeIDs    map[string]string // effort keys a theme resolved to
 	sessions    []store.ObservedSession
 	conflicts   map[string][]string
 	annotations map[string]string // AnnotationKey -> purpose
@@ -195,7 +194,6 @@ func (c *Collector) collectLocal(ctx context.Context) (*localState, error) {
 		ghSlugs:     map[string]string{},
 		noGitHub:    map[string]string{},
 		annotations: map[string]string{},
-		themeIDs:    map[string]string{},
 		sources:     map[string]SourceStatus{},
 	}
 	set, err := c.discoverWorkspaces()

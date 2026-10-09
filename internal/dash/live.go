@@ -232,10 +232,9 @@ func Open(opts Options) (*Dash, error) {
 	b, err := loadBaseline(filepath.Join(opts.Dir, BaselineFile))
 	if err != nil {
 		d.baselineLoadErr = err.Error()
-		b = nil
 	}
-	d.baseline = b
 	if b != nil {
+		d.baseline = b
 		d.gen = b.Generation
 	}
 	s, err := loadSnapshot(filepath.Join(opts.Dir, SnapshotFile))
@@ -301,19 +300,14 @@ func (d *Dash) Publish(s *Snapshot) error {
 	if d.opts.Dir == "" {
 		return nil
 	}
-	werr := atomicfile.Write(filepath.Join(d.opts.Dir, SnapshotFile), v.snapshotJSON, 0o600)
-	msg := ""
-	if werr != nil {
-		msg = werr.Error()
-		logf("dash: persist snapshot: %v", werr)
-	} else {
-		// A good snapshot.json replaced whatever could not be loaded.
-		d.setDiagLocked(&d.snapshotLoadErr, "")
+	if err := atomicfile.Write(filepath.Join(d.opts.Dir, SnapshotFile), v.snapshotJSON, 0o600); err != nil {
+		logf("dash: persist snapshot: %v", err)
+		d.setDiagLocked(&d.persistErr, err.Error())
+		return fmt.Errorf("%w: %w", ErrPersist, err)
 	}
-	d.setDiagLocked(&d.persistErr, msg)
-	if werr != nil {
-		return fmt.Errorf("%w: %w", ErrPersist, werr)
-	}
+	// A good snapshot.json replaced whatever could not be loaded.
+	d.setDiagLocked(&d.snapshotLoadErr, "")
+	d.setDiagLocked(&d.persistErr, "")
 	return nil
 }
 

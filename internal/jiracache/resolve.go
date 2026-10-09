@@ -67,10 +67,11 @@ func Resolve(f Fetcher, ticket string, opts Opts) (Info, State, error) {
 
 // fetchAndStore performs the live fetch and writes the result through the cache.
 // A fetch error is returned; a successful fetch is written so subsequent reads
-// are served locally (a failed write is returned alongside the info). On error the cache is left untouched when a usable entry
-// already exists (a transient Jira outage keeps serving the last-known status),
-// and only a cold key gets a short-lived negative entry so an environment
-// without acli doesn't respawn the background warmer on every render forever.
+// are served locally (a failed write is returned alongside the info). On error
+// the cache is left untouched when a usable entry already exists (a transient
+// Jira outage keeps serving the last-known status), and only a cold key gets a
+// short-lived negative entry so an environment without acli doesn't respawn
+// the background warmer on every render forever.
 func fetchAndStore(f Fetcher, ticket string) (Info, State, error) {
 	if f == nil {
 		return Info{}, Miss, nil

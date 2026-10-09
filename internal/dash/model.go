@@ -42,6 +42,9 @@ const (
 	Error Freshness = "error"
 )
 
+// hasData reports whether f carries a last known good value: Fresh or Stale.
+func (f Freshness) hasData() bool { return f == Fresh || f == Stale }
+
 // NodeKind names the kinds of snapshot nodes.
 type NodeKind string
 
