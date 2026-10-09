@@ -1218,10 +1218,15 @@ func workingCopyFiles(t *testing.T, root string) []string {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
-			if d.Name() == ".jj" || d.Name() == ".git" {
+		// jj >= 0.46 makes each secondary workspace a git worktree, so .git
+		// can be a pointer file there rather than a directory.
+		if d.Name() == ".jj" || d.Name() == ".git" {
+			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
