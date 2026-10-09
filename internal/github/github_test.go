@@ -123,16 +123,17 @@ func TestSanitizeBranch(t *testing.T) {
 	}
 }
 
-// IsPinBookmark decides whether a bookmark is wgo's to push. Claiming one
-// that is not costs the user a duplicate PR; failing to claim one that is
-// costs them a bookmark `wgo to` can no longer move. Both directions matter,
-// so both are pinned down here.
+// IsPinBookmark decides whether a bookmark is wgo's to push. Claiming one that
+// is not a pin silently drops the user's own work from --create-prs; failing to
+// claim a real pin publishes a duplicate head ref and leaves a bookmark `wgo to`
+// can no longer move. Both directions matter, so both are pinned down here.
 func TestIsPinBookmark(t *testing.T) {
 	reserved := []string{
 		"pr-7-feature",
 		"pr-123-a-very-long-slug",
 		"pr-7-",               // SanitizeBranch collapses some head refs to nothing
 		"pr-7-pr-8-confusing", // the slug may itself look like a pin
+		"pr-0-x",
 	}
 	for _, name := range reserved {
 		t.Run(name, func(t *testing.T) {
@@ -144,6 +145,7 @@ func TestIsPinBookmark(t *testing.T) {
 		"pr-review-fixes", // starts with the prefix, but no PR number
 		"pr-123",          // no slug separator: not a shape wgo produces
 		"pr-",
+		"pr--x", // empty number
 		"pr",
 		"feature/pr-7-x", // the prefix is anchored at the start
 		"",
@@ -157,6 +159,10 @@ func TestIsPinBookmark(t *testing.T) {
 
 // Whatever PinBookmark writes, IsPinBookmark has to recognise — they are the
 // two halves of one namespace and drift between them is the failure mode.
+func TestPinBookmarkShape(t *testing.T) {
+	assert.Equal(t, "pr-7-feature-auth", PinBookmark(7, "feature/auth"))
+}
+
 func TestPinBookmarkIsRecognised(t *testing.T) {
 	for _, branch := range []string{"feature/auth", "main", "!!!", "", "pr-8-nested"} {
 		name := PinBookmark(7, branch)

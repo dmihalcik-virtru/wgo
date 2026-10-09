@@ -92,6 +92,10 @@ func runSync(_ *cobra.Command, _ []string) error {
 		Linker:      wgosync.NewCLILinker(),
 	}
 
+	if err := wgosync.CheckOptions(opts); err != nil {
+		return err
+	}
+
 	exitWithErr := false
 	for _, repo := range repos {
 		if !jjc.IsRepo(repo) {
@@ -118,6 +122,12 @@ func runSync(_ *cobra.Command, _ []string) error {
 
 func printSyncResult(repo string, r *wgosync.Result) {
 	fmt.Printf("== %s ==\n", repo)
+	defer func() {
+		if len(r.PinsSkipped) > 0 {
+			fmt.Printf("  left alone %d wgo pin bookmark(s) (pr-<N>-*): %s\n",
+				len(r.PinsSkipped), strings.Join(r.PinsSkipped, ", "))
+		}
+	}()
 	if len(r.BaseChanges) == 0 && len(r.MarkerUpdates) == 0 &&
 		len(r.Created) == 0 && len(r.Linked) == 0 && len(r.MarkerStrips) == 0 {
 		fmt.Println("  no changes")

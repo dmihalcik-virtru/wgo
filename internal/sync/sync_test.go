@@ -15,9 +15,10 @@ import (
 type fakeJJ struct {
 	entries []jj.LogEntry
 	pushed  [][]string
+	fetched int
 }
 
-func (f *fakeJJ) GitFetch(string, string, []string) error      { return nil }
+func (f *fakeJJ) GitFetch(string, string, []string) error      { f.fetched++; return nil }
 func (f *fakeJJ) Log(string, string) ([]jj.LogEntry, error)    { return f.entries, nil }
 func (f *fakeJJ) RemoteURLs(string) (map[string]string, error) { return nil, nil }
 func (f *fakeJJ) GitPush(_ string, opts jj.PushOpts) (jj.PushResult, error) {
@@ -421,4 +422,45 @@ func TestSync_CreatePRs_PrefixLookalikeIsNotReserved(t *testing.T) {
 	require.Len(t, ghc.created, 1)
 	assert.Equal(t, "pr-review-fixes", ghc.created[0].Head)
 	assert.NotEmpty(t, res.Created)
+}
+
+// One pin among legitimate names must fail the whole run: filtering it out and
+// proceeding would open a PR for "a" the user may not have meant to publish yet.
+func TestSync_CreatePRs_RejectsMixedBookmarkList(t *testing.T) {
+	jjc := &fakeJJ{entries: []jj.LogEntry{
+		{ChangeID: "ca", Bookmarks: []string{"a"}, Parents: []string{"trunk"}},
+	}}
+	ghc := newFakeGH()
+	opts := Options{
+		DefaultBase: "main", CreatePRs: true, GHStackMode: "off",
+		Bookmarks: []string{"a", "pr-7-x", "pr-8-y"},
+	}
+
+	_, err := Sync(jjc, ghc, "/repo", opts)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "pr-7-x, pr-8-y")
+	assert.ErrorContains(t, err, "reserved")
+	assert.Empty(t, jjc.pushed)
+	assert.Empty(t, ghc.created)
+}
+
+// The rejection costs nothing: it must come before the network fetch.
+func TestSync_CreatePRs_RejectsPinBeforeFetch(t *testing.T) {
+	jjc := &fakeJJ{}
+	_, err := Sync(jjc, newFakeGH(), "/repo", Options{
+		Fetch: true, CreatePRs: true, GHStackMode: "off", Bookmarks: []string{"pr-7-x"},
+	})
+	require.Error(t, err)
+	assert.Zero(t, jjc.fetched)
+}
+
+// The user must be told which bookmarks an unscoped run left alone.
+func TestSync_CreatePRs_ReportsSkippedPins(t *testing.T) {
+	jjc := &fakeJJ{entries: []jj.LogEntry{
+		{ChangeID: "cp", Bookmarks: []string{"pr-7-their-feature"}, Parents: []string{"trunk"}},
+	}}
+	res, err := Sync(jjc, newFakeGH(), "/repo", Options{DefaultBase: "main", CreatePRs: true, GHStackMode: "off"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"pr-7-their-feature"}, res.PinsSkipped)
 }

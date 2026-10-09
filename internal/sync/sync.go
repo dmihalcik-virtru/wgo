@@ -84,6 +84,7 @@ type Result struct {
 	BaseChanges   []BaseChange
 	MarkerUpdates []MarkerUpdate
 	Skipped       []string       // bookmarks with no open PR
+	PinsSkipped   []string       // wgo pin bookmarks --create-prs left alone
 	Created       []PRCreation   // PRs opened by --create-prs
 	Linked        []string       // branches linked into the native Stack (bottom→top)
 	MarkerStrips  []MarkerUpdate // PRs whose wgo-stack marker was stripped (native migration)
@@ -117,16 +118,9 @@ type PRCreation struct {
 // descendants whenever an ancestor commit changes, so there is no rebase
 // work for sync to do.
 func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) {
-	// Before the fetch: this is a typo in the command line, and there is no
-	// reason to make the user wait on the network to hear about it.
-	if opts.CreatePRs {
-		if reserved := reservedPins(opts.Bookmarks); len(reserved) > 0 {
-			return nil, fmt.Errorf("sync: refusing to open a PR for %s — the pr-<N>- prefix is reserved "+
-				"for the local bookmarks `wgo to <PR-URL>` creates to pin a PR head it could not track, so "+
-				"PR <N> is already that bookmark's PR; name the bookmark holding your own work instead, or "+
-				"drop --bookmark to sync every bookmark in the repo",
-				strings.Join(reserved, ", "))
-		}
+	// Before the fetch: invalid flag input needs no network round trip to report.
+	if err := CheckOptions(opts); err != nil {
+		return nil, err
 	}
 
 	if opts.Fetch {
@@ -172,6 +166,11 @@ func Sync(jjc JJOps, ghc GitHubOps, repo string, opts Options) (*Result, error) 
 				continue
 			}
 			if !inScope(bm) {
+				// Say so: a pin shows up in no other output, and a user's own
+				// `pr-<N>-x` branch would otherwise vanish without a word.
+				if github.IsPinBookmark(bm) {
+					result.PinsSkipped = append(result.PinsSkipped, bm)
+				}
 				continue
 			}
 			// The trunk bookmark is in the DAG like any other, but it is the
@@ -296,6 +295,23 @@ func scopeFilter(bookmarks []string) func(string) bool {
 		_, ok := set[bm]
 		return ok && !github.IsPinBookmark(bm)
 	}
+}
+
+// CheckOptions rejects option combinations Sync would refuse, so a caller that
+// syncs several repos can report them once instead of once per repo.
+func CheckOptions(opts Options) error {
+	if !opts.CreatePRs {
+		return nil
+	}
+	reserved := reservedPins(opts.Bookmarks)
+	if len(reserved) == 0 {
+		return nil
+	}
+	return fmt.Errorf("sync: refusing to open a PR for %s: the pr-<N>- prefix is reserved for the "+
+		"local bookmarks `wgo to <PR-URL>` creates to pin an existing PR's head. Name the bookmark "+
+		"holding your own work (if this is your own branch, rename it), or drop --bookmark to sync "+
+		"every other bookmark",
+		strings.Join(reserved, ", "))
 }
 
 // reservedPins returns the entries of bookmarks that name one of wgo's pin

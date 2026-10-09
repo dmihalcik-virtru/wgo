@@ -199,9 +199,8 @@ func SanitizeBranch(branch string) string {
 	return s
 }
 
-// PinBookmarkPrefix is the bookmark-name prefix wgo reserves for itself. Every
-// name under it belongs to wgo, not to the user's work, which is what lets code
-// that never created one still recognise it (see IsPinBookmark).
+// PinBookmarkPrefix begins every name PinBookmark produces. A name is reserved
+// only if it has the full `pr-<N>-` shape; see IsPinBookmark.
 const PinBookmarkPrefix = "pr-"
 
 // PinBookmark names the wgo-owned local bookmark that pins PR n's head when the
