@@ -1,0 +1,80 @@
+/* wgo review graph explorer styles.
+ *
+ * Palettes (dataviz skill; validated with scripts/validate_palette.js --pairs all
+ * because any two node kinds can touch):
+ *   light surface #fcfcfb  person #2a78d6  pr #eb6834  ticket #1baf7a
+ *     -> PASS lightness, chroma, CVD (worst dE 9.2), normal-vision floor (worst 24.0);
+ *        WARN contrast: ticket aqua 2.74:1 (relief: distinct diamond shape, hover/selected
+ *        direct labels, and the table view).
+ *   dark surface  #1a1a19  person #3987e5  pr #d95926  ticket #199e70  (selected dark steps,
+ *     not a flip) -> ALL PASS (CVD worst 9.4, normal worst 20.9, contrast >= 3:1).
+ *   repo = neutral #898781 hexagon: a container/context mark, not a series, so it takes
+ *     no categorical slot (a 4th slot fails the all-pairs floors in dark mode).
+ *   Status (fixed, never themed) for PR outcome rings: good #0ca30c, warning #fab219,
+ *     serious #ec835a, critical #d03b3b. Rings are always paired with a dash pattern and
+ *     a text label in the legend/tooltip; in-flight has no status colour (thin neutral ring).
+ *   Four kinds are encoded by hue AND shape (circle/square/diamond/hexagon).
+ */
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --plane: #f9f9f7; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.12); --accent: #2a78d6;
+  --k-person: #2a78d6; --k-pr: #eb6834; --k-ticket: #1baf7a; --k-repo: #898781;
+  --s-good: #0ca30c; --s-warn: #fab219; --s-serious: #ec835a; --s-critical: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface: #1a1a19; --plane: #0d0d0d; --ink: #ffffff; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.12); --accent: #3987e5;
+    --k-person: #3987e5; --k-pr: #d95926; --k-ticket: #199e70; --k-repo: #898781;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--plane); color: var(--ink); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); }
+#app { display: flex; flex-direction: column; height: 100vh; min-height: 420px; }
+.hdr { padding: 10px 16px 6px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.hdr h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.hdr .counts { color: var(--ink2); margin-top: 2px; }
+.hdr .note { color: var(--ink2); font-size: 12px; margin-top: 2px; }
+.bar { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 6px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.bar label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.bar input[type=search] { width: 220px; padding: 4px 8px; border: 1px solid var(--axis); border-radius: 6px; background: var(--plane); color: var(--ink); font: inherit; }
+button, .btn { font: inherit; color: var(--ink); background: var(--plane); border: 1px solid var(--axis); border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+button:hover { background: var(--grid); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.status { color: var(--ink2); font-size: 12px; }
+.main { flex: 1; display: flex; min-height: 0; }
+.stage { position: relative; flex: 1; min-width: 0; background: var(--surface); }
+.stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.stage canvas.dragging { cursor: grabbing; }
+.stage canvas.hot { cursor: pointer; }
+.tip { position: absolute; pointer-events: none; max-width: 340px; padding: 6px 9px; background: var(--surface); color: var(--ink); border: 1px solid var(--axis); border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.18); font-size: 12px; z-index: 5; }
+.tip b { display: block; word-break: break-word; }
+.tip .dim { color: var(--ink2); }
+.tablewrap { position: absolute; inset: 0; overflow: auto; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { position: sticky; top: 0; background: var(--surface); }
+th button { white-space: nowrap; border: 0; background: none; padding: 0; font-weight: 600; }
+tr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.side { width: 330px; flex: none; overflow: auto; background: var(--surface); border-left: 1px solid var(--border); padding: 10px 12px; }
+.side h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink2); margin: 12px 0 6px; }
+.side > div:first-child > h2:first-child { margin-top: 0; }
+.legend { list-style: none; margin: 0; padding: 0; }
+.legend { margin-bottom: 4px; }
+.legend li { display: flex; align-items: center; gap: 7px; padding: 1px 0; }
+.legend svg { flex: none; }
+.legend label { display: flex; align-items: center; gap: 7px; cursor: pointer; width: 100%; }
+.legend .off { opacity: .45; }
+.detail h3 { margin: 8px 0 2px; font-size: 14px; word-break: break-word; }
+.detail .kv { color: var(--ink2); font-size: 12px; }
+.detail h4 { margin: 8px 0 2px; font-size: 12px; color: var(--ink2); }
+.detail ul { margin: 0; padding-left: 16px; }
+.detail li { word-break: break-word; margin: 1px 0; }
+.detail li button { padding: 0 5px; margin-left: 4px; font-size: 11px; }
+.empty { color: var(--ink2); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (max-width: 800px) { .main { flex-direction: column; } .side { width: auto; max-height: 40%; border-left: 0; border-top: 1px solid var(--border); } }
