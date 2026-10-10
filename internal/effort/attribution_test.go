@@ -283,8 +283,8 @@ func TestMergeEfforts(t *testing.T) {
 
 	merged, diags := MergeEfforts(stateEfforts, planEfforts)
 
-	if len(diags) != 0 {
-		t.Errorf("unexpected diagnostics: %v", diags)
+	if len(diags) != 1 || !strings.Contains(diags[0], "state and plan disagree: only in state [repo1:branch1], only in plan [repo1:branch1-updated]") {
+		t.Errorf("expected one divergence diagnostic, got: %v", diags)
 	}
 
 	if len(merged) != 3 {
@@ -295,17 +295,17 @@ func TestMergeEfforts(t *testing.T) {
 	if merged["effort-1"].Name != "Plan Effort 1" {
 		t.Errorf("expected plan to win for effort-1 name")
 	}
-	if merged["effort-1"].Source != "both" {
+	if merged["effort-1"].Source != SourceBoth {
 		t.Errorf("expected source 'both' for effort-1, got %s", merged["effort-1"].Source)
 	}
 
 	// effort-2: state only
-	if merged["effort-2"].Source != "state" {
+	if merged["effort-2"].Source != SourceState {
 		t.Errorf("expected source 'state' for effort-2, got %s", merged["effort-2"].Source)
 	}
 
 	// effort-3: plan only
-	if merged["effort-3"].Source != "plan" {
+	if merged["effort-3"].Source != SourcePlan {
 		t.Errorf("expected source 'plan' for effort-3, got %s", merged["effort-3"].Source)
 	}
 }
@@ -345,5 +345,102 @@ func TestMergeEffortsReportsNameCollision(t *testing.T) {
 	_, diags := MergeEfforts(st, pl)
 	if len(diags) != 1 || !strings.Contains(diags[0], `"Feature" is stored under 2 IDs`) {
 		t.Errorf("expected a name-collision diagnostic, got %q", diags)
+	}
+}
+
+func TestMergeEffortsClonesBranchesAndKeepsStateBranches(t *testing.T) {
+	st := map[string]store.Effort{"e": {Name: "E", Branches: []string{"/m/a/wgo:x"}}}
+	pl := map[string]plan.EffortEntry{"e": {Name: "E", Branches: []string{"wgo:x"}}}
+	merged, _ := MergeEfforts(st, pl)
+	merged["e"].Branches[0] = "mutated"
+	if pl["e"].Branches[0] != "wgo:x" || st["e"].Branches[0] != "/m/a/wgo:x" {
+		t.Error("MergeEfforts aliased its inputs")
+	}
+	if got := merged["e"].StateBranches; len(got) != 1 || got[0] != "/m/a/wgo:x" {
+		t.Errorf("StateBranches = %q", got)
+	}
+}
+
+func TestAttributeWorkspaces_AbsoluteRefMustNameADiscoveredClone(t *testing.T) {
+	clones := []MainCloneInfo{{Path: "/m/a/wgo", Name: "wgo"}}
+	ws := []WorkspaceInfo{{Path: "/w/x", MainRepoPath: "/m/a/wgo", Bookmark: "feat"}}
+	efforts := map[string]MergedEffort{
+		"clean":   {Name: "Clean", Branches: []string{"/m/a/wgo/:feat"}},
+		"unknown": {Name: "Unknown", Branches: []string{"/elsewhere/wgo:feat"}},
+	}
+	r := AttributeWorkspaces(ws, clones, efforts, nil)
+	if len(r.Grouped["clean"]) != 1 || len(r.Grouped["unknown"]) != 0 {
+		t.Errorf("grouped = %+v", r.Grouped)
+	}
+	found := false
+	for _, d := range r.Diagnostics {
+		found = found || (strings.Contains(d, `effort "Unknown"`) && strings.Contains(d, "/elsewhere/wgo"))
+	}
+	if !found {
+		t.Errorf("expected a diagnostic for the unknown absolute path, got %q", r.Diagnostics)
+	}
+}
+
+func TestSplitRefSharesPlanDefinition(t *testing.T) {
+	repo, bm, ok := splitRef("owner/repo:feat")
+	if !ok || repo != "owner/repo" || bm != "feat" {
+		t.Errorf("got %q %q %v", repo, bm, ok)
+	}
+	if _, _, ok := splitRef("repo:has space"); ok {
+		t.Error("whitespace in a bookmark must be rejected, as the plan parser does")
+	}
+}
+
+// A second clone with the same directory name makes the plan's short ref
+// ambiguous; the state's exact path still attributes the workspace.
+func TestAttributeWorkspaces_AmbiguousPlanRefFallsBackToState(t *testing.T) {
+	clones := []MainCloneInfo{
+		{Path: "/m/fork/wgo", Name: "wgo", Owner: "fork", Repo: "wgo"},
+		{Path: "/m/up/wgo", Name: "wgo", Owner: "up", Repo: "wgo"},
+	}
+	ws := []WorkspaceInfo{{Path: "/w/x", MainRepoPath: "/m/fork/wgo", Bookmark: "feat"}}
+	merged, _ := MergeEfforts(
+		map[string]store.Effort{"e": {Name: "E", Branches: []string{"/m/fork/wgo:feat"}}},
+		map[string]plan.EffortEntry{"e": {Name: "E", Branches: []string{"wgo:feat"}}},
+	)
+	r := AttributeWorkspaces(ws, clones, merged, nil)
+	if len(r.Grouped["e"]) != 1 {
+		t.Errorf("expected fallback to the state ref, got grouped=%v diags=%q", r.Grouped, r.Diagnostics)
+	}
+
+	// Without a usable state ref the ambiguity is reported and nothing matches.
+	only := map[string]MergedEffort{"e": {Name: "E", Branches: []string{"wgo:feat"}}}
+	r = AttributeWorkspaces(ws, clones, only, nil)
+	if len(r.Grouped["e"]) != 0 || len(r.Diagnostics) == 0 {
+		t.Errorf("expected an ambiguity diagnostic, got grouped=%v diags=%q", r.Grouped, r.Diagnostics)
+	}
+}
+
+func TestAttributeWorkspaces_BookmarkErrSuppressesNoBookmarkDiagnostic(t *testing.T) {
+	ws := []WorkspaceInfo{{Path: "/w/x", BookmarkErr: true}, {Path: "/w/y"}}
+	r := AttributeWorkspaces(ws, nil, map[string]MergedEffort{}, nil)
+	if len(r.Ungrouped) != 2 {
+		t.Fatalf("ungrouped = %d", len(r.Ungrouped))
+	}
+	if len(r.Diagnostics) != 1 || !strings.Contains(r.Diagnostics[0], "/w/y has no bookmark") {
+		t.Errorf("diagnostics = %q", r.Diagnostics)
+	}
+}
+
+func TestAttributeWorkspaces_UnknownThemeIsReportedOnce(t *testing.T) {
+	ws := []WorkspaceInfo{{Path: "/w/a"}, {Path: "/w/b"}, {Path: "/w/c"}}
+	efforts := map[string]MergedEffort{"known": {Name: "Known"}}
+	theme := func(p string) string {
+		if p == "/w/c" {
+			return "known"
+		}
+		return "ghost"
+	}
+	r := AttributeWorkspaces(ws, nil, efforts, theme)
+	if len(r.Grouped["ghost"]) != 2 || len(r.Grouped["known"]) != 1 {
+		t.Errorf("grouped = %v", r.Grouped)
+	}
+	if len(r.Diagnostics) != 1 || !strings.Contains(r.Diagnostics[0], `theme "ghost" matches no effort`) {
+		t.Errorf("diagnostics = %q", r.Diagnostics)
 	}
 }

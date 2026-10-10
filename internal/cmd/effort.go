@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 var (
 	effortDescription string
+	effortForce       bool
 )
 
 // planEffortCmd represents the `wgo plan effort` command group.
@@ -32,8 +34,10 @@ Each command updates state.json and the "## Efforts" section of the plan
 together; if the plan cannot be written, state is left unchanged.
 
 Bookmarks are named repo:bookmark, where repo is a discovered main clone's
-directory name, its owner/repo, or its absolute path. State stores the clone's
-absolute path; the plan shows the shortest name that is unambiguous.`,
+directory name, its owner/repo, or its absolute path. When linked with
+"wgo plan effort link", state stores the clone's absolute path; the plan shows
+the clone's directory name, else its owner/repo, else its absolute path,
+whichever is the first that is unambiguous.`,
 }
 
 // effortAddCmd represents the `wgo plan effort add` command.
@@ -73,10 +77,13 @@ var effortUnlinkCmd = &cobra.Command{
 var effortRemoveCmd = &cobra.Command{
 	Use:   "remove <name>",
 	Short: "Remove an effort",
-	Long:  `Remove an effort and its associations from state and the plan.`,
-	Args:  cobra.ExactArgs(1),
+	Long: `Remove an effort and its associations from state and the plan.
+
+If the effort's plan block holds text wgo does not interpret (malformed
+entries, notes), removal is refused unless --force is given.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runEffort(func(env *effortEnv) error { return env.remove(args[0]) })
+		return runEffort(func(env *effortEnv) error { return env.remove(args[0], effortForce) })
 	},
 }
 
@@ -88,6 +95,7 @@ func init() {
 	planEffortCmd.AddCommand(effortRemoveCmd)
 
 	effortAddCmd.Flags().StringVarP(&effortDescription, "description", "d", "", "Description of the effort")
+	effortRemoveCmd.Flags().BoolVar(&effortForce, "force", false, "Remove even if the plan block holds text wgo does not interpret")
 }
 
 // effortEnv is what the effort commands run against.
@@ -121,14 +129,15 @@ func discoverMainClones() ([]effort.MainCloneInfo, error) {
 
 // mutate loads state and the plan, applies fn to both and persists them as a
 // pair: the plan is written inside the state lock and before state, so a
-// failed plan write leaves state untouched, and a failed state write restores
-// the previous plan. SavePlan does not take the state lock, so this cannot
-// deadlock.
+// failed plan write leaves state untouched. A failed state write restores the
+// previous plan, but only after the lock is released and only if the plan file
+// still holds what this call wrote; SavePlan does not take the state lock, so
+// the restore cannot deadlock and must not clobber a concurrent edit.
 func (env *effortEnv) mutate(fn func(st *store.State, p *plan.Plan) error) error {
 	if err := env.store.EnsureDir(); err != nil {
 		return err
 	}
-	var original string
+	var original, rendered string
 	planWritten := false
 	err := env.store.MutateState(func(st *store.State) (bool, error) {
 		content, err := env.store.LoadPlan()
@@ -145,21 +154,34 @@ func (env *effortEnv) mutate(fn func(st *store.State, p *plan.Plan) error) error
 		if err := fn(st, p); err != nil {
 			return false, err
 		}
-		if rendered := p.Render(); rendered != content {
-			if err := env.store.SavePlan(rendered); err != nil {
+		if out := p.Render(); out != content {
+			if err := env.store.SavePlan(out); err != nil {
 				return false, fmt.Errorf("failed to save plan (state left unchanged): %w", err)
 			}
-			original, planWritten = content, true
+			original, rendered, planWritten = content, out, true
 		}
 		return true, nil
 	})
-	if err != nil && planWritten {
-		if rerr := env.store.SavePlan(original); rerr != nil {
-			return fmt.Errorf("%w; restoring the previous plan also failed: %v", err, rerr)
-		}
+	if err == nil || !planWritten {
+		return err
 	}
-	return err
+	current, lerr := env.store.LoadPlan()
+	switch {
+	case lerr != nil:
+		return fmt.Errorf("%w; could not re-read the plan to restore it: %w", err, lerr)
+	case current != rendered:
+		return fmt.Errorf("%w; the plan was changed externally and was not restored", err)
+	}
+	if rerr := env.store.SavePlan(original); rerr != nil {
+		return fmt.Errorf("%w; restoring the previous plan also failed: %w", err, rerr)
+	}
+	return fmt.Errorf("%w (plan restored)", err)
 }
+
+// effortNotFoundError distinguishes "no such effort" from an ambiguous name.
+type effortNotFoundError struct{ msg string }
+
+func (e effortNotFoundError) Error() string { return e.msg }
 
 // findEffort resolves a name to an effort ID in state or the plan: the ID the
 // name generates first, then a case-insensitive name match.
@@ -192,7 +214,7 @@ func findEffort(st *store.State, p *plan.Plan, name string) (string, error) {
 		if len(known) > 0 {
 			msg += "; known efforts: " + strings.Join(known, ", ")
 		}
-		return "", fmt.Errorf("%s. Create it with: wgo plan effort add %q", msg, name)
+		return "", effortNotFoundError{fmt.Sprintf("%s. Create it with: wgo plan effort add %q", msg, name)}
 	default:
 		return "", fmt.Errorf("effort name %q is ambiguous, it matches IDs %s; fix the duplicate in the plan or state", name, strings.Join(matches, ", "))
 	}
@@ -216,33 +238,22 @@ func knownEffortNames(st *store.State, p *plan.Plan) []string {
 
 func (env *effortEnv) add(name, description string) error {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("effort name must not be empty")
+	if err := plan.ValidateEffort(plan.EffortEntry{Name: name, Description: description}); err != nil {
+		return err
 	}
-	id := plan.GenerateEffortID(name)
 	if err := env.mutate(func(st *store.State, p *plan.Plan) error {
-		_, inState := st.Efforts[id]
-		_, inPlan := p.Efforts[id]
-		if inState && inPlan {
-			return fmt.Errorf("effort %q already exists; use `wgo plan effort link %q <repo:bookmark>` to add bookmarks", name, name)
+		id, err := findEffort(st, p, name)
+		var notFound effortNotFoundError
+		switch {
+		case err == nil:
+			return env.addExisting(st, p, id, name, description)
+		case !errors.As(err, &notFound):
+			return err
 		}
+		id = plan.GenerateEffortID(name)
 		now := time.Now()
-		if !inState {
-			e := store.Effort{Name: name, Description: description, Branches: []string{}, CreatedAt: now, UpdatedAt: now}
-			if pe, ok := p.Efforts[id]; ok {
-				// A hand-written plan effort wins: adopt its fields.
-				e.Description = pe.Description
-				e.Branches = slices.Clone(pe.Branches)
-				if e.Branches == nil {
-					e.Branches = []string{}
-				}
-			}
-			st.Efforts[id] = e
-		}
-		if !inPlan {
-			se := st.Efforts[id]
-			p.Efforts[id] = plan.EffortEntry{ID: id, Name: se.Name, Description: se.Description, Branches: planRefs(se.Branches, nil)}
-		}
+		st.Efforts[id] = store.Effort{Name: name, Description: description, Branches: []string{}, CreatedAt: now, UpdatedAt: now}
+		p.Efforts[id] = plan.EffortEntry{ID: id, Name: name, Description: description}
 		return nil
 	}); err != nil {
 		return err
@@ -251,36 +262,77 @@ func (env *effortEnv) add(name, description string) error {
 	return nil
 }
 
+// addExisting handles `add` for a name that is already an effort. When it
+// exists on only one side, the other side is projected from it (a hand-written
+// plan effort wins); when on both, it is an error. A differing --description
+// is never silently dropped.
+func (env *effortEnv) addExisting(st *store.State, p *plan.Plan, id, name, description string) error {
+	se, inState := st.Efforts[id]
+	pe, inPlan := p.Efforts[id]
+	if inState && inPlan {
+		return fmt.Errorf("effort %q already exists; use `wgo plan effort link %q <repo:bookmark>` to add bookmarks", name, name)
+	}
+	existing := pe.Description
+	if inState {
+		existing = se.Description
+	}
+	if description != "" && description != existing {
+		return fmt.Errorf("effort %q already exists with description %q; edit it with: wgo plan edit", name, existing)
+	}
+	now := time.Now()
+	if !inState {
+		// A hand-written plan effort wins: adopt its fields.
+		se = store.Effort{Name: pe.Name, Description: pe.Description, Branches: append([]string{}, pe.Branches...), CreatedAt: now, UpdatedAt: now}
+		st.Efforts[id] = se
+	} else {
+		p.Efforts[id] = plan.EffortEntry{ID: id, Name: se.Name, Description: se.Description, Branches: planRefs(se.Branches, nil)}
+	}
+	return nil
+}
+
 // planRefs converts state references for the plan. Without clone information
 // they are written as stored.
 func planRefs(refs []string, clones []effort.MainCloneInfo) []string {
 	out := make([]string, 0, len(refs))
 	for _, r := range refs {
-		out = append(out, displayFor(r, clones))
+		out = append(out, displayFor(r, clones, nil))
 	}
 	return out
 }
 
-// displayFor returns the plan form of a stored reference.
-func displayFor(ref string, clones []effort.MainCloneInfo) string {
+// displayFor returns the plan form of a stored reference. A reference that
+// does not resolve is returned as stored; warn, when non-nil, is told why.
+func displayFor(ref string, clones []effort.MainCloneInfo, warn func(ref string, err error)) string {
 	if clones == nil {
 		return ref
 	}
 	clone, bookmark, err := effort.ResolveRef(ref, clones)
 	if err != nil {
+		if warn != nil {
+			warn(ref, err)
+		}
 		return ref
 	}
 	return effort.DisplayRef(clone, bookmark, clones)
 }
 
-// normalizeFor returns the state form of a plan reference, or the
-// reference unchanged when it does not resolve to one clone.
-func normalizeFor(ref string, clones []effort.MainCloneInfo) string {
+// normalizeFor returns the state form of a plan reference, or the reference
+// unchanged when it does not resolve to one clone; warn, when non-nil, is
+// told why.
+func normalizeFor(ref string, clones []effort.MainCloneInfo, warn func(ref string, err error)) string {
 	clone, bookmark, err := effort.ResolveRef(ref, clones)
 	if err != nil {
+		if warn != nil {
+			warn(ref, err)
+		}
 		return ref
 	}
 	return effort.NormalizeBookmarkRef(clone.Path, bookmark)
+}
+
+// keptAsWritten returns the warn callback for displayFor and normalizeFor.
+func (env *effortEnv) keptAsWritten(ref string, err error) {
+	fmt.Fprintf(env.out, "warning: reference %s was kept as written (%v)\n", ref, err)
 }
 
 // sameRef reports whether a stored or plan reference names the given
@@ -331,7 +383,7 @@ func (env *effortEnv) link(effortName, ref string) error {
 			now := time.Now()
 			se = store.Effort{Name: pe.Name, Description: pe.Description, Branches: []string{}, CreatedAt: now}
 			for _, b := range pe.Branches {
-				se.Branches = append(se.Branches, normalizeFor(b, clones))
+				se.Branches = append(se.Branches, normalizeFor(b, clones, env.keptAsWritten))
 			}
 		}
 		name = se.Name
@@ -346,7 +398,10 @@ func (env *effortEnv) link(effortName, ref string) error {
 		se.UpdatedAt = time.Now()
 		st.Efforts[id] = se
 		if !inPlan {
-			pe = plan.EffortEntry{ID: id, Name: se.Name, Description: se.Description, Branches: planRefs(se.Branches, clones)}
+			pe = plan.EffortEntry{ID: id, Name: se.Name, Description: se.Description, Branches: make([]string, 0, len(se.Branches))}
+			for _, b := range se.Branches {
+				pe.Branches = append(pe.Branches, displayFor(b, clones, env.keptAsWritten))
+			}
 		} else if !planHas {
 			pe.Branches = append(pe.Branches, display)
 		}
@@ -361,8 +416,15 @@ func (env *effortEnv) link(effortName, ref string) error {
 
 func (env *effortEnv) unlink(effortName, ref string) error {
 	normalized, display, clones, err := env.resolveLinkRef(ref)
-	if err != nil {
-		return err
+	// A reference whose clone is no longer discovered (moved, deleted,
+	// discovery.base_dirs changed) can still be unlinked by its exact text.
+	resolveErr := err
+	resolved := err == nil
+	if !resolved {
+		normalized, display, clones = ref, ref, nil
+		if _, _, ok := plan.ParseBranchRef(ref); !ok {
+			return resolveErr
+		}
 	}
 	var name string
 	if err := env.mutate(func(st *store.State, p *plan.Plan) error {
@@ -370,7 +432,7 @@ func (env *effortEnv) unlink(effortName, ref string) error {
 		if err != nil {
 			return err
 		}
-		match := func(b string) bool { return sameRef(b, normalized, clones) }
+		match := func(b string) bool { return b == ref || (resolved && sameRef(b, normalized, clones)) }
 		se, inState := st.Efforts[id]
 		pe, inPlan := p.Efforts[id]
 		name = se.Name
@@ -393,15 +455,21 @@ func (env *effortEnv) unlink(effortName, ref string) error {
 		}
 		return nil
 	}); err != nil {
+		if !resolved {
+			return fmt.Errorf("%w (reference %s no longer resolves: %v)", err, ref, resolveErr)
+		}
 		return err
+	}
+	if !resolved {
+		fmt.Fprintf(env.out, "reference %s no longer resolves to a discovered clone; unlinked it by its exact text\n", ref)
 	}
 	fmt.Fprintf(env.out, "Unlinked %s from effort: %s\n", display, name)
 	return nil
 }
 
-func (env *effortEnv) remove(effortName string) error {
+func (env *effortEnv) remove(effortName string, force bool) error {
 	var name string
-	dupWarning := false
+	dup := false
 	if err := env.mutate(func(st *store.State, p *plan.Plan) error {
 		id, err := findEffort(st, p, effortName)
 		if err != nil {
@@ -413,21 +481,24 @@ func (env *effortEnv) remove(effortName string) error {
 		} else if e, ok := p.Efforts[id]; ok {
 			name = e.Name
 		}
+		if lines := p.EffortUnparsedLines(id); len(lines) > 0 && !force {
+			return fmt.Errorf("the plan block for effort %q holds text wgo does not interpret and removing it would delete it:\n  %s\nrerun with --force, or move them out with: wgo plan edit",
+				name, strings.Join(lines, "\n  "))
+		}
+		dup = p.EffortHasDuplicateHeading(id)
+		if dup {
+			fmt.Fprintf(env.out, "warning: the plan has more than one %q block; only the first is removed\n", "### "+name)
+		}
 		delete(st.Efforts, id)
 		delete(p.Efforts, id)
-		heading := "### " + name
-		for _, d := range p.Diagnostics {
-			if strings.Contains(d, "duplicate effort heading") && strings.Contains(d, fmt.Sprintf("%q", heading)) {
-				dupWarning = true
-			}
-		}
 		return nil
 	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(env.out, "Removed effort: %s\n", name)
-	if dupWarning {
-		fmt.Fprintf(env.out, "warning: the plan has another %q block; it was kept and will be read as this effort. Edit it with: wgo plan edit\n", "### "+name)
+	if dup {
+		fmt.Fprintf(env.out, "Removed effort %s from state; the plan still has another ### %s block, so it will be read as this effort. Edit it with: wgo plan edit\n", name, name)
+		return nil
 	}
+	fmt.Fprintf(env.out, "Removed effort: %s\n", name)
 	return nil
 }

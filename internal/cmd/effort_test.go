@@ -165,7 +165,7 @@ func TestEffortCommandsRoundTrip(t *testing.T) {
 			[]string{"not linked"}},
 		{"unlink unknown effort", func() error { return f.env.unlink("Missing", "api:feat") },
 			[]string{"not found"}},
-		{"remove unknown effort", func() error { return f.env.remove("Missing") },
+		{"remove unknown effort", func() error { return f.env.remove("Missing", false) },
 			[]string{"not found"}},
 		{"add existing", func() error { return f.env.add("Feature X", "") },
 			[]string{"already exists"}},
@@ -191,7 +191,7 @@ func TestEffortCommandsRoundTrip(t *testing.T) {
 	}
 
 	// remove restores the golden plan exactly.
-	if err := f.env.remove("Feature X"); err != nil {
+	if err := f.env.remove("Feature X", false); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	assertPlanBytes(t, f.planPath, f.golden)
@@ -220,7 +220,8 @@ func TestEffortLinkPlanOnlyEffort(t *testing.T) {
 
 func TestEffortRemoveWarnsAboutDuplicateHeading(t *testing.T) {
 	f := newEffortFixture(t)
-	if err := f.env.remove("Plan efforts"); err != nil {
+	// The primary block holds a stray line, so removal needs --force.
+	if err := f.env.remove("Plan efforts", true); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	got := f.plan(t)
@@ -230,9 +231,114 @@ func TestEffortRemoveWarnsAboutDuplicateHeading(t *testing.T) {
 	if !strings.Contains(got, "### Plan efforts\n- other:duplicate-heading\n") {
 		t.Error("the duplicate block must be kept verbatim")
 	}
-	if !strings.Contains(f.out.String(), "another \"### Plan efforts\" block") {
-		t.Errorf("expected a duplicate-heading warning, got %q", f.out.String())
+	out := f.out.String()
+	if !strings.Contains(out, "still has another ### Plan efforts block") || !strings.Contains(out, "wgo plan edit") {
+		t.Errorf("expected a duplicate-heading notice, got %q", out)
 	}
+	if strings.Contains(out, "Removed effort: ") {
+		t.Errorf("must not claim a clean removal: %q", out)
+	}
+}
+
+func TestEffortRemoveRefusesToDeleteUnparsedText(t *testing.T) {
+	f := newEffortFixture(t)
+	err := f.env.remove("Plan efforts", false)
+	f.wantErr(t, err, "A stray line after the entries.", "--force", "wgo plan edit")
+	assertPlanBytes(t, f.planPath, f.golden)
+	if len(f.stateBytes(t)) != 0 {
+		t.Error("state should not have been written")
+	}
+
+	// An effort with nothing uninterpreted removes without --force.
+	if err := f.env.remove("Dashboard", false); err != nil {
+		t.Fatalf("remove Dashboard: %v", err)
+	}
+	if strings.Contains(f.plan(t), "### Dashboard") {
+		t.Error("Dashboard should be gone")
+	}
+}
+
+func TestEffortUnlinkDeadReference(t *testing.T) {
+	f := newEffortFixture(t)
+	if err := f.env.add("Feature X", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Hand-edit a link to a clone that is not discovered.
+	edited := mustReplaceOnce(t, f.plan(t), "### Feature X\n", "### Feature X\n- gone:feat\n")
+	if err := os.WriteFile(f.planPath, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.env.unlink("Feature X", "gone:feat"); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+	if strings.Contains(f.plan(t), "gone:feat") {
+		t.Error("dead entry still in the plan")
+	}
+	if !strings.Contains(f.out.String(), "no longer resolves") {
+		t.Errorf("expected a 'no longer resolves' notice, got %q", f.out.String())
+	}
+
+	// A true miss still says so, and mentions why the ref did not resolve.
+	err := f.env.unlink("Feature X", "gone:other")
+	f.wantErr(t, err, "not linked", "no longer resolves")
+}
+
+func TestEffortAddDescriptionConflict(t *testing.T) {
+	f := newEffortFixture(t)
+	// "Dashboard" is plan-only with no description; a differing -d is an error.
+	err := f.env.add("Dashboard", "new text")
+	f.wantErr(t, err, "already exists", "wgo plan edit")
+	assertPlanBytes(t, f.planPath, f.golden)
+
+	// Case-insensitive: "plan efforts" is the existing "Plan efforts" on both
+	// sides once state has it.
+	err = f.env.add("dashboard", "")
+	if err != nil {
+		t.Fatalf("add without a description projects the plan effort into state: %v", err)
+	}
+	if _, ok := f.effort(t, "Dashboard"); !ok {
+		t.Error("state should now hold Dashboard")
+	}
+	f.wantErr(t, f.env.add("DASHBOARD", ""), "already exists")
+	assertPlanBytes(t, f.planPath, f.golden)
+
+	// Names that would corrupt the plan are rejected.
+	f.wantErr(t, f.env.add("# sneaky", ""), "single line")
+	f.wantErr(t, f.env.add("ok", "- looks like an entry"), "description")
+}
+
+func TestEffortStateWriteFailureRestoresPlan(t *testing.T) {
+	f := newEffortFixture(t)
+	if err := f.env.add("Feature X", ""); err != nil {
+		t.Fatal(err)
+	}
+	planBefore := f.plan(t)
+	stateBefore := f.stateBytes(t)
+
+	// A directory where SaveState writes its temp file fails the state write
+	// after the plan was already written.
+	if err := os.Mkdir(filepath.Join(filepath.Dir(f.planPath), "state.json.tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := f.env.add("Other", "")
+	f.wantErr(t, err, "plan restored")
+	assertPlanBytes(t, f.planPath, planBefore)
+	if !bytes.Equal(f.stateBytes(t), stateBefore) {
+		t.Error("state changed")
+	}
+}
+
+func TestEffortCobraWiring(t *testing.T) {
+	jjtest.RequireJJ(t)
+	planPath, golden := goldenHome(t, "")
+	defer func() { effortDescription, effortForce = "", false }()
+	rootCmd.SetArgs([]string{"plan", "effort", "add", "Wired", "-d", "from the flag"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	want := mustReplaceOnce(t, golden, goldenEffortsTail, goldenEffortsTail+"\n### Wired\nfrom the flag\n")
+	assertPlanBytes(t, planPath, want)
 }
 
 func TestEffortPlanWriteFailureLeavesStateUnchanged(t *testing.T) {
@@ -250,7 +356,7 @@ func TestEffortPlanWriteFailureLeavesStateUnchanged(t *testing.T) {
 	ops := map[string]func() error{
 		"add":    func() error { return f.env.add("Other", "") },
 		"link":   func() error { return f.env.link("Feature X", "api:feat") },
-		"remove": func() error { return f.env.remove("Feature X") },
+		"remove": func() error { return f.env.remove("Feature X", false) },
 	}
 	for name, op := range ops {
 		err := op()

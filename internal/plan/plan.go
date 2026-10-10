@@ -4,7 +4,9 @@
 // lines of the whole file alongside the parsed view, and Render re-renders
 // only what a caller actually changed: every byte the parser does not own
 // (the preamble, unknown sections, duplicate sections, fenced code, stray text
-// inside an effort block) is written back exactly as it was read.
+// inside an effort block) is written back exactly as it was read. The one
+// exception is a file with mixed line endings, which is normalized to the
+// majority ending and reported.
 package plan
 
 import (
@@ -13,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -42,8 +45,9 @@ type Plan struct {
 	// headings, malformed effort entries and stray text.
 	Diagnostics []string
 
-	diagLines []int     // 0-based file line of each diagnostic, for ordering
-	doc       *document // raw file model; nil for plans built in code // raw file model; nil for plans built in code
+	diagLines  []int           // 0-based file line of each diagnostic, for ordering
+	doc        *document       // raw file model; nil for plans built in code
+	dupEfforts map[string]bool // IDs whose heading appears more than once
 }
 
 // BranchEntry represents an entry in the Active Branches section.
@@ -65,7 +69,6 @@ type EffortEntry struct {
 	Name        string
 	Description string
 	Branches    []string // "repo:bookmark" format
-	SpecPath    string
 }
 
 var effortIDSanitizer = regexp.MustCompile(`[^a-z0-9]+`)
@@ -81,6 +84,70 @@ func GenerateEffortID(name string) string {
 
 	h := sha256.Sum256([]byte(name))
 	return normalized + "-" + hex.EncodeToString(h[:])[:8]
+}
+
+// ParseBranchRef splits an effort entry "repo:bookmark" at the last colon, so
+// an absolute clone path works as the repo part (it may contain spaces). A
+// bookmark never contains a colon or whitespace; ok is false for anything
+// else. The parser and effort.ResolveRef share this definition.
+func ParseBranchRef(ref string) (repo, bookmark string, ok bool) {
+	i := strings.LastIndex(ref, ":")
+	if i <= 0 || i == len(ref)-1 {
+		return "", "", false
+	}
+	repo, bookmark = ref[:i], ref[i+1:]
+	if strings.TrimSpace(repo) == "" || strings.ContainsAny(bookmark, " \t") {
+		return "", "", false
+	}
+	return repo, bookmark, true
+}
+
+// ValidateEffort reports whether e can be written to the plan and read back
+// unchanged: a single-line name that is not itself a heading marker, a
+// description whose lines cannot be mistaken for headings or entries, and
+// well-formed entries.
+func ValidateEffort(e EffortEntry) error {
+	name := strings.TrimSpace(e.Name)
+	if name == "" {
+		return fmt.Errorf("effort name must not be empty")
+	}
+	if strings.ContainsAny(name, "\r\n") || strings.HasPrefix(name, "#") {
+		return fmt.Errorf("effort name %q must be a single line that does not start with #", name)
+	}
+	for _, l := range strings.Split(e.Description, "\n") {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "#") || strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			return fmt.Errorf("effort description line %q would be read back as a heading, entry or code fence; reword it", t)
+		}
+	}
+	for _, b := range e.Branches {
+		if _, _, ok := ParseBranchRef(b); !ok {
+			return fmt.Errorf("effort entry %q is not a valid repo:bookmark", b)
+		}
+	}
+	return nil
+}
+
+// EffortHasDuplicateHeading reports whether the plan file has more than one
+// "### " heading for the effort; only the first is the effort, the rest are
+// kept verbatim.
+func (p *Plan) EffortHasDuplicateHeading(id string) bool { return p.dupEfforts[id] }
+
+// EffortUnparsedLines returns the lines of the effort's block that are not
+// part of its name, description or entries: malformed entries and stray text.
+// Removing the effort would delete them.
+func (p *Plan) EffortUnparsedLines(id string) []string {
+	if p.doc == nil {
+		return nil
+	}
+	for _, sec := range p.doc.sections {
+		for _, b := range sec.blocks {
+			if sec.owned && b.primary && b.id == id {
+				return slices.Clone(b.unparsed)
+			}
+		}
+	}
+	return nil
 }
 
 // Parse parses plan file content. It never fails on malformed content:

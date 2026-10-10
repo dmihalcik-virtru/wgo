@@ -63,6 +63,8 @@ type effortBlock struct {
 	primary bool // false for a repeated heading, which is kept verbatim
 	parsed  EffortEntry
 
+	unparsed []string // malformed entries and stray lines, trimmed, in file order
+
 	descStart, descEnd int   // description line range [start, end) in lines; start == -1 when none
 	branchIdx          []int // indices in lines of "- repo:bookmark" entries
 }
@@ -165,7 +167,7 @@ func parseDocument(content string, p *Plan) *document {
 	lines, eol, trailing, mixed := splitLines(content)
 	d := &document{eol: eol, trailingNewline: trailing, trailingBlank: countTrailingBlank(lines)}
 	if mixed {
-		p.diag(0, "mixed line endings; the plan is written back with %q endings", eol)
+		p.diag(-1, "mixed line endings; the plan is written back with %q endings", eol)
 	}
 
 	// Mark fenced lines across the whole file so a fence that spans a
@@ -176,7 +178,7 @@ func parseDocument(content string, p *Plan) *document {
 		fenced[i] = fs.step(l)
 	}
 	if fs.char != 0 {
-		p.diag(0, "unclosed code fence; everything after it is kept verbatim")
+		p.diag(-1, "unclosed code fence; everything after it is kept verbatim")
 	}
 
 	var cur *section
@@ -297,9 +299,10 @@ func (p *Plan) finalizeEffort(blk *effortBlock, start int, fenced []bool) {
 		p.diag(start, "effort heading without a name; kept verbatim")
 	}
 
-	// Consecutive stray lines (a fenced block counts as one run, blank lines
-	// included) are reported once, at their first line.
+	// Consecutive non-blank stray lines are reported once, at their first
+	// line: an unfenced blank line ends a run, a fenced block stays in one.
 	strayAt, strayN := -1, 0
+	descClosed := false
 	flushStray := func() {
 		if strayN == 0 {
 			return
@@ -324,16 +327,17 @@ func (p *Plan) finalizeEffort(blk *effortBlock, start int, fenced []bool) {
 		if !fenced[i] && strings.HasPrefix(trimmed, "- ") {
 			flushStray()
 			ref := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
-			repo, bookmark, ok := strings.Cut(ref, ":")
-			if !ok || strings.TrimSpace(repo) == "" || strings.TrimSpace(bookmark) == "" || strings.ContainsAny(ref, " \t") {
+			if _, _, ok := ParseBranchRef(ref); !ok {
 				p.diag(start+i, "effort %q: malformed entry %q (want - repo:bookmark); kept verbatim", name, trimmed)
+				blk.unparsed = append(blk.unparsed, trimmed)
+				descClosed = blk.descStart != -1 // text after it is stray, not description
 				continue
 			}
 			entry.Branches = append(entry.Branches, ref)
 			blk.branchIdx = append(blk.branchIdx, i)
 			continue
 		}
-		if len(blk.branchIdx) == 0 {
+		if len(blk.branchIdx) == 0 && !descClosed {
 			// Text before the first entry is the description.
 			if blk.descStart == -1 {
 				blk.descStart = i
@@ -345,6 +349,7 @@ func (p *Plan) finalizeEffort(blk *effortBlock, start int, fenced []bool) {
 			strayAt = i
 		}
 		strayN++
+		blk.unparsed = append(blk.unparsed, trimmed)
 	}
 	flushStray()
 	if blk.descStart != -1 {
@@ -356,6 +361,10 @@ func (p *Plan) finalizeEffort(blk *effortBlock, start int, fenced []bool) {
 	blk.parsed = cloneEffort(entry)
 	if _, dup := p.Efforts[entry.ID]; dup || name == "" {
 		if name != "" {
+			if p.dupEfforts == nil {
+				p.dupEfforts = map[string]bool{}
+			}
+			p.dupEfforts[entry.ID] = true
 			p.diag(start, "duplicate effort heading %q; the effort is ambiguous, only the first block is used and this one is kept verbatim", "### "+name)
 		}
 		return
@@ -365,11 +374,11 @@ func (p *Plan) finalizeEffort(blk *effortBlock, start int, fenced []bool) {
 	p.EffortOrder = append(p.EffortOrder, entry.ID)
 }
 
-// diag records a diagnostic. line is a 0-based file line index, or 0 for a
+// diag records a diagnostic. line is a 0-based file line index, or -1 for a
 // file-level message.
 func (p *Plan) diag(line int, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	if line > 0 {
+	if line >= 0 {
 		msg = fmt.Sprintf("plan line %d: %s", line+1, msg)
 	} else {
 		msg = "plan: " + msg
@@ -432,7 +441,8 @@ func (p *Plan) render(extra []string) string {
 	}
 
 	// Missing owned sections that now have content are inserted before the
-	// next owned section in ownedOrder, or after the last one.
+	// next owned section present in ownedOrder, or else at the end of the
+	// file (after any unmanaged sections).
 	pending := map[string][]string{}
 	for _, name := range ownedOrder {
 		if !present[name] {
@@ -790,7 +800,15 @@ func patchList(body []string, entryIdx []int, oldKeys, newLines []string, anchor
 	for k, i := range entryIdx {
 		pos[i] = k
 	}
+	// Indented lines right after the last entry (a nested list, a wrapped
+	// line) belong to it: new entries go after them, not between.
 	last := entryIdx[len(entryIdx)-1]
+	for last+1 < len(body) && isContinuation(body[last+1]) {
+		if _, isEntry := pos[last+1]; isEntry {
+			break
+		}
+		last++
+	}
 
 	var out []string
 	next := 0
@@ -809,12 +827,9 @@ func patchList(body []string, entryIdx []int, oldKeys, newLines []string, anchor
 		return len(newLines)
 	}
 	for i, line := range body {
-		k, isEntry := pos[i]
-		if !isEntry {
+		if k, isEntry := pos[i]; !isEntry {
 			out = append(out, line)
-			continue
-		}
-		if j := matchOld[k]; j >= 0 {
+		} else if j := matchOld[k]; j >= 0 {
 			emitTo(j)
 			out = append(out, line)
 			next = j + 1
@@ -827,6 +842,12 @@ func patchList(body []string, entryIdx []int, oldKeys, newLines []string, anchor
 		}
 	}
 	return out
+}
+
+// isContinuation reports whether line is indented, non-blank text that
+// continues the list entry above it.
+func isContinuation(line string) bool {
+	return strings.TrimSpace(line) != "" && (line[0] == ' ' || line[0] == '\t')
 }
 
 // lcsMatch aligns a and b by longest common subsequence and returns, for

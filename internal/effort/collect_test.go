@@ -110,3 +110,24 @@ func equalSnapshots(a, b map[string][]byte) bool {
 	}
 	return true
 }
+
+// Collect tolerates a nil jj client: workspaces are still attributed (to
+// Ungrouped) and the missing client is reported rather than panicking.
+func TestCollect_NilClient(t *testing.T) {
+	repo, _ := jjtest.NewRepo(t)
+	s := store.NewWithDir(t.TempDir())
+	if err := s.SaveState(&store.State{Efforts: map[string]store.Effort{}}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Collect(nil, []discovery.DiscoveredRepo{{Path: repo}}, s, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Ungrouped) != 1 || !res.Ungrouped[0].BookmarkErr {
+		t.Errorf("ungrouped = %+v", res.Ungrouped)
+	}
+	joined := strings.Join(res.Diagnostics, "|")
+	if !strings.Contains(joined, "no jj client") || strings.Contains(joined, "has no bookmark") {
+		t.Errorf("diagnostics = %q", res.Diagnostics)
+	}
+}

@@ -19,9 +19,13 @@ type Source interface {
 }
 
 // Collect gathers the discovered workspaces, their main clones and current
-// bookmarks, merges state and plan efforts (plan wins) and attributes every
+// nearest bookmarks, merges state and plan efforts (plan wins) and attributes every
 // workspace. The diagnostics include plan-parse, merge and attribution
 // warnings. It is read-only: it never writes the plan file or state.
+//
+// A workspace's bookmark is jj.NearestBookmark: the nearest ancestor
+// bookmark, the first of them when several tie, so workspaces on a commit with
+// several bookmarks are attributed by whichever jj lists first.
 //
 // themeID, when non-nil, returns an explicit theme for a workspace path
 // (gh-72 agent ThemeIDs); it wins over bookmark membership.
@@ -42,7 +46,8 @@ func Collect(jjc jj.Client, repos []discovery.DiscoveredRepo, src Source, themeI
 	var diags []string
 	diags = append(diags, p.Diagnostics...)
 
-	clones := MainClones(jjc, repos)
+	clones, cloneDiags := MainClonesWithDiagnostics(jjc, repos)
+	diags = append(diags, cloneDiags...)
 
 	sorted := append([]discovery.DiscoveredRepo(nil), repos...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
@@ -55,8 +60,11 @@ func Collect(jjc jj.Client, repos []discovery.DiscoveredRepo, src Source, themeI
 		}
 		seen[path] = true
 		ws := WorkspaceInfo{Path: path, MainRepoPath: filepath.Clean(ResolveMainClone(r))}
-		bm, err := jjc.NearestBookmark(path)
-		if err != nil {
+		if jjc == nil {
+			ws.BookmarkErr = true
+			diags = append(diags, fmt.Sprintf("workspace %s: no jj client to read its bookmark", path))
+		} else if bm, err := jjc.NearestBookmark(path); err != nil {
+			ws.BookmarkErr = true
 			diags = append(diags, fmt.Sprintf("workspace %s: could not read its bookmark: %v", path, err))
 		} else {
 			ws.Bookmark = bm

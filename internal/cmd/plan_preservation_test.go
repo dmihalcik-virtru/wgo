@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/virtru/wgo/internal/jjtest"
+	"github.com/virtru/wgo/internal/plan"
+	"github.com/virtru/wgo/internal/store"
 )
 
 // The golden plan has a preamble, a custom section holding a fenced "## "
@@ -148,5 +150,69 @@ func TestSpecNewPreservesPlan(t *testing.T) {
 	}
 	line := "- **" + filepath.Base(repo) + ":WGO-999-thing** — WGO-999: a thing 📄 spec/WGO-999.md\n"
 	want := mustReplaceOnce(t, golden, goldenLastBranch, goldenLastBranch+line)
+	assertPlanBytes(t, planPath, want)
+}
+
+func TestAddWithWorktreePreservesPlan(t *testing.T) {
+	f := newMainsFixture(t)
+	toml := "[discovery]\nbase_dirs = [\"" + f.Cfg.Worktree.MainsDir + "\"]\nscan_depth = 5\n\n" +
+		"[worktree]\nmains_dir = \"" + f.Cfg.Worktree.MainsDir + "\"\nworktrees_dir = \"" + f.WorktreesDir + "\"\n"
+	planPath, golden := goldenHome(t, toml)
+
+	oldSpec, oldClaude := addNoSpec, addNoClaudeMD
+	addNoSpec, addNoClaudeMD = true, true
+	t.Cleanup(func() { addNoSpec, addNoClaudeMD = oldSpec, oldClaude })
+
+	captureStdout(t, func() {
+		if err := addWithWorktree("WGO-5", "the thing", []string{testOwner + "/" + testRepo}, false); err != nil {
+			t.Fatalf("addWithWorktree: %v", err)
+		}
+	})
+	branch := slugTicketBranch("WGO-5", "the thing")
+	want := mustReplaceOnce(t, golden, "- [ ] a passthrough note line\n", "- [ ] a passthrough note line\n○ WGO-5 the thing\n")
+	want = mustReplaceOnce(t, want, goldenLastBranch, goldenLastBranch+"- **"+testRepo+":"+branch+"** — WGO-5: the thing\n")
+	assertPlanBytes(t, planPath, want)
+}
+
+func TestSpecLinkPreservesPlan(t *testing.T) {
+	planPath, golden := goldenHome(t, "")
+	repo, _ := jjtest.NewRepo(t)
+	jjtest.Bookmark(t, repo, "WGO-999-thing", "@")
+	withRepoFlag(t, repo)
+
+	// Scaffold the spec, then put the plan back so only the link is under test.
+	if err := runSpecNew("WGO-999", "a thing"); err != nil {
+		t.Fatalf("runSpecNew: %v", err)
+	}
+	if err := os.WriteFile(planPath, []byte(golden), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runSpecLink("WGO-999"); err != nil {
+		t.Fatalf("runSpecLink: %v", err)
+	}
+	line := "- **" + filepath.Base(repo) + ":WGO-999-thing** — WGO-999 📄 spec/WGO-999.md\n"
+	want := mustReplaceOnce(t, golden, goldenLastBranch, goldenLastBranch+line)
+	assertPlanBytes(t, planPath, want)
+}
+
+func TestTodayPlanSyncPreservesPlan(t *testing.T) {
+	planPath, golden := goldenHome(t, "")
+	s := store.NewWithDir(filepath.Dir(planPath))
+	p, err := plan.Parse(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := &todayData{
+		plan:  p,
+		store: s,
+		branches: []activeBranch{
+			{RepoName: "wgo", Branch: "main", Path: t.TempDir()},
+			{RepoName: "wgo", Branch: "feat/x", Path: t.TempDir()}, // already in the plan
+			{RepoName: "api", Branch: "fix/new", Path: t.TempDir()},
+		},
+	}
+	captureStdout(t, func() { syncPlanBranches(data) })
+	want := mustReplaceOnce(t, golden, goldenLastBranch, goldenLastBranch+"- **api:fix/new** — active branch\n")
 	assertPlanBytes(t, planPath, want)
 }

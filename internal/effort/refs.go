@@ -8,8 +8,10 @@
 // "repo:bookmark" strings. State stores the normalized form, the absolute
 // main-clone path plus the exact bookmark; the plan shows the shortest repo
 // name that is unambiguous among the discovered clones (see DisplayRef). Every
-// reference is resolved to a single discovered main clone before it is
-// matched, so the same bookmark name in two repositories never matches.
+// reference, including an absolute "/path:bookmark", is resolved to a single
+// discovered main clone before it is matched; one that names no discovered
+// clone, or several, never matches and is reported as a diagnostic. The same
+// bookmark name in two repositories therefore never matches.
 package effort
 
 import (
@@ -21,6 +23,7 @@ import (
 	"github.com/virtru/wgo/internal/discovery"
 	gh "github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/jj"
+	"github.com/virtru/wgo/internal/plan"
 	"github.com/virtru/wgo/internal/store"
 )
 
@@ -48,14 +51,10 @@ func (c MainCloneInfo) describe() string {
 	return c.Path
 }
 
-// splitRef splits "repo:bookmark" at the last colon so an absolute path
-// works as the repo part.
+// splitRef splits "repo:bookmark" with the plan package's definition, so the
+// plan parser and reference resolution agree on where the bookmark starts.
 func splitRef(ref string) (string, string, bool) {
-	i := strings.LastIndex(ref, ":")
-	if i <= 0 || i == len(ref)-1 {
-		return "", "", false
-	}
-	return ref[:i], ref[i+1:], true
+	return plan.ParseBranchRef(ref)
 }
 
 // MatchRepo returns the main clones a repo reference names. The reference
@@ -156,6 +155,16 @@ func NormalizeBookmarkRef(mainClonePath, bookmark string) string {
 // sorted by path. Owner and repo come from the origin remote when it is a
 // GitHub URL, else from the <owner>/<repo> directory layout.
 func MainClones(jjc jj.Client, repos []discovery.DiscoveredRepo) []MainCloneInfo {
+	clones, _ := MainClonesWithDiagnostics(jjc, repos)
+	return clones
+}
+
+// MainClonesWithDiagnostics is MainClones that also reports each clone whose
+// remotes could not be read. Such a clone falls back to the directory layout
+// for its owner/repo slug, which may be a guess, so owner/repo references to
+// it deserve a second look.
+func MainClonesWithDiagnostics(jjc jj.Client, repos []discovery.DiscoveredRepo) ([]MainCloneInfo, []string) {
+	var diags []string
 	seen := map[string]bool{}
 	var clones []MainCloneInfo
 	for _, r := range repos {
@@ -180,5 +189,6 @@ func MainClones(jjc jj.Client, repos []discovery.DiscoveredRepo) []MainCloneInfo
 		clones = append(clones, clone)
 	}
 	sort.Slice(clones, func(i, j int) bool { return clones[i].Path < clones[j].Path })
-	return clones
+	sort.Strings(diags)
+	return clones, diags
 }
