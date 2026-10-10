@@ -58,7 +58,11 @@ func newServerOpts(t testing.TB, opts HandlerOptions) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewUnstartedServer(nil)
 	opts.Host = srv.Listener.Addr().String()
-	srv.Config.Handler = NewHandler(opts)
+	h, err := NewHandler(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.Config.Handler = h
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv

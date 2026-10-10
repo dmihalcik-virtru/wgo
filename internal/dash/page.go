@@ -24,6 +24,13 @@ type liveBoot struct {
 	// Entity is the identifier the user asked /lookup for.
 	Focus  string `json:"focus,omitempty"`
 	Entity string `json:"entity,omitempty"`
+	// Token is the per-launch action token, sent back in TokenHeader.
+	// ActionAPI and AckAPI are set when actions and Mark seen are enabled;
+	// Resume names the configured resume tool (empty hides Resume).
+	Token     string `json:"token,omitempty"`
+	ActionAPI string `json:"action_api,omitempty"`
+	AckAPI    string `json:"ack_api,omitempty"`
+	Resume    string `json:"resume,omitempty"`
 }
 
 // page is a rendered explorer page with its Content-Security-Policy. The
@@ -77,6 +84,10 @@ var (
 // styles (by hash), same-origin fetches and nothing else: no eval, no
 // remote code, no framing, no form posts.
 func contentSecurityPolicy(page []byte) string {
+	// WARNING: every bare <script> (and <style>) in the rendered page is
+	// hashed and so allowlisted, whatever it contains. Untrusted data
+	// (snapshot fields, paths, branch names) must never be rendered into
+	// one; it belongs in the JSON bootstrap or the /api responses.
 	hashes := func(re *regexp.Regexp) string {
 		var out []string
 		for _, m := range re.FindAllSubmatch(page, -1) {

@@ -148,18 +148,28 @@ func TestLivePageRendersBeforeAnySnapshot(t *testing.T) {
 	}
 }
 
-func TestLiveAppIssuesOnlyGets(t *testing.T) {
-	// Slice 2 is read-only: no POST, no tokens, no launch actions.
+func TestLiveAppKeepsTheTokenInAHeader(t *testing.T) {
+	// The only POSTs are the token-guarded actions and Mark seen; the token
+	// goes in a header, never a URL, storage, a beacon or a log.
 	live, err := review.RenderPage(review.Page{Mode: review.ModeLive, Boot: liveBoot{Mode: "live"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	app := string(live)
 	app = app[strings.Index(app, "/* wgo dash live explorer"):]
-	for _, bad := range []string{"method:", "POST", "XMLHttpRequest", "token", "eval(", "new Function", ".innerHTML", "document.write"} {
+	for _, bad := range []string{"XMLHttpRequest", "sendBeacon", "localStorage", "sessionStorage", "document.cookie", "token=", "?token", "console.log", "eval(", "new Function", ".innerHTML", "document.write", "Access-Control"} {
 		if strings.Contains(app, bad) {
 			t.Errorf("live app contains %q", bad)
 		}
+	}
+	if n := strings.Count(app, `method: "POST"`); n != 1 {
+		t.Errorf("want exactly one POST (postJSON), found %d", n)
+	}
+	if !strings.Contains(app, `"X-Wgo-Token": BOOT.token`) {
+		t.Error("postJSON does not send the token header")
+	}
+	if strings.Count(app, "BOOT.token") != strings.Count(app, "!BOOT.token")+strings.Count(app, `"X-Wgo-Token": BOOT.token`) {
+		t.Error("BOOT.token is used somewhere other than the header and enablement checks")
 	}
 }
 
