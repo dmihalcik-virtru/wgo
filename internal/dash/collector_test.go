@@ -257,3 +257,26 @@ func TestWorkspaceIDStable(t *testing.T) {
 		t.Fatal("id must be opaque")
 	}
 }
+
+func TestNodeIDsIgnoreRepoCase(t *testing.T) {
+	if prNodeID("Acme/Widgets", 3) != prNodeID("acme/widgets", 3) {
+		t.Fatal("PR node IDs must not depend on repo case")
+	}
+	if githubTicketID("Acme/Widgets", 3) != githubTicketID("acme/widgets", 3) {
+		t.Fatal("ticket node IDs must not depend on repo case")
+	}
+}
+
+// TestWorkspaceIDSameRootDifferentClones: one path under two main clones is
+// two workspaces, and a path that does not exist still gets a stable ID.
+func TestWorkspaceIDSameRootDifferentClones(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "gone")
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	if WorkspaceID(a, root) == WorkspaceID(b, root) {
+		t.Fatal("same root under different main clones must differ")
+	}
+	if WorkspaceID(a, root) != WorkspaceID(a, root) {
+		t.Fatal("ID of a nonexistent path must be stable")
+	}
+}

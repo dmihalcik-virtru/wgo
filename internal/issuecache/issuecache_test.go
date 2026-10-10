@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/virtru/wgo/internal/github"
 )
 
 var key = Key{Owner: "acme", Repo: "widgets", Number: 70}
@@ -113,4 +114,59 @@ func TestLockRefreshLogsFilesystemFaults(t *testing.T) {
 	logs := brokenCache(t)
 	assert.False(t, LockRefresh(key, time.Minute))
 	assert.NotEmpty(t, *logs, "a filesystem fault must not look like silent contention")
+}
+
+// TestHyphenatedOwnerRepoDoNotCollide: a-b/c and a/b-c are different repos.
+func TestHyphenatedOwnerRepoDoNotCollide(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	a := Key{Owner: "a-b", Repo: "c", Number: 1}
+	b := Key{Owner: "a", Repo: "b-c", Number: 1}
+	require.NoError(t, Write(a, Info{Number: 1, State: "open"}))
+	assert.Equal(t, Miss, Read(b, time.Hour).State)
+	assert.Equal(t, Fresh, Read(a, time.Hour).State)
+}
+
+// TestOwnerRepoCaseInsensitive: GitHub slugs are case-insensitive.
+func TestOwnerRepoCaseInsensitive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, Write(Key{Owner: "Acme", Repo: "Widgets", Number: 7}, Info{Number: 7, State: "open"}))
+	assert.Equal(t, Fresh, Read(Key{Owner: "acme", Repo: "widgets", Number: 7}, time.Hour).State)
+}
+
+func TestTraversalKeyRejected(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	assert.Error(t, Write(Key{Owner: "..", Repo: "x", Number: 1}, Info{}))
+}
+
+// TestNoAuthIsNotCached: a missing token must not linger as a cached failure.
+func TestNoAuthIsNotCached(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	r := Refresh(&countingFetcher{err: github.ErrNoAuth}, key)
+	assert.ErrorIs(t, r.Err, github.ErrNoAuth)
+	after := Read(key, time.Hour)
+	assert.Equal(t, Miss, after.State)
+	assert.NoError(t, after.Err, "no failure recorded on disk")
+}
+
+// TestCorruptEntryIsLoggedMiss: an unreadable entry reads as a miss, visibly.
+func TestCorruptEntryIsLoggedMiss(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, Write(key, Info{Number: 70, State: "open"}))
+	path, err := issuePath(key)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o644))
+	var logged []string
+	old := Logf
+	Logf = func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	t.Cleanup(func() { Logf = old })
+	assert.Equal(t, Miss, Read(key, time.Hour).State)
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "corrupt")
+}
+
+// TestLossyNamesDoNotCollide: names that a sanitizer would merge stay apart.
+func TestLossyNamesDoNotCollide(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, Write(Key{Owner: "o", Repo: "foo--bar", Number: 1}, Info{Number: 1, State: "open"}))
+	assert.Equal(t, Miss, Read(Key{Owner: "o", Repo: "foo-bar", Number: 1}, time.Hour).State)
 }

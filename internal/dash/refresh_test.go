@@ -294,6 +294,13 @@ func TestGitHubTicketNeedsGitHubRemote(t *testing.T) {
 		if j.Kind == JobIssue {
 			t.Fatalf("issue lookup queued against a guessed repo: %+v", j.Issue)
 		}
+		if j.Kind == JobPR {
+			t.Fatalf("PR lookup queued for a repo with no GitHub remote: %+v", j)
+		}
+	}
+	bm := s.Node(bookmarkID(repo, "gh-9-x"))
+	if bm == nil || bm.Bookmark.PRLookup != Unknown || bm.Bookmark.PRError != "no GitHub remote" {
+		t.Fatalf("bookmark on a non-GitHub repo should say why PRs are unknown: %+v", bm)
 	}
 }
 

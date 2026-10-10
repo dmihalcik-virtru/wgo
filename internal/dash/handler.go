@@ -20,11 +20,14 @@ const placeholderPage = `<!doctype html>
 </html>
 `
 
-// Handler serves the dashboard read-only. It never runs discovery, jj, a
-// network call or a process: it only serializes the view src currently
-// holds, so a request costs a pointer load and a write. Requests whose Host
-// header is not exactly host (the configured loopback host:port) are
-// rejected, which defeats DNS rebinding.
+// Handler serves the dashboard read-only. The page at / is a temporary
+// placeholder until the UI lands (gh-70 slice 2); only the read-only snapshot
+// endpoint is real, and the spec's token and Origin checks do not exist yet.
+//
+// It never runs discovery, jj, a network call or a process: it only
+// serializes the view src currently holds, so a request costs a pointer load
+// and a write. Requests whose Host header is not exactly host (the configured
+// loopback host:port) are rejected, which defeats DNS rebinding.
 func Handler(src ViewSource, host string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +46,15 @@ func Handler(src ViewSource, host string) http.Handler {
 			_, _ = w.Write([]byte(`{"status":"loading"}` + "\n"))
 			return
 		}
-		_ = v.WriteJSON(w, time.Now())
+		body, err := v.encodeJSON(time.Now())
+		if err != nil {
+			logf("dash: encode snapshot: %v", err)
+			http.Error(w, "snapshot could not be served", http.StatusInternalServerError)
+			return
+		}
+		if _, err := w.Write(body); err != nil {
+			logf("dash: write snapshot: %v", err) // the client went away
+		}
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()

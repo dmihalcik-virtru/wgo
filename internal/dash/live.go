@@ -80,6 +80,17 @@ func (v *View) withDiagnostics(diags []string) *View {
 // WriteJSON writes the API body for v: status, generation, snapshot age at
 // now, the snapshot and the delta.
 func (v *View) WriteJSON(w io.Writer, now time.Time) error {
+	body, err := v.encodeJSON(now)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(body)
+	return err
+}
+
+// encodeJSON builds the body WriteJSON writes, so a caller can tell an
+// encoding failure (nothing sent yet) from a failed write.
+func (v *View) encodeJSON(now time.Time) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.Grow(len(v.snapshotJSON) + len(v.deltaJSON) + 128)
 	age := now.Sub(v.Snapshot.GeneratedAt).Seconds()
@@ -99,7 +110,7 @@ func (v *View) WriteJSON(w io.Writer, now time.Time) error {
 	}
 	dj, err := json.Marshal(diags)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	buf.Write(dj)
 	buf.WriteString(`,"snapshot":`)
@@ -107,8 +118,7 @@ func (v *View) WriteJSON(w io.Writer, now time.Time) error {
 	buf.WriteString(`,"delta":`)
 	buf.Write(v.deltaJSON)
 	buf.WriteString("}\n")
-	_, err = w.Write(buf.Bytes())
-	return err
+	return buf.Bytes(), nil
 }
 
 // Options configure a Dash.
@@ -231,6 +241,7 @@ func Open(opts Options) (*Dash, error) {
 	}
 	b, err := loadBaseline(filepath.Join(opts.Dir, BaselineFile))
 	if err != nil {
+		logf("dash: load baseline: %v", err)
 		d.baselineLoadErr = err.Error()
 	}
 	if b != nil {
@@ -239,6 +250,7 @@ func Open(opts Options) (*Dash, error) {
 	}
 	s, err := loadSnapshot(filepath.Join(opts.Dir, SnapshotFile))
 	if err != nil {
+		logf("dash: load snapshot: %v", err)
 		d.snapshotLoadErr = err.Error()
 	}
 	if s != nil {

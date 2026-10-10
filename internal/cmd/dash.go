@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -92,11 +93,7 @@ func runDash(ctx context.Context, out io.Writer) error {
 	})
 	opts := dash.Options{Dir: filepath.Join(st.BaseDir(), "cache", "dash"), Collector: collector}
 	if dashRefresh {
-		r := dash.NewRefresher(dash.Fetchers{
-			PR:    newGHFetcher(),
-			Jira:  jiraFetcherFn(),
-			Issue: ghIssueFetcher{c: github.NewClient()},
-		}, dash.RefresherOptions{Workers: 4, IgnoreLeases: true})
+		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, IgnoreLeases: true})
 		defer r.Close()
 		opts.Refresher = r
 	}
@@ -119,6 +116,21 @@ func runDash(ctx context.Context, out io.Writer) error {
 	// saved, failed remote lookups) is also in the printed diagnostics; the
 	// error makes it visible to scripts through the exit status.
 	return refreshErr
+}
+
+// dashFetchers returns the lookups this machine can actually make. An
+// integration that is absent (no GitHub token or gh, no acli) gets no fetcher,
+// so its jobs are skipped rather than failing every run.
+func dashFetchers() dash.Fetchers {
+	var f dash.Fetchers
+	if gc := github.NewClient(); gc.Available() {
+		f.PR = newGHFetcher()
+		f.Issue = ghIssueFetcher{c: gc}
+	}
+	if _, err := exec.LookPath("acli"); err == nil {
+		f.Jira = jiraFetcherFn()
+	}
+	return f
 }
 
 // ghIssueFetcher adapts the GitHub client to issuecache.Fetcher.

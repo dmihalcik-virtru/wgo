@@ -153,7 +153,7 @@ func (r BatchResult) Err() error {
 	if r.Dropped > 0 {
 		parts = append(parts, fmt.Sprintf("%d of %d lookups not run (queue full)", r.Dropped, r.Jobs))
 	}
-	return fmt.Errorf("remote refresh: %s; run: wgo dash --json --refresh", strings.Join(parts, ", "))
+	return fmt.Errorf("remote refresh: %s", strings.Join(parts, ", "))
 }
 
 // NewRefresher starts a Refresher's workers.

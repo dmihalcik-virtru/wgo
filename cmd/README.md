@@ -4,7 +4,8 @@
 
 ```
 wgo .                    # Current context: branch, PR, worktree, agent status
-wgo status               # Dashboard across all tracked repos/worktrees (watch mode)
+wgo status               # Status across all tracked repos/worktrees (--watch to refresh)
+wgo dash --json          # Snapshot of efforts, workspaces, PRs, tickets, agents (--refresh to fetch)
 wgo plan                 # Show/edit the .plan file
 wgo plan add "reason"    # Annotate current branch with purpose
 wgo ls                   # List all known worktrees/branches across repos

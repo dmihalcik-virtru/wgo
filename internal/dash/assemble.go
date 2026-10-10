@@ -172,7 +172,13 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 			bi.PRError = res.Err.Error()
 		}
 		prTally.add(bi.PRLookup, res.FetchedAt)
-		if bi.PRLookup != Fresh {
+		if ls.ghSlugs[w.mainClone] == "" {
+			// No GitHub remote (or jj could not say): a fetch could only
+			// fail and record that failure, so say why and queue nothing.
+			if bi.PRError == "" {
+				bi.PRError = ls.noGitHub[w.mainClone]
+			}
+		} else if bi.PRLookup != Fresh {
 			addJob(Job{Kind: JobPR, RemoteURL: origin, RepoPath: w.mainClone, Branch: w.bookmark})
 		}
 		b.node(Node{ID: bmID, Kind: KindBookmark, Label: w.bookmark, Bookmark: bi})

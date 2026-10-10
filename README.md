@@ -59,7 +59,7 @@ Developers with many branches, worktrees, and repos across multiple checkouts lo
 
 - GitHub PR integration with cached status
 - Fuzzy finder for quick worktree/branch selection
-- Effort grouping in `wgo status` and `wgo .` (efforts and workspace attribution exist; the dashboard does not use them yet)
+- Effort grouping in `wgo status` and `wgo .` (efforts and workspace attribution exist; `wgo dash --json` uses them, `wgo status` and `wgo .` do not yet)
 
 ## Installation
 

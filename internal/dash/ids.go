@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // WorkspaceID returns the deterministic, opaque ID of the workspace rooted at
 // root in the repository whose main clone is mainClone. Both paths are
 // canonicalized (cleaned, symlinks resolved), so the same workspace reached
-// through different spellings gets the same ID. The ID reveals neither path.
+// through different spellings gets the same ID while the paths exist; a path
+// that no longer exists cannot be resolved, so a deleted workspace may hash
+// differently from when it existed. The ID reveals neither path.
 func WorkspaceID(mainClone, root string) string {
 	return "ws-" + shortHash(canonicalPath(mainClone), canonicalPath(root))
 }
@@ -27,14 +30,18 @@ func bookmarkID(mainClone, name string) string {
 
 func effortNodeID(key string) string { return "effort:" + key }
 
-func prNodeID(repo string, number int) string { return fmt.Sprintf("pr:%s#%d", repo, number) }
+// prNodeID and githubTicketID lowercase the repo: GitHub slugs are
+// case-insensitive, so Foo/Bar and foo/bar must be one node.
+func prNodeID(repo string, number int) string {
+	return fmt.Sprintf("pr:%s#%d", strings.ToLower(repo), number)
+}
 
 func agentNodeID(session string) string { return "agent:" + session }
 
 func jiraTicketID(key string) string { return "ticket:jira:" + key }
 
 func githubTicketID(ownerRepo string, number int) string {
-	return fmt.Sprintf("ticket:gh:%s#%d", ownerRepo, number)
+	return fmt.Sprintf("ticket:gh:%s#%d", strings.ToLower(ownerRepo), number)
 }
 
 func shortHash(parts ...string) string {

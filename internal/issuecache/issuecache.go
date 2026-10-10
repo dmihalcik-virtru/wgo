@@ -1,8 +1,8 @@
 // Package issuecache is a cross-invocation on-disk cache for GitHub issue
 // status, used for `gh-N` tickets. Entries live under
-// ~/.wgo/cache/ghissue/<owner>-<repo>/<number>.json, keyed by repository and
-// issue number, because an issue number only means something within its
-// repository.
+// ~/.wgo/cache/ghissue/<owner>/<repo>/<number>.json (owner and repo lowercased,
+// as GitHub treats them case-insensitively), keyed by repository and issue
+// number, because an issue number only means something within its repository.
 //
 // It is modelled on internal/jiracache, with internal/prcache's split between
 // the last successful fetch and the last attempt: Read never makes a network
@@ -15,9 +15,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/virtru/wgo/internal/atomicfile"
@@ -62,7 +65,8 @@ type Result struct {
 	FetchedAt     time.Time
 	LastAttemptAt time.Time
 	// Err is the most recent recorded fetch failure, possibly alongside
-	// last-known-good Info.
+	// last-known-good Info. After Refresh it can also accompany fresh data,
+	// meaning the fetch worked but the result could not be cached.
 	Err error
 }
 
@@ -104,23 +108,36 @@ func readEntry(k Key) (entry, bool) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			logf("issue cache: read %s: %v", k, err)
+		}
 		return entry{}, false
 	}
 	var e entry
 	if err := json.Unmarshal(data, &e); err != nil {
+		logf("issue cache: corrupt entry for %s: %v", k, err)
 		return entry{}, false
 	}
 	return e, true
 }
 
+// writeMu serialises this process's cache writes so WriteFailure's
+// read-modify-write cannot overwrite a concurrent successful Write with a
+// stale copy. atomicfile keeps each file whole; this keeps it current.
+var writeMu sync.Mutex
+
 // Write stores a successful fetch, clearing any recorded failure.
 func Write(k Key, info Info) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
 	now := time.Now()
 	return writeEntry(k, entry{Info: info, FetchedAt: now, LastAttemptAt: now})
 }
 
 // WriteFailure records a failed attempt, keeping any earlier good data.
 func WriteFailure(k Key, cause error) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
 	e, _ := readEntry(k)
 	e.LastAttemptAt = time.Now()
 	e.LastError = cause.Error()
@@ -167,6 +184,11 @@ func Refresh(f Fetcher, k Key) Result {
 	if err != nil {
 		prior := Read(k, 0)
 		prior.Err = err
+		if errors.Is(err, github.ErrNoAuth) {
+			// A missing token is not an answer about the issue: caching it
+			// would keep reporting an error after the user logs in.
+			return prior
+		}
 		if werr := WriteFailure(k, err); werr != nil {
 			logf("issue cache: record failure for %s: %v", k, werr)
 			prior.Err = errors.Join(err, fmt.Errorf("issue cache write: %w", werr))
@@ -234,6 +256,11 @@ func LockRefresh(k Key, window time.Duration) bool {
 	return true
 }
 
+// slugPart is what GitHub allows in an owner or repo name. Using it as a
+// directory name verbatim (after lowercasing) keeps distinct repos distinct,
+// which a lossy sanitizer would not.
+var slugPart = regexp.MustCompile(`^[a-z0-9._-]{1,100}$`)
+
 func issuePath(k Key) (string, error) {
 	if k.Owner == "" || k.Repo == "" || k.Number <= 0 {
 		return "", fmt.Errorf("issuecache: incomplete key %s", k)
@@ -242,6 +269,11 @@ func issuePath(k Key) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ns := github.SanitizeBranch(k.Owner + "-" + k.Repo)
-	return filepath.Join(s.BaseDir(), "cache", "ghissue", ns, fmt.Sprintf("%d.json", k.Number)), nil
+	owner, repo := strings.ToLower(k.Owner), strings.ToLower(k.Repo)
+	for _, part := range []string{owner, repo} {
+		if !slugPart.MatchString(part) || part == "." || part == ".." {
+			return "", fmt.Errorf("issuecache: unusable key %s", k)
+		}
+	}
+	return filepath.Join(s.BaseDir(), "cache", "ghissue", owner, repo, fmt.Sprintf("%d.json", k.Number)), nil
 }
