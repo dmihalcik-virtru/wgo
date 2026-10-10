@@ -47,7 +47,20 @@ type Config struct {
 type Collector struct {
 	cfg Config
 	jj  *jj.CLIClient
+	// reader, when set, supplies the per-workspace jj reads instead of c.jj.
+	// It is a test seam: nil means the real read-only jj client.
+	reader func(ctx context.Context) wsReader
 }
+
+// wsReader is the subset of jj read queries readWorkspace needs.
+// *jj.CLIClient satisfies it.
+type wsReader interface {
+	Log(repo, revset string) ([]jj.LogEntry, error)
+	NearestBookmark(workspacePath string) (string, error)
+	CountRevset(repo, revset string) (int, error)
+}
+
+var _ wsReader = (*jj.CLIClient)(nil)
 
 // NewCollector returns a Collector for cfg.
 func NewCollector(cfg Config) *Collector {
@@ -108,8 +121,14 @@ type wsData struct {
 	current   jj.Change
 	changes   []jj.Change // newest first, within ChangeWindow
 	truncated int
-	stack     []string // bottom-up
-	err       error
+	// truncatedUnknown is set when the workspace may hold more changes than
+	// the window but jj could not count them.
+	truncatedUnknown bool
+	// warning is a non-fatal problem found while reading, surfaced as a
+	// diagnostic by collectLocal once the fan-out has finished.
+	warning string
+	stack   []string // bottom-up
+	err     error
 }
 
 // workspaceSet is the deduplicated set of discovered workspaces.
@@ -206,6 +225,9 @@ func (c *Collector) collectLocal(ctx context.Context) (*localState, error) {
 	c.readWorkspaces(ctx, ls.workspaces)
 	jjStatus := SourceStatus{}
 	for _, w := range ls.workspaces {
+		if w.warning != "" {
+			ls.diags = append(ls.diags, w.warning)
+		}
 		if w.err != nil {
 			jjStatus.Error++
 		} else {
@@ -261,8 +283,11 @@ func (c *Collector) collectLocal(ctx context.Context) (*localState, error) {
 	if c.cfg.Store != nil {
 		if state, err = c.cfg.Store.LoadState(); err != nil {
 			state = nil
-			agentStatus = SourceStatus{State: Error, Detail: "load state: " + err.Error()}
-			ls.diags = append(ls.diags, "load state: "+err.Error())
+			msg := "load state (~/.wgo/state.json): " + err.Error() +
+				"; agent sessions, state-only efforts and annotations are not shown"
+			agentStatus = SourceStatus{State: Error, Detail: msg}
+			planStatus = SourceStatus{State: Error, Detail: msg}
+			ls.diags = append(ls.diags, msg)
 		}
 		content, err := c.cfg.Store.LoadPlan()
 		if err == nil {
@@ -270,7 +295,11 @@ func (c *Collector) collectLocal(ctx context.Context) (*localState, error) {
 		}
 		if err != nil {
 			p = nil
-			planStatus = SourceStatus{State: Error, Detail: "plan: " + err.Error()}
+			detail := "plan: " + err.Error()
+			if planStatus.Detail != "" {
+				detail = planStatus.Detail + "; " + detail
+			}
+			planStatus = SourceStatus{State: Error, Detail: detail}
 			ls.diags = append(ls.diags, "plan: "+err.Error())
 		}
 	}
@@ -359,13 +388,18 @@ func resolveTheme(theme string, efforts map[string]effort.MergedEffort) string {
 // readWorkspaces runs the per-workspace jj queries with bounded concurrency.
 // A failure is recorded on that workspace and never fails the collection.
 func (c *Collector) readWorkspaces(ctx context.Context, wss []*wsData) {
-	if c.jj == nil {
+	var jjc wsReader
+	switch {
+	case c.reader != nil:
+		jjc = c.reader(ctx)
+	case c.jj != nil:
+		jjc = c.jj.WithContext(ctx)
+	default:
 		for _, w := range wss {
 			w.err = fmt.Errorf("jj unavailable")
 		}
 		return
 	}
-	jjc := c.jj.WithContext(ctx)
 	sem := make(chan struct{}, c.cfg.Workers)
 	var wg sync.WaitGroup
 	for _, w := range wss {
@@ -384,7 +418,9 @@ func (c *Collector) readWorkspaces(ctx context.Context, wss []*wsData) {
 // @ not yet in trunk, pushed or not. It is not jj's mutable() set.
 const mutableRange = "trunk()..@"
 
-func readWorkspace(jjc *jj.CLIClient, w *wsData) error {
+// readWorkspace fills w from jjc. It writes only to w, so concurrent calls
+// on distinct workspaces do not race.
+func readWorkspace(jjc wsReader, w *wsData) error {
 	cur, err := jjc.Log(w.root, "@")
 	if err != nil {
 		return err
@@ -402,7 +438,11 @@ func readWorkspace(jjc *jj.CLIClient, w *wsData) error {
 	}
 	if len(entries) >= ChangeWindow {
 		total, err := jjc.CountRevset(w.root, mutableRange)
-		if err == nil && total > len(entries) {
+		switch {
+		case err != nil:
+			w.truncatedUnknown = true
+			w.warning = fmt.Sprintf("workspace %s: could not count changes beyond the newest %d: %s", w.root, ChangeWindow, jj.BriefError(err))
+		case total > len(entries):
 			w.truncated = total - len(entries)
 		}
 	}

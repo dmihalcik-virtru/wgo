@@ -164,9 +164,12 @@ type WorkspaceInfo struct {
 	Changes []string `json:"changes,omitempty"`
 	// ChangesTruncated counts changes in trunk()..@ beyond the ChangeWindow
 	// read; it counts empty undescribed changes that Changes leaves out.
-	ChangesTruncated int       `json:"changes_truncated,omitempty"`
-	LastActivity     time.Time `json:"last_activity,omitzero"`
-	Annotation       string    `json:"annotation,omitempty"`
+	ChangesTruncated int `json:"changes_truncated,omitempty"`
+	// ChangesTruncatedUnknown is set when the window was full but jj could not
+	// count what lies beyond it, so ChangesTruncated is not trustworthy.
+	ChangesTruncatedUnknown bool      `json:"changes_truncated_unknown,omitempty"`
+	LastActivity            time.Time `json:"last_activity,omitzero"`
+	Annotation              string    `json:"annotation,omitempty"`
 	// EffortID is the node ID of the effort this workspace is attributed to.
 	EffortID string `json:"effort_id"`
 	// Error is set when jj could not be read for this workspace; the other

@@ -34,6 +34,9 @@ type BaselineWorkspace struct {
 	Label     string   `json:"label"`
 	Changes   []string `json:"changes"`
 	Truncated int      `json:"truncated,omitempty"`
+	// TruncatedUnknown records that the window was full but the overflow
+	// could not be counted. Absent in older baselines, meaning false.
+	TruncatedUnknown bool `json:"truncated_unknown,omitempty"`
 	// Known is false when jj could not read the workspace at the time.
 	Known bool `json:"known"`
 }
@@ -72,10 +75,11 @@ func baselineFrom(s *Snapshot, at time.Time) *Baseline {
 				changes = changes[:ChangeWindow]
 			}
 			b.Workspaces[n.ID] = BaselineWorkspace{
-				Label:     n.Label,
-				Changes:   append([]string{}, changes...),
-				Truncated: w.ChangesTruncated,
-				Known:     w.Error == "",
+				Label:            n.Label,
+				Changes:          append([]string{}, changes...),
+				Truncated:        w.ChangesTruncated,
+				TruncatedUnknown: w.ChangesTruncatedUnknown,
+				Known:            w.Error == "",
 			}
 		case n.Bookmark != nil:
 			b.Bookmarks[n.ID] = BaselineBookmark{PRsKnown: n.Bookmark.PRLookup.hasData()}
@@ -173,6 +177,8 @@ type WorkspaceDelta struct {
 	NewChanges int    `json:"new_changes"`
 	// Truncated is the number of changes beyond the comparison window.
 	Truncated int `json:"truncated,omitempty"`
+	// TruncatedUnknown means the overflow could not be counted.
+	TruncatedUnknown bool `json:"truncated_unknown,omitempty"`
 }
 
 // PRDelta reports a PR state or review-decision change.
@@ -209,7 +215,7 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 		if w == nil {
 			continue
 		}
-		wd := WorkspaceDelta{ID: n.ID, Label: n.Label, Truncated: w.ChangesTruncated}
+		wd := WorkspaceDelta{ID: n.ID, Label: n.Label, Truncated: w.ChangesTruncated, TruncatedUnknown: w.ChangesTruncatedUnknown}
 		base, had := b.Workspaces[n.ID]
 		switch {
 		case w.Error != "":
@@ -233,10 +239,13 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 				wd.Status = ItemChanged
 			}
 		}
-		if wd.Truncated > 0 || (had && base.Truncated > 0) {
+		if wd.Truncated > 0 || wd.TruncatedUnknown || (had && (base.Truncated > 0 || base.TruncatedUnknown)) {
 			d.Summary.Truncated++
 			if wd.Truncated == 0 {
 				wd.Truncated = base.Truncated
+			}
+			if had && base.TruncatedUnknown {
+				wd.TruncatedUnknown = true
 			}
 		}
 		d.Summary.NewChanges += wd.NewChanges

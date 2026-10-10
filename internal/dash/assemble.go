@@ -1,6 +1,7 @@
 package dash
 
 import (
+	"fmt"
 	"maps"
 	"path/filepath"
 	"sort"
@@ -233,6 +234,13 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		u := b.nodes[effortNode(GroupUngrouped)]
 		for _, cf := range att.Conflicts {
 			id := wsByCanonical[canonicalPath(cf.Workspace.Path)]
+			if id == "" {
+				// A conflicted workspace we did not discover cannot be
+				// referenced by ID; say so instead of emitting a dangling one.
+				ls.diags = append(ls.diags, fmt.Sprintf("workspace %s is claimed by multiple efforts (%s) but is not a discovered workspace",
+					cf.Workspace.Path, strings.Join(cf.ClaimedBy, ", ")))
+				continue
+			}
 			u.Effort.Conflicts = append(u.Effort.Conflicts, EffortConflict{WorkspaceID: id, ClaimedBy: append([]string(nil), cf.ClaimedBy...)})
 		}
 		sort.Slice(u.Effort.Conflicts, func(i, j int) bool { return u.Effort.Conflicts[i].WorkspaceID < u.Effort.Conflicts[j].WorkspaceID })
@@ -340,6 +348,7 @@ func workspaceInfo(w *wsData, repo, repoSlug, effortID string, annotations map[s
 		}
 	}
 	wi.ChangesTruncated = w.truncated
+	wi.ChangesTruncatedUnknown = w.truncatedUnknown
 	if w.bookmark != "" {
 		for i, name := range w.stack {
 			if name == w.bookmark {
@@ -365,7 +374,13 @@ func (c *Collector) ticketNode(b *builder, bookmark, repoName, repoSlug, noGitHu
 	if n, ok := strings.CutPrefix(ticket, "GH-"); ok {
 		num, err := strconv.Atoi(n)
 		if err != nil {
-			return ""
+			// The ticket regex guarantees digits, so only overflow reaches
+			// here. Show the ticket rather than drop it.
+			id := "ticket:gh:invalid#" + n
+			b.node(Node{ID: id, Kind: KindTicket, Label: "gh-" + n, Ticket: &TicketInfo{
+				Key: "gh-" + n, System: "github", Freshness: Unknown, Error: "issue number out of range"}})
+			issues.add(Unknown, time.Time{})
+			return id
 		}
 		if repoSlug == "" {
 			// No GitHub remote (or jj could not say): the issue cannot be
