@@ -50,8 +50,15 @@ func largeDash(t testing.TB) *Dash {
 // newServer starts src behind Handler bound to the server's own address.
 func newServer(t testing.TB, src ViewSource) *httptest.Server {
 	t.Helper()
+	return newServerOpts(t, HandlerOptions{Source: src})
+}
+
+// newServerOpts serves NewHandler(opts) with Host set to the listener.
+func newServerOpts(t testing.TB, opts HandlerOptions) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewUnstartedServer(nil)
-	srv.Config.Handler = Handler(src, srv.Listener.Addr().String())
+	opts.Host = srv.Listener.Addr().String()
+	srv.Config.Handler = NewHandler(opts)
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv
@@ -146,14 +153,11 @@ func TestHandlerEmptyStateAndPage(t *testing.T) {
 	if resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("headers: %v", resp.Header)
 	}
-	resp, err = srv.Client().Get(srv.URL + "/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 200 || resp.Header.Get("Content-Security-Policy") != "default-src 'none'" {
+	resp, pageBody := get(t, srv.URL+"/")
+	if resp.StatusCode != 200 {
 		t.Fatalf("page: %d %v", resp.StatusCode, resp.Header)
 	}
+	checkCSP(t, resp.Header.Get("Content-Security-Policy"), pageBody)
 	resp, err = srv.Client().Post(srv.URL+"/api/snapshot", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)

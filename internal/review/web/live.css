@@ -1,0 +1,82 @@
+/* wgo dash (live mode) additions. Loaded after style.css and reusing its tokens.
+ *
+ * Node kinds keep the review explorer's validated palette and add shapes instead
+ * of hues (a 4th categorical slot fails the all-pairs floors in dark mode):
+ *   workspace = blue circle (--k-person's step; it is a place, not a person)
+ *   pr        = orange square, ticket = aqua diamond (same as review)
+ *   effort    = neutral hexagon (container mark), bookmark = small neutral tag
+ *   agent     = ink triangle: a tool, never drawn as a person
+ * Freshness is never colour alone: stale = dashed outline + "stale", unknown =
+ * hollow mark + "?" + "unknown", error = dotted critical outline + "unavailable".
+ */
+:root { --k-workspace: var(--k-person); --k-effort: var(--k-repo); --k-bookmark: var(--muted); --k-agent: var(--ink2); }
+body.live #app { min-height: 560px; }
+.hdr .mode { font-weight: 400; color: var(--ink2); margin-left: 6px; font-size: 13px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border: 1px solid var(--axis); border-radius: 10px; font-size: 12px; color: var(--ink2); background: var(--plane); }
+.chip .glyph { font-weight: 700; }
+.f-fresh .glyph { color: var(--s-good); }
+.f-stale { border-style: dashed; }
+.f-stale .glyph { color: var(--s-warn); }
+.f-unknown { border-style: dotted; }
+.f-error { border-color: var(--s-critical); border-style: dotted; }
+.f-error .glyph { color: var(--s-critical); }
+.warns { margin: 4px 0 0; padding-left: 18px; color: var(--ink); font-size: 12px; }
+.warns li::marker { content: "⚠ "; color: var(--s-serious); }
+.since { margin-top: 6px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--plane); font-size: 12px; }
+.since b { font-weight: 600; }
+.since ul { margin: 2px 0 0; padding-left: 16px; }
+.since button.linkish, .effort button.linkish { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
+.multiples { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 6px 16px 8px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.mult { flex: 1 1 260px; min-width: 220px; }
+.mult h2 { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--ink2); }
+.mult .sub { font-weight: 400; }
+.mult svg { display: block; width: 100%; height: 92px; overflow: visible; }
+.mult .mbar { cursor: pointer; }
+.mult .mbar rect.hit { fill: transparent; }
+.mult .mbar rect.v { fill: var(--muted); opacity: .55; }
+.mult .mbar rect.part { fill: var(--accent); }
+.mult .mbar.on rect.v { fill: var(--accent); opacity: 1; }
+.mult .mbar:focus-visible { outline: none; }
+.mult .mbar:focus-visible rect.hit { stroke: var(--accent); stroke-width: 2; }
+.mult text { fill: var(--ink2); font-size: 10px; }
+.mult .empty { font-size: 12px; margin: 6px 0; }
+.lv-main { flex: 1; display: flex; min-height: 0; }
+.efforts { width: 360px; flex: none; overflow: auto; background: var(--surface); border-right: 1px solid var(--border); padding: 6px 10px 12px; }
+.effort { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; margin: 6px 0; background: var(--plane); }
+.effort.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.effort.dim { opacity: .45; }
+.effort > header { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.effort > header button.name { font-weight: 600; font-size: 13px; border: 0; background: none; padding: 0; text-align: left; }
+.badge { font-size: 11px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--axis); color: var(--ink2); }
+.badge.warn { border-color: var(--s-serious); color: var(--ink); }
+.effort .desc { color: var(--ink2); font-size: 12px; margin: 1px 0 3px; }
+.effort ul { list-style: none; margin: 2px 0; padding: 0; }
+.effort li { margin: 3px 0; font-size: 12px; }
+.effort li.ws > button { font-weight: 600; border: 0; background: none; padding: 0; text-align: left; }
+.effort .meta { color: var(--ink2); }
+.effort .sub { padding-left: 12px; }
+.effort .err { color: var(--ink); }
+.effort .err::before { content: "⚠ "; color: var(--s-critical); }
+.effort .xlink { font-size: 12px; margin-top: 3px; }
+.state { display: inline-block; padding: 0 5px; border-radius: 4px; border: 1px solid var(--axis); font-size: 11px; }
+.state.s-good { border-color: var(--s-good); }
+.state.s-bad { border-color: var(--s-critical); }
+.state.s-warn { border-color: var(--s-warn); }
+.state.f-unknown, .state.f-stale, .state.f-error { border-style: dashed; color: var(--ink2); }
+.liveness-uncertain { font-style: italic; }
+.conflict { color: var(--ink); }
+.conflict::before { content: "⚠ "; color: var(--s-serious); }
+.view-tabs { display: inline-flex; gap: 0; }
+.view-tabs button { border-radius: 0; }
+.view-tabs button:first-child { border-radius: 6px 0 0 6px; }
+.view-tabs button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+.view-tabs button[aria-pressed=true] { background: var(--accent); color: #fff; border-color: var(--accent); }
+.filterchip[hidden] { display: none; }
+table.live tbody tr { cursor: pointer; }
+table.live tbody tr:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.banner { margin: 6px 0 0; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--s-serious); background: var(--plane); font-size: 12px; }
+.loading { padding: 24px; color: var(--ink2); }
+.actions { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+.actions button[disabled] { opacity: .5; cursor: not-allowed; }
+@media (max-width: 1000px) { .lv-main { flex-direction: column; } .efforts { width: auto; max-height: 35%; border-right: 0; border-bottom: 1px solid var(--border); } }
