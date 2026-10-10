@@ -106,6 +106,14 @@ type PRRef struct {
 	IsDraft bool `json:"is_draft,omitempty"`
 	// Checks is the CI/checks rollup for the PR's head commit.
 	Checks CIStatus `json:"checks"`
+	// UpdatedAt is GitHub's last-updated time for the PR. Zero (and omitted)
+	// when the fetch predates gh-70 or GitHub did not report it.
+	UpdatedAt time.Time `json:"updated_at,omitzero"`
+	// RequestedReviewers are the users (login) and teams ("team:<slug>")
+	// whose review is still requested. Whether an empty list means "none
+	// requested" or "not fetched" is recorded by the cache entry that holds
+	// the ref (prcache.Result.ReviewersKnown), not by this field.
+	RequestedReviewers []string `json:"requested_reviewers,omitempty"`
 }
 
 // PRLookupRef is the provenance of Context.PRs, present only when those refs

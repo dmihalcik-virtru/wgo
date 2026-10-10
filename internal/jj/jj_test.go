@@ -1242,3 +1242,76 @@ func workingCopyFiles(t *testing.T, root string) []string {
 	slices.Sort(out)
 	return out
 }
+
+// TestReadOnlyNeverSnapshots proves ReadOnly reads leave the op log alone even
+// when the working copy has unsnapshotted edits, while the default client
+// still snapshots (so the option changes nothing for other callers).
+func TestReadOnlyNeverSnapshots(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	ro := c.ReadOnly()
+	if c.IgnoreWorkingCopy {
+		t.Fatal("ReadOnly mutated the original client")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "edited.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := jjtest.OpCount(t, repo)
+
+	if _, err := ro.CurrentChange(repo); err != nil {
+		t.Fatalf("ReadOnly CurrentChange: %v", err)
+	}
+	if _, err := ro.Log(repo, "::@"); err != nil {
+		t.Fatalf("ReadOnly Log: %v", err)
+	}
+	if _, err := ro.NearestBookmark(repo); err != nil {
+		t.Fatalf("ReadOnly NearestBookmark: %v", err)
+	}
+	if _, err := ro.ListWorkspaces(repo); err != nil {
+		t.Fatalf("ReadOnly ListWorkspaces: %v", err)
+	}
+	if got := jjtest.OpCount(t, repo); got != before {
+		t.Fatalf("ReadOnly reads changed the op log: %d -> %d operations", before, got)
+	}
+	files, err := ro.ChangedFiles(repo, "@")
+	if err != nil {
+		t.Fatalf("ReadOnly ChangedFiles: %v", err)
+	}
+	if slices.Contains(files, "edited.txt") {
+		t.Fatalf("ReadOnly read saw the unsnapshotted edit: %v", files)
+	}
+
+	// The default client snapshots on read, as before.
+	if _, err := c.CurrentChange(repo); err != nil {
+		t.Fatalf("CurrentChange: %v", err)
+	}
+	if got := jjtest.OpCount(t, repo); got == before {
+		t.Fatalf("default client did not snapshot; op count stayed %d", got)
+	}
+}
+
+func TestBriefErrorStripsCommandLine(t *testing.T) {
+	jjtest.RequireJJ(t)
+	dir := t.TempDir() // not a jj repo
+	_, err := jj.NewCLI().Root(dir)
+	if err == nil {
+		t.Fatal("Root on a non-repo succeeded")
+	}
+	var ce *jj.CommandError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %T, want *jj.CommandError", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("CommandError does not unwrap to *exec.ExitError")
+	}
+	if !strings.HasPrefix(err.Error(), "jj root: ") {
+		t.Errorf("Error() = %q, want the command line prefix", err.Error())
+	}
+	brief := jj.BriefError(err)
+	if brief == "" || strings.Contains(brief, "jj root") {
+		t.Errorf("BriefError = %q, want jj's message without the command line", brief)
+	}
+	if got := jj.BriefError(errors.New("plain")); got != "plain" {
+		t.Errorf("BriefError(plain) = %q", got)
+	}
+}

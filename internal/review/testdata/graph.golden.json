@@ -1,0 +1,235 @@
+{
+ "version": 1,
+ "label": "2026-test",
+ "me": "dana",
+ "nodes": [
+  {
+   "id": "person:alice",
+   "kind": "person",
+   "label": "alice",
+   "url": "https://github.com/alice",
+   "teams_known": true,
+   "counterpart": {
+    "reviewed_my_prs": 2,
+    "built_on_my_prs": 0,
+    "i_reviewed": 0,
+    "discussed": 0
+   }
+  },
+  {
+   "id": "person:bob",
+   "kind": "person",
+   "label": "bob",
+   "url": "https://github.com/bob",
+   "outside": true,
+   "teams_known": true,
+   "counterpart": {
+    "reviewed_my_prs": 0,
+    "built_on_my_prs": 1,
+    "i_reviewed": 0,
+    "discussed": 0
+   }
+  },
+  {
+   "id": "person:carol",
+   "kind": "person",
+   "label": "carol",
+   "url": "https://github.com/carol",
+   "counterpart": {
+    "reviewed_my_prs": 0,
+    "built_on_my_prs": 0,
+    "i_reviewed": 0,
+    "discussed": 3
+   }
+  },
+  {
+   "id": "person:dana",
+   "kind": "person",
+   "label": "dana",
+   "url": "https://github.com/dana",
+   "me": true
+  },
+  {
+   "id": "person:gemini-code-assist",
+   "kind": "person",
+   "label": "gemini-code-assist",
+   "url": "https://github.com/gemini-code-assist",
+   "bot": true
+  },
+  {
+   "id": "pr:https://github.com/o/r/pull/1",
+   "kind": "pr",
+   "label": "o/r#1 one",
+   "url": "https://github.com/o/r/pull/1",
+   "repo": "o/r",
+   "state": "merged",
+   "month": "2026-02",
+   "mine": true,
+   "outcome": "shipped-with-rework",
+   "complexity": "H",
+   "churn": 15
+  },
+  {
+   "id": "pr:https://github.com/o/r/pull/2",
+   "kind": "pr",
+   "label": "o/r#2 two",
+   "url": "https://github.com/o/r/pull/2",
+   "repo": "o/r",
+   "state": "open",
+   "month": "2026-03",
+   "mine": true,
+   "outcome": "in-flight",
+   "complexity": "M",
+   "ticketless": true
+  },
+  {
+   "id": "pr:https://github.com/o/r/pull/9",
+   "kind": "pr",
+   "label": "o/r#9 nine",
+   "url": "https://github.com/o/r/pull/9",
+   "repo": "o/r",
+   "state": "merged",
+   "month": "2026-01"
+  },
+  {
+   "id": "repo:o/r",
+   "kind": "repo",
+   "label": "o/r",
+   "url": "https://github.com/o/r"
+  },
+  {
+   "id": "ticket:E-1",
+   "kind": "ticket",
+   "label": "E-1",
+   "url": "https://j.example.net/browse/E-1"
+  },
+  {
+   "id": "ticket:T-1",
+   "kind": "ticket",
+   "label": "T-1 the ticket",
+   "url": "https://j.example.net/browse/T-1",
+   "state": "Done",
+   "month": "2026-01",
+   "points": 3
+  }
+ ],
+ "edges": [
+  {
+   "source": "person:alice",
+   "target": "pr:https://github.com/o/r/pull/1",
+   "kind": "reviewed",
+   "weight": 3
+  },
+  {
+   "source": "person:alice",
+   "target": "pr:https://github.com/o/r/pull/9",
+   "kind": "wrote",
+   "weight": 1
+  },
+  {
+   "source": "person:bob",
+   "target": "pr:https://github.com/o/r/pull/1",
+   "kind": "built_on",
+   "weight": 1
+  },
+  {
+   "source": "person:carol",
+   "target": "person:dana",
+   "kind": "discussed",
+   "weight": 3
+  },
+  {
+   "source": "person:dana",
+   "target": "pr:https://github.com/o/r/pull/1",
+   "kind": "authored",
+   "weight": 1
+  },
+  {
+   "source": "person:dana",
+   "target": "pr:https://github.com/o/r/pull/2",
+   "kind": "authored",
+   "weight": 1
+  },
+  {
+   "source": "person:dana",
+   "target": "pr:https://github.com/o/r/pull/9",
+   "kind": "i_reviewed",
+   "weight": 3
+  },
+  {
+   "source": "person:gemini-code-assist",
+   "target": "pr:https://github.com/o/r/pull/1",
+   "kind": "reviewed",
+   "weight": 1
+  },
+  {
+   "source": "pr:https://github.com/o/r/pull/1",
+   "target": "repo:o/r",
+   "kind": "in_repo",
+   "weight": 1
+  },
+  {
+   "source": "pr:https://github.com/o/r/pull/1",
+   "target": "ticket:T-1",
+   "kind": "ticket",
+   "weight": 1
+  },
+  {
+   "source": "pr:https://github.com/o/r/pull/2",
+   "target": "pr:https://github.com/o/r/pull/1",
+   "kind": "refs",
+   "weight": 1
+  },
+  {
+   "source": "pr:https://github.com/o/r/pull/2",
+   "target": "repo:o/r",
+   "kind": "in_repo",
+   "weight": 1
+  },
+  {
+   "source": "pr:https://github.com/o/r/pull/9",
+   "target": "repo:o/r",
+   "kind": "in_repo",
+   "weight": 1
+  },
+  {
+   "source": "ticket:T-1",
+   "target": "ticket:E-1",
+   "kind": "parent",
+   "weight": 1
+  }
+ ],
+ "facets": {
+  "complexity": {
+   "H": 1,
+   "M": 1
+  },
+  "kind": {
+   "person": 5,
+   "pr": 3,
+   "repo": 1,
+   "ticket": 2
+  },
+  "month": {
+   "2026-02": 1,
+   "2026-03": 1
+  },
+  "outcome": {
+   "in-flight": 1,
+   "shipped-with-rework": 1
+  },
+  "person": {
+   "bot": 1,
+   "my teams": 1,
+   "outside my teams": 1,
+   "teams unknown": 1
+  },
+  "repo": {
+   "o/r": 2
+  },
+  "ticket": {
+   "has ticket": 1,
+   "none": 1
+  }
+ }
+}

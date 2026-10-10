@@ -85,18 +85,28 @@ func fetchAndStore(f Fetcher, remoteURL, repoPath, branch string) Result {
 	}
 	refs, err := f.FetchPRs(repoPath, branch)
 	if err != nil {
-		// Ignore write errors: a failed cache write must not fail the command.
-		_ = WriteFailure(remoteURL, repoPath, branch, err)
+		// A failed cache write must not fail the command; it is reported in
+		// WriteErr for callers that care.
+		werr := WriteFailure(remoteURL, repoPath, branch, err)
+		if werr != nil {
+			logf("pr cache: record failure for %s %s: %v", repoPath, branch, werr)
+		}
 		prior := readAsStale(remoteURL, repoPath, branch)
 		prior.Err = err
+		prior.WriteErr = werr
 		return prior
 	}
-	_ = Write(remoteURL, repoPath, branch, refs)
+	werr := Write(remoteURL, repoPath, branch, refs)
+	if werr != nil {
+		logf("pr cache: write for %s %s: %v", repoPath, branch, werr)
+	}
 	return Result{
-		PRs:           refs,
-		State:         Fresh,
-		FetchedAt:     time.Now(),
-		LastAttemptAt: time.Now(),
+		PRs:            refs,
+		State:          Fresh,
+		FetchedAt:      time.Now(),
+		LastAttemptAt:  time.Now(),
+		ReviewersKnown: true,
+		WriteErr:       werr,
 	}
 }
 

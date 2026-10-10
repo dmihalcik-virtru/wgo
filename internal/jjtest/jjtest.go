@@ -122,6 +122,24 @@ func Bookmark(t *testing.T, repo, name, revset string) {
 	runJJ(t, repo, "bookmark", "create", name, "-r", revset)
 }
 
+// OpCount returns the number of operations in the op log of the repo at dir.
+// It reads with --ignore-working-copy, so counting never adds a snapshot
+// operation of its own. Tests compare counts before and after an action to
+// prove the action created no operation.
+func OpCount(t *testing.T, dir string) int {
+	t.Helper()
+	RequireJJ(t)
+	cmd := exec.Command("jj", "--ignore-working-copy", "op", "log", "--no-graph", "-T", `"x\n"`)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("jj op log (in %s): %v\nstderr: %s", dir, err, stderr.String())
+	}
+	return bytes.Count(stdout.Bytes(), []byte("x\n"))
+}
+
 // runJJ executes jj inside dir, failing the test on non-zero exit. Stderr
 // is included verbatim in the failure message.
 func runJJ(t *testing.T, dir string, args ...string) {

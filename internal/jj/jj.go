@@ -3,6 +3,7 @@ package jj
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -83,8 +84,15 @@ type CLIClient struct {
 	// Binary is the path or name of the jj executable. Defaults to "jj".
 	Binary string
 
-	// ctx cancels in-flight jj subprocesses. Nil means uncancellable, which
-	// is what every read-only caller wants. Set it with WithContext.
+	// IgnoreWorkingCopy passes jj's global --ignore-working-copy flag to
+	// every invocation, so jj neither snapshots nor updates any working copy.
+	// Reads then see each workspace's @ as of its last snapshot. ReadOnly
+	// returns a copy with it set; it is meant for viewers (wgo dash) that
+	// must not snapshot a workspace just by looking.
+	IgnoreWorkingCopy bool
+
+	// ctx cancels in-flight jj subprocesses. Nil means uncancellable, the
+	// default for one-shot commands. Set it with WithContext.
 	ctx context.Context
 }
 
@@ -114,12 +122,27 @@ func (c *CLIClient) WithContext(ctx context.Context) *CLIClient {
 	return &clone
 }
 
+// ReadOnly returns a shallow copy of c that runs every jj command with
+// --ignore-working-copy. Use it for read queries that must not snapshot a
+// workspace: an ordinary jj read of a workspace with edited files records a
+// snapshot operation, which a passive viewer must never cause. The copy is
+// for reads only; mutations through it would act on stale working-copy state.
+// c itself is unchanged, so other callers keep jj's default behaviour.
+func (c *CLIClient) ReadOnly() *CLIClient {
+	clone := *c
+	clone.IgnoreWorkingCopy = true
+	return &clone
+}
+
 // command builds the exec.Cmd for a jj invocation, wiring cancellation when
 // the client carries a context.
 func (c *CLIClient) command(dir string, args ...string) *exec.Cmd {
 	binary := c.Binary
 	if binary == "" {
 		binary = "jj"
+	}
+	if c.IgnoreWorkingCopy {
+		args = append([]string{"--ignore-working-copy"}, args...)
 	}
 	var cmd *exec.Cmd
 	if c.ctx != nil {
@@ -157,10 +180,47 @@ func (c *CLIClient) runIn(dir string, args ...string) (string, error) {
 		if ctxErr := c.ctxErr(); ctxErr != nil {
 			return stdout.String(), fmt.Errorf("jj %s: %w", strings.Join(args, " "), ctxErr)
 		}
-		return stdout.String(), fmt.Errorf("jj %s: %s: %w",
-			strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
+		return stdout.String(), &CommandError{
+			Args:   args,
+			Stderr: strings.TrimSpace(stderr.String()),
+			Err:    err,
+		}
 	}
 	return stdout.String(), nil
+}
+
+// CommandError is a jj invocation that exited non-zero. Error() carries the
+// command line (without the global --ignore-working-copy flag) for logs;
+// Brief() is jj's own message alone, for display surfaces where a long -T
+// template would bury it.
+type CommandError struct {
+	Args   []string
+	Stderr string
+	Err    error
+}
+
+func (e *CommandError) Error() string {
+	return fmt.Sprintf("jj %s: %s: %v", strings.Join(e.Args, " "), e.Stderr, e.Err)
+}
+
+func (e *CommandError) Unwrap() error { return e.Err }
+
+// Brief returns jj's stderr without the command line, falling back to the
+// exit error when jj printed nothing.
+func (e *CommandError) Brief() string {
+	if e.Stderr != "" {
+		return e.Stderr
+	}
+	return e.Err.Error()
+}
+
+// BriefError returns err's message with any jj command line stripped.
+func BriefError(err error) string {
+	var ce *CommandError
+	if errors.As(err, &ce) {
+		return ce.Brief()
+	}
+	return err.Error()
 }
 
 // ctxErr reports the client context's error, or nil when there is no context.

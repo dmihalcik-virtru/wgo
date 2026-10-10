@@ -22,6 +22,17 @@ import (
 	"github.com/virtru/wgo/models"
 )
 
+// Logf, when non-nil, receives diagnostic messages for otherwise-swallowed
+// cache faults (a failed cache write after a fetch). It is nil by default so
+// the hot path stays silent; cmd wires it to the WGO_DEBUG logger.
+var Logf func(format string, args ...any)
+
+func logf(format string, args ...any) {
+	if Logf != nil {
+		Logf(format, args...)
+	}
+}
+
 // State describes the freshness of a cache lookup.
 type State int
 
@@ -48,11 +59,19 @@ const (
 // The trailing two fields are omitempty, so entries written before WGO-137
 // load unchanged, as a success with no recorded attempt.
 type entry struct {
+	// Schema is the entry layout version; see SchemaVersion. Zero for
+	// entries written before gh-70.
+	Schema        int            `json:"schema,omitempty"`
 	PRs           []models.PRRef `json:"prs"`
 	FetchedAt     time.Time      `json:"fetched_at"`
 	LastAttemptAt time.Time      `json:"last_attempt_at,omitempty"`
 	LastError     string         `json:"last_error,omitempty"`
 }
+
+// SchemaVersion is the entry layout Write produces. Version 2 (gh-70) adds
+// each PR's updated_at and requested reviewers. Older entries still load;
+// their refs simply lack those fields, which Result.ReviewersKnown reports.
+const SchemaVersion = 2
 
 // Result is what a cache lookup served, plus the provenance a renderer needs
 // to explain it.
@@ -66,10 +85,18 @@ type Result struct {
 	FetchedAt time.Time
 	// LastAttemptAt is when a fetch was last attempted, successful or not.
 	LastAttemptAt time.Time
+	// ReviewersKnown reports that PRs carry fetched UpdatedAt and
+	// RequestedReviewers (a schema-2 entry). False for an entry written by
+	// an older wgo: an empty reviewer list there means "unknown", not "none".
+	ReviewersKnown bool
 	// Err is the most recent recorded fetch failure. It can be non-nil
 	// alongside a populated PRs: a refresh failed, but last-known-good data
 	// survived it.
 	Err error
+	// WriteErr is set by a live fetch whose result could not be written to
+	// the cache: the result is still returned, but later reads will not see
+	// it. Read never sets it.
+	WriteErr error
 }
 
 // Read returns the cached PR refs for a branch and their freshness. It never
@@ -83,9 +110,10 @@ func Read(remoteURL, repoPath, branch string, ttl time.Duration) Result {
 		return Result{State: Miss}
 	}
 	r := Result{
-		PRs:           e.PRs,
-		FetchedAt:     e.FetchedAt,
-		LastAttemptAt: e.LastAttemptAt,
+		PRs:            e.PRs,
+		FetchedAt:      e.FetchedAt,
+		LastAttemptAt:  e.LastAttemptAt,
+		ReviewersKnown: e.Schema >= SchemaVersion && !e.FetchedAt.IsZero(),
 	}
 	if e.LastError != "" {
 		r.Err = errors.New(e.LastError)
@@ -125,6 +153,7 @@ func readEntry(remoteURL, repoPath, branch string) (entry, bool) {
 func Write(remoteURL, repoPath, branch string, refs []models.PRRef) error {
 	now := time.Now()
 	return writeEntry(remoteURL, repoPath, branch, entry{
+		Schema:        SchemaVersion,
 		PRs:           refs,
 		FetchedAt:     now,
 		LastAttemptAt: now,

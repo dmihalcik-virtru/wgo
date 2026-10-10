@@ -222,3 +222,54 @@ func TestReadPreWGO137Entry(t *testing.T) {
 	assert.Equal(t, 7, res.PRs[0].Number)
 	assert.NoError(t, res.Err)
 }
+
+// TestReadPreGH70EntryStillLoads: an entry written before PRRef gained
+// updated_at and requested reviewers (no schema field) loads unchanged and
+// reports its reviewer data as unknown rather than "none requested".
+func TestReadPreGH70EntryStillLoads(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path, err := prPath(testRemote, testRepo, "feature-x")
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	old := `{
+  "prs": [{"number": 7, "title": "Add widget", "state": "open",
+           "url": "https://github.com/acme/widgets/pull/7",
+           "review_decision": "APPROVED", "checks": {"state": "success"}}],
+  "fetched_at": "` + time.Now().Add(-time.Minute).Format(time.RFC3339Nano) + `"
+}`
+	require.NoError(t, os.WriteFile(path, []byte(old), 0o644))
+
+	res := Read(testRemote, testRepo, "feature-x", time.Hour)
+	assert.Equal(t, Fresh, res.State)
+	require.Len(t, res.PRs, 1)
+	assert.Equal(t, 7, res.PRs[0].Number)
+	assert.Equal(t, "APPROVED", res.PRs[0].ReviewDecision)
+	assert.True(t, res.PRs[0].UpdatedAt.IsZero())
+	assert.Nil(t, res.PRs[0].RequestedReviewers)
+	assert.False(t, res.ReviewersKnown, "a pre-gh-70 entry cannot vouch for reviewers")
+}
+
+// TestWriteReadUpdatedAtAndReviewers round-trips the gh-70 fields and marks
+// the reviewer data as known, including a fetched-but-empty list.
+func TestWriteReadUpdatedAtAndReviewers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	refs := []models.PRRef{
+		{Number: 7, State: "open", UpdatedAt: at, RequestedReviewers: []string{"alice", "team:devs"}},
+		{Number: 8, State: "open", RequestedReviewers: []string{}},
+	}
+	require.NoError(t, Write(testRemote, testRepo, "feature-x", refs))
+
+	res := Read(testRemote, testRepo, "feature-x", time.Hour)
+	assert.True(t, res.ReviewersKnown)
+	require.Len(t, res.PRs, 2)
+	assert.True(t, at.Equal(res.PRs[0].UpdatedAt))
+	assert.Equal(t, []string{"alice", "team:devs"}, res.PRs[0].RequestedReviewers)
+	assert.Empty(t, res.PRs[1].RequestedReviewers)
+
+	// A later failure annotates the entry but keeps the schema.
+	require.NoError(t, WriteFailure(testRemote, testRepo, "feature-x", errors.New("boom")))
+	res = Read(testRemote, testRepo, "feature-x", time.Hour)
+	assert.True(t, res.ReviewersKnown)
+	assert.Error(t, res.Err)
+}

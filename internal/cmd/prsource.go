@@ -9,6 +9,12 @@ import (
 	"github.com/virtru/wgo/models"
 )
 
+// Route prcache's otherwise-swallowed cache write faults through the
+// WGO_DEBUG logger.
+func init() {
+	prcache.Logf = debugf
+}
+
 // ghFetcher adapts the GitHub client to prcache.Fetcher: it lists a branch's
 // PRs over the network and projects them onto the compact models.PRRef the
 // cache stores.
@@ -96,6 +102,10 @@ func toPRRefs(prs []github.PRInfo) []models.PRRef {
 			ReviewDecision: pr.ReviewDecision,
 			IsDraft:        pr.IsDraft,
 			Checks:         pr.Checks,
+			UpdatedAt:      pr.UpdatedAt,
+			// Whether reviewers were fetched is recorded by prcache's schema
+			// version (Result.ReviewersKnown), not by nil-ness here.
+			RequestedReviewers: append([]string{}, pr.RequestedReviewers...),
 		})
 	}
 	return refs

@@ -289,6 +289,11 @@ type PRInfo struct {
 	IsDraft bool `json:"isDraft"`
 	// Checks is the CI rollup for HeadSHA. Populated only by ListPRsForBranchEnriched.
 	Checks models.CIStatus `json:"checks"`
+	// UpdatedAt is when GitHub last updated the PR.
+	UpdatedAt time.Time `json:"updatedAt"`
+	// RequestedReviewers are pending review requests: user logins and
+	// "team:<slug>" for teams. Set on the REST paths.
+	RequestedReviewers []string `json:"requestedReviewers"`
 }
 
 // IsMerged reports whether the PR was merged.
