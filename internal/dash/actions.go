@@ -219,22 +219,21 @@ func (s *server) serveAction(w http.ResponseWriter, r *http.Request) {
 // request. extra is a note to append to the launcher's message.
 func (s *server) planAction(ctx context.Context, req actionRequest) (launch.Action, string, *httpError) {
 	a := s.opts.Actions
-	t, err := a.Resolver.Resolve(req.WorkspaceID)
+	t, dir, err := ResolveWorkspace(a.Resolver, req.WorkspaceID, a.Roots)
+	var nc *NotContainedError
+	var ue *unreadableRootsError
 	switch {
 	case errors.Is(err, ErrUnknownWorkspace):
 		return launch.Action{}, "", reject(http.StatusNotFound, "unknown workspace %q: it is not among the workspaces wgo dash discovers now", req.WorkspaceID)
 	case errors.Is(err, ErrStaleWorkspace):
 		return launch.Action{}, "", reject(http.StatusNotFound, "that workspace is no longer discovered (removed or moved); nothing was opened. The page updates on the next refresh")
+	case errors.As(err, &nc):
+		if errors.As(err, &ue) {
+			s.opts.Logf("workspace %s (%s) is under no readable discovery root; unreadable: %s", req.WorkspaceID, t.Root, ue.list())
+		}
+		return launch.Action{}, "", reject(http.StatusNotFound, "workspace %q cannot be opened: %v", req.WorkspaceID, err)
 	case err != nil:
 		return launch.Action{}, "", reject(http.StatusInternalServerError, "could not run discovery: %v", err)
-	}
-	dir, err := containedWorkspace(t.Root, a.Roots)
-	var ue *unreadableRootsError
-	if errors.As(err, &ue) {
-		s.opts.Logf("workspace %s (%s) is under no readable discovery root; unreadable: %s", req.WorkspaceID, t.Root, ue.list())
-	}
-	if err != nil {
-		return launch.Action{}, "", reject(http.StatusNotFound, "workspace %q cannot be opened: %v", req.WorkspaceID, err)
 	}
 	switch req.Kind {
 	case ActionTerminal:
@@ -324,6 +323,43 @@ func (s *server) specFile(ctx context.Context, t Target, dir string) (launch.Act
 		return launch.Action{}, "", reject(http.StatusNotFound, "spec/%s.md resolves outside the workspace; it was not opened", ticket)
 	}
 	return launch.Action{Kind: launch.KindFile, File: real}, "", nil
+}
+
+// NotContainedError is a workspace ID that resolved through discovery but
+// whose directory fails the containment check: it is gone, no longer a jj
+// workspace, or not beneath a discovery root.
+type NotContainedError struct{ err error }
+
+func (e *NotContainedError) Error() string { return e.err.Error() }
+
+// Unwrap returns the containment failure.
+func (e *NotContainedError) Unwrap() error { return e.err }
+
+// ResolveWorkspace is the one check every launch path uses, the dashboard's
+// /api/action and `wgo open` alike: it resolves id through r (current
+// discovery) and verifies the result is an existing jj workspace beneath
+// one of roots after resolving symlinks. It returns the target and the
+// verified directory, which is the only path that may be launched.
+//
+// Errors: ErrUnknownWorkspace (also for a malformed ID) and
+// ErrStaleWorkspace from the resolver, a *NotContainedError for a failed
+// containment check, or the resolver's discovery error.
+func ResolveWorkspace(r Resolver, id string, roots []string) (Target, string, error) {
+	if !ValidWorkspaceID(id) {
+		return Target{}, "", ErrUnknownWorkspace
+	}
+	t, err := r.Resolve(id)
+	if err != nil {
+		return Target{}, "", err
+	}
+	if t.ID != "" && t.ID != id {
+		return Target{}, "", ErrUnknownWorkspace
+	}
+	dir, err := containedWorkspace(t.Root, roots)
+	if err != nil {
+		return t, "", &NotContainedError{err: err}
+	}
+	return t, dir, nil
 }
 
 // containedWorkspace resolves root's symlinks and checks the result is an
