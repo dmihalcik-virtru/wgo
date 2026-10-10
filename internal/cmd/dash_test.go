@@ -129,7 +129,7 @@ func TestServeDashServesRefreshesOpensAndStops(t *testing.T) {
 	}
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(body), `"loading"`) {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"loading"`) {
 		t.Fatalf("snapshot before any refresh should be loading, got %s", body)
 	}
 	// Read-only: no POST anywhere.

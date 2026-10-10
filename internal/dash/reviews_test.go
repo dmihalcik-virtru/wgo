@@ -406,7 +406,7 @@ func TestLookupFocusesActiveEffortOrSaysNotActive(t *testing.T) {
 			!strings.Contains(body, "<h1>wgo dash</h1>") || !strings.Contains(body, "is not active") || strings.Contains(body, "<script") {
 			t.Errorf("%s: %d %s", entity, resp.StatusCode, body)
 		}
-		if resp.Header.Get("Content-Security-Policy") != staticCSP {
+		if resp.Header.Get("Content-Security-Policy") != staticCSP || staticCSP != "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" {
 			t.Errorf("%s: CSP %q", entity, resp.Header.Get("Content-Security-Policy"))
 		}
 	}

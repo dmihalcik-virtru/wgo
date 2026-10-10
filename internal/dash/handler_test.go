@@ -153,14 +153,11 @@ func TestHandlerEmptyStateAndPage(t *testing.T) {
 	if resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("headers: %v", resp.Header)
 	}
-	resp, err = srv.Client().Get(srv.URL + "/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if csp := resp.Header.Get("Content-Security-Policy"); resp.StatusCode != 200 || !strings.HasPrefix(csp, "default-src 'none'; script-src 'sha256-") {
+	resp, pageBody := get(t, srv.URL+"/")
+	if resp.StatusCode != 200 {
 		t.Fatalf("page: %d %v", resp.StatusCode, resp.Header)
 	}
+	checkCSP(t, resp.Header.Get("Content-Security-Policy"), pageBody)
 	resp, err = srv.Client().Post(srv.URL+"/api/snapshot", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)

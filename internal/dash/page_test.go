@@ -52,9 +52,40 @@ func checkCSP(t *testing.T, csp, body string) {
 			t.Errorf("CSP contains %q: %s", bad, csp)
 		}
 	}
-	for _, want := range []string{"default-src 'none'", "connect-src 'self'", "frame-ancestors 'none'", "form-action 'none'", "base-uri 'none'"} {
-		if !strings.Contains(csp, want) {
-			t.Errorf("CSP lacks %q: %s", want, csp)
+	// Exact directive set: a new or loosened directive fails. Script and
+	// style sources must be sha256 hashes only (or 'none').
+	fixed := map[string]string{
+		"default-src":     "'none'",
+		"connect-src":     "'self'",
+		"img-src":         "'self' data:",
+		"base-uri":        "'none'",
+		"form-action":     "'none'",
+		"frame-ancestors": "'none'",
+	}
+	got := map[string]string{}
+	for _, d := range strings.Split(csp, ";") {
+		name, val, _ := strings.Cut(strings.TrimSpace(d), " ")
+		if _, dup := got[name]; dup {
+			t.Errorf("CSP repeats directive %q: %s", name, csp)
+		}
+		got[name] = val
+	}
+	if len(got) != len(fixed)+2 {
+		t.Errorf("CSP directives = %v, want exactly %d", got, len(fixed)+2)
+	}
+	for name, want := range fixed {
+		if got[name] != want {
+			t.Errorf("CSP %s = %q, want %q: %s", name, got[name], want, csp)
+		}
+	}
+	for _, name := range []string{"script-src", "style-src"} {
+		for _, src := range strings.Fields(got[name]) {
+			if !(strings.HasPrefix(src, "'sha256-") && strings.HasSuffix(src, "'")) {
+				t.Errorf("CSP %s has non-hash source %q: %s", name, src, csp)
+			}
+		}
+		if got[name] == "" {
+			t.Errorf("CSP lacks %s: %s", name, csp)
 		}
 	}
 	n := 0
