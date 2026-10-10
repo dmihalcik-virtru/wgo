@@ -231,11 +231,10 @@ type TicketInfo struct {
 
 // AgentInfo describes a gh-72 agent session, read only.
 type AgentInfo struct {
-	SessionID string `json:"session_id"`
-	Tool      string `json:"tool"`
-	Status    string `json:"status"`
-	// Liveness is active, live or uncertain.
-	Liveness     string    `json:"liveness"`
+	SessionID    string    `json:"session_id"`
+	Tool         string    `json:"tool"`
+	Status       string    `json:"status"`
+	Liveness     Liveness  `json:"liveness"`
 	Source       string    `json:"source,omitempty"`
 	Branch       string    `json:"branch,omitempty"`
 	ThemeID      string    `json:"theme_id,omitempty"`
@@ -249,21 +248,35 @@ type AgentInfo struct {
 	EffortID      string   `json:"effort_id"`
 }
 
+// Liveness is the derived liveness of an agent session, mirroring the
+// visible values of store.AgentLiveness ("gone" sessions are never shown).
+type Liveness string
+
+// Agent liveness values.
+const (
+	LivenessActive    Liveness = "active"
+	LivenessLive      Liveness = "live"
+	LivenessUncertain Liveness = "uncertain"
+)
+
+// EdgeKind names the kinds of snapshot edges.
+type EdgeKind string
+
 // Edge kinds.
 const (
-	EdgeContains = "contains" // effort -> workspace
-	EdgeOn       = "on"       // workspace -> bookmark
-	EdgePR       = "pr"       // bookmark -> pr
-	EdgeTicket   = "ticket"   // pr (or bookmark without PRs) -> ticket
-	EdgeRuns     = "runs"     // effort -> agent
-	EdgeWorksIn  = "works_in" // agent -> workspace
+	EdgeContains EdgeKind = "contains" // effort -> workspace
+	EdgeOn       EdgeKind = "on"       // workspace -> bookmark
+	EdgePR       EdgeKind = "pr"       // bookmark -> pr
+	EdgeTicket   EdgeKind = "ticket"   // pr (or bookmark without PRs) -> ticket
+	EdgeRuns     EdgeKind = "runs"     // effort -> agent
+	EdgeWorksIn  EdgeKind = "works_in" // agent -> workspace
 )
 
 // Edge is a directed snapshot edge between node IDs.
 type Edge struct {
-	Source string `json:"source"`
-	Target string `json:"target"`
-	Kind   string `json:"kind"`
+	Source string   `json:"source"`
+	Target string   `json:"target"`
+	Kind   EdgeKind `json:"kind"`
 }
 
 // Counts are the precomputed small multiples, keyed by effort node ID.

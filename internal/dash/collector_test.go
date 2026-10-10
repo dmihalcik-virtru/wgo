@@ -218,6 +218,9 @@ func TestCollectorJJ(t *testing.T) {
 	if string(j1) != string(j2) {
 		t.Fatalf("snapshots differ:\n%s\n%s", j1, j2)
 	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("collected snapshot is invalid: %v", err)
+	}
 }
 
 func keys[V any](m map[string]V) []string {

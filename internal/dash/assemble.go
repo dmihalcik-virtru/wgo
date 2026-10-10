@@ -31,7 +31,7 @@ func (b *builder) node(n Node) *Node {
 	return p
 }
 
-func (b *builder) edge(src, dst, kind string) {
+func (b *builder) edge(src, dst string, kind EdgeKind) {
 	if src == "" || dst == "" {
 		return
 	}
@@ -244,7 +244,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 			SessionID:     o.ID,
 			Tool:          o.Tool,
 			Status:        string(o.Status),
-			Liveness:      string(o.Liveness),
+			Liveness:      Liveness(o.Liveness),
 			Source:        string(o.Source),
 			Branch:        o.Branch,
 			ThemeID:       o.ThemeID,
@@ -552,7 +552,7 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 
 	for _, n := range s.Nodes {
 		if n.Agent != nil {
-			c.Agents[n.Agent.EffortID][n.Agent.Liveness]++
+			c.Agents[n.Agent.EffortID][string(n.Agent.Liveness)]++
 		}
 	}
 	return c
