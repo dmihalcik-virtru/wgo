@@ -413,7 +413,9 @@ func (s *server) serveAck(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, reject(http.StatusConflict, "a newer generation has already been marked seen (perhaps in another tab)"))
 		return
 	case err != nil:
-		s.writeError(w, reject(http.StatusInternalServerError, "could not save the last-seen baseline: %v", err))
+		// The path-bearing detail goes to the log, not to the browser.
+		s.opts.Logf("save the last-seen baseline: %v", err)
+		s.writeError(w, reject(http.StatusInternalServerError, "could not save the last-seen baseline; see the wgo dash log for details"))
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "generation": req.Generation})
