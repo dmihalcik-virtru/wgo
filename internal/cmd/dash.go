@@ -122,13 +122,18 @@ func runDash(ctx context.Context, out io.Writer) error {
 // integration that is absent (no GitHub token or gh, no acli) gets no fetcher,
 // so its jobs are skipped rather than failing every run.
 func dashFetchers() dash.Fetchers {
-	var f dash.Fetchers
+	f := dash.Fetchers{Missing: map[dash.JobKind]string{}}
 	if gc := github.NewClient(); gc.Available() {
 		f.PR = newGHFetcher()
 		f.Issue = ghIssueFetcher{c: gc}
+	} else {
+		f.Missing[dash.JobPR] = "no GitHub token or gh"
+		f.Missing[dash.JobIssue] = "no GitHub token or gh"
 	}
 	if _, err := exec.LookPath("acli"); err == nil {
 		f.Jira = jiraFetcherFn()
+	} else {
+		f.Missing[dash.JobJira] = "acli not on PATH"
 	}
 	return f
 }

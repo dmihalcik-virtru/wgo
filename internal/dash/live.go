@@ -155,6 +155,9 @@ type Dash struct {
 	collectErr      string // the last collection failed
 	persistErr      string // the last snapshot write failed
 	refreshErr      string // the last remote refresh had failures
+	// skipDiag is informational, not an error: remote lookups skipped for
+	// want of an integration. Cleared when the next refresh starts.
+	skipDiag string
 }
 
 // Logf, when set, receives Dash faults that have no caller to return to,
@@ -184,6 +187,9 @@ func (d *Dash) diagnosticsLocked() []string {
 	}
 	if d.refreshErr != "" {
 		out = append(out, d.refreshErr)
+	}
+	if d.skipDiag != "" {
+		out = append(out, d.skipDiag)
 	}
 	return out
 }
@@ -215,6 +221,14 @@ func (d *Dash) recordRefreshError(err error) {
 		logf("dash: %v", err)
 	}
 	d.setDiagLocked(&d.refreshErr, msg)
+}
+
+// recordSkipped shows which lookups the last batch skipped for want of an
+// integration; "" clears it. It does not affect any error.
+func (d *Dash) recordSkipped(msg string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.setDiagLocked(&d.skipDiag, msg)
 }
 
 // recordCollectError makes a failed collection visible on the view still
@@ -355,6 +369,7 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		return err
 	}
 	d.latest = ls
+	d.recordSkipped("")
 	s, jobs := c.assemble(ls)
 	// A failed write leaves the snapshot published in memory, so the remote
 	// refresh still goes ahead; the write error is returned at the end.
@@ -379,6 +394,7 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		}
 		remoteErr := res.Err()
 		d.recordRefreshError(remoteErr)
+		d.recordSkipped(d.opts.Refresher.skipSummary(res))
 		s, _ := c.assemble(ls)
 		if err := d.Publish(s); err != nil {
 			return errors.Join(err, remoteErr)
@@ -399,6 +415,7 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		// "snapshot not saved"; only an encoding failure needs recording.
 		s, _ := c.assemble(ls)
 		err := res.Err()
+		d.recordSkipped(d.opts.Refresher.skipSummary(res))
 		if perr := d.Publish(s); perr != nil && !errors.Is(perr, ErrPersist) {
 			err = errors.Join(err, fmt.Errorf("background republish: %w", perr))
 		}

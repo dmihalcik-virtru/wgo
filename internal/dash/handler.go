@@ -43,6 +43,11 @@ func Handler(src ViewSource, host string) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		v := src.Current()
 		if v == nil {
+			// Deliberately 200, not 503: this is a polled status resource,
+			// not a one-shot page. A client that polls it expects a JSON
+			// body every time and reads "status" to tell loading from
+			// ready, so "no snapshot yet" is a normal state, not a failure.
+			// A one-shot page would answer an unready server with an error.
 			_, _ = w.Write([]byte(`{"status":"loading"}` + "\n"))
 			return
 		}

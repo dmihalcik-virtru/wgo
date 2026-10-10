@@ -176,6 +176,10 @@ type Fetcher interface {
 
 // Refresh fetches the issue now and writes the result through the cache. It
 // is for background workers and explicit refreshes only, never a read path.
+//
+// Result.Err can be set in two shapes: with State == Fresh, when the fetch
+// succeeded but the cache write failed (the data is valid, not persisted); or
+// alongside prior stale data, when the fetch itself failed.
 func Refresh(f Fetcher, k Key) Result {
 	if f == nil {
 		return Read(k, 0)

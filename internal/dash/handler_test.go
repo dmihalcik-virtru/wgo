@@ -62,39 +62,55 @@ func TestSnapshotHandlerP95(t *testing.T) {
 	srv := newServer(t, d)
 	client := srv.Client()
 	const n = 200
-	var lat []time.Duration
-	for i := 0; i < n; i++ {
-		start := time.Now()
-		resp, err := client.Get(srv.URL + "/api/snapshot")
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil || resp.StatusCode != http.StatusOK {
-			t.Fatalf("status %d: %v", resp.StatusCode, err)
-		}
-		lat = append(lat, time.Since(start))
-		if i == 0 {
-			var out struct {
-				Status     string    `json:"status"`
-				Generation uint64    `json:"generation"`
-				Snapshot   *Snapshot `json:"snapshot"`
-				Delta      *Delta    `json:"delta"`
-			}
-			if err := json.Unmarshal(body, &out); err != nil {
+	// The 100ms bound is only enforced on an unloaded, uninstrumented run.
+	enforce := !testing.Short() && !raceEnabled
+	for _, path := range []string{"/api/snapshot", "/"} {
+		// Warm the connection, the allocator and the encoder.
+		for i := 0; i < 20; i++ {
+			resp, err := client.Get(srv.URL + path)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if out.Status != "ready" || out.Generation != 1 || len(out.Snapshot.Nodes) != 500 || out.Delta.Status != DeltaNoPreviousLook {
-				t.Fatalf("body: status=%s gen=%d nodes=%d", out.Status, out.Generation, len(out.Snapshot.Nodes))
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+		var lat []time.Duration
+		for i := 0; i < n; i++ {
+			start := time.Now()
+			resp, err := client.Get(srv.URL + path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil || resp.StatusCode != http.StatusOK {
+				t.Fatalf("%s: status %d: %v", path, resp.StatusCode, err)
+			}
+			lat = append(lat, time.Since(start))
+			if i == 0 && path == "/api/snapshot" {
+				var out struct {
+					Status     string    `json:"status"`
+					Generation uint64    `json:"generation"`
+					Snapshot   *Snapshot `json:"snapshot"`
+					Delta      *Delta    `json:"delta"`
+				}
+				if err := json.Unmarshal(body, &out); err != nil {
+					t.Fatal(err)
+				}
+				if out.Status != "ready" || out.Generation != 1 || len(out.Snapshot.Nodes) != 500 || out.Delta.Status != DeltaNoPreviousLook {
+					t.Fatalf("body: status=%s gen=%d nodes=%d", out.Status, out.Generation, len(out.Snapshot.Nodes))
+				}
 			}
 		}
-	}
-	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
-	p95 := lat[n*95/100-1]
-	t.Logf("GET /api/snapshot over %d requests: p50=%v p95=%v max=%v", n, lat[n/2], p95, lat[n-1])
-	if p95 >= 100*time.Millisecond {
-		t.Fatalf("p95 = %v, want < 100ms", p95)
+		sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
+		p95 := lat[n*95/100-1]
+		t.Logf("GET %s over %d requests: p50=%v p95=%v max=%v", path, n, lat[n/2], p95, lat[n-1])
+		if p95 >= 100*time.Millisecond {
+			if enforce {
+				t.Fatalf("GET %s: p95 = %v, want < 100ms", path, p95)
+			}
+			t.Logf("GET %s: p95 = %v exceeds 100ms, not enforced (short mode or race detector)", path, p95)
+		}
 	}
 }
 

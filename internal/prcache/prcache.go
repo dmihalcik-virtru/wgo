@@ -22,6 +22,17 @@ import (
 	"github.com/virtru/wgo/models"
 )
 
+// Logf, when non-nil, receives diagnostic messages for otherwise-swallowed
+// cache faults (a failed cache write after a fetch). It is nil by default so
+// the hot path stays silent; cmd wires it to the WGO_DEBUG logger.
+var Logf func(format string, args ...any)
+
+func logf(format string, args ...any) {
+	if Logf != nil {
+		Logf(format, args...)
+	}
+}
+
 // State describes the freshness of a cache lookup.
 type State int
 

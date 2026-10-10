@@ -5,6 +5,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/virtru/wgo/internal/dash"
 )
 
 func TestDashRequiresJSON(t *testing.T) {
@@ -28,5 +30,15 @@ func TestDashFetchersAbsentIntegrations(t *testing.T) {
 	f := dashFetchers()
 	if f.PR != nil || f.Issue != nil || f.Jira != nil {
 		t.Fatalf("fetchers without any integration: %+v", f)
+	}
+	want := map[dash.JobKind]string{
+		dash.JobPR:    "no GitHub token or gh",
+		dash.JobIssue: "no GitHub token or gh",
+		dash.JobJira:  "acli not on PATH",
+	}
+	for k, why := range want {
+		if f.Missing[k] != why {
+			t.Fatalf("Missing[%s] = %q, want %q", k, f.Missing[k], why)
+		}
 	}
 }

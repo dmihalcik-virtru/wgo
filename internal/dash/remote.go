@@ -52,6 +52,9 @@ type Fetchers struct {
 	PR    prcache.Fetcher
 	Jira  jiracache.Fetcher
 	Issue issuecache.Fetcher
+	// Missing optionally says why a kind has no fetcher ("acli not on
+	// PATH"), so a skipped batch can explain itself.
+	Missing map[JobKind]string
 }
 
 // describe names j for a failure message.
@@ -125,6 +128,9 @@ type BatchResult struct {
 	// Jobs counts the batch's jobs that have a fetcher. Jobs without one
 	// (no gh, no acli) are not failures: that integration is just absent.
 	Jobs int
+	// Skipped counts, per kind, the jobs passed over because that kind has
+	// no fetcher. Not failures: see Jobs.
+	Skipped map[JobKind]int
 	// Failed describes each job whose fetch or cache write failed.
 	Failed []string
 	// Dropped counts jobs that never ran: beyond the queue bound, or
@@ -184,6 +190,10 @@ func (r *Refresher) Submit(jobs []Job) <-chan BatchResult {
 	r.mu.Lock()
 	for _, j := range jobs {
 		if !r.supports(j) {
+			if b.res.Skipped == nil {
+				b.res.Skipped = map[JobKind]int{}
+			}
+			b.res.Skipped[j.Kind]++
 			continue
 		}
 		b.res.Jobs++
@@ -281,4 +291,32 @@ func (r *Refresher) run(j Job) error {
 		}
 	}
 	return nil
+}
+
+// skipSummary describes the jobs res skipped for want of a fetcher, or ""
+// when none were. It is informational, never an error.
+func (r *Refresher) skipSummary(res BatchResult) string {
+	kinds := make([]JobKind, 0, len(res.Skipped))
+	for k := range res.Skipped {
+		kinds = append(kinds, k)
+	}
+	slices.Sort(kinds)
+	var parts []string
+	for _, k := range kinds {
+		label := string(k)
+		switch k {
+		case JobPR:
+			label = "GitHub PR"
+		case JobIssue:
+			label = "GitHub issue"
+		case JobJira:
+			label = "Jira"
+		}
+		p := fmt.Sprintf("%d %s lookups skipped", res.Skipped[k], label)
+		if why := r.f.Missing[k]; why != "" {
+			p += ": " + why
+		}
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, "; ")
 }

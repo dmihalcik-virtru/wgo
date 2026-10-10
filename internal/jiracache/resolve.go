@@ -38,6 +38,9 @@ const refreshBackoff = 30 * time.Second
 
 // Resolve returns the Jira info for a ticket, reconciling the on-disk cache with
 // the network per opts, and reports the freshness State of the value served.
+// On the synchronous paths (Synchronous, or SyncOnMiss on a miss) it may
+// return fresh info together with a non-nil error wrapping the cache write
+// failure: the data is valid but was not persisted.
 // The hot path (a Fresh hit, or a Stale hit without SyncOnMiss) never blocks on
 // the network.
 func Resolve(f Fetcher, ticket string, opts Opts) (Info, State, error) {
