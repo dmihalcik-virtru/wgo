@@ -376,6 +376,22 @@ func TestReviewLinksAPI(t *testing.T) {
 	}
 }
 
+// A GitHub issue key (gh-N) names no repo: looking it up must not land on
+// whichever repo's issue N comes first. Only its URL, or a Jira key, matches.
+func TestResolveEntityNeverMatchesGitHubKeyAlone(t *testing.T) {
+	a, b := githubTicketID("acme/one", 70), githubTicketID("acme/two", 70)
+	s := &Snapshot{Nodes: []Node{
+		{ID: a, Kind: KindTicket, Ticket: &TicketInfo{Key: "gh-70", System: "github", URL: "https://github.com/acme/one/issues/70"}},
+		{ID: b, Kind: KindTicket, Ticket: &TicketInfo{Key: "gh-70", System: "github", URL: "https://github.com/acme/two/issues/70"}},
+	}}
+	if node, _ := resolveEntity(s, "ticket:gh-70"); node != "" {
+		t.Fatalf("ticket:gh-70 resolved to %s", node)
+	}
+	if node, _ := resolveEntity(s, "ticket:https://github.com/acme/two/issues/70"); node != b {
+		t.Fatalf("ticket URL resolved to %q, want %s", node, b)
+	}
+}
+
 func TestLookupFocusesActiveEffortOrSaysNotActive(t *testing.T) {
 	c := newReviewServer(t, fixtureDash(t), NewReviewIndex(t.TempDir()))
 	for entity, focus := range map[string]string{

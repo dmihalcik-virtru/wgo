@@ -1,7 +1,9 @@
 package dash
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/virtru/wgo/internal/discovery"
 )
 
 // largeDash publishes a snapshot with 100 workspaces and 300 PR, ticket and
@@ -138,6 +142,42 @@ func BenchmarkSnapshotHandler(b *testing.B) {
 type emptySource struct{}
 
 func (emptySource) Current() *View { return nil }
+
+// A first collection that fails leaves no view, but its cause must still
+// reach the page and /lookup instead of an endless "loading".
+func TestLoadingStateCarriesFirstCollectionFailure(t *testing.T) {
+	f := newFixture(t)
+	f.discover = func() ([]discovery.DiscoveredRepo, error) {
+		return nil, errors.New("scan roots unreadable")
+	}
+	d, err := Open(Options{Dir: t.TempDir(), Collector: f.collector(t, time.Now(), memSource{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Refresh(context.Background(), RefreshOptions{}); err == nil {
+		t.Fatal("Refresh with a failing discovery succeeded")
+	}
+	if d.Current() != nil {
+		t.Fatal("a failed first collection published a view")
+	}
+	srv := newServer(t, d)
+	resp, body := get(t, srv.URL+"/api/snapshot")
+	var p struct {
+		Status      string   `json:"status"`
+		Diagnostics []string `json:"diagnostics"`
+	}
+	if err := json.Unmarshal([]byte(body), &p); err != nil {
+		t.Fatalf("loading payload %q: %v", body, err)
+	}
+	if resp.StatusCode != 200 || p.Status != "loading" || len(p.Diagnostics) != 1 ||
+		!strings.Contains(p.Diagnostics[0], "collection failed: discover workspaces: scan roots unreadable") {
+		t.Fatalf("loading payload: %d %s", resp.StatusCode, body)
+	}
+	resp, body = get(t, srv.URL+"/lookup?entity=ticket:WGO-1")
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "scan roots unreadable") {
+		t.Fatalf("lookup while loading: %d %s", resp.StatusCode, body)
+	}
+}
 
 func TestHandlerEmptyStateAndPage(t *testing.T) {
 	srv := newServer(t, emptySource{})

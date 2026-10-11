@@ -514,7 +514,9 @@
     warns.forEach(function (w) { el("li", null, w, warnsEl); });
     warnsEl.hidden = !warns.length;
     if (!p || !snap) {
-      countsEl.textContent = p && p.status === "loading" ? "Collecting the first snapshot… this page updates by itself." : "Loading the snapshot…";
+      countsEl.textContent = !p || p.status !== "loading" ? "Loading the snapshot…" :
+        (p.diagnostics || []).length ? "No snapshot yet: wgo dash is retrying after the problems below." :
+        "Collecting the first snapshot… this page updates by itself.";
       return;
     }
     var c = {};

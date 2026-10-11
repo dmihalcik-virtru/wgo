@@ -244,7 +244,13 @@ func (r *Refresher) supports(j Job) bool {
 	return false
 }
 
-// Close stops accepting jobs and waits for in-flight ones.
+// errRefresherClosed fails a job that was still queued when Close was called.
+var errRefresherClosed = errors.New("not run: the refresher was closed")
+
+// Close stops accepting jobs, fails the ones still queued without fetching
+// them, and waits for the running ones. A fetch cannot be cancelled, so
+// letting the queue drain would hold shutdown hostage to every pending
+// network call.
 func (r *Refresher) Close() {
 	r.mu.Lock()
 	if r.closed {
@@ -260,7 +266,13 @@ func (r *Refresher) Close() {
 func (r *Refresher) work() {
 	defer r.wg.Done()
 	for f := range r.queue {
-		err := r.run(f.job)
+		r.mu.Lock()
+		closed := r.closed
+		r.mu.Unlock()
+		err := errRefresherClosed
+		if !closed {
+			err = r.run(f.job)
+		}
 		r.mu.Lock()
 		delete(r.pending, f.job.key())
 		waiters := f.waiters

@@ -1,6 +1,7 @@
 package dash
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +13,20 @@ import (
 // ViewSource supplies the published view. Dash implements it.
 type ViewSource interface {
 	Current() *View
+}
+
+// diagnosticSource is a ViewSource that can report its problems before it
+// has a view. Dash implements it.
+type diagnosticSource interface {
+	Diagnostics() []string
+}
+
+// pendingDiagnostics returns src's problems while it has no view yet, or nil.
+func pendingDiagnostics(src ViewSource) []string {
+	if d, ok := src.(diagnosticSource); ok {
+		return d.Diagnostics()
+	}
+	return nil
 }
 
 // HandlerOptions configures NewHandler.
@@ -109,8 +124,16 @@ func (s *server) serveSnapshot(w http.ResponseWriter, r *http.Request) {
 		// Deliberately 200, not 503: this is a polled status resource, not a
 		// one-shot page. A client that polls it expects a JSON body every
 		// time and reads "status" to tell loading from ready, so "no
-		// snapshot yet" is a normal state, not a failure.
-		_, _ = w.Write([]byte(`{"status":"loading"}` + "\n"))
+		// snapshot yet" is a normal state, not a failure. Diagnostics say
+		// why the first snapshot has not arrived, e.g. a failed collection.
+		body, err := json.Marshal(struct {
+			Status      string   `json:"status"`
+			Diagnostics []string `json:"diagnostics,omitempty"`
+		}{"loading", pendingDiagnostics(s.opts.Source)})
+		if err != nil {
+			body = []byte(`{"status":"loading"}`)
+		}
+		_, _ = w.Write(append(body, '\n'))
 		return
 	}
 	// Encode before writing so an encoding failure can still be a 500; a

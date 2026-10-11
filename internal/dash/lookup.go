@@ -16,8 +16,10 @@ const maxEntity = 1024
 // efforts that node belongs to. It accepts live node IDs (effort:…, ws-…,
 // pr:owner/repo#N, ticket:jira:KEY, agent:…) and the review graph's IDs for
 // the same things: pr:<url> matches a live PR with exactly that URL, and
-// ticket:<KEY> a live ticket with exactly that key or URL. Nothing is
-// matched by title or label.
+// ticket:<KEY> a live Jira ticket with exactly that key, or any live ticket
+// with exactly that URL. A GitHub issue key (gh-N) names no repo, so it is
+// never matched on its own, as in reviewNodeFor. Nothing is matched by title
+// or label.
 func resolveEntity(s *Snapshot, entity string) (node string, efforts []string) {
 	if s == nil {
 		return "", nil
@@ -41,7 +43,7 @@ func resolveEntity(s *Snapshot, entity string) (node string, efforts []string) {
 			break
 		}
 		for i := range s.Nodes {
-			if t := s.Nodes[i].Ticket; t != nil && (t.Key == key || (t.URL != "" && t.URL == key)) {
+			if t := s.Nodes[i].Ticket; t != nil && ((t.System == "jira" && t.Key == key) || (t.URL != "" && t.URL == key)) {
 				node = s.Nodes[i].ID
 				break
 			}
@@ -77,8 +79,13 @@ func (s *server) serveLookup(w http.ResponseWriter, r *http.Request) {
 	v := s.opts.Source.Current()
 	if v == nil {
 		w.Header().Set("Retry-After", "2")
-		s.serveNotice(w, http.StatusServiceUnavailable, "wgo dash — loading",
-			"wgo dash has not collected its first snapshot yet, so "+entity+" cannot be looked up. Reload in a moment.")
+		msg := "wgo dash has not collected its first snapshot yet, so " + entity + " cannot be looked up."
+		if diags := pendingDiagnostics(s.opts.Source); len(diags) > 0 {
+			msg += " It is retrying after: " + strings.Join(diags, "; ") + "."
+		} else {
+			msg += " Reload in a moment."
+		}
+		s.serveNotice(w, http.StatusServiceUnavailable, "wgo dash — loading", msg)
 		return
 	}
 	node, efforts := resolveEntity(v.Snapshot, entity)

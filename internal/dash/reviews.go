@@ -347,7 +347,7 @@ func (ix *ReviewIndex) linksJSON(v *View) []byte {
 	links.Errors = append([]string{}, st.errs...)
 	b, err := json.Marshal(links)
 	if err != nil {
-		Logf("dash: encode review links: %v", err)
+		logf("dash: encode review links: %v", err)
 		b = []byte(`{"efforts":{},"entities":{},"errors":["review links could not be encoded"]}`)
 	}
 	ix.links, ix.linksKey = append(b, '\n'), key
