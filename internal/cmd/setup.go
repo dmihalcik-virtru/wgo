@@ -38,21 +38,21 @@ with the whole URL as one argument. wgo open accepts only
 wgo://open?ws=<workspace-id>, asks before the first open of each workspace,
 and can only open a terminal tab; see wgo open --help.
 
-Setup compiles the applet with osacompile, adds the wgo URL scheme to its
-Info.plist with plutil, re-signs it ad hoc with codesign and registers it
-with LaunchServices (lsregister -f). The wgo path and your current PATH
-(wgo needs jj on it) are fixed at install time: run setup again after
-moving wgo.
+Setup compiles the applet with osacompile, sets its bundle ID, the wgo URL
+scheme and a wgo marker in its Info.plist with plutil, re-signs it ad hoc
+with codesign and registers it with LaunchServices (lsregister -f). The
+wgo path and your current PATH (wgo needs jj on it) are fixed at install
+time: run setup again after moving wgo or jj.
 
 --uninstall unregisters and deletes the applet, after checking it carries
-the marker wgo wrote into its Info.plist; it never deletes anything else.
+the marker and bundle ID wgo wrote into its Info.plist; it never deletes
+anything else.
 --dry-run prints the steps without running them.
 
 macOS only; on other systems it reports that it is unavailable. wgo dash
 does not need it.`,
 	Args: cobra.NoArgs,
-	// The error says what to do; usage text would bury it (and the
-	// applet shows it in a notification).
+	// The error says what to do; usage text would bury it.
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		in := &urlhandler.Installer{

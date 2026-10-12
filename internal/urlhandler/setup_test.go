@@ -185,7 +185,7 @@ func TestInstallReplacesOwnApplet(t *testing.T) {
 
 // A failed rebuild must not cost the user the handler they already have.
 func TestInstallFailureKeepsPreviousApplet(t *testing.T) {
-	for _, step := range []string{"osacompile", "codesign"} {
+	for _, step := range []string{"osacompile", "plutil", "codesign"} {
 		t.Run(step, func(t *testing.T) {
 			r := &fakeRunner{err: map[string]error{step: errors.New("boom")}}
 			in, _ := newInstaller(t, r)
@@ -224,6 +224,79 @@ func TestInstallRestoresPreviousWhenSwapFails(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(app, "Contents", "old")); err != nil {
 		t.Fatalf("previous applet not restored: %v", err)
+	}
+}
+
+// TestInstallKeepsBackupWhenRestoreFails: if the new applet cannot be moved
+// into place and the previous one cannot be moved back, the previous one
+// is the copy in staging, so staging must not be removed.
+func TestInstallKeepsBackupWhenRestoreFails(t *testing.T) {
+	r := &fakeRunner{}
+	in, _ := newInstaller(t, r)
+	app := mkOurApplet(t, in, r)
+	in.Rename = func(oldpath, newpath string) error {
+		if newpath == app {
+			return errors.New("cross-device link")
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	err := in.Install(context.Background())
+	previous := filepath.Join(StagingDir(in.Home), "previous.app")
+	if err == nil || !strings.Contains(err.Error(), previous) || !strings.Contains(err.Error(), "run wgo setup url-handler again") {
+		t.Fatalf("err = %v; want it to name %s and the fix", err, previous)
+	}
+	if _, err := os.Stat(filepath.Join(previous, "Contents", "old")); err != nil {
+		t.Fatalf("the only copy of the previous applet was lost: %v", err)
+	}
+	for _, c := range r.calls {
+		if c[0] == LSRegister {
+			t.Fatal("must not register after a failed swap")
+		}
+	}
+}
+
+func TestInstallMoveAsideFailureKeepsPreviousApplet(t *testing.T) {
+	r := &fakeRunner{}
+	in, _ := newInstaller(t, r)
+	app := mkOurApplet(t, in, r)
+	in.Rename = func(oldpath, newpath string) error {
+		if oldpath == app {
+			return errors.New("permission denied")
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	err := in.Install(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "moving the previous applet aside") || !strings.Contains(err.Error(), "left in place") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(app, "Contents", "old")); err != nil {
+		t.Fatalf("previous applet lost: %v", err)
+	}
+	if _, err := os.Lstat(StagingDir(in.Home)); !os.IsNotExist(err) {
+		t.Errorf("staging folder left behind: %v", err)
+	}
+	for _, c := range r.calls {
+		if c[0] == LSRegister {
+			t.Fatal("must not register after a failed move")
+		}
+	}
+}
+
+func TestUninstallUnregisterFailureKeepsApplet(t *testing.T) {
+	r := &fakeRunner{
+		extract: map[string]string{MarkerKey: MarkerValue, "CFBundleIdentifier": BundleID},
+		err:     map[string]error{LSRegister: errors.New("boom")},
+	}
+	in, _ := newInstaller(t, r)
+	app := AppPath(in.Home)
+	if err := os.MkdirAll(filepath.Join(app, "Contents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.Uninstall(context.Background()); err == nil || !strings.Contains(err.Error(), "not removed") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(app); err != nil {
+		t.Fatalf("applet removed although unregistering failed: %v", err)
 	}
 }
 
