@@ -74,7 +74,8 @@ var (
 )
 
 // contentSecurityPolicy allows exactly the page's own inline scripts and
-// styles (by hash), same-origin fetches and nothing else: no eval, no
+// styles (by hash), same-origin fetches, same-origin and data: images, and
+// nothing else: no eval, no
 // remote code, no framing, no form posts.
 func contentSecurityPolicy(page []byte) string {
 	hashes := func(re *regexp.Regexp) string {
@@ -100,7 +101,8 @@ func contentSecurityPolicy(page []byte) string {
 	}, "; ")
 }
 
-// staticPage is a small self-contained notice page (not active, loading).
+// staticPage is a small self-contained, script-free notice page, such as
+// the /lookup and review-run-not-found notices.
 func staticPage(title, heading, message, linkText, linkHref string) []byte {
 	esc := html.EscapeString
 	var b strings.Builder

@@ -58,7 +58,8 @@ func Handler(src ViewSource, host string) http.Handler {
 	return NewHandler(HandlerOptions{Source: src, Host: host})
 }
 
-// server holds the pre-rendered pages and routes.
+// server holds the pre-rendered live page and the routes; review pages
+// are rendered by ReviewIndex.Scan.
 type server struct {
 	opts HandlerOptions
 	live *page
@@ -67,10 +68,10 @@ type server struct {
 }
 
 // NewHandler serves the dashboard read-only. It never runs discovery, jj, a
-// network call or a process: it only serializes what it already holds (the
-// view src currently publishes, and pages rendered once at construction), so
-// a request costs a pointer load and a write. Requests whose Host header is
-// not exactly opts.Host are rejected, which defeats DNS rebinding.
+// network call or a process: requests only read in-memory state (the view
+// src currently publishes, the live page rendered at construction, and the
+// review pages and links the background Scan prepared). Requests whose Host
+// header is not exactly opts.Host are rejected, which defeats DNS rebinding.
 func NewHandler(opts HandlerOptions) http.Handler {
 	if opts.PollInterval <= 0 {
 		opts.PollInterval = DefaultPollInterval

@@ -57,7 +57,8 @@
   };
 
   // bookmarkBucket is the PR-state bucket of a bookmark that has no PR node:
-  // "unknown" when the lookup has no data, "none" only when it is known empty.
+  // "unknown" when the lookup has no data, "none" only when it is known empty,
+  // and "" (no bucket) when it has PRs, which are counted by their own nodes.
   L.bookmarkBucket = function (bm) {
     if (!bm || bm.pr_lookup === "unknown" || bm.pr_lookup === "error" || !bm.pr_lookup) return "unknown";
     return bm.pr_count > 0 ? "" : "none";
@@ -217,7 +218,8 @@
 
   function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
   // sortRows sorts rows by key (dir 1 ascending, -1 descending), stably, with
-  // label then ID as tie-breakers. It returns a new array.
+  // label then ID as tie-breakers, always ascending whatever dir is. It
+  // returns a new array.
   L.sortRows = function (rows, key, dir) {
     function val(r) {
       if (key === "kind") return KIND_ORDER[r.kind] != null ? KIND_ORDER[r.kind] : 99;

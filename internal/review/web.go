@@ -39,8 +39,9 @@ type Page struct {
 	// <script id="wgo-boot" type="application/json"> element that tells the
 	// scripts how they are being served. Review exports carry no Boot.
 	Boot any
-	// Addons names embedded web/*.js scripts inlined after the mode's app,
-	// such as web/served.js for review pages served by `wgo dash`.
+	// Addons names embedded scripts under web/ (outside vendor/), inlined
+	// before </body>, which in both shells is after the mode's app script;
+	// e.g. web/served.js for review pages served by `wgo dash`.
 	Addons []string
 }
 
@@ -51,7 +52,7 @@ func Render(g *Graph) ([]byte, error) {
 	return RenderPage(Page{Mode: ModeReview, Graph: g})
 }
 
-// RenderPage renders p. A review page with no Boot and no Addons is exactly
+// RenderPage renders p. A review page with no Title, Boot or Addons is exactly
 // Render's offline export: the extra elements are only appended when asked
 // for, so the exported HTML is unaffected by the dashboard's needs.
 func RenderPage(p Page) ([]byte, error) {

@@ -20,8 +20,8 @@ import (
 )
 
 func TestDashRejectsBadFlags(t *testing.T) {
-	oldJSON, oldDays, oldPort := dashJSON, dashDays, dashPort
-	t.Cleanup(func() { dashJSON, dashDays, dashPort = oldJSON, oldDays, oldPort })
+	oldJSON, oldDays, oldPort, oldRefresh := dashJSON, dashDays, dashPort, dashRefresh
+	t.Cleanup(func() { dashJSON, dashDays, dashPort, dashRefresh = oldJSON, oldDays, oldPort, oldRefresh })
 	dashJSON, dashDays, dashPort = false, dash.DefaultDays, 0
 	if err := runDash(context.Background(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "--port") {
 		t.Fatalf("want a --port error, got %v", err)
@@ -29,6 +29,11 @@ func TestDashRejectsBadFlags(t *testing.T) {
 	dashPort, dashDays = DefaultDashPort, 0
 	if err := runDash(context.Background(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "--days") {
 		t.Fatalf("want a --days error, got %v", err)
+	}
+	// --refresh only means something for the one-shot --json snapshot.
+	dashDays, dashRefresh = dash.DefaultDays, true
+	if err := runDash(context.Background(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "wgo dash --json --refresh") {
+		t.Fatalf("want a --refresh error suggesting --json, got %v", err)
 	}
 }
 

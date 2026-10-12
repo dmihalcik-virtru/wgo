@@ -44,7 +44,7 @@ type reviewRun struct {
 	label string
 	mod   time.Time
 	page  *page
-	json  []byte // the graph, encoded exactly as `wgo review graph --json`
+	json  []byte // the graph, encoded exactly as `wgo review graph --format json`
 	// node IDs by exact PR URL and by ticket key / ticket URL
 	prByURL, ticketByKey, ticketByURL map[string]string
 }

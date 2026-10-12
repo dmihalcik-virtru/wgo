@@ -42,29 +42,28 @@ const DefaultDashPort = 8766
 // dashCmd is `wgo dash`: the live dashboard of ongoing work (gh-70).
 var dashCmd = &cobra.Command{
 	Use:   "dash",
-	Short: "Snapshot of all ongoing work: efforts, workspaces, PRs, tickets and agents",
-	Long: `Build a snapshot of ongoing work across every discovered workspace: efforts,
-workspaces, bookmarks and their PRs, tickets, and agent sessions, with
-per-source freshness and a "since last look" delta.
+	Short: "Live dashboard of all ongoing work: efforts, workspaces, PRs, tickets and agents",
+	Long: `Serve a read-only web dashboard of ongoing work across every discovered
+workspace: efforts, workspaces, bookmarks and their PRs, tickets, and agent
+sessions, with per-source freshness and a "since last look" delta.
 
-The local collection reads jj with --ignore-working-copy, so it never
-snapshots a workspace, and reads PR, Jira and GitHub issue data from wgo's
-caches only: anything not cached is reported as unknown. Pass --refresh to
-also try to fetch the missing or stale remote data before printing; lookups
-that fail are listed in the output's diagnostics and make the command exit
-non-zero.
+The dashboard is served on http://127.0.0.1:8766 (only the loopback
+address; change the port with --port) and opened in the browser unless
+--no-open. The page appears at once and fills in when the first snapshot
+is ready. In the background it re-collects local state and refreshes stale
+PR, Jira and GitHub issue data every 30 seconds; page requests only read the
+last published snapshot. Year-in-review runs under
+~/.wgo/cache/review/runs/ are served under /review/ and linked to the live
+efforts they share PRs or tickets with. Stop it with Ctrl-C.
 
-The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.
+With --json, wgo dash prints one snapshot instead of serving. The local
+collection reads jj with --ignore-working-copy, so it never snapshots a
+workspace, and reads PR, Jira and GitHub issue data from wgo's caches only:
+anything not cached is reported as unknown. Add --refresh to also try to
+fetch the missing or stale remote data before printing; lookups that fail
+are listed in the output's diagnostics and make the command exit non-zero.
 
-Without --json, wgo dash serves a read-only web dashboard on
-http://127.0.0.1:8766 (only the loopback address; change the port with
---port) and opens it in the browser unless --no-open. The page appears at
-once and fills in when the first snapshot is ready. In the background it
-re-collects local state and refreshes stale PR, Jira and GitHub issue data
-every 30 seconds; page requests only read the last published snapshot.
-Year-in-review runs under ~/.wgo/review/ are served under /review/ and
-linked to the live efforts they share PRs or tickets with. Stop it with
-Ctrl-C.`,
+The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDash(cmd.Context(), cmd.OutOrStdout())
@@ -87,6 +86,9 @@ func init() {
 func runDash(ctx context.Context, out io.Writer) error {
 	if dashDays < 1 || dashDays > 366 {
 		return fmt.Errorf("--days must be between 1 and 366, got %d", dashDays)
+	}
+	if dashRefresh && !dashJSON {
+		return errors.New("--refresh only applies with --json; the dashboard server refreshes remote data every 30 seconds by itself. Run wgo dash --json --refresh to print a refreshed snapshot")
 	}
 	if !dashJSON && (dashPort < 1 || dashPort > 65535) {
 		return fmt.Errorf("--port must be between 1 and 65535, got %d", dashPort)
@@ -122,8 +124,8 @@ func runDash(ctx context.Context, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		// The server honors leases, so it never refetches what another wgo
-		// process is already fetching.
+		// The server honors leases: a key that this or any other wgo process
+		// tried within the backoff window is not fetched again.
 		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4})
 		defer r.Close()
 		opts.Refresher = r

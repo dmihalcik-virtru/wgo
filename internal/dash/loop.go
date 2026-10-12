@@ -10,8 +10,9 @@ import (
 const DefaultRefreshInterval = 30 * time.Second
 
 // Loop calls tick at once and then every interval until ctx is done. Ticks
-// never overlap: one that overruns the interval delays the next instead of
-// queueing more. It returns when ctx is done.
+// never overlap: after one overruns the interval the next starts at once,
+// and any further missed ticks are dropped, not queued. It returns when ctx
+// is done.
 func Loop(ctx context.Context, interval time.Duration, tick func(context.Context)) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
