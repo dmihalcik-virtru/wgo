@@ -320,7 +320,10 @@ func (s *server) specFile(ctx context.Context, t Target, dir string) (launch.Act
 		return launch.Action{}, "", reject(http.StatusInternalServerError, "could not look for the spec: %v", err)
 	}
 	real, err := filepath.EvalSymlinks(p)
-	if err != nil || !within(real, dir) {
+	if err != nil {
+		return launch.Action{}, "", reject(http.StatusNotFound, "spec/%s.md could not be resolved (%v); it was not opened", ticket, unwrapPathError(err))
+	}
+	if !within(real, dir) {
 		return launch.Action{}, "", reject(http.StatusNotFound, "spec/%s.md resolves outside the workspace; it was not opened", ticket)
 	}
 	return launch.Action{Kind: launch.KindFile, File: real}, "", nil
@@ -334,12 +337,18 @@ func containedWorkspace(root string, roots []string) (string, error) {
 		return "", errors.New("it has no absolute path")
 	}
 	real, err := filepath.EvalSymlinks(root)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return "", errors.New("its directory no longer exists")
 	}
+	if err != nil {
+		return "", fmt.Errorf("its directory could not be read (%v)", unwrapPathError(err))
+	}
 	fi, err := os.Stat(filepath.Join(real, ".jj"))
-	if err != nil || !fi.IsDir() {
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || err == nil && !fi.IsDir():
 		return "", errors.New("it is no longer a jj workspace")
+	case err != nil:
+		return "", fmt.Errorf("its .jj directory could not be read (%v)", unwrapPathError(err))
 	}
 	var unreadable []string
 	for _, r := range roots {

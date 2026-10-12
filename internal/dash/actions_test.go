@@ -547,6 +547,39 @@ func TestContainedWorkspace(t *testing.T) {
 	}
 }
 
+// TestContainedWorkspaceNamesTheFailure checks only a missing directory is
+// reported as gone; other errors say what went wrong.
+func TestContainedWorkspaceNamesTheFailure(t *testing.T) {
+	tmp, _ := filepath.EvalSymlinks(t.TempDir())
+	root := filepath.Join(tmp, "root")
+	if _, err := containedWorkspace(filepath.Join(root, "nope"), []string{root}); err == nil || !strings.Contains(err.Error(), "no longer exists") {
+		t.Errorf("missing: %v", err)
+	}
+	loop := filepath.Join(root, "loop")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := containedWorkspace(loop, []string{root}); err == nil || !strings.Contains(err.Error(), "could not be read") {
+		t.Errorf("symlink loop: %v", err)
+	}
+	if os.Geteuid() == 0 {
+		return // root reads through mode 000
+	}
+	ws := filepath.Join(root, "locked")
+	mkWorkspace(t, ws)
+	if err := os.Chmod(ws, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(ws, 0o755) })
+	_, err := containedWorkspace(ws, []string{root})
+	if err == nil || !strings.Contains(err.Error(), ".jj directory could not be read") || strings.Contains(err.Error(), ws) {
+		t.Errorf("unreadable workspace: %v", err)
+	}
+}
+
 // TestAckOnlyByPost checks the baseline advances only through a valid POST
 // /api/ack, never by loading or reloading the page.
 func TestAckOnlyByPost(t *testing.T) {
