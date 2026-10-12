@@ -77,14 +77,22 @@ func NewReviewIndex(runsDir string) *ReviewIndex {
 }
 
 // runMod is the newest modification time among a run's inputs, so a rewrite
-// of the ledger or the cards is noticed even when the directory's own mtime
-// does not change.
+// of the ledger or a card, even one edited in place, is noticed when the
+// directory's own mtime does not change. Unreadable inputs are ignored here;
+// loading the run reports them.
 func runMod(dir string, fi os.FileInfo) time.Time {
 	mod := fi.ModTime()
-	for _, name := range []string{"ledger.jsonl", "people.json", "coverage.json", "cards"} {
-		if st, err := os.Lstat(filepath.Join(dir, name)); err == nil && st.ModTime().After(mod) {
+	newer := func(path string) {
+		if st, err := os.Lstat(path); err == nil && st.ModTime().After(mod) {
 			mod = st.ModTime()
 		}
+	}
+	for _, name := range []string{"ledger.jsonl", "people.json", "coverage.json", "cards"} {
+		newer(filepath.Join(dir, name))
+	}
+	cards, _ := os.ReadDir(filepath.Join(dir, "cards"))
+	for _, c := range cards {
+		newer(filepath.Join(dir, "cards", c.Name()))
 	}
 	return mod
 }
@@ -95,7 +103,9 @@ func runMod(dir string, fi os.FileInfo) time.Time {
 //
 // Every failure is recorded for Errors (and so shown on the page): an
 // unreadable runs directory keeps the previously loaded runs and is also
-// returned; a run that cannot be read or loaded is skipped.
+// returned; a run that cannot be read or loaded is skipped, unless an
+// earlier version of it loaded, which is kept and served until a reload
+// succeeds (the skill may be midway through rewriting it).
 func (ix *ReviewIndex) Scan() error {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
@@ -132,6 +142,13 @@ func (ix *ReviewIndex) Scan() error {
 		}
 		r, err := loadReviewRun(dir, e.Name(), mod)
 		if err != nil {
+			if prev := old.byLabel[e.Name()]; prev != nil {
+				next.errs = append(next.errs, fmt.Sprintf("review run %s: reload failed, still serving the version from %s: %v",
+					e.Name(), prev.mod.Format("2006-01-02 15:04"), err))
+				next.runs = append(next.runs, prev)
+				next.byLabel[prev.label] = prev
+				continue
+			}
 			next.errs = append(next.errs, fmt.Sprintf("review run %s: %v", e.Name(), err))
 			continue
 		}
@@ -208,6 +225,26 @@ func (ix *ReviewIndex) run(label string) *reviewRun {
 		return nil
 	}
 	return ix.state.Load().byLabel[label]
+}
+
+// Runs lists the loaded runs, newest first. The slice is shared: callers
+// must not modify it.
+func (ix *ReviewIndex) Runs() []*reviewRun {
+	if ix == nil {
+		return nil
+	}
+	return ix.state.Load().runs
+}
+
+// errorsFor lists the recorded errors about the run named label.
+func (ix *ReviewIndex) errorsFor(label string) []string {
+	var out []string
+	for _, e := range ix.Errors() {
+		if strings.HasPrefix(e, "review run "+label+":") {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // Errors lists what the last scan could not read or load.

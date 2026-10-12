@@ -143,4 +143,29 @@ test("warnings include review-run errors and an unavailable-links note", () => {
   assert.deepEqual(L.warnings(null, null, null, ""), []);
 });
 
+test("a poll without a snapshot is never shown as fresh data", () => {
+  // Before the first snapshot, loading is normal: the header says so.
+  assert.equal(L.payloadIssue({ status: "loading" }, null), "");
+  assert.equal(L.payloadIssue({ status: "ready", snapshot: {} }, 4), "");
+  // After one, a restarted server keeps the old generation on screen and says why.
+  assert.match(L.payloadIssue({ status: "loading", diagnostics: ["collection failed: boom"] }, 4),
+    /^wgo dash has no snapshot right now .*still showing generation 4 .*Problems: collection failed: boom$/);
+  // Anything else is an unexpected response, not "loading".
+  assert.match(L.payloadIssue({ status: "teapot" }, null), /^wgo dash returned an unexpected response \(status "teapot"\)\.$/);
+  assert.match(L.payloadIssue({ status: "ready" }, 2), /unexpected response.*generation 2/);
+  assert.match(L.payloadIssue(null, null), /^wgo dash returned an unexpected response\.$/);
+});
+
+test("URLs are allowlisted: http(s) outside, same-origin paths inside", () => {
+  assert.equal(L.safeURL("https://github.com/a/b/pull/1"), "https://github.com/a/b/pull/1");
+  assert.equal(L.safeURL("HTTP://x.example/"), "HTTP://x.example/");
+  for (const bad of ["javascript:alert(1)", "data:text/html,x", "//evil.example", "/review/a/", " https://x", "", null, 7]) {
+    assert.equal(L.safeURL(bad), "", String(bad));
+  }
+  assert.equal(L.localURL("/review/2026/#focus=x"), "/review/2026/#focus=x");
+  for (const bad of ["//evil.example", "/\\evil.example", "https://x", "javascript:x", "review/a", "", null]) {
+    assert.equal(L.localURL(bad), "", String(bad));
+  }
+});
+
 console.log("ok " + n);

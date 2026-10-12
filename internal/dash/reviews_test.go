@@ -305,6 +305,78 @@ func TestReviewRunErrorsAreSurfaced(t *testing.T) {
 	}
 }
 
+// A run that fails to reload keeps its last good version, links and page,
+// and the index and 404 pages say what failed instead of "none found".
+func TestReviewRunReloadFailureKeepsLastGoodVersion(t *testing.T) {
+	runs := t.TempDir()
+	dir := writeReviewRun(t, runs, "2026-test", time.Now().Add(-time.Hour))
+	ix := scannedIndex(t, runs)
+	if err := os.WriteFile(filepath.Join(dir, "coverage.json"), []byte("{half-written"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	if errs := ix.Errors(); len(errs) != 1 || !strings.Contains(errs[0], "review run 2026-test: reload failed, still serving the version from") {
+		t.Fatalf("errors = %v", errs)
+	}
+	c := newReviewServer(t, fixtureDash(t), ix)
+	if resp, body := fetch(t, c, "/review/2026-test/"); resp.StatusCode != 200 {
+		t.Fatalf("last good version not served: %d %s", resp.StatusCode, body)
+	}
+	if _, body := fetch(t, c, "/review/"); !strings.Contains(body, "2026-test</a>") || !strings.Contains(body, "reload failed") {
+		t.Errorf("index should list the run and its reload error: %s", body)
+	}
+
+	// A run that never loaded is not served, and both pages say why.
+	other := filepath.Join(t.TempDir(), "runs")
+	bad := writeReviewRun(t, other, "corrupt", time.Now())
+	if err := os.WriteFile(filepath.Join(bad, "coverage.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c2 := newReviewServer(t, fixtureDash(t), scannedIndex(t, other))
+	_, body := fetch(t, c2, "/review/")
+	if strings.Contains(body, "No year-in-review runs found") || !strings.Contains(body, "review run corrupt") {
+		t.Errorf("index hid the load failure: %s", body)
+	}
+	resp, body := fetch(t, c2, "/review/corrupt/")
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(body, "review run corrupt") || !strings.Contains(body, `href="/review/"`) ||
+		resp.Header.Get("Content-Security-Policy") != staticCSP {
+		t.Errorf("404 for a failed run: %d %s", resp.StatusCode, body)
+	}
+}
+
+// Editing a card in place does not touch the cards directory's mtime, but
+// must still count as a change to the run.
+func TestRunModSeesInPlaceCardEdits(t *testing.T) {
+	dir := t.TempDir()
+	card := filepath.Join(dir, "cards", "a.json")
+	if err := os.MkdirAll(filepath.Dir(card), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(card, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	for _, p := range []string{card, filepath.Dir(card), dir} {
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := runMod(dir, fi)
+	later := time.Now()
+	if err := os.Chtimes(card, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if after := runMod(dir, fi); !after.After(before) {
+		t.Fatalf("runMod did not move after an in-place card edit: %v -> %v", before, after)
+	}
+}
+
 func TestComputeLinksMatchesExactIdentityOnly(t *testing.T) {
 	runs := t.TempDir()
 	writeReviewRun(t, runs, "older", time.Now().Add(-48*time.Hour))
@@ -456,8 +528,9 @@ func TestMutatingMethodsAreRejectedOnEveryRoute(t *testing.T) {
 				t.Fatal(err)
 			}
 			resp.Body.Close()
-			if resp.StatusCode != http.StatusMethodNotAllowed && resp.StatusCode != http.StatusNotFound {
-				t.Errorf("%s %s = %d, want 405 or 404", method, path, resp.StatusCode)
+			// The method guard runs before routing, so even unknown paths get 405.
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s = %d, want 405", method, path, resp.StatusCode)
 			}
 		}
 	}

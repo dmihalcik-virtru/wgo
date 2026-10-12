@@ -1,6 +1,7 @@
 package dash
 
 import (
+	"fmt"
 	"html"
 	"net/http"
 	"net/url"
@@ -108,20 +109,27 @@ func (s *server) serveNotice(w http.ResponseWriter, status int, title, message s
 	_, _ = w.Write(staticPage(title, "wgo dash", message, "Open the live dashboard", "/"))
 }
 
-// serveReviewIndex lists the runs the dashboard can serve.
+// serveReviewIndex lists the runs the dashboard can serve, and why any
+// others could not be loaded.
 func (s *server) serveReviewIndex(w http.ResponseWriter, r *http.Request) {
+	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light dark\"><title>wgo dash — review runs</title></head>\n<body>\n<h1>wgo dash</h1>\n<h2>Year-in-review runs</h2>\n")
-	var runs []*reviewRun
-	if s.opts.Reviews != nil {
-		runs = s.opts.Reviews.state.Load().runs
-	}
-	if len(runs) == 0 {
-		b.WriteString("<p>No year-in-review runs found. Run the /year-in-review skill, then wait for the next refresh.</p>\n")
-	} else {
+	runs, errs := s.opts.Reviews.Runs(), s.opts.Reviews.Errors()
+	switch {
+	case len(runs) > 0:
 		b.WriteString("<ul>\n")
 		for _, run := range runs {
-			b.WriteString("<li><a href=\"/review/" + html.EscapeString(url.PathEscape(run.label)) + "/\">" + html.EscapeString(run.label) + "</a> (" + run.mod.Format("2006-01-02 15:04") + ")</li>\n")
+			fmt.Fprintf(&b, "<li><a href=\"/review/%s/\">%s</a> (%s)</li>\n", esc(url.PathEscape(run.label)), esc(run.label), run.mod.Format("2006-01-02 15:04"))
+		}
+		b.WriteString("</ul>\n")
+	case len(errs) == 0:
+		b.WriteString("<p>No year-in-review runs found. Run the /year-in-review skill, then wait for the next refresh.</p>\n")
+	}
+	if len(errs) > 0 {
+		b.WriteString("<h3>Could not load</h3>\n<ul>\n")
+		for _, e := range errs {
+			fmt.Fprintf(&b, "<li>%s</li>\n", esc(e))
 		}
 		b.WriteString("</ul>\n")
 	}
@@ -134,11 +142,22 @@ func (s *server) serveReviewIndex(w http.ResponseWriter, r *http.Request) {
 // reviewRunFor resolves the {label} wildcard to a known run. The label is
 // validated after routing because the wildcard value is unescaped (so it
 // can contain "/" from %2F); it is only ever used as a map key, never as a
-// path.
+// path. An unknown run gets a page that says why, if a scan error names it.
 func (s *server) reviewRunFor(w http.ResponseWriter, r *http.Request) *reviewRun {
-	run := s.opts.Reviews.run(r.PathValue("label"))
+	label := r.PathValue("label")
+	run := s.opts.Reviews.run(label)
 	if run == nil {
-		http.NotFound(w, r)
+		msg := "There is no year-in-review run by that name."
+		if ValidRunLabel(label) {
+			msg = "There is no year-in-review run named " + label + "."
+			if errs := s.opts.Reviews.errorsFor(label); len(errs) > 0 {
+				msg = strings.Join(errs, "; ") + "."
+			}
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", staticCSP)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(staticPage("wgo dash — review run not found", "wgo dash", msg, "List the review runs", "/review/"))
 	}
 	return run
 }

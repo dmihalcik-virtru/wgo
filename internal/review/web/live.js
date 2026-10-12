@@ -305,6 +305,26 @@
   L.pollErrorText = function (e, haveSnapshot) {
     return L.fetchFailure(e) + (haveSnapshot ? "; still showing the last snapshot (its age is in the header)." : "; no snapshot has loaded yet.") + " Retrying…";
   };
+  // payloadIssue is the banner for a snapshot poll that did not bring a
+  // snapshot, or "" when there is nothing to say. lastGen is the generation
+  // still on screen, or null when none has loaded: before the first snapshot
+  // a "loading" payload is normal and the header says so instead.
+  L.payloadIssue = function (p, lastGen) {
+    var showing = lastGen == null ? "" : "; still showing generation " + lastGen + " until a new one is collected";
+    if (!p || typeof p !== "object") return "wgo dash returned an unexpected response" + showing + ".";
+    if (p.status === "ready" && p.snapshot) return "";
+    if (p.status === "loading") {
+      if (lastGen == null) return "";
+      var diags = p.diagnostics || [];
+      return "wgo dash has no snapshot right now (it may have restarted)" + showing + "." + (diags.length ? " Problems: " + diags.join("; ") : "");
+    }
+    return "wgo dash returned an unexpected response (status " + JSON.stringify(p.status) + ")" + showing + ".";
+  };
+  // safeURL passes only absolute http(s) URLs; localURL only same-origin
+  // paths. "//host" and "/\host" are protocol-relative to a browser, so
+  // neither counts as local.
+  L.safeURL = function (u) { return typeof u === "string" && /^https?:\/\//i.test(u) ? u : ""; };
+  L.localURL = function (u) { return typeof u === "string" && /^\/(?![\/\\])/.test(u) ? u : ""; };
   // warnings lists the diagnostics shown under the header: the view's, the
   // snapshot's, review-run scan errors, and an unavailable links note.
   L.warnings = function (payload, snap, links, linksError) {
@@ -343,8 +363,7 @@
     if (parent) parent.appendChild(e);
     return e;
   }
-  function safeURL(u) { return typeof u === "string" && /^https?:\/\//i.test(u) ? u : ""; }
-  function localURL(u) { return typeof u === "string" && /^\/(?!\/)/.test(u) ? u : ""; }
+  var safeURL = L.safeURL, localURL = L.localURL;
   function link(parent, text, url) {
     var u = safeURL(url);
     if (!u) { parent.appendChild(document.createTextNode(text)); return null; }
@@ -521,7 +540,8 @@
     }
     var c = {};
     store.idx.byId.forEach(function (n) { c[n.kind] = (c[n.kind] || 0) + 1; });
-    var age = (p.age_seconds || 0) + (Date.now() - store.fetchedAt) / 1000;
+    // A missing age is unknown, not zero: never call an old snapshot new.
+    var age = typeof p.age_seconds === "number" ? p.age_seconds + (Date.now() - store.fetchedAt) / 1000 : null;
     countsEl.textContent = plural(c.effort || 0, "effort") + " · " + plural(c.workspace || 0, "workspace") + " · " + plural(c.pr || 0, "PR") + " · " +
       plural(c.ticket || 0, "ticket") + " · " + plural(c.agent || 0, "agent session") + "   |   generation " + p.generation +
       " · snapshot age " + L.ageText(age) + (p.loaded_from_disk ? " · loaded from disk, refreshing" : "");
@@ -1176,27 +1196,42 @@
   // ---------- polling ----------
   var focusPending = BOOT.focus || "", lastKey = "";
   function applyPayload(p) {
-    store.fetchedAt = Date.now();
-    var hadError = !!store.error;
-    store.error = "";
-    store.payload = p;
-    if (p.status !== "ready" || !p.snapshot) { store.notify("status"); return; }
-    var key = p.generation + "\n" + JSON.stringify(p.diagnostics || []) + "\n" + JSON.stringify(p.delta || null);
-    if (key === lastKey && store.snap) { store.notify("status"); if (hadError) renderBanner(); return; }
-    lastKey = key;
-    var first = !store.snap;
-    store.snap = p.snapshot;
-    store.idx = L.index(store.snap);
-    store.rows = L.rows(store.snap, store.idx);
-    store.selection = L.prune(store.selection, store.idx.byId);
-    if (store.filter) store.vis = L.visible(store.snap, store.idx, store.filter);
-    if (focusPending) {
-      if (store.idx.byId.has(focusPending)) { store.selection = new Set([focusPending]); store.focusMissing = ""; }
-      else store.focusMissing = (BOOT.entity || focusPending) + " is not part of any active effort.";
-      focusPending = "";
+    var ready = p && p.status === "ready" && p.snapshot;
+    store.error = L.payloadIssue(p, store.snap ? store.payload.generation : null);
+    if (!ready) {
+      // Keep the last ready payload, and with it the generation and age the
+      // header shows for the snapshot still on screen.
+      if (!store.snap) { store.payload = p; store.fetchedAt = Date.now(); }
+      store.notify("status");
+      return;
     }
-    store.notify("data");
-    if (first) { robustFit(); if (store.selection.size) revealEffort(Array.from(store.selection)[0]); }
+    store.payload = p;
+    store.fetchedAt = Date.now();
+    var key = p.generation + "\n" + JSON.stringify(p.diagnostics || []) + "\n" + JSON.stringify(p.delta || null);
+    if (key === lastKey && store.snap) { store.notify("status"); return; }
+    var first = !store.snap;
+    try {
+      store.snap = p.snapshot;
+      store.idx = L.index(store.snap);
+      store.rows = L.rows(store.snap, store.idx);
+      store.selection = L.prune(store.selection, store.idx.byId);
+      if (store.filter) store.vis = L.visible(store.snap, store.idx, store.filter);
+      if (focusPending) {
+        if (store.idx.byId.has(focusPending)) { store.selection = new Set([focusPending]); store.focusMissing = ""; }
+        else store.focusMissing = (BOOT.entity || focusPending) + " is not part of any active effort.";
+        focusPending = "";
+      }
+      store.notify("data");
+      if (first) { robustFit(); if (store.selection.size) revealEffort(Array.from(store.selection)[0]); }
+    } catch (e) {
+      // Leave lastKey unset so the next poll tries this generation again,
+      // and say so on the page rather than only in the console.
+      lastKey = "";
+      store.error = "wgo dash could not display snapshot generation " + p.generation + ": " + ((e && e.message) || e) + ". Retrying…";
+      renderBanner();
+      throw e;
+    }
+    lastKey = key;
   }
   // getJSON fetches url, tagging failures for L.fetchFailure: e.status for
   // an HTTP error, e.unreadable for a body that is not JSON.
@@ -1220,14 +1255,12 @@
   }
   function poll() {
     var done = function () { setTimeout(poll, POLL); };
+    var fault = function (e) { if (window.console) console.error("wgo dash:", e); };
     getJSON(API).then(applyPayload, function (e) {
       store.error = L.pollErrorText(e, !!store.snap);
       store.notify("status");
-    }).then(pollLinks).then(done, function (e) {
-      // A rendering fault, not a fetch failure: keep polling, and log it.
-      if (window.console) console.error("wgo dash:", e);
-      done();
-    });
+    }).catch(fault) // a rendering fault: applyPayload has put it in the banner
+      .then(pollLinks).then(done, function (e) { fault(e); done(); });
   }
   setInterval(function () { if (store.snap) renderHeader(); }, 5000);
   setView(/(^|[#&])view=table(&|$)/.test(location.hash) ? "table" : "graph");

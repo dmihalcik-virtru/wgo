@@ -1,6 +1,7 @@
 package review
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -8,10 +9,14 @@ import (
 )
 
 // TestLiveJSLogic runs the live explorer's pure functions under node. It is
-// skipped where node is not installed; nothing else depends on node.
+// skipped where node is not installed, except under CI, where a missing node
+// would silently drop the only check of the explorer's linked selection.
 func TestLiveJSLogic(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("node not on PATH under CI; the live.js logic tests need it")
+		}
 		t.Skip("node not on PATH; skipping the live.js logic tests")
 	}
 	live, err := filepath.Abs(filepath.Join("web", "live.js"))
