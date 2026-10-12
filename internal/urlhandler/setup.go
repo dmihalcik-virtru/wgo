@@ -195,7 +195,14 @@ func (in *Installer) verifyOurs(ctx context.Context, app string) error {
 		return fmt.Errorf("%s is not an application folder wgo created; it was left alone", app)
 	}
 	for _, kv := range [][2]string{{MarkerKey, MarkerValue}, {"CFBundleIdentifier", BundleID}} {
-		out, err := in.Run.Output(ctx, []string{"plutil", "-extract", kv[0], "raw", "-o", "-", infoPlist(app)})
+		plist := infoPlist(app)
+		out, err := in.Run.Output(ctx, []string{"plutil", "-extract", kv[0], "raw", "-o", "-", plist})
+		// plutil reports a missing key, which means not ours, with this
+		// text; any other failure (no Info.plist, a damaged one) means wgo
+		// cannot tell, and says so rather than calling the applet foreign.
+		if err != nil && !strings.Contains(err.Error(), "No value at that key path") {
+			return fmt.Errorf("could not read %s from %s: %w; %s was left alone. Remove it yourself if it is a broken wgo URL Handler, then run wgo setup url-handler again", kv[0], plist, err, app)
+		}
 		if err != nil || strings.TrimSpace(out) != kv[1] {
 			return fmt.Errorf("%s was not created by wgo setup url-handler (its Info.plist has no %s = %q); it was left alone. Remove it yourself if you mean to", app, kv[0], kv[1])
 		}

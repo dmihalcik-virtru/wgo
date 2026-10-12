@@ -487,3 +487,20 @@ func TestDialogScriptCompiles(t *testing.T) {
 		t.Fatalf("osacompile: %v\n%s", err, b)
 	}
 }
+
+// An applet wgo cannot read is not called foreign: the error says plutil
+// failed, so the user knows it may be a broken wgo applet.
+func TestInstallUnreadablePlistIsNotForeign(t *testing.T) {
+	r := &fakeRunner{err: map[string]error{"plutil": errors.New("plutil: exit status 1: Info.plist: (The file couldn't be opened because there is no such file.)")}}
+	in, _ := newInstaller(t, r)
+	app := mkOurApplet(t, in, r)
+	r.extractErr = true
+	in.RemoveAll = func(p string) error { t.Fatalf("removed %s", p); return nil }
+	err := in.Install(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "could not read "+MarkerKey) || strings.Contains(err.Error(), "was not created by wgo") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(app, "Contents", "old")); err != nil {
+		t.Fatalf("applet touched: %v", err)
+	}
+}

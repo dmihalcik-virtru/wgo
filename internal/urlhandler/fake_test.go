@@ -13,6 +13,9 @@ type fakeRunner struct {
 	err     map[string]error
 	extract map[string]string
 	before  func(argv []string) // runs before answering, e.g. to leave files behind
+	// extractErr makes plutil -extract fail with err["plutil"] instead of
+	// answering from extract.
+	extractErr bool
 }
 
 func (f *fakeRunner) Output(_ context.Context, argv []string) (string, error) {
@@ -20,7 +23,7 @@ func (f *fakeRunner) Output(_ context.Context, argv []string) (string, error) {
 	if f.before != nil {
 		f.before(argv)
 	}
-	if argv[0] == "plutil" && len(argv) > 2 && argv[1] == "-extract" {
+	if argv[0] == "plutil" && len(argv) > 2 && argv[1] == "-extract" && !f.extractErr {
 		v, ok := f.extract[argv[2]]
 		if !ok {
 			return "", errors.New("plutil: No value at that key path")
