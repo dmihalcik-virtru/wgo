@@ -1231,8 +1231,10 @@ as hostile:
 - **First use asks.** The first link to a workspace shows a dialog with the
   workspace's full path. **Cancel** is the default, and the dialog cancels
   itself after two minutes. Click **Open** only if you just clicked that
-  link. wgo remembers your answer per workspace ID and path in
-  `~/.wgo/url-handler-approvals.json`. If the ID later resolves to another
+  link. If you click **Open**, wgo remembers that per workspace ID and path
+  in `~/.wgo/url-handler-approvals.json`, and later links to that workspace
+  open without asking. **Cancel** and a timed-out dialog are not
+  remembered; the next link asks again. If the ID later resolves to another
   path, wgo asks again. Without a dialog, for example over SSH, `wgo open`
   asks y/N on a terminal and otherwise refuses. It never accepts on its
   own.
@@ -1247,20 +1249,26 @@ as hostile:
   link is already being handled" and is dropped, not queued. A page cannot
   stack up dialogs.
 
-When `wgo open` does not open a link, the applet shows why in a macOS
-notification, never a modal alert. A web page can trigger this without
-any click from you. The messages are fixed text and never quote the URL,
-so a page cannot put its own words in a wgo notification. Run the same
-`wgo open '<url>'` in a terminal to see the full message.
+When `wgo open` fails, the applet shows why in a macOS notification, never
+a modal alert. A web page can trigger this without any click from you.
+Clicking **Cancel** is not a failure and shows nothing. The messages never
+include any part of the URL, so a page cannot put its own words in a wgo
+notification. Run the same `wgo open '<url>'` in a terminal to see the full
+message.
 
 ### Known limitation
 
 Workspace IDs are unsalted hashes of the workspace and main clone paths.
 A page that targets you and guesses your directory layout could compute a
-real ID and make the first-use dialog appear. It still cannot open
-anything unless you click **Open**, but a per-install salt would make IDs
-unguessable. That is a possible follow-up. It would change the dashboard's
-workspace IDs.
+real ID:
+
+- For a workspace you have not approved, that only makes the first-use
+  dialog appear.
+- For one you have approved, the link opens a terminal tab in it with no
+  prompt. It still cannot run anything in that tab.
+
+A per-install salt would make IDs unguessable. That is a possible
+follow-up. It would change the dashboard's workspace IDs.
 
 ### Automation prompt for links
 

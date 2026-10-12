@@ -25,7 +25,7 @@ const Scheme = "wgo"
 // openHost is the only accepted URL host (the action).
 const openHost = "open"
 
-// MaxURLLen bounds an accepted URL. The canonical form is 30 bytes.
+// MaxURLLen bounds an accepted URL. The canonical form is 33 bytes.
 const MaxURLLen = 256
 
 // OpenURL is the canonical wgo:// URL that opens workspace id.

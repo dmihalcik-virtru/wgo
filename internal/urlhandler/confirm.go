@@ -35,7 +35,7 @@ const dialogTimeout = 120
 var dialogScript = `on run argv
 	set wsPath to item 1 of argv
 	activate
-	set r to display dialog "A wgo:// link wants to open a terminal tab in this workspace:" & return & return & wsPath & return & return & "Only open it if you just clicked a wgo link. wgo remembers your answer for this workspace at this path." with title "wgo URL handler" buttons {"Cancel", "Open"} default button "Cancel" cancel button "Cancel" with icon caution giving up after ` + strconv.Itoa(dialogTimeout) + `
+	set r to display dialog "A wgo:// link wants to open a terminal tab in this workspace:" & return & return & wsPath & return & return & "Only open it if you just clicked a wgo link. If you click Open, wgo remembers it for this workspace at this path." with title "wgo URL handler" buttons {"Cancel", "Open"} default button "Cancel" cancel button "Cancel" with icon caution giving up after ` + strconv.Itoa(dialogTimeout) + `
 	if gave up of r then return "Cancel"
 	return button returned of r
 end run`

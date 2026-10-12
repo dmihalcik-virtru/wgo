@@ -504,3 +504,16 @@ func TestInstallUnreadablePlistIsNotForeign(t *testing.T) {
 		t.Fatalf("applet touched: %v", err)
 	}
 }
+
+// TestDialogScriptDefaultsToCancel pins the dialog's safe defaults: Return
+// or Escape cancels, a timeout cancels, and the path comes only from argv.
+func TestDialogScriptDefaultsToCancel(t *testing.T) {
+	for _, want := range []string{`default button "Cancel"`, `cancel button "Cancel"`, "giving up after ", `if gave up of r then return "Cancel"`, "set wsPath to item 1 of argv"} {
+		if !strings.Contains(dialogScript, want) {
+			t.Errorf("dialog script lacks %q", want)
+		}
+	}
+	if strings.Contains(dialogScript, `default button "Open"`) {
+		t.Error("Open must not be the default button")
+	}
+}
