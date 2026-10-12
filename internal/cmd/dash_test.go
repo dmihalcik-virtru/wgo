@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -255,6 +256,51 @@ func TestServeDashReportsReviewScanErrors(t *testing.T) {
 	}
 	if errs := ix.Errors(); len(errs) != 1 {
 		t.Fatalf("index errors = %v", errs)
+	}
+}
+
+// A refresh that panics must not take the server down, and a failure that
+// repeats every tick is printed once, then once more when it clears.
+func TestServeDashSurvivesPanicsAndPrintsFailuresOnce(t *testing.T) {
+	ln, err := listenDash(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errOut := &syncBuffer{}
+	var ticks atomic.Int32
+	done := make(chan error, 1)
+	go func() {
+		done <- serveDash(ctx, io.Discard, ln, dashServer{
+			source: nilSource{},
+			refresh: func(context.Context) error {
+				switch n := ticks.Add(1); {
+				case n == 1:
+					panic("boom")
+				case n < 5:
+					return errors.New("jj unavailable")
+				default:
+					return nil
+				}
+			},
+			interval: 5 * time.Millisecond,
+			errOut:   errOut,
+		})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for ticks.Load() < 6 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	got := errOut.String()
+	if ticks.Load() < 6 || !strings.Contains(got, "refresh panicked: boom") {
+		t.Fatalf("ticks %d; the loop should outlive a panic: %q", ticks.Load(), got)
+	}
+	if strings.Count(got, "refresh failed: jj unavailable") != 1 || strings.Count(got, "refresh is working again") != 1 {
+		t.Fatalf("a repeated failure should be printed once, and its recovery once: %q", got)
 	}
 }
 

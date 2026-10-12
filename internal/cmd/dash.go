@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"syscall"
@@ -266,7 +267,35 @@ func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServe
 	go func() {
 		defer close(loopDone)
 		var lastScanErrs []string
+		lastRefreshErr := ""
 		dash.Loop(loopCtx, ds.interval, func(ctx context.Context) {
+			// A panic here (say, on a hand-edited review run) would kill the
+			// whole server; report it and let the next tick try again.
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(errOut, "wgo dash: refresh panicked: %v\n%s", r, debug.Stack())
+				}
+			}()
+			// Collect first, so loading every review run never delays the
+			// first snapshot.
+			err := ds.refresh(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			// The page keeps the last good snapshot, shows its age and the
+			// failure; print a failure when it changes rather than every tick.
+			msg := ""
+			if err != nil {
+				msg = err.Error()
+			}
+			if msg != lastRefreshErr {
+				if msg != "" {
+					fmt.Fprintf(errOut, "wgo dash: refresh failed: %s\n", msg)
+				} else {
+					fmt.Fprintln(errOut, "wgo dash: refresh is working again.")
+				}
+				lastRefreshErr = msg
+			}
 			if ds.reviews != nil {
 				// Scan records every failure in Errors, which the page shows
 				// too; print them when they change rather than every tick.
@@ -277,10 +306,6 @@ func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServe
 					}
 					lastScanErrs = errs
 				}
-			}
-			if err := ds.refresh(ctx); err != nil && ctx.Err() == nil {
-				// The page keeps the last good snapshot and shows its age.
-				fmt.Fprintf(errOut, "wgo dash: refresh failed: %v\n", err)
 			}
 		})
 	}()
