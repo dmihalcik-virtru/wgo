@@ -344,7 +344,7 @@ func TestExecRunnerLogsLateFailure(t *testing.T) {
 	logged := make(chan string, 1)
 	r := ExecRunner{Logf: func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }}
 	// Outlives the grace, then fails: reported as opened, then logged.
-	if err := r.Start("", []string{"sh", "-c", "sleep 0.3; echo boom >&2; exit 3"}); err != nil {
+	if err := r.Start("", []string{"sh", "-c", "echo starting >&2; sleep 0.3; echo boom >&2; exit 3"}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	select {
@@ -363,5 +363,48 @@ func TestExecRunnerLogsLateFailure(t *testing.T) {
 	case msg := <-logged:
 		t.Fatalf("success logged %q", msg)
 	case <-time.After(600 * time.Millisecond):
+	}
+}
+
+func TestExecRunnerStderrIsNotAPipe(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	// A pipe's reader lives in wgo, so a terminal that outlives wgo would
+	// lose its stderr; the child must get a file instead.
+	probe := []string{"sh", "-c", "if [ -p /dev/fd/2 ]; then echo stderr-is-a-pipe >&2; exit 3; fi"}
+	if err := (ExecRunner{}).Start("", probe); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := (ExecRunner{}).Run(context.Background(), "", probe); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestExecRunnerReportsStderr(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	fail := []string{"sh", "-c", "echo first >&2; echo second >&2; exit 4"}
+	if err := (ExecRunner{}).Run(context.Background(), "", fail); err == nil || !strings.Contains(err.Error(), "exit status 4: first") {
+		t.Fatalf("Run err = %v", err)
+	}
+	if err := (ExecRunner{}).Start("", fail); err == nil || !strings.Contains(err.Error(), "exit status 4: first") {
+		t.Fatalf("Start err = %v", err)
+	}
+}
+
+func TestExecRunnerRunDoesNotWaitForForkedChild(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	// An editor that forks a GUI child and exits must not hold the request
+	// open until the child exits.
+	start := time.Now()
+	if err := (ExecRunner{}).Run(context.Background(), "", []string{"sh", "-c", "sleep 5 & exit 0"}); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("Run waited %v for a forked child", d)
 	}
 }
