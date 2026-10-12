@@ -62,10 +62,17 @@ func (c SystemConfirmer) Confirm(ctx context.Context, p Prompt) (bool, error) {
 	if c.GOOS == "darwin" && c.Run != nil {
 		out, err := c.Run.Output(ctx, DialogArgv(p.Path))
 		if err == nil {
-			return strings.TrimSpace(out) == "Open", nil
+			switch strings.TrimSpace(out) {
+			case "Open":
+				return true, nil
+			case "Cancel":
+				return false, nil
+			}
+			return false, errors.New("the confirmation dialog returned an unexpected answer; nothing was opened")
 		}
-		// osascript reports Cancel (and Escape) as error -128.
-		if strings.Contains(err.Error(), "-128") {
+		// osascript reports Cancel (and Escape) as error -128, ending its
+		// message with "(-128)"; a bare substring would also match -1280.
+		if strings.HasSuffix(strings.TrimSpace(err.Error()), "(-128)") {
 			return false, nil
 		}
 		why = fmt.Errorf("the confirmation dialog failed: %w", err)
@@ -75,10 +82,13 @@ func (c SystemConfirmer) Confirm(ctx context.Context, p Prompt) (bool, error) {
 	if !c.TTY || c.Stdin == nil || c.Prompt == nil {
 		return false, fmt.Errorf("%v, and stdin is not a terminal to ask on; nothing was opened. Run the same wgo open command in a terminal to confirm", why)
 	}
+	if why != nil && c.GOOS == "darwin" {
+		fmt.Fprintf(c.Prompt, "wgo open: %v; asking here instead.\n", why)
+	}
 	fmt.Fprintf(c.Prompt, "A wgo:// link wants to open a terminal tab in this workspace:\n\n  %s\n\nOnly open it if you just clicked a wgo link. Open it? [y/N] ", p.Path)
 	line, err := bufio.NewReader(c.Stdin).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return false, err
+		return false, fmt.Errorf("could not read the answer to the confirmation (%v); nothing was opened", err)
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":

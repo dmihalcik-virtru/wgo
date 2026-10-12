@@ -460,10 +460,10 @@ func TestDashCobraWiring(t *testing.T) {
 func TestDashLaunchConfigDegrades(t *testing.T) {
 	var warn bytes.Buffer
 	good := config.DashConfig{Terminal: "command", TerminalCommand: []string{"wezterm", "start", "--cwd", "{workspace}"}, Resume: "claude", Editor: "/usr/local/bin/zed"}
-	if got := dashLaunchConfig(good, &warn); got.Terminal != "command" || got.Resume != "claude" || got.Editor != good.Editor || warn.Len() != 0 {
+	if got := dashLaunchConfig("wgo dash", good, &warn); got.Terminal != "command" || got.Resume != "claude" || got.Editor != good.Editor || warn.Len() != 0 {
 		t.Fatalf("good config: %+v %q", got, warn.String())
 	}
-	got := dashLaunchConfig(config.DashConfig{Terminal: "kitty", Resume: "bash -c evil", Editor: "zed"}, &warn)
+	got := dashLaunchConfig("wgo dash", config.DashConfig{Terminal: "kitty", Resume: "bash -c evil", Editor: "zed"}, &warn)
 	if got.Terminal != "" || got.TerminalCommand != nil || got.Resume != "" || got.Editor != "zed" {
 		t.Fatalf("degraded = %+v", got)
 	}
@@ -473,7 +473,7 @@ func TestDashLaunchConfigDegrades(t *testing.T) {
 		}
 	}
 	warn.Reset()
-	got = dashLaunchConfig(config.DashConfig{Terminal: "ghostty", TerminalCommand: []string{"wezterm", "--cwd={workspace}"}, Resume: "codex"}, &warn)
+	got = dashLaunchConfig("wgo dash", config.DashConfig{Terminal: "ghostty", TerminalCommand: []string{"wezterm", "--cwd={workspace}"}, Resume: "codex"}, &warn)
 	if got.Terminal != "" || got.TerminalCommand != nil || got.Resume != "codex" || !strings.Contains(warn.String(), "whole argument") {
 		t.Fatalf("partial = %+v %q", got, warn.String())
 	}

@@ -1234,11 +1234,17 @@ as hostile:
   itself after two minutes. Click **Open** only if you just clicked that
   link. If you click **Open**, wgo remembers that per workspace ID and path
   in `~/.wgo/url-handler-approvals.json`, and later links to that workspace
-  open without asking. **Cancel** and a timed-out dialog are not
-  remembered; the next link asks again. If the ID later resolves to another
-  path, wgo asks again. Without a dialog, for example over SSH, `wgo open`
-  asks y/N on a terminal and otherwise refuses. It never accepts on its
-  own.
+  open without asking. If the ID later resolves to another path, wgo asks
+  again. If the dialog cannot be shown (another OS, or no GUI session),
+  `wgo open` asks y/N when you run it in a terminal, and otherwise refuses.
+  It never accepts on its own.
+- **Declining pauses that workspace.** **Cancel**, Escape, a timed-out
+  dialog or a y/N "no" is not remembered as a refusal, but for the next 5
+  minutes links to that workspace are refused with a notification instead
+  of a dialog. A page that fires the same link again and again cannot wear
+  you down into clicking **Open**. Other workspaces are not affected, and
+  running `wgo open` yourself in a terminal skips the pause. Open it from
+  `wgo dash` meanwhile.
 - **No hidden formatting characters.** A workspace path containing control
   characters or invisible Unicode formatting characters (category Cf) is
   refused before any dialog.
@@ -1249,23 +1255,25 @@ as hostile:
 - **One link at a time.** `wgo open` takes a non-blocking lock,
   `~/.wgo/url-handler.lock`. While one `wgo open` is handling a link, for
   example while its dialog is up, another `wgo open` exits at once with
-  "another wgo:// link is already being handled". The applet itself handles
-  one link at a time, and macOS does not deliver links that arrive while it
-  is busy: in testing, of three links sent within a second, only the first
-  ran and the others were dropped without a dialog or notification. A page
-  cannot stack up dialogs this way.
+  "another wgo:// link is already being handled", so a page cannot stack up
+  dialogs. Separately, macOS itself may not deliver links that arrive
+  while the applet is busy: in one test, of three links sent within a
+  second, only the first ran and the others were dropped without a dialog
+  or notification. That is macOS behavior, not something wgo enforces.
 
 When `wgo open` fails, the applet shows why in a macOS notification, never
 a modal alert. A web page can trigger this without any click from you.
-Clicking **Cancel** is not a failure and shows nothing. The messages never
+Clicking **Cancel** is not a failure and shows nothing; a link refused
+during the pause after it does show a notification. The messages never
 include any part of the URL, so a page cannot put its own words in a wgo
 notification.
 
-The applet discards everything `wgo open` prints, including warnings from a
-link that did open (say, approvals that could not be saved, or a `[dash]`
+When a link opens, the applet discards everything `wgo open` printed,
+including warnings (say, approvals that could not be saved, or a `[dash]`
 setting that was ignored). So `wgo open` also appends what each link did,
-with a timestamp, to `~/.wgo/url-handler.log`. It records the workspace ID,
-never the URL. Past 256 KiB the log starts over, keeping the previous one
+with a timestamp, to `~/.wgo/url-handler.log`. It records the workspace ID
+and what happened, including local paths in error and fallback messages,
+but never any part of the URL. Past 256 KiB the log starts over, keeping the previous one
 as `url-handler.log.1`. To see why links misbehave:
 
 ```
@@ -1304,8 +1312,9 @@ wgo setup url-handler --uninstall
 This unregisters the applet from LaunchServices and deletes it. It first
 checks that the applet's `Info.plist` carries the marker and bundle ID that
 setup wrote. It refuses to touch anything else at that path, including a
-symlink. The approvals file stays behind; delete
-`~/.wgo/url-handler-approvals.json` to forget your answers.
+symlink. Your approvals, the log and the lock stay behind in `~/.wgo/`
+(`url-handler-approvals.json`, `url-handler.log*`, `url-handler.lock`);
+delete them to forget your answers.
 
 ---
 

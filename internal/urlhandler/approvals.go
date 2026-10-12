@@ -13,7 +13,7 @@ import (
 )
 
 // ApprovalsFile is the file under ~/.wgo that records which workspaces the
-// user has allowed wgo:// links to open.
+// user has allowed wgo:// links to open, and which they recently declined.
 const ApprovalsFile = "url-handler-approvals.json"
 
 // approvalsVersion is the schema version of the approvals file.
@@ -28,13 +28,32 @@ type Approval struct {
 	ApprovedAt  time.Time `json:"approved_at"`
 }
 
+// Decline is a workspace whose confirmation the user declined (Cancel,
+// Escape, no, or a dialog left to time out). Links to it are refused
+// without asking until DeclineCooldown has passed.
+type Decline struct {
+	WorkspaceID string    `json:"workspace_id"`
+	DeclinedAt  time.Time `json:"declined_at"`
+}
+
+// DeclineCooldown is how long after a decline links to that workspace are
+// refused without a dialog, so a page that fires the same link again and
+// again cannot wear the user down into clicking Open.
+const DeclineCooldown = 5 * time.Minute
+
 type approvalsDoc struct {
 	Version   int        `json:"version"`
 	Approvals []Approval `json:"approvals"`
+	Declines  []Decline  `json:"declines,omitempty"`
 }
 
-// Approvals is the store of confirmed workspaces, a small JSON file written
-// atomically.
+var (
+	errCorruptApprovals = errors.New("not valid JSON")
+	errNewerApprovals   = errors.New("was written by a newer wgo")
+)
+
+// Approvals is the store of confirmed and recently declined workspaces, a
+// small JSON file written atomically.
 type Approvals struct {
 	path string
 }
@@ -58,12 +77,21 @@ func (a *Approvals) load() (approvalsDoc, error) {
 		return doc, err
 	}
 	if err := json.Unmarshal(b, &doc); err != nil {
-		return doc, fmt.Errorf("%s is not valid JSON: %w", a.path, err)
+		return approvalsDoc{}, fmt.Errorf("%s is %w: %w", a.path, errCorruptApprovals, err)
 	}
 	if doc.Version > approvalsVersion {
-		return doc, fmt.Errorf("%s was written by a newer wgo (version %d)", a.path, doc.Version)
+		return approvalsDoc{}, fmt.Errorf("%s %w (version %d)", a.path, errNewerApprovals, doc.Version)
 	}
 	return doc, nil
+}
+
+func (a *Approvals) save(doc approvalsDoc) error {
+	doc.Version = approvalsVersion
+	b, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(a.path, append(b, '\n'), 0o600)
 }
 
 // Approved reports whether id was confirmed at exactly path. An unreadable
@@ -82,21 +110,21 @@ func (a *Approvals) Approved(id, path string) (bool, error) {
 }
 
 // Approve records id as confirmed at path, replacing any earlier path for
-// it. An unreadable or corrupt file is replaced rather than blocking the
-// approval the user just gave, and warnf (when set) is told the earlier
-// approvals were lost; a file from a newer wgo is left alone.
+// it and clearing any decline. A corrupt file is replaced rather than
+// blocking the approval the user just gave, and warnf (when set) is told
+// the earlier approvals were lost. A file that cannot be read, or that a
+// newer wgo wrote, is left alone and the error returned.
 func (a *Approvals) Approve(id, path string, now time.Time, warnf func(format string, args ...any)) error {
 	doc, err := a.load()
-	if err != nil {
-		if doc.Version > approvalsVersion {
-			return err
-		}
+	switch {
+	case errors.Is(err, errCorruptApprovals):
 		if warnf != nil {
-			warnf("replacing unreadable %s; earlier wgo:// approvals were lost and those workspaces will ask again (%v)", a.path, err)
+			warnf("replacing corrupt %s; earlier wgo:// approvals were lost and those workspaces will ask again (%v)", a.path, err)
 		}
 		doc = approvalsDoc{}
+	case err != nil:
+		return err
 	}
-	doc.Version = approvalsVersion
 	kept := doc.Approvals[:0]
 	for _, ap := range doc.Approvals {
 		if ap.WorkspaceID != id {
@@ -104,11 +132,58 @@ func (a *Approvals) Approve(id, path string, now time.Time, warnf func(format st
 		}
 	}
 	doc.Approvals = append(kept, Approval{WorkspaceID: id, Path: path, ApprovedAt: now.UTC()})
-	b, err := json.MarshalIndent(doc, "", "  ")
+	doc.Declines = recentDeclines(doc.Declines, now, id)
+	return a.save(doc)
+}
+
+// Decline records that the user declined id at now, starting its
+// DeclineCooldown. Declines that have already cooled down are dropped. An
+// unreadable, corrupt or newer file is left alone and the error returned:
+// a decline is not worth losing approvals over.
+func (a *Approvals) Decline(id string, now time.Time) error {
+	doc, err := a.load()
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(a.path, append(b, '\n'), 0o600)
+	doc.Declines = append(recentDeclines(doc.Declines, now, id), Decline{WorkspaceID: id, DeclinedAt: now.UTC()})
+	return a.save(doc)
+}
+
+// CoolingDown reports whether id was declined less than DeclineCooldown
+// before now, and if so when links to it will ask again. An unreadable
+// file is an error, which callers treat as not cooling down: the dialog
+// still defaults to Cancel.
+func (a *Approvals) CoolingDown(id string, now time.Time) (until time.Time, ok bool, err error) {
+	doc, err := a.load()
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	for _, d := range doc.Declines {
+		if d.WorkspaceID == id && coolingDown(d, now) && d.DeclinedAt.Add(DeclineCooldown).After(until) {
+			until, ok = d.DeclinedAt.Add(DeclineCooldown), true
+		}
+	}
+	return until, ok, nil
+}
+
+// coolingDown reports whether d is still in its cooldown at now. A decline
+// stamped in the future (the clock went back) is ignored rather than
+// trusted to block links for longer than DeclineCooldown.
+func coolingDown(d Decline, now time.Time) bool {
+	age := now.Sub(d.DeclinedAt)
+	return age >= 0 && age < DeclineCooldown
+}
+
+// recentDeclines returns the declines still cooling down at now, except
+// any for id.
+func recentDeclines(ds []Decline, now time.Time, id string) []Decline {
+	var kept []Decline
+	for _, d := range ds {
+		if d.WorkspaceID != id && coolingDown(d, now) {
+			kept = append(kept, d)
+		}
+	}
+	return kept
 }
 
 // LockFile is the single-instance lock `wgo open` takes under ~/.wgo.

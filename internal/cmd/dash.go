@@ -154,7 +154,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		}
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		lcfg := dashLaunchConfig(cfg.Dash, os.Stderr)
+		lcfg := dashLaunchConfig("wgo dash", cfg.Dash, os.Stderr)
 		logf := prefixLogf(os.Stderr)
 		readOnly := jj.NewCLI().ReadOnly()
 		return serveDash(ctx, out, ln, dashServer{
@@ -262,7 +262,7 @@ func dashInterval(dc config.DashConfig) time.Duration {
 // dashLaunchConfig turns [dash] into a launcher config. An invalid setting
 // is reported on errOut and dropped, so the dashboard still starts with the
 // default launchers rather than failing.
-func dashLaunchConfig(dc config.DashConfig, errOut io.Writer) launch.Config {
+func dashLaunchConfig(who string, dc config.DashConfig, errOut io.Writer) launch.Config {
 	lc := launch.Config{
 		Terminal:        dc.Terminal,
 		TerminalCommand: dc.TerminalCommand,
@@ -272,11 +272,11 @@ func dashLaunchConfig(dc config.DashConfig, errOut io.Writer) launch.Config {
 	// Check each group on its own so the warning names only its problem. A
 	// dropped resume hides Resume; a dropped terminal means Ghostty.
 	if err := (launch.Config{Resume: lc.Resume}).Validate(); err != nil {
-		fmt.Fprintf(errOut, "wgo dash: ignoring [dash] resume in ~/.wgo/config.toml: %v\n", err)
+		fmt.Fprintf(errOut, "%s: ignoring [dash] resume in ~/.wgo/config.toml: %v\n", who, err)
 		lc.Resume = ""
 	}
 	if err := (launch.Config{Terminal: lc.Terminal, TerminalCommand: lc.TerminalCommand}).Validate(); err != nil {
-		fmt.Fprintf(errOut, "wgo dash: ignoring [dash] terminal and terminal_command in ~/.wgo/config.toml: %v\n", err)
+		fmt.Fprintf(errOut, "%s: ignoring [dash] terminal and terminal_command in ~/.wgo/config.toml: %v\n", who, err)
 		lc.Terminal, lc.TerminalCommand = "", nil
 	}
 	return lc

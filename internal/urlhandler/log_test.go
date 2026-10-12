@@ -71,3 +71,25 @@ func TestLogUnwritableDiscards(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestLogFailedRotationKeepsLogging: when the old log cannot be moved
+// aside (here url-handler.log.1 is a non-empty directory), the log keeps
+// appending rather than going silent.
+func TestLogFailedRotationKeepsLogging(t *testing.T) {
+	path := LogPath(t.TempDir())
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", MaxLogSize+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(path+".1", "keep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l, err := OpenLog(path, nil)
+	if err == nil || !l.Writing() {
+		t.Fatalf("OpenLog = writing %v, %v; want a working log and the rotation error", l.Writing(), err)
+	}
+	l.Printf("still here")
+	l.Close()
+	if b, _ := os.ReadFile(path); !strings.HasSuffix(string(b), " still here\n") {
+		t.Fatal("the log stopped after a failed rotation")
+	}
+}

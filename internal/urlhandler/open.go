@@ -15,12 +15,23 @@ import (
 // ErrDeclined is returned when the user declines the confirmation.
 var ErrDeclined = errors.New("not opened: the link was declined")
 
+// CoolingDownError is returned for a link to a workspace the user declined
+// less than DeclineCooldown ago: wgo refuses it without a dialog.
+type CoolingDownError struct {
+	Until time.Time
+}
+
+func (e *CoolingDownError) Error() string {
+	return fmt.Sprintf("not opened: you declined a link to this workspace recently, so links to it are refused without asking until %s (so a page cannot keep asking). Open it from wgo dash, or run wgo open in a terminal", e.Until.Local().Format("15:04"))
+}
+
 // ErrBusy is returned when another wgo open holds the lock; the link is
 // dropped rather than queued behind that wgo open's dialog.
 var ErrBusy = errors.New("another wgo:// link is already being handled; this one was dropped")
 
-// OpenOptions are what Open needs. Lock, Now and Warnf are optional (no
-// Lock means no locking); with no Roots every workspace fails containment.
+// OpenOptions are what Open needs. Lock, Now, Warnf and Interactive are
+// optional (no Lock means no locking); with no Roots every workspace fails
+// containment.
 type OpenOptions struct {
 	// Resolver resolves workspace IDs through current discovery.
 	Resolver dash.Resolver
@@ -39,6 +50,9 @@ type OpenOptions struct {
 	Now func() time.Time
 	// Warnf reports problems that do not stop the open; nil drops them.
 	Warnf func(format string, args ...any)
+	// Interactive is true when a person ran wgo open in a terminal: the
+	// decline cooldown, which stops a page from re-asking, does not apply.
+	Interactive bool
 }
 
 // Open handles one wgo:// URL: it accepts only the canonical
@@ -46,6 +60,10 @@ type OpenOptions struct {
 // same containment check the dashboard uses, confirms the first open of
 // that workspace at that path, and opens a terminal tab there. It never
 // resumes an agent and never runs anything taken from the URL.
+//
+// A declined confirmation starts a DeclineCooldown for that workspace,
+// during which links to it (other than Interactive runs) are refused with a
+// *CoolingDownError instead of asking again.
 //
 // Error messages never quote the URL, not even the validated ID: the
 // applet shows them in a notification credited to wgo.
@@ -77,7 +95,13 @@ func Open(ctx context.Context, raw string, o OpenOptions) (launch.Result, error)
 	}
 	_, dir, err := dash.ResolveWorkspace(o.Resolver, id, o.Roots)
 	var nc *dash.NotContainedError
+	var di *dash.DiscoveryIncompleteError
 	switch {
+	case errors.As(err, &di):
+		// Discovery's own problems (say, jj could not list a repo's
+		// workspaces with the PATH the applet was installed with) are the
+		// likelier cause than a deleted workspace, so say them.
+		return launch.Result{}, fmt.Errorf("unknown workspace: wgo does not discover it now, but discovery reported problems that may be why: %s. Nothing was opened; if jj moved, run: wgo setup url-handler", strings.Join(di.Diagnostics, "; "))
 	case errors.Is(err, dash.ErrUnknownWorkspace), errors.Is(err, dash.ErrStaleWorkspace):
 		return launch.Result{}, errors.New("unknown workspace: wgo does not discover it now (deleted, moved, or outside [discovery] base_dirs); nothing was opened. List current IDs with: wgo dash --json")
 	case errors.As(err, &nc):
@@ -93,11 +117,23 @@ func Open(ctx context.Context, raw string, o OpenOptions) (launch.Result, error)
 		warnf("could not read %s, so confirming again: %v", o.Approvals.Path(), err)
 	}
 	if !ok {
+		if !o.Interactive {
+			until, cooling, err := o.Approvals.CoolingDown(id, now())
+			if err != nil {
+				warnf("could not read %s, so not applying the decline cooldown: %v", o.Approvals.Path(), err)
+			}
+			if cooling {
+				return launch.Result{}, &CoolingDownError{Until: until}
+			}
+		}
 		yes, err := o.Confirmer.Confirm(ctx, Prompt{WorkspaceID: id, Path: dir})
 		if err != nil {
 			return launch.Result{}, err
 		}
 		if !yes {
+			if err := o.Approvals.Decline(id, now()); err != nil {
+				warnf("could not record the decline in %s, so the next link will ask again: %v", o.Approvals.Path(), err)
+			}
 			return launch.Result{}, ErrDeclined
 		}
 		if err := o.Approvals.Approve(id, dir, now(), warnf); err != nil {

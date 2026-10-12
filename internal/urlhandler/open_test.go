@@ -59,6 +59,8 @@ type openFixture struct {
 	approvals         *Approvals
 	lock              func() (func(), error)
 	warnf             func(string, ...any)
+	now               time.Time
+	interactive       bool
 }
 
 func mkWorkspace(t *testing.T, dir string) string {
@@ -89,19 +91,21 @@ func newOpenFixture(t *testing.T) *openFixture {
 	f.launcher = &fakeLauncher{}
 	f.confirmer = &fakeConfirmer{answer: true}
 	f.approvals = NewApprovals(filepath.Join(base, "home", ".wgo", ApprovalsFile))
+	f.now = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	return f
 }
 
 func (f *openFixture) open(raw string) (launch.Result, error) {
 	return Open(context.Background(), raw, OpenOptions{
-		Resolver:  f.resolver,
-		Roots:     []string{f.root},
-		Launcher:  f.launcher,
-		Confirmer: f.confirmer,
-		Approvals: f.approvals,
-		Lock:      f.lock,
-		Warnf:     f.warnf,
-		Now:       func() time.Time { return time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC) },
+		Resolver:    f.resolver,
+		Roots:       []string{f.root},
+		Launcher:    f.launcher,
+		Confirmer:   f.confirmer,
+		Approvals:   f.approvals,
+		Lock:        f.lock,
+		Warnf:       f.warnf,
+		Now:         func() time.Time { return f.now },
+		Interactive: f.interactive,
 	})
 }
 
@@ -170,8 +174,8 @@ func TestOpenDeclineLaunchesNothingAndStoresNothing(t *testing.T) {
 	if len(f.launcher.acts) != 0 {
 		t.Fatal("a declined link must not launch")
 	}
-	if _, err := os.Stat(f.approvals.Path()); !os.IsNotExist(err) {
-		t.Fatalf("approvals file exists after a decline (err %v)", err)
+	if ok, err := f.approvals.Approved(f.wsID, f.ws); ok || err != nil {
+		t.Fatalf("Approved after a decline = %v, %v; want false", ok, err)
 	}
 }
 
@@ -235,6 +239,7 @@ func TestOpenPathChangeConfirmsAgain(t *testing.T) {
 	if len(f.launcher.acts) != 1 {
 		t.Fatalf("launches = %d, want only the first", len(f.launcher.acts))
 	}
+	f.now = f.now.Add(DeclineCooldown)
 	f.confirmer.answer = true
 	if _, err := f.open(OpenURL(f.wsID)); err != nil {
 		t.Fatal(err)
@@ -302,6 +307,28 @@ func TestSystemConfirmer(t *testing.T) {
 		ok, err := SystemConfirmer{GOOS: "darwin", Run: r}.Confirm(ctx, p)
 		if ok || err != nil {
 			t.Fatalf("= %v, %v; want a plain decline", ok, err)
+		}
+	})
+	t.Run("other error ending in -128 digits is not a cancel", func(t *testing.T) {
+		r := &fakeRunner{err: map[string]error{"osascript": errors.New("execution error: something else. (-1280)")}}
+		ok, err := SystemConfirmer{GOOS: "darwin", Run: r}.Confirm(ctx, p)
+		if ok || err == nil {
+			t.Fatalf("= %v, %v; want an error, not a decline", ok, err)
+		}
+	})
+	t.Run("unexpected dialog output is an error", func(t *testing.T) {
+		r := &fakeRunner{out: map[string]string{"osascript": "\n"}}
+		ok, err := SystemConfirmer{GOOS: "darwin", Run: r}.Confirm(ctx, p)
+		if ok || err == nil {
+			t.Fatalf("= %v, %v; want an error, not a decline", ok, err)
+		}
+	})
+	t.Run("dialog failure falls back to y/N and says why", func(t *testing.T) {
+		r := &fakeRunner{err: map[string]error{"osascript": errors.New("Not authorized. (-1743)")}}
+		var prompt strings.Builder
+		ok, err := SystemConfirmer{GOOS: "darwin", Run: r, Stdin: strings.NewReader("y\n"), TTY: true, Prompt: &prompt}.Confirm(ctx, p)
+		if !ok || err != nil || !strings.Contains(prompt.String(), "-1743") {
+			t.Fatalf("= %v, %v; prompt %q", ok, err, prompt.String())
 		}
 	})
 	t.Run("dialog gave up", func(t *testing.T) {
@@ -431,7 +458,13 @@ type blockingConfirmer struct {
 func (b *blockingConfirmer) Confirm(context.Context, Prompt) (bool, error) {
 	b.mu.Lock()
 	b.calls++
+	n := b.calls
 	b.mu.Unlock()
+	if n > 1 {
+		// A second dialog means locking failed; fail fast rather than
+		// panicking on a closed channel or blocking until the timeout.
+		return false, errors.New("a second confirmation ran while the first held the lock")
+	}
 	close(b.entered)
 	<-b.release
 	return true, nil

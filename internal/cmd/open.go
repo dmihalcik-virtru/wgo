@@ -44,12 +44,17 @@ terminal, and otherwise refuses. Accepted workspaces are remembered in
 ~/.wgo/url-handler-approvals.json. A path with control or invisible
 formatting characters is refused rather than shown.
 
-Only one wgo open runs at a time: while one is handling a link (say, its
-dialog is up), another exits at once and drops its link.
+Only one wgo open handles a link at a time: while one is (say, its dialog
+is up), another exits at once and drops its link.
+
+Declining (Cancel, Escape, no, or leaving the dialog to time out) also
+refuses further links to that workspace without asking for 5 minutes, so a
+page cannot keep re-asking until you click Open. Running wgo open yourself
+in a terminal is not affected.
 
 Each link's outcome and any warnings are also appended to
-~/.wgo/url-handler.log (the workspace ID, never the URL), since the URL
-handler discards what wgo open prints.
+~/.wgo/url-handler.log (the workspace ID and local paths, never the URL),
+since the URL handler discards what wgo open prints when a link opens.
 
 The tab opens with the same launcher as wgo dash's Open tab ([dash]
 terminal settings); when no terminal can be opened it prints a cd command
@@ -79,7 +84,10 @@ func runOpen(ctx context.Context, raw string, out, errOut io.Writer) error {
 	// reports also goes to the log.
 	lg, lerr := urlhandler.OpenLog(urlhandler.LogPath(st.BaseDir()), nil)
 	defer lg.Close()
-	if lerr != nil {
+	switch {
+	case lerr != nil && lg.Writing():
+		fmt.Fprintf(io.MultiWriter(errOut, lg), "wgo open: %v\n", lerr)
+	case lerr != nil:
 		fmt.Fprintf(errOut, "wgo open: %v; continuing without a log\n", lerr)
 	}
 	err = runOpenLogged(ctx, raw, st, lg, io.MultiWriter(out, lg), io.MultiWriter(errOut, lg), errOut)
@@ -108,9 +116,13 @@ func runOpenLogged(ctx context.Context, raw string, st *store.FileStore, lg *url
 		JJ:       jj.NewCLI(),
 		Discover: discovery.FromConfig(cfg).DiscoverAll,
 	})
+	// The applet's stdin is /dev/null, never a terminal; a terminal means a
+	// person ran wgo open, which skips the decline cooldown.
+	tty := urlhandler.IsTerminal(os.Stdin)
 	logf := func(format string, args ...any) { fmt.Fprintf(warn, "wgo open: "+format+"\n", args...) }
-	lcfg := dashLaunchConfig(cfg.Dash, warn)
-	lcfg.Resume = "" // a link never resumes an agent
+	dc := cfg.Dash
+	dc.Resume = "" // a link never resumes an agent, so its setting is not checked
+	lcfg := dashLaunchConfig("wgo open", dc, warn)
 	return openWith(ctx, raw, out, urlhandler.OpenOptions{
 		Resolver: collector,
 		Roots:    cfg.Discovery.BaseDirs,
@@ -119,14 +131,15 @@ func runOpenLogged(ctx context.Context, raw string, st *store.FileStore, lg *url
 			GOOS:   runtime.GOOS,
 			Run:    urlhandler.ExecRunner{},
 			Stdin:  os.Stdin,
-			TTY:    stdinIsTerminal(),
+			TTY:    tty,
 			Prompt: prompt,
 		},
 		Approvals: urlhandler.NewApprovals(urlhandler.ApprovalsPath(st.BaseDir())),
 		Lock: func() (func(), error) {
 			return urlhandler.TryLock(urlhandler.LockPath(st.BaseDir()))
 		},
-		Warnf: logf,
+		Warnf:       logf,
+		Interactive: tty,
 	})
 }
 
@@ -149,10 +162,4 @@ func openWith(ctx context.Context, raw string, out io.Writer, o urlhandler.OpenO
 		fmt.Fprintln(out, "wgo open: tried first: "+strings.Join(res.Fallbacks, "; "))
 	}
 	return nil
-}
-
-// stdinIsTerminal reports whether stdin is an interactive terminal.
-func stdinIsTerminal() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }

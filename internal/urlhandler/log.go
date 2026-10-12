@@ -2,7 +2,9 @@ package urlhandler
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +23,7 @@ const MaxLogSize = 256 << 10
 // do shell script, which throws stderr away when wgo succeeds, so this file
 // is the only place a warning from a link that did open can be read later.
 // Writes never fail: a link must not stop because its log cannot be written.
+// A Log is not safe for concurrent use.
 type Log struct {
 	f   *os.File
 	now func() time.Time
@@ -28,8 +31,9 @@ type Log struct {
 }
 
 // OpenLog opens the log at path for appending, creating its directory and
-// rotating it once it passes MaxLogSize. On error it returns a Log that
-// discards everything, with the error to report.
+// rotating it once it passes MaxLogSize. A failed rotation keeps appending
+// to path and returns the error with a working Log, so the caller can
+// record it there; any other error returns a Log that discards everything.
 func OpenLog(path string, now func() time.Time) (*Log, error) {
 	if now == nil {
 		now = time.Now
@@ -38,9 +42,11 @@ func OpenLog(path string, now func() time.Time) (*Log, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return l, fmt.Errorf("could not create %s: %w", filepath.Dir(path), err)
 	}
+	var rotErr error
 	if fi, err := os.Stat(path); err == nil && fi.Size() > MaxLogSize {
-		if err := os.Rename(path, path+".1"); err != nil {
-			return l, fmt.Errorf("could not rotate %s: %w", path, err)
+		// ErrNotExist means another wgo open rotated it first.
+		if err := os.Rename(path, path+".1"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			rotErr = fmt.Errorf("could not rotate %s, so it keeps growing: %w", path, err)
 		}
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
@@ -48,8 +54,11 @@ func OpenLog(path string, now func() time.Time) (*Log, error) {
 		return l, fmt.Errorf("could not open %s: %w", path, err)
 	}
 	l.f = f
-	return l, nil
+	return l, rotErr
 }
+
+// Writing reports whether the log is writing to its file.
+func (l *Log) Writing() bool { return l.f != nil }
 
 // Write implements io.Writer: each complete line is written with a
 // timestamp, and control characters are replaced so a message cannot
