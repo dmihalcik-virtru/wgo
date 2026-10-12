@@ -81,8 +81,10 @@ func runStatusline(w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// Best-effort: config supplies the Jira site for ticket links. A failure
-	// just yields a non-linked ticket, so ignore the error.
+	// Best-effort: config supplies the Jira site for ticket links. On a
+	// failure Init leaves the built-in defaults in place, which just yields a
+	// non-linked ticket, so ignore the error: the statusline has nowhere to
+	// show it, and every other command reports it.
 	_ = config.Init()
 
 	ctx, err := buildContextOpts(cwd, contextOptions{

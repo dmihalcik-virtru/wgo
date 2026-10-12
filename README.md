@@ -519,7 +519,8 @@ icons = false
 tilde_home = true
 ```
 
-Edit this file to customize discovery behavior.
+Edit this file to customize discovery behavior. The optional `[dash]`
+section configures [`wgo dash`](#dashboard-configuration).
 
 The `[worktree]` and `[rig]` paths encode wgo's layout contract:
 
@@ -1019,6 +1020,40 @@ The HTML is a single self-contained file with no network requests, so it can
 be shared as-is. Without `--out` it is written to
 `~/.wgo/reviews/<label>.graph.html`.
 
+## Live Dashboard with `wgo dash`
+
+`wgo dash` shows all your ongoing work in one live page: efforts,
+workspaces, bookmarks and their PRs, tickets and agent sessions, with how
+fresh each source is and what changed since you last looked.
+
+```
+wgo dash                 # serve http://127.0.0.1:8766 and open it
+wgo dash --no-open       # serve without opening a browser
+wgo dash --port 8800     # another loopback port
+wgo dash --json          # print one snapshot as JSON and exit
+```
+
+The server listens on the loopback address only. Every 30 seconds by
+default (`[dash] refresh_seconds`) it re-collects local jj state, reading
+with `--ignore-working-copy` so it never snapshots a workspace. It also
+refreshes stale PR, Jira and GitHub issue data. Year-in-review runs are
+served under `/review/`. Stop the server with Ctrl-C.
+
+### Dashboard configuration
+
+All `[dash]` keys in `~/.wgo/config.toml` are optional:
+
+```toml
+[dash]
+port = 8766                # loopback port; --port wins
+days = 14                  # activity window; --days wins
+refresh_seconds = 30       # background re-collection interval (5 to 3600)
+```
+
+An out-of-range value stops `wgo dash` with an error naming the setting;
+values are never silently adjusted. `--json` ignores `port` and
+`refresh_seconds`, since it prints one snapshot without serving.
+
 ---
 
 ## Commands Reference
@@ -1046,6 +1081,8 @@ be shared as-is. Without `--out` it is written to
 | `wgo status --filter dirty` | Show only repos with uncommitted changes |
 | `wgo status --filter stale` | Show only repos with no recent activity |
 | `wgo status --sort activity` | Sort repos by last commit time |
+| `wgo dash` | Live web dashboard of all ongoing work ([details](#live-dashboard-with-wgo-dash)) |
+| `wgo dash --json` | One dashboard snapshot as JSON |
 | `wgo today` | Morning review: commits, PRs, branches, tasks |
 | `wgo today --yesterday` | Review the previous day |
 | `wgo pr` | PRs needing attention across all repos |

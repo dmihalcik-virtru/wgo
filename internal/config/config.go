@@ -2,12 +2,19 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
@@ -24,6 +31,22 @@ type Config struct {
 	Cache     CacheConfig     `mapstructure:"cache"`
 	Sync      SyncConfig      `mapstructure:"sync"`
 	Rig       RigConfig       `mapstructure:"rig"`
+	Dash      DashConfig      `mapstructure:"dash"`
+}
+
+// DashConfig controls `wgo dash`, the local live dashboard. Zero values mean
+// the built-in default; --port and --days override port and days. wgo dash
+// rejects out-of-range values rather than adjusting them.
+type DashConfig struct {
+	// Port is the loopback port to serve on (cmd.DefaultDashPort when zero).
+	Port int `mapstructure:"port"`
+	// RefreshSeconds is the background re-collection interval, between
+	// dash.MinRefreshInterval and dash.MaxRefreshInterval
+	// (dash.DefaultRefreshInterval when zero).
+	RefreshSeconds int `mapstructure:"refresh_seconds"`
+	// Days is the activity window of the small multiples, 1 to 366
+	// (dash.DefaultDays when zero).
+	Days int `mapstructure:"days"`
 }
 
 // RigConfig controls `wgo rig`, which materialises one pinned checkout per
@@ -211,9 +234,21 @@ type UIConfig struct {
 var (
 	configFile string
 	cfg        *Config
+
+	// warnOut receives warnings about the config file, such as unknown keys.
+	warnOut io.Writer = os.Stderr
+	// warned holds the warnings already printed, so a command that calls
+	// Init more than once warns only once.
+	warned = map[string]bool{}
 )
 
-// Init initializes the configuration.
+// Init initializes the configuration. Each call reads ~/.wgo/config.toml
+// afresh, creating it from the default template when it is missing.
+//
+// A file that fails to parse or decode is an error naming the file and the
+// offending keys. Get then returns the built-in defaults, never a partly
+// decoded config, so callers that treat config as best-effort stay coherent.
+// Unknown keys are not an error: each is reported once on stderr and ignored.
 func Init() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -228,69 +263,178 @@ func Init() error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	// Set defaults
-	setDefaults()
-
-	// Read config if it exists
-	if _, err := os.Stat(configFile); err == nil {
-		viper.SetConfigFile(configFile)
-		viper.SetConfigType("toml")
-
-		if err := viper.ReadInConfig(); err != nil {
-			return fmt.Errorf("failed to read config file: %w", err)
-		}
-	} else {
-		// Create default config file
+	// Create default config file
+	if _, err := os.Stat(configFile); errors.Is(err, fs.ErrNotExist) {
 		if err := createDefaultConfig(configFile); err != nil {
 			return fmt.Errorf("failed to create default config: %w", err)
 		}
 	}
 
-	cfg = &Config{}
-	if err := viper.Unmarshal(cfg); err != nil {
-		return fmt.Errorf("failed to unmarshal config: %w", err)
+	v := newViper()
+	v.SetConfigFile(configFile)
+	v.SetConfigType("toml")
+	if err := v.ReadInConfig(); err != nil {
+		cfg = defaultConfig()
+		return fmt.Errorf("failed to read %s: %w; fix the TOML syntax, or move the file aside to regenerate the default", configFile, err)
 	}
 
-	// Expand tilde in paths
-	cfg.Discovery.BaseDirs = expandPaths(cfg.Discovery.BaseDirs)
-	cfg.Worktree.MainsDir = expandPath(cfg.Worktree.MainsDir)
-	cfg.Worktree.WorktreesDir = expandPath(cfg.Worktree.WorktreesDir)
-	cfg.Rig.Dir = expandPath(cfg.Rig.Dir)
+	decoded, unused, err := decode(v)
+	if err != nil {
+		cfg = defaultConfig()
+		return fmt.Errorf("invalid %s: %s; fix the value, or remove the key to use its default", configFile, decodeErrorText(err))
+	}
+	cfg = decoded
+	for _, key := range unused {
+		if retired(key) {
+			continue
+		}
+		warnf("warning: %s: unknown key %q is ignored; check its spelling or remove it\n", configFile, key)
+	}
 
 	return nil
 }
 
+// retiredSections are sections older default templates wrote that wgo no
+// longer reads. Their keys are ignored without a warning: the user never
+// chose them, so warning on every command would only be noise.
+var retiredSections = []string{
+	"hooks", // passive git hooks, removed with the move to jj (#23)
+}
+
+// retired reports whether key lies in a retired section.
+func retired(key string) bool {
+	for _, s := range retiredSections {
+		if key == s || strings.HasPrefix(key, s+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// newViper returns a viper instance holding only the built-in defaults. A
+// fresh instance per Init keeps one read from leaking into the next.
+func newViper() *viper.Viper {
+	v := viper.New()
+	setDefaults(v)
+	return v
+}
+
+// defaultConfig is the config built from the defaults alone.
+func defaultConfig() *Config {
+	c, _, err := decode(newViper())
+	if err != nil {
+		// The defaults are fixed and always decode.
+		panic(fmt.Sprintf("config: built-in defaults do not decode: %v", err))
+	}
+	return c
+}
+
+// decode unmarshals v into a Config and returns any keys that match no
+// field. Decoding is strict: a value of the wrong type ("abc" for a number,
+// true for a number) or a fractional number for an integer setting is an
+// error rather than a silent conversion.
+func decode(v *viper.Viper) (*Config, []string, error) {
+	c := &Config{}
+	var md mapstructure.Metadata
+	err := v.Unmarshal(c, func(dc *mapstructure.DecoderConfig) {
+		dc.Metadata = &md
+		dc.WeaklyTypedInput = false
+		dc.DecodeHook = mapstructure.ComposeDecodeHookFunc(
+			wholeNumberHook,
+			// viper's own defaults, which a custom hook replaces.
+			mapstructure.StringToTimeDurationHookFunc(),
+			mapstructure.StringToSliceHookFunc(","),
+		)
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Expand tilde in paths
+	c.Discovery.BaseDirs = expandPaths(c.Discovery.BaseDirs)
+	c.Worktree.MainsDir = expandPath(c.Worktree.MainsDir)
+	c.Worktree.WorktreesDir = expandPath(c.Worktree.WorktreesDir)
+	c.Rig.Dir = expandPath(c.Rig.Dir)
+
+	sort.Strings(md.Unused)
+	return c, md.Unused, nil
+}
+
+// wholeNumberHook rejects a fractional number for an integer setting, which
+// mapstructure would otherwise truncate (port = 9000.7 becoming 9000).
+func wholeNumberHook(from, to reflect.Type, data any) (any, error) {
+	if from.Kind() != reflect.Float32 && from.Kind() != reflect.Float64 {
+		return data, nil
+	}
+	switch to.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+	default:
+		return data, nil
+	}
+	f := reflect.ValueOf(data).Float()
+	if f != math.Trunc(f) {
+		return nil, fmt.Errorf("expected a whole number, got %v", f)
+	}
+	return data, nil
+}
+
+// decodeErrorText flattens mapstructure's multi-line error into one line,
+// dropping its "decoding failed due to the following error(s):" preamble.
+func decodeErrorText(err error) string {
+	var joined interface{ Unwrap() []error }
+	if !errors.As(err, &joined) {
+		return err.Error()
+	}
+	var parts []string
+	for _, e := range joined.Unwrap() {
+		parts = append(parts, e.Error())
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "; ")
+}
+
+// warnf prints a config warning once per process.
+func warnf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if warned[msg] {
+		return
+	}
+	warned[msg] = true
+	fmt.Fprint(warnOut, msg)
+}
+
 // setDefaults sets default configuration values.
-func setDefaults() {
+func setDefaults(v *viper.Viper) {
 	home, _ := os.UserHomeDir()
 
 	// Default author to jj user.email, falling back to user.name or env vars.
-	viper.SetDefault("author", defaultAuthor())
+	v.SetDefault("author", defaultAuthor())
 
-	viper.SetDefault("discovery.base_dirs", []string{filepath.Join(home, "Documents", "GitHub")})
-	viper.SetDefault("worktree.mains_dir", filepath.Join(home, "Documents", "GitHub", "mains"))
-	viper.SetDefault("worktree.worktrees_dir", filepath.Join(home, "Documents", "GitHub", "worktrees"))
-	viper.SetDefault("discovery.scan_depth", 4)
-	viper.SetDefault("discovery.exclude_patterns", []string{
+	v.SetDefault("discovery.base_dirs", []string{filepath.Join(home, "Documents", "GitHub")})
+	v.SetDefault("worktree.mains_dir", filepath.Join(home, "Documents", "GitHub", "mains"))
+	v.SetDefault("worktree.worktrees_dir", filepath.Join(home, "Documents", "GitHub", "worktrees"))
+	v.SetDefault("discovery.scan_depth", 4)
+	v.SetDefault("discovery.exclude_patterns", []string{
 		"node_modules", ".cache", "vendor", "dist",
 	})
-	viper.SetDefault("ui.icons", false)
-	viper.SetDefault("ui.tilde_home", true)
-	viper.SetDefault("status.default_sort", "activity")
-	viper.SetDefault("status.stale_days", 14)
-	viper.SetDefault("status.refresh_interval", 5)
-	viper.SetDefault("status.show_spec_column", true)
-	viper.SetDefault("doctor.exclude_bookmarks", []string{"main", "master", "develop", "release/*"})
-	viper.SetDefault("doctor.spec_required", false)
-	viper.SetDefault("cache.pr_ttl", 120)
-	viper.SetDefault("cache.jira_ttl", 600)
-	viper.SetDefault("sync.create_prs", false)
-	viper.SetDefault("sync.gh_stack", "auto")
-	viper.SetDefault("rig.dir", filepath.Join(home, "Documents", "GitHub", "rigs"))
-	viper.SetDefault("rig.org_prefixes", []string{})
-	viper.SetDefault("rig.sparse", true)
-	viper.SetDefault("rig.verify_on_new", true)
-	viper.SetDefault("rig.freeze", false)
+	v.SetDefault("ui.icons", false)
+	v.SetDefault("ui.tilde_home", true)
+	v.SetDefault("status.default_sort", "activity")
+	v.SetDefault("status.stale_days", 14)
+	v.SetDefault("status.refresh_interval", 5)
+	v.SetDefault("status.show_spec_column", true)
+	v.SetDefault("doctor.exclude_bookmarks", []string{"main", "master", "develop", "release/*"})
+	v.SetDefault("doctor.spec_required", false)
+	v.SetDefault("cache.pr_ttl", 120)
+	v.SetDefault("cache.jira_ttl", 600)
+	v.SetDefault("sync.create_prs", false)
+	v.SetDefault("sync.gh_stack", "auto")
+	v.SetDefault("rig.dir", filepath.Join(home, "Documents", "GitHub", "rigs"))
+	v.SetDefault("rig.org_prefixes", []string{})
+	v.SetDefault("rig.sparse", true)
+	v.SetDefault("rig.verify_on_new", true)
+	v.SetDefault("rig.freeze", false)
 }
 
 // createDefaultConfig creates a default config file.
@@ -377,6 +521,12 @@ create_prs = false
 #   "off"  - always use the wgo-stack marker
 #   "on"   - require native linking; error if "gh stack" is unavailable
 gh_stack = "auto"
+
+# [dash]
+# Settings for "wgo dash", the local live dashboard. All optional.
+# port = 8766                   # loopback port (--port overrides)
+# refresh_seconds = 30          # background re-collection interval (5 to 3600)
+# days = 14                     # activity window (--days overrides)
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)

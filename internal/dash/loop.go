@@ -9,6 +9,14 @@ import (
 // local state and refreshes remote caches.
 const DefaultRefreshInterval = 30 * time.Second
 
+// MinRefreshInterval and MaxRefreshInterval bound a configured refresh
+// interval: faster would hammer jj and the remote APIs, and slower is no
+// longer a live dashboard.
+const (
+	MinRefreshInterval = 5 * time.Second
+	MaxRefreshInterval = time.Hour
+)
+
 // Loop calls tick at once and then every interval until ctx is done. Ticks
 // never overlap: after one overruns the interval the next starts at once,
 // and any further missed ticks are dropped, not queued. It returns when ctx

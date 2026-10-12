@@ -43,7 +43,7 @@ func setDashFlags(t *testing.T, days int) {
 func runDashJSON(t *testing.T) dashJSONOut {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := runDash(context.Background(), &buf); err != nil {
+	if err := runDash(context.Background(), &buf, noDashFlags); err != nil {
 		t.Fatalf("runDash: %v\n%s", err, buf.String())
 	}
 	var out dashJSONOut
@@ -93,7 +93,7 @@ func TestDashJSONEndToEnd(t *testing.T) {
 func TestDashJSONRejectsZeroDays(t *testing.T) {
 	goldenHome(t, "")
 	setDashFlags(t, 0)
-	if err := runDash(context.Background(), &bytes.Buffer{}); err == nil {
+	if err := runDash(context.Background(), &bytes.Buffer{}, noDashFlags); err == nil {
 		t.Fatal("--days 0 must be an error")
 	}
 }
