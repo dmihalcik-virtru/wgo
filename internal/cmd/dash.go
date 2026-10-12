@@ -24,6 +24,7 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/issuecache"
 	"github.com/virtru/wgo/internal/jj"
+	"github.com/virtru/wgo/internal/launch"
 	"github.com/virtru/wgo/internal/review"
 	"github.com/virtru/wgo/internal/store"
 )
@@ -43,7 +44,7 @@ const DefaultDashPort = 8766
 var dashCmd = &cobra.Command{
 	Use:   "dash",
 	Short: "Live dashboard of all ongoing work: efforts, workspaces, PRs, tickets and agents",
-	Long: `Serve a read-only web dashboard of ongoing work across every discovered
+	Long: `Serve a web dashboard of ongoing work across every discovered
 workspace: efforts, workspaces, bookmarks and their PRs, tickets, and agent
 sessions, with per-source freshness and a "since last look" delta.
 
@@ -63,8 +64,17 @@ anything not cached is reported as unknown. Add --refresh to also try to
 fetch the missing or stale remote data before printing; lookups that fail
 are listed in the output's diagnostics and make the command exit non-zero.
 
-[dash] in ~/.wgo/config.toml sets port, days and refresh_seconds; --port
-and --days win over it.
+The page's buttons open a workspace in a new Ghostty tab (or the terminal
+configured in [dash]), resume an agent there, open it in an editor or
+Finder, open its .plan entry or spec, and mark the current state seen.
+They only work from the page wgo dash served: each run of wgo dash issues a
+secret token embedded in that page, and the server checks it, the exact Origin
+and Host, and re-resolves the workspace ID through discovery before
+launching anything. Requests never carry paths or commands. Nothing a
+launch does changes jj, the plan or agent state.
+
+[dash] in ~/.wgo/config.toml sets port, days, refresh_seconds, terminal,
+terminal_command, resume and editor; --port and --days win over it.
 
 The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.`,
 	Args: cobra.NoArgs,
@@ -144,6 +154,9 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		}
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		lcfg := dashLaunchConfig(cfg.Dash, os.Stderr)
+		logf := prefixLogf(os.Stderr)
+		readOnly := jj.NewCLI().ReadOnly()
 		return serveDash(ctx, out, ln, dashServer{
 			source:  d,
 			reviews: dash.NewReviewIndex(review.RunsDir(st.BaseDir())),
@@ -152,6 +165,18 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 			},
 			interval: dashInterval(cfg.Dash),
 			open:     !dashNoOpen,
+			ack:      d,
+			logf:     logf,
+			actions: &dash.ActionOptions{
+				Resolver: d,
+				Launcher: launch.NewSystem(lcfg, launch.ExecRunner{Logf: logf}),
+				Roots:    cfg.Discovery.BaseDirs,
+				PlanPath: st.PlanPath(),
+				Resume:   lcfg.Resume,
+				Bookmark: func(_ context.Context, root string) (string, error) {
+					return readOnly.NearestBookmark(root)
+				},
+			},
 		})
 	}
 	if dashRefresh {
@@ -234,6 +259,29 @@ func dashInterval(dc config.DashConfig) time.Duration {
 	return time.Duration(dc.RefreshSeconds) * time.Second
 }
 
+// dashLaunchConfig turns [dash] into a launcher config. An invalid setting
+// is reported on errOut and dropped, so the dashboard still starts with the
+// default launchers rather than failing.
+func dashLaunchConfig(dc config.DashConfig, errOut io.Writer) launch.Config {
+	lc := launch.Config{
+		Terminal:        dc.Terminal,
+		TerminalCommand: dc.TerminalCommand,
+		Resume:          dc.Resume,
+		Editor:          dc.Editor,
+	}
+	// Check each group on its own so the warning names only its problem. A
+	// dropped resume hides Resume; a dropped terminal means Ghostty.
+	if err := (launch.Config{Resume: lc.Resume}).Validate(); err != nil {
+		fmt.Fprintf(errOut, "wgo dash: ignoring [dash] resume in ~/.wgo/config.toml: %v\n", err)
+		lc.Resume = ""
+	}
+	if err := (launch.Config{Terminal: lc.Terminal, TerminalCommand: lc.TerminalCommand}).Validate(); err != nil {
+		fmt.Fprintf(errOut, "wgo dash: ignoring [dash] terminal and terminal_command in ~/.wgo/config.toml: %v\n", err)
+		lc.Terminal, lc.TerminalCommand = "", nil
+	}
+	return lc
+}
+
 // listenDash binds the loopback address only. A busy port is an error
 // naming --port; it never falls back to another port or address.
 func listenDash(port int) (net.Listener, error) {
@@ -283,29 +331,46 @@ type dashServer struct {
 	refresh  func(context.Context) error
 	interval time.Duration
 	open     bool
-	errOut   io.Writer // refresh and scan failures; nil means stderr
+	errOut   io.Writer           // refresh and scan failures; nil means stderr
+	actions  *dash.ActionOptions // nil disables /api/action
+	ack      dash.Acker          // nil disables /api/ack
+	// logf receives server and launcher faults; nil writes them to errOut.
+	logf func(format string, args ...any)
 }
 
-// serveDash serves the read-only dashboard on ln until ctx is done, running
+// prefixLogf logs "wgo dash: ..." lines to w.
+func prefixLogf(w io.Writer) func(format string, args ...any) {
+	return func(format string, args ...any) { fmt.Fprintf(w, "wgo dash: "+format+"\n", args...) }
+}
+
+// serveDash serves the dashboard on ln until ctx is done, running
 // the refresh loop beside it, then shuts both down. The HTTP handlers only
 // read what the loop last published.
 func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServer) error {
 	host := ln.Addr().String()
-	srv := &http.Server{
-		Handler: dash.NewHandler(dash.HandlerOptions{
-			Source:  ds.source,
-			Host:    host,
-			Reviews: ds.reviews,
-		}),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	served := make(chan error, 1)
-	go func() { served <- srv.Serve(ln) }()
-
 	errOut := ds.errOut
 	if errOut == nil {
 		errOut = os.Stderr
 	}
+	logf := ds.logf
+	if logf == nil {
+		logf = prefixLogf(errOut)
+	}
+	handler, err := dash.NewHandler(dash.HandlerOptions{
+		Source:  ds.source,
+		Host:    host,
+		Reviews: ds.reviews,
+		Actions: ds.actions,
+		Ack:     ds.ack,
+		Logf:    logf,
+	})
+	if err != nil {
+		ln.Close()
+		return err
+	}
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
 	loopCtx, stopLoop := context.WithCancel(ctx)
 	loopDone := make(chan struct{})
 	go func() {
@@ -355,14 +420,17 @@ func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServe
 	}()
 
 	url := "http://" + host + "/"
-	fmt.Fprintf(out, "wgo dash: serving %s (read-only). Press Ctrl-C to stop.\n", url)
+	mode := "read-only"
+	if ds.actions != nil {
+		mode = "actions enabled for this page only"
+	}
+	fmt.Fprintf(out, "wgo dash: serving %s (%s). Press Ctrl-C to stop.\n", url, mode)
 	if ds.open {
 		if err := openInBrowser(url); err != nil {
 			fmt.Fprintf(out, "wgo dash: could not open a browser (%v); open %s yourself.\n", err, url)
 		}
 	}
 
-	var err error
 	select {
 	case <-ctx.Done():
 	case err = <-served:

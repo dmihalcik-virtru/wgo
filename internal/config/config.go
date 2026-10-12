@@ -34,12 +34,27 @@ type Config struct {
 	Dash      DashConfig      `mapstructure:"dash"`
 }
 
-// DashConfig controls `wgo dash`, the local live dashboard. Zero values mean
-// the built-in default; --port and --days override port and days. wgo dash
-// rejects out-of-range values rather than adjusting them.
+// DashConfig controls `wgo dash`, the local live dashboard, and the
+// launchers its browser actions use. Zero values mean the built-in default;
+// --port and --days override port and days. wgo dash rejects an
+// out-of-range port, days or refresh_seconds rather than adjusting it.
 type DashConfig struct {
 	// Port is the loopback port to serve on (cmd.DefaultDashPort when zero).
 	Port int `mapstructure:"port"`
+	// Terminal picks the Open tab launcher: ghostty (default), iterm,
+	// terminal or command.
+	Terminal string `mapstructure:"terminal"`
+	// TerminalCommand is the argv for terminal = "command", and the fallback
+	// tried after Ghostty when set. An element that is exactly {workspace}
+	// is replaced by the workspace directory; no shell is involved.
+	TerminalCommand []string `mapstructure:"terminal_command"`
+	// Resume names the agent tool the Resume action starts in a new tab:
+	// "claude" (claude --continue) or "codex" (codex resume --last). Empty
+	// hides Resume.
+	Resume string `mapstructure:"resume"`
+	// Editor is an editor executable preferred over code and xed for the
+	// Editor, Plan and Spec actions.
+	Editor string `mapstructure:"editor"`
 	// RefreshSeconds is the background re-collection interval, between
 	// dash.MinRefreshInterval and dash.MaxRefreshInterval
 	// (dash.DefaultRefreshInterval when zero).
@@ -355,6 +370,7 @@ func decode(v *viper.Viper) (*Config, []string, error) {
 	c.Worktree.MainsDir = expandPath(c.Worktree.MainsDir)
 	c.Worktree.WorktreesDir = expandPath(c.Worktree.WorktreesDir)
 	c.Rig.Dir = expandPath(c.Rig.Dir)
+	c.Dash.Editor = expandPath(c.Dash.Editor)
 
 	sort.Strings(md.Unused)
 	return c, md.Unused, nil
@@ -525,6 +541,10 @@ gh_stack = "auto"
 # [dash]
 # Settings for "wgo dash", the local live dashboard. All optional.
 # port = 8766                   # loopback port (--port overrides)
+# terminal = "ghostty"          # Open tab: ghostty | iterm | terminal | command
+# terminal_command = ["wezterm", "start", "--cwd", "{workspace}"]  # for "command", or the fallback after Ghostty
+# resume = "claude"             # Resume action: "claude" or "codex"; empty hides it
+# editor = "zed"                # Editor/Plan/Spec: one executable, no arguments; tried before code, then xed
 # refresh_seconds = 30          # background re-collection interval (5 to 3600)
 # days = 14                     # activity window (--days overrides)
 
