@@ -408,3 +408,21 @@ func TestExecRunnerRunDoesNotWaitForForkedChild(t *testing.T) {
 		t.Fatalf("Run waited %v for a forked child", d)
 	}
 }
+
+func TestLaunchRefusesRelativeOrUncleanPaths(t *testing.T) {
+	ctx := context.Background()
+	for _, a := range []Action{
+		{Kind: KindTerminal, Dir: "-e"},
+		{Kind: KindTerminal, Dir: "relative/dir"},
+		{Kind: KindEditor, Dir: ""},
+		{Kind: KindReveal, Dir: "/w/../etc"},
+		{Kind: KindFile, Dir: "/w", File: "--goto"},
+		{Kind: KindFile, Dir: "/w", File: "/w/spec/"},
+	} {
+		f := &fakeRunner{}
+		r := newSystem(Config{Resume: "claude"}, f, "darwin").Launch(ctx, a)
+		if r.Launched || r.Method != MethodCopy || len(f.calls) != 0 {
+			t.Errorf("%+v: launched %+v, calls %v", a, r, f.calls)
+		}
+	}
+}

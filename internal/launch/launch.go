@@ -305,6 +305,16 @@ func newSystem(cfg Config, r Runner, goos string) *System {
 
 // Launch implements Launcher.
 func (s *System) Launch(ctx context.Context, a Action) Result {
+	p := a.Dir
+	if a.Kind == KindFile {
+		p = a.File
+	}
+	// Callers resolve and contain paths before this point; checking again
+	// here keeps a relative path, or one starting with "-", from ever
+	// reaching an argv where it could be read as a flag.
+	if !filepath.IsAbs(p) || filepath.Clean(p) != p {
+		return Result{Method: MethodCopy, Message: fmt.Sprintf("refusing to launch for %q: not a clean absolute path", p)}
+	}
 	switch a.Kind {
 	case KindTerminal:
 		return s.terminal(ctx, a.Dir, nil)
