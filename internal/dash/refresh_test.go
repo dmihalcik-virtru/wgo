@@ -403,6 +403,47 @@ func TestRefresherQueueLimits(t *testing.T) {
 	}
 }
 
+func TestRefresherCloseSkipsQueuedJobs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	g := &gatedPRs{release: make(chan struct{})}
+	r := NewRefresher(Fetchers{PR: g}, RefresherOptions{Workers: 1, IgnoreLeases: true})
+	done := r.Submit([]Job{prJob("a"), prJob("b"), prJob("c")})
+	waitCalls(t, &g.calls, 1)
+	closed := make(chan struct{})
+	go func() {
+		r.Close()
+		close(closed)
+	}()
+	for {
+		r.mu.Lock()
+		c := r.closed
+		r.mu.Unlock()
+		if c {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Close waits for the running fetch, but not for the queued ones.
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a fetch was still running")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(g.release)
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return")
+	}
+	if g.calls.Load() != 1 {
+		t.Fatalf("fetch calls = %d, want 1: queued jobs ran after Close", g.calls.Load())
+	}
+	res := <-done
+	if len(res.Failed) != 2 || !strings.Contains(res.Failed[0], "refresher was closed") {
+		t.Fatalf("result = %+v, want the two queued jobs failed as closed", res)
+	}
+}
+
 func TestBatchResultErrListsAFew(t *testing.T) {
 	res := BatchResult{Jobs: 5}
 	for i := range 5 {

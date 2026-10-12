@@ -1,7 +1,9 @@
 package dash
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/virtru/wgo/internal/discovery"
 )
 
 // largeDash publishes a snapshot with 100 workspaces and 300 PR, ticket and
@@ -50,8 +54,15 @@ func largeDash(t testing.TB) *Dash {
 // newServer starts src behind Handler bound to the server's own address.
 func newServer(t testing.TB, src ViewSource) *httptest.Server {
 	t.Helper()
+	return newServerOpts(t, HandlerOptions{Source: src})
+}
+
+// newServerOpts serves NewHandler(opts) with Host set to the listener.
+func newServerOpts(t testing.TB, opts HandlerOptions) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewUnstartedServer(nil)
-	srv.Config.Handler = Handler(src, srv.Listener.Addr().String())
+	opts.Host = srv.Listener.Addr().String()
+	srv.Config.Handler = NewHandler(opts)
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv
@@ -132,6 +143,42 @@ type emptySource struct{}
 
 func (emptySource) Current() *View { return nil }
 
+// A first collection that fails leaves no view, but its cause must still
+// reach the page and /lookup instead of an endless "loading".
+func TestLoadingStateCarriesFirstCollectionFailure(t *testing.T) {
+	f := newFixture(t)
+	f.discover = func() ([]discovery.DiscoveredRepo, error) {
+		return nil, errors.New("scan roots unreadable")
+	}
+	d, err := Open(Options{Dir: t.TempDir(), Collector: f.collector(t, time.Now(), memSource{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Refresh(context.Background(), RefreshOptions{}); err == nil {
+		t.Fatal("Refresh with a failing discovery succeeded")
+	}
+	if d.Current() != nil {
+		t.Fatal("a failed first collection published a view")
+	}
+	srv := newServer(t, d)
+	resp, body := get(t, srv.URL+"/api/snapshot")
+	var p struct {
+		Status      string   `json:"status"`
+		Diagnostics []string `json:"diagnostics"`
+	}
+	if err := json.Unmarshal([]byte(body), &p); err != nil {
+		t.Fatalf("loading payload %q: %v", body, err)
+	}
+	if resp.StatusCode != 200 || p.Status != "loading" || len(p.Diagnostics) != 1 ||
+		!strings.Contains(p.Diagnostics[0], "collection failed: discover workspaces: scan roots unreadable") {
+		t.Fatalf("loading payload: %d %s", resp.StatusCode, body)
+	}
+	resp, body = get(t, srv.URL+"/lookup?entity=ticket:WGO-1")
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "scan roots unreadable") {
+		t.Fatalf("lookup while loading: %d %s", resp.StatusCode, body)
+	}
+}
+
 func TestHandlerEmptyStateAndPage(t *testing.T) {
 	srv := newServer(t, emptySource{})
 	resp, err := srv.Client().Get(srv.URL + "/api/snapshot")
@@ -146,14 +193,11 @@ func TestHandlerEmptyStateAndPage(t *testing.T) {
 	if resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("headers: %v", resp.Header)
 	}
-	resp, err = srv.Client().Get(srv.URL + "/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 200 || resp.Header.Get("Content-Security-Policy") != "default-src 'none'" {
+	resp, pageBody := get(t, srv.URL+"/")
+	if resp.StatusCode != 200 {
 		t.Fatalf("page: %d %v", resp.StatusCode, resp.Header)
 	}
+	checkCSP(t, resp.Header.Get("Content-Security-Policy"), pageBody)
 	resp, err = srv.Client().Post(srv.URL+"/api/snapshot", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)

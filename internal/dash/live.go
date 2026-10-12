@@ -303,6 +303,15 @@ func loadSnapshot(path string) (*Snapshot, error) {
 // It never blocks on a collection.
 func (d *Dash) Current() *View { return d.view.Load() }
 
+// Diagnostics lists the current Dash-level problems. Unlike a view's copy, it
+// is available before the first snapshot, so a failed first collection can
+// be shown instead of an endless "loading".
+func (d *Dash) Diagnostics() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.diagnosticsLocked()
+}
+
 // Publish assigns s the next generation, computes its delta, swaps it in
 // and persists it atomically. s must not be modified afterwards.
 //
