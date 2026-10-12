@@ -34,9 +34,6 @@ var (
 	dashRefresh bool
 	dashPort    int
 	dashNoOpen  bool
-	// dashFlags lets runDash tell a passed flag from a default, which
-	// [dash] config may override.
-	dashFlags interface{ Changed(name string) bool }
 )
 
 // DefaultDashPort is the default loopback port `wgo dash` serves on.
@@ -50,8 +47,8 @@ var dashCmd = &cobra.Command{
 workspace: efforts, workspaces, bookmarks and their PRs, tickets, and agent
 sessions, with per-source freshness and a "since last look" delta.
 
-The dashboard is served on http://127.0.0.1:8766 (only the loopback
-address; change the port with --port) and opened in the browser unless
+The dashboard is served on http://127.0.0.1:8766 by default (only the
+loopback address; change the port with --port or [dash] port) and opened in the browser unless
 --no-open. The page appears at once and fills in when the first snapshot
 is ready. In the background it re-collects local state and refreshes stale
 PR, Jira and GitHub issue data every 30 seconds by default; page requests
@@ -66,13 +63,13 @@ anything not cached is reported as unknown. Add --refresh to also try to
 fetch the missing or stale remote data before printing; lookups that fail
 are listed in the output's diagnostics and make the command exit non-zero.
 
-[dash] in ~/.wgo/config.toml sets port, days and refresh_seconds; flags win
-over it.
+[dash] in ~/.wgo/config.toml sets port, days and refresh_seconds; --port
+and --days win over it.
 
 The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runDash(cmd.Context(), cmd.OutOrStdout())
+		return runDash(cmd.Context(), cmd.OutOrStdout(), cmd.Flags().Changed)
 	},
 }
 
@@ -86,11 +83,12 @@ func init() {
 	dashCmd.Flags().BoolVar(&dashRefresh, "refresh", false, "with --json, also fetch missing or stale PR, Jira and GitHub issue data")
 	dashCmd.Flags().IntVar(&dashPort, "port", DefaultDashPort, "loopback port to serve the dashboard on")
 	dashCmd.Flags().BoolVar(&dashNoOpen, "no-open", false, "serve without opening a browser")
-	dashFlags = dashCmd.Flags()
 	rootCmd.AddCommand(dashCmd)
 }
 
-func runDash(ctx context.Context, out io.Writer) error {
+// runDash runs wgo dash. flagChanged reports whether a flag was passed on
+// the command line; only flags left at their defaults yield to [dash] config.
+func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) bool) error {
 	if dashDays < 1 || dashDays > 366 {
 		return fmt.Errorf("--days must be between 1 and 366, got %d", dashDays)
 	}
@@ -107,7 +105,7 @@ func runDash(ctx context.Context, out io.Writer) error {
 		return err
 	}
 	cfg := config.Get()
-	if err := applyDashConfig(cfg.Dash); err != nil {
+	if err := applyDashConfig(cfg.Dash, flagChanged); err != nil {
 		return err
 	}
 	st, err := store.New()
@@ -203,30 +201,37 @@ func dashFetchers() dash.Fetchers {
 }
 
 // applyDashConfig uses [dash] port and days in place of any flag the user
-// did not pass.
-func applyDashConfig(dc config.DashConfig) error {
-	changed := func(name string) bool { return dashFlags != nil && dashFlags.Changed(name) }
-	if dc.Port != 0 && !changed("port") {
+// did not pass, and checks refresh_seconds. A setting a flag overrides is
+// not checked, and neither is port under --json, which never serves.
+func applyDashConfig(dc config.DashConfig, flagChanged func(name string) bool) error {
+	if dc.Port != 0 && !dashJSON && !flagChanged("port") {
 		if dc.Port < 1 || dc.Port > 65535 {
-			return fmt.Errorf("[dash] port in ~/.wgo/config.toml must be between 1 and 65535, got %d", dc.Port)
+			return fmt.Errorf("[dash] port in ~/.wgo/config.toml must be between 1 and 65535, got %d; fix it, or override it with wgo dash --port %d", dc.Port, DefaultDashPort)
 		}
 		dashPort = dc.Port
 	}
-	if dc.Days != 0 && !changed("days") {
+	if dc.Days != 0 && !flagChanged("days") {
 		if dc.Days < 1 || dc.Days > 366 {
-			return fmt.Errorf("[dash] days in ~/.wgo/config.toml must be between 1 and 366, got %d", dc.Days)
+			return fmt.Errorf("[dash] days in ~/.wgo/config.toml must be between 1 and 366, got %d; fix it, or override it with wgo dash --days %d", dc.Days, dash.DefaultDays)
 		}
 		dashDays = dc.Days
+	}
+	if dc.RefreshSeconds != 0 && !dashJSON {
+		minS, maxS := int(dash.MinRefreshInterval/time.Second), int(dash.MaxRefreshInterval/time.Second)
+		if dc.RefreshSeconds < minS || dc.RefreshSeconds > maxS {
+			return fmt.Errorf("[dash] refresh_seconds in ~/.wgo/config.toml must be between %d and %d, got %d; fix it, or remove it to use the %v default", minS, maxS, dc.RefreshSeconds, dash.DefaultRefreshInterval)
+		}
 	}
 	return nil
 }
 
-// dashInterval is [dash] refresh_seconds, or the default; never under 5s.
+// dashInterval is [dash] refresh_seconds, already range-checked by
+// applyDashConfig, or the default when unset.
 func dashInterval(dc config.DashConfig) time.Duration {
-	if dc.RefreshSeconds <= 0 {
+	if dc.RefreshSeconds == 0 {
 		return dash.DefaultRefreshInterval
 	}
-	return max(time.Duration(dc.RefreshSeconds)*time.Second, 5*time.Second)
+	return time.Duration(dc.RefreshSeconds) * time.Second
 }
 
 // listenDash binds the loopback address only. A busy port is an error

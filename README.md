@@ -1047,11 +1047,12 @@ All `[dash]` keys in `~/.wgo/config.toml` are optional:
 [dash]
 port = 8766                # loopback port; --port wins
 days = 14                  # activity window; --days wins
-refresh_seconds = 30       # background re-collection interval (minimum 5)
+refresh_seconds = 30       # background re-collection interval (5 to 3600)
 ```
 
-An out-of-range `port` or `days` stops `wgo dash` with an error naming the
-setting.
+An out-of-range value stops `wgo dash` with an error naming the setting;
+values are never silently adjusted. `--json` ignores `port` and
+`refresh_seconds`, since it prints one snapshot without serving.
 
 ---
 
@@ -1077,11 +1078,11 @@ setting.
 | `wgo ls` | List all discovered repositories |
 | `wgo status` | Dashboard across all tracked repos |
 | `wgo status --watch` | Live-updating status dashboard |
-| `wgo dash` | Live web dashboard of all ongoing work ([details](#live-dashboard-with-wgo-dash)) |
-| `wgo dash --json` | One dashboard snapshot as JSON |
 | `wgo status --filter dirty` | Show only repos with uncommitted changes |
 | `wgo status --filter stale` | Show only repos with no recent activity |
 | `wgo status --sort activity` | Sort repos by last commit time |
+| `wgo dash` | Live web dashboard of all ongoing work ([details](#live-dashboard-with-wgo-dash)) |
+| `wgo dash --json` | One dashboard snapshot as JSON |
 | `wgo today` | Morning review: commits, PRs, branches, tasks |
 | `wgo today --yesterday` | Review the previous day |
 | `wgo pr` | PRs needing attention across all repos |

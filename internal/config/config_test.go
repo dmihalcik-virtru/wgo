@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -183,20 +185,107 @@ func TestResolveProject_RuleWithNoFields(t *testing.T) {
 	assert.Equal(t, "X", proj)
 }
 
-// TestDashConfig verifies the optional [dash] section is read and that the
-// default config documents it without setting anything.
-func TestDashConfig(t *testing.T) {
+// writeConfig points HOME at a fresh directory holding toml as
+// ~/.wgo/config.toml, and captures config warnings.
+func writeConfig(t *testing.T, toml string) (warnings *bytes.Buffer) {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	require.NoError(t, Init())
-	assert.Equal(t, DashConfig{}, Get().Dash, "a default config leaves [dash] unset")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".wgo"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".wgo", "config.toml"), []byte(toml), 0o644))
+	return captureWarnings(t)
+}
 
-	path := filepath.Join(home, ".wgo", "config.toml")
-	require.NoError(t, os.WriteFile(path, []byte(`[dash]
+func captureWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	oldOut, oldWarned := warnOut, warned
+	warnOut, warned = &buf, map[string]bool{}
+	t.Cleanup(func() { warnOut, warned = oldOut, oldWarned })
+	return &buf
+}
+
+// TestDashConfig verifies the optional [dash] section is read, and that the
+// generated default config parses cleanly with [dash] unset.
+func TestDashConfig(t *testing.T) {
+	writeConfig(t, `[dash]
 port = 8799
 refresh_seconds = 45
 days = 21
-`), 0o644))
+`)
 	require.NoError(t, Init())
 	assert.Equal(t, DashConfig{Port: 8799, RefreshSeconds: 45, Days: 21}, Get().Dash)
+
+	// A fresh HOME: Init writes the template and reads it back, so no earlier
+	// read may leak in and the template itself must decode without warnings.
+	t.Setenv("HOME", t.TempDir())
+	warnings := captureWarnings(t)
+	require.NoError(t, Init())
+	assert.Equal(t, DashConfig{}, Get().Dash, "the default config leaves [dash] unset")
+	assert.Empty(t, warnings.String(), "the default config has no unknown keys")
+}
+
+// TestInitRejectsMistypedValues verifies values are decoded strictly: a wrong
+// type or a fractional integer is an error naming the file and the key, and
+// Get falls back to the defaults rather than a partly decoded config.
+func TestInitRejectsMistypedValues(t *testing.T) {
+	for _, tc := range []struct{ name, toml, want string }{
+		{"string for int", "[dash]\nport = \"abc\"\n", "dash.port"},
+		{"numeric string for int", "[dash]\nport = \"9000\"\n", "dash.port"},
+		{"bool for int", "[dash]\nrefresh_seconds = true\n", "dash.refresh_seconds"},
+		{"fractional int", "[dash]\nport = 9000.7\n", "whole number"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeConfig(t, "[cache]\npr_ttl = 5\n"+tc.toml)
+			err := Init()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Contains(t, err.Error(), filepath.Join(".wgo", "config.toml"))
+			assert.Contains(t, err.Error(), "remove the key")
+			assert.NotContains(t, err.Error(), "decoding failed", "the mapstructure preamble is dropped")
+			require.NotNil(t, Get())
+			assert.Equal(t, 120, Get().Cache.PRTTL, "a failed decode leaves the defaults, not a partial config")
+		})
+	}
+}
+
+// TestInitAcceptsLenientForms verifies the strict decoding still accepts a
+// whole-number float and a single string for a list.
+func TestInitAcceptsLenientForms(t *testing.T) {
+	home := t.TempDir()
+	writeConfig(t, "[dash]\nport = 9000.0\n[discovery]\nbase_dirs = \""+home+"\"\n")
+	require.NoError(t, Init())
+	assert.Equal(t, 9000, Get().Dash.Port)
+	assert.Equal(t, []string{home}, Get().Discovery.BaseDirs)
+}
+
+// TestInitWarnsOnUnknownKeys verifies a misspelled key or section is
+// reported once on stderr and otherwise ignored.
+func TestInitWarnsOnUnknownKeys(t *testing.T) {
+	warnings := writeConfig(t, "[dash]\nrefresh_second = 10\nport = 9001\n[dashboard]\nport = 1\n")
+	require.NoError(t, Init())
+	require.NoError(t, Init())
+	assert.Equal(t, 9001, Get().Dash.Port)
+	out := warnings.String()
+	assert.Equal(t, 1, strings.Count(out, `unknown key "dash.refresh_second"`), out)
+	assert.Equal(t, 1, strings.Count(out, `unknown key "dashboard"`), out)
+}
+
+// TestInitIgnoresRetiredSections verifies the [hooks] section that older
+// default templates wrote is ignored without a warning.
+func TestInitIgnoresRetiredSections(t *testing.T) {
+	warnings := writeConfig(t, "[hooks]\nenabled = true\nauto_plan = true\nexclude_branches = [\"main\"]\n")
+	require.NoError(t, Init())
+	assert.Empty(t, warnings.String())
+}
+
+// TestInitReportsBadTOML verifies a syntax error names the file and leaves
+// the defaults in place.
+func TestInitReportsBadTOML(t *testing.T) {
+	writeConfig(t, "[dash\nport = 1\n")
+	err := Init()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), filepath.Join(".wgo", "config.toml"))
+	assert.Contains(t, err.Error(), "fix the TOML syntax")
+	assert.Equal(t, 120, Get().Cache.PRTTL)
 }
