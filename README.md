@@ -1250,8 +1250,10 @@ as hostile:
   `~/.wgo/url-handler.lock`. While one `wgo open` is handling a link, for
   example while its dialog is up, another `wgo open` exits at once with
   "another wgo:// link is already being handled". The applet itself handles
-  one link at a time, so links a page sends while a dialog is up may wait
-  and show their own dialogs afterwards. Each still defaults to **Cancel**.
+  one link at a time, and macOS does not deliver links that arrive while it
+  is busy: in testing, of three links sent within a second, only the first
+  ran and the others were dropped without a dialog or notification. A page
+  cannot stack up dialogs this way.
 
 When `wgo open` fails, the applet shows why in a macOS notification, never
 a modal alert. A web page can trigger this without any click from you.
