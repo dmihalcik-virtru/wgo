@@ -69,3 +69,23 @@ func TestOpenWithDeclineIsNotAnError(t *testing.T) {
 		t.Fatalf("err = %v, out = %q", err, out.String())
 	}
 }
+
+// TestRunOpenLogsRejection checks a rejected link is recorded in the
+// url-handler log, without any of the URL's text.
+func TestRunOpenLogsRejection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var out, errOut bytes.Buffer
+	raw := "wgo://open?ws=ws-0123456789abcdef&command=evil-marker"
+	if err := runOpen(context.Background(), raw, &out, &errOut); err == nil {
+		t.Fatal("want a rejection")
+	}
+	b, err := os.ReadFile(urlhandler.LogPath(filepath.Join(home, ".wgo")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(b)
+	if !strings.Contains(log, "rejected a link") || !strings.Contains(log, "rejected wgo:// link") || strings.Contains(log, "evil-marker") {
+		t.Fatalf("log = %q", log)
+	}
+}

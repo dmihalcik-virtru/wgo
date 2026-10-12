@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode"
 
@@ -15,11 +16,11 @@ import (
 var ErrDeclined = errors.New("not opened: the link was declined")
 
 // ErrBusy is returned when another wgo open holds the lock; the link is
-// dropped rather than queued, so a page cannot stack up dialogs.
+// dropped rather than queued behind that wgo open's dialog.
 var ErrBusy = errors.New("another wgo:// link is already being handled; this one was dropped")
 
-// OpenOptions are what Open needs. Every field but Now and Warnf is
-// required.
+// OpenOptions are what Open needs. Lock, Now and Warnf are optional (no
+// Lock means no locking); with no Roots every workspace fails containment.
 type OpenOptions struct {
 	// Resolver resolves workspace IDs through current discovery.
 	Resolver dash.Resolver
@@ -105,7 +106,11 @@ func Open(ctx context.Context, raw string, o OpenOptions) (launch.Result, error)
 	}
 	res := o.Launcher.Launch(ctx, launch.Action{Kind: launch.KindTerminal, Dir: dir})
 	if !res.Launched {
-		return res, fmt.Errorf("%s Run: %s", res.Message, res.Copy)
+		tried := ""
+		if len(res.Fallbacks) > 0 {
+			tried = " Tried: " + strings.Join(res.Fallbacks, "; ") + "."
+		}
+		return res, fmt.Errorf("%s%s Run: %s", res.Message, tried, res.Copy)
 	}
 	return res, nil
 }

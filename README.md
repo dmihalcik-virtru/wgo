@@ -1189,8 +1189,9 @@ Setup builds a small AppleScript applet, `~/Applications/wgo URL
 Handler.app`, with `osacompile`. It adds the `wgo` URL scheme and a wgo
 marker to the applet's `Info.plist` with `plutil`, re-signs it ad hoc with
 `codesign`, and registers it with LaunchServices (`lsregister -f`). The
-applet passes the whole URL, as one quoted argument, to the `wgo` binary
-that ran setup:
+applet passes the whole URL to the `wgo` binary that ran setup. It runs it
+through AppleScript's `do shell script`, with the URL quoted by `quoted
+form of`, so it arrives as one argument:
 
 ```
 <absolute path of wgo> open '<url>'
@@ -1238,23 +1239,36 @@ as hostile:
   path, wgo asks again. Without a dialog, for example over SSH, `wgo open`
   asks y/N on a terminal and otherwise refuses. It never accepts on its
   own.
-- **No disguised paths.** A workspace path containing control characters or
-  invisible Unicode formatting characters is refused before any dialog.
+- **No hidden formatting characters.** A workspace path containing control
+  characters or invisible Unicode formatting characters (category Cf) is
+  refused before any dialog.
   This covers bidi overrides and isolates (U+202A–U+202E, U+2066–U+2069),
   direction marks (U+200E, U+200F, U+061C) and zero-width characters, any
-  of which could make the path in the dialog read as another.
+  of which could make the path in the dialog read as another. Look-alike
+  letters and unusual spaces are not detected, so read the path.
 - **One link at a time.** `wgo open` takes a non-blocking lock,
-  `~/.wgo/url-handler.lock`. While one link is being handled, for example
-  while its dialog is up, another link exits at once with "another wgo://
-  link is already being handled" and is dropped, not queued. A page cannot
-  stack up dialogs.
+  `~/.wgo/url-handler.lock`. While one `wgo open` is handling a link, for
+  example while its dialog is up, another `wgo open` exits at once with
+  "another wgo:// link is already being handled". The applet itself handles
+  one link at a time, so links a page sends while a dialog is up may wait
+  and show their own dialogs afterwards. Each still defaults to **Cancel**.
 
 When `wgo open` fails, the applet shows why in a macOS notification, never
 a modal alert. A web page can trigger this without any click from you.
 Clicking **Cancel** is not a failure and shows nothing. The messages never
 include any part of the URL, so a page cannot put its own words in a wgo
-notification. Run the same `wgo open '<url>'` in a terminal to see the full
-message.
+notification.
+
+The applet discards everything `wgo open` prints, including warnings from a
+link that did open (say, approvals that could not be saved, or a `[dash]`
+setting that was ignored). So `wgo open` also appends what each link did,
+with a timestamp, to `~/.wgo/url-handler.log`. It records the workspace ID,
+never the URL. Past 256 KiB the log starts over, keeping the previous one
+as `url-handler.log.1`. To see why links misbehave:
+
+```
+tail ~/.wgo/url-handler.log
+```
 
 ### Known limitation
 

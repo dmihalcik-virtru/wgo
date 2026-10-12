@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
@@ -30,10 +31,10 @@ Only one form is accepted, exactly:
 
   wgo://open?ws=<workspace-id>
 
-where the ID is a dashboard workspace ID (ws- and 16 hex digits; see
-wgo dash --json). Anything else is rejected: other hosts, paths, ports,
-fragments, extra, empty or repeated parameters, percent-encoding, and any
-command or resume parameter. A link can never run a command.
+where the ID is a dashboard workspace ID (ws- and 16 lowercase hex
+digits; see wgo dash --json). Anything else is rejected: other hosts,
+paths, ports, fragments, extra, empty or repeated parameters,
+percent-encoding, and any command or resume parameter. A link can never run a command.
 
 The ID is resolved through current discovery and must be an existing jj
 workspace under a [discovery] base_dirs root. The first time a link opens a
@@ -45,6 +46,10 @@ formatting characters is refused rather than shown.
 
 Only one wgo open runs at a time: while one is handling a link (say, its
 dialog is up), another exits at once and drops its link.
+
+Each link's outcome and any warnings are also appended to
+~/.wgo/url-handler.log (the workspace ID, never the URL), since the URL
+handler discards what wgo open prints.
 
 The tab opens with the same launcher as wgo dash's Open tab ([dash]
 terminal settings); when no terminal can be opened it prints a cd command
@@ -66,24 +71,45 @@ func runOpen(ctx context.Context, raw string, out, errOut io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// Reject a malformed link before loading config or running discovery.
-	if _, err := urlhandler.ParseOpenURL(raw); err != nil {
-		return fmt.Errorf("wgo open: rejected wgo:// link: %w. Only %s is accepted; nothing was opened", err, urlhandler.AcceptedForm)
-	}
-	if err := config.Init(); err != nil {
-		return err
-	}
-	cfg := config.Get()
 	st, err := store.New()
 	if err != nil {
 		return err
 	}
+	// The applet discards stdout and stderr, so everything this link
+	// reports also goes to the log.
+	lg, lerr := urlhandler.OpenLog(urlhandler.LogPath(st.BaseDir()), nil)
+	defer lg.Close()
+	if lerr != nil {
+		fmt.Fprintf(errOut, "wgo open: %v; continuing without a log\n", lerr)
+	}
+	err = runOpenLogged(ctx, raw, st, lg, io.MultiWriter(out, lg), io.MultiWriter(errOut, lg), errOut)
+	if err != nil {
+		lg.Printf("%v", err)
+	}
+	return err
+}
+
+// runOpenLogged is runOpen once the log is open: out and warn also write
+// to it, prompt (the y/N question) does not.
+func runOpenLogged(ctx context.Context, raw string, st *store.FileStore, lg *urlhandler.Log, out, warn, prompt io.Writer) error {
+	// Reject a malformed link before loading config or running discovery.
+	// Neither the log nor the error quotes the URL.
+	id, err := urlhandler.ParseOpenURL(raw)
+	if err != nil {
+		lg.Printf("wgo open: rejected a link")
+		return fmt.Errorf("wgo open: rejected wgo:// link: %w. Only %s is accepted; nothing was opened", err, urlhandler.AcceptedForm)
+	}
+	lg.Printf("wgo open: link to %s", id)
+	if err := config.Init(); err != nil {
+		return err
+	}
+	cfg := config.Get()
 	collector := dash.NewCollector(dash.Config{
 		JJ:       jj.NewCLI(),
 		Discover: discovery.FromConfig(cfg).DiscoverAll,
 	})
-	logf := func(format string, args ...any) { fmt.Fprintf(errOut, "wgo open: "+format+"\n", args...) }
-	lcfg := dashLaunchConfig(cfg.Dash, errOut)
+	logf := func(format string, args ...any) { fmt.Fprintf(warn, "wgo open: "+format+"\n", args...) }
+	lcfg := dashLaunchConfig(cfg.Dash, warn)
 	lcfg.Resume = "" // a link never resumes an agent
 	return openWith(ctx, raw, out, urlhandler.OpenOptions{
 		Resolver: collector,
@@ -94,7 +120,7 @@ func runOpen(ctx context.Context, raw string, out, errOut io.Writer) error {
 			Run:    urlhandler.ExecRunner{},
 			Stdin:  os.Stdin,
 			TTY:    stdinIsTerminal(),
-			Prompt: errOut,
+			Prompt: prompt,
 		},
 		Approvals: urlhandler.NewApprovals(urlhandler.ApprovalsPath(st.BaseDir())),
 		Lock: func() (func(), error) {
@@ -119,6 +145,9 @@ func openWith(ctx context.Context, raw string, out io.Writer, o urlhandler.OpenO
 		return fmt.Errorf("wgo open: %w", err)
 	}
 	fmt.Fprintln(out, "wgo open: "+res.Message)
+	if len(res.Fallbacks) > 0 {
+		fmt.Fprintln(out, "wgo open: tried first: "+strings.Join(res.Fallbacks, "; "))
+	}
 	return nil
 }
 

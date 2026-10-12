@@ -473,3 +473,15 @@ func TestOpenOneLinkAtATime(t *testing.T) {
 		t.Fatalf("open after release: %v", err)
 	}
 }
+
+// TestOpenFailureNamesWhatWasTried keeps the launcher's fallback detail
+// (such as the Automation hint) in the error the notification shows.
+func TestOpenFailureNamesWhatWasTried(t *testing.T) {
+	f := newOpenFixture(t)
+	f.launcher.res = &launch.Result{Method: launch.MethodCopy, Copy: "cd /w", Message: "Could not open a terminal.",
+		Fallbacks: []string{"ghostty: not authorized (-1743); allow it in Privacy & Security > Automation"}}
+	_, err := f.open(OpenURL(f.wsID))
+	if err == nil || !strings.Contains(err.Error(), "Tried: ghostty: not authorized") || !strings.Contains(err.Error(), "Run: cd /w") {
+		t.Fatalf("err = %v", err)
+	}
+}

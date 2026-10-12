@@ -82,9 +82,9 @@ func (a *Approvals) Approved(id, path string) (bool, error) {
 }
 
 // Approve records id as confirmed at path, replacing any earlier path for
-// it. A corrupt file is replaced rather than blocking the approval the user
-// just gave, and warnf (when set) is told the earlier approvals were lost;
-// a file from a newer wgo is left alone.
+// it. An unreadable or corrupt file is replaced rather than blocking the
+// approval the user just gave, and warnf (when set) is told the earlier
+// approvals were lost; a file from a newer wgo is left alone.
 func (a *Approvals) Approve(id, path string, now time.Time, warnf func(format string, args ...any)) error {
 	doc, err := a.load()
 	if err != nil {
