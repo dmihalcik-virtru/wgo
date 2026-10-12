@@ -544,7 +544,7 @@ gh_stack = "auto"
 # terminal = "ghostty"          # Open tab: ghostty | iterm | terminal | command
 # terminal_command = ["wezterm", "start", "--cwd", "{workspace}"]  # for "command", or the fallback after Ghostty
 # resume = "claude"             # Resume action: "claude" or "codex"; empty hides it
-# editor = "code"               # preferred editor for Editor/Plan/Spec (else code, then xed)
+# editor = "zed"                # Editor/Plan/Spec: one executable, no arguments; tried before code, then xed
 # refresh_seconds = 30          # background re-collection interval (5 to 3600)
 # days = 14                     # activity window (--days overrides)
 

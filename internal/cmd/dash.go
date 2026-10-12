@@ -67,8 +67,8 @@ are listed in the output's diagnostics and make the command exit non-zero.
 The page's buttons open a workspace in a new Ghostty tab (or the terminal
 configured in [dash]), resume an agent there, open it in an editor or
 Finder, open its .plan entry or spec, and mark the current state seen.
-They only work from the page wgo dash served: each launch issues a secret
-token embedded in that page, and the server checks it, the exact Origin
+They only work from the page wgo dash served: each run of wgo dash issues a
+secret token embedded in that page, and the server checks it, the exact Origin
 and Host, and re-resolves the workspace ID through discovery before
 launching anything. Requests never carry paths or commands. Nothing a
 launch does changes jj, the plan or agent state.

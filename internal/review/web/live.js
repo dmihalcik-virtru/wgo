@@ -325,7 +325,7 @@
   // safeURL passes only absolute http(s) URLs.
   L.safeURL = function (u) { return typeof u === "string" && /^https?:\/\//i.test(u) ? u : ""; };
   // localURL returns u when it is a same-origin path, else "". It rejects
-  // protocol-relative "//host", "/\\host" (browsers treat \\ as /), any
+  // protocol-relative "//host", "/\host" (browsers treat \ as /), any
   // backslash, and whitespace or control characters, which browsers strip
   // from URLs (so "/\t/host" would become "//host").
   L.localURL = function (u) {
@@ -368,7 +368,7 @@
   // server's own explanation when it sent one, otherwise the cause.
   L.actionError = function (e) {
     if (e && e.detail) return e.detail + (e.status ? " (HTTP " + e.status + ")" : "");
-    if (e && e.status === 403) return "wgo dash refused the request (HTTP 403); reload the page, since each wgo dash launch issues a new token";
+    if (e && e.status === 403) return "wgo dash refused the request (HTTP 403); reload the page, since each run of wgo dash issues a new token";
     return L.fetchFailure(e);
   };
   // ackText reports a Mark seen outcome.

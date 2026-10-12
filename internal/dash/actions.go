@@ -136,8 +136,8 @@ func (s *server) writeError(w http.ResponseWriter, e *httpError) {
 
 // checkPost enforces everything a state-changing request must satisfy
 // beyond the exact Host (checked for every request) and POST: an Origin
-// that is exactly this server, a same-origin fetch, the action token in its
-// header, and a JSON content type. It then decodes the bounded body into
+// that is exactly this server, Sec-Fetch-Site same-origin when the browser
+// sends it, the action token in its header, and a JSON content type. It then decodes the bounded body into
 // dst, rejecting unknown fields and trailing data.
 func (s *server) checkPost(w http.ResponseWriter, r *http.Request, dst any) *httpError {
 	origins := r.Header.Values("Origin")
@@ -149,7 +149,7 @@ func (s *server) checkPost(w http.ResponseWriter, r *http.Request, dst any) *htt
 	}
 	tokens := r.Header.Values(TokenHeader)
 	if s.token == "" || len(tokens) != 1 || subtle.ConstantTimeCompare([]byte(tokens[0]), []byte(s.token)) != 1 {
-		return reject(http.StatusForbidden, "forbidden: missing or wrong action token; reload the wgo dash page (each wgo dash launch issues a new token)")
+		return reject(http.StatusForbidden, "forbidden: missing or wrong action token; reload the wgo dash page (each run of wgo dash issues a new token)")
 	}
 	mt, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mt != "application/json" {
@@ -262,7 +262,7 @@ func (s *server) planFile(ctx context.Context, t Target, dir string) (launch.Act
 	}
 	content, err := os.ReadFile(a.PlanPath)
 	if errors.Is(err, fs.ErrNotExist) {
-		return launch.Action{}, "", reject(http.StatusNotFound, "there is no plan file yet (%s); start one with: wgo plan add", a.PlanPath)
+		return launch.Action{}, "", reject(http.StatusNotFound, "there is no plan file yet (%s); start one with: cd <workspace> && wgo plan add \"<why>\"", a.PlanPath)
 	}
 	if err != nil {
 		return launch.Action{}, "", reject(http.StatusInternalServerError, "could not read the plan: %v", err)
@@ -287,7 +287,7 @@ func (s *server) planFile(ctx context.Context, t Target, dir string) (launch.Act
 		return e.Branch == bm && (e.Repo == repo || path.Base(e.Repo) == repo)
 	})
 	if line == 0 {
-		return act, fmt.Sprintf("(No Active Branches entry for %s:%s, so the whole plan is open. Add one with: wgo plan add)", repo, bm), nil
+		return act, fmt.Sprintf("(No Active Branches entry for %s:%s, so the whole plan is open. Add one with: cd <workspace> && wgo plan add \"<why>\")", repo, bm), nil
 	}
 	act.Line = line
 	return act, "", nil

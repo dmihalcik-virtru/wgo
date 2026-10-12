@@ -1,16 +1,19 @@
-// Package launch opens local tools at a workspace: a terminal tab (Ghostty on
-// macOS, else a configured terminal), an agent resume, an editor, or Finder.
+// Package launch opens local tools at a workspace: a terminal tab (Ghostty,
+// iTerm or Terminal.app on macOS, or a configured terminal command), an
+// agent resume, an editor, or Finder.
 //
 // It is the shared launcher behind `wgo dash` browser actions (gh-70) and is
 // meant to be reused by #27's launch affordances. Callers hand it a validated
-// absolute path; it never receives, builds or runs a shell string. Every
-// process is started with an explicit argv through os/exec, and the one
-// AppleScript it runs is a fixed constant that reads the path from its
-// arguments (`on run argv`), so a path can never become script source.
+// absolute path; it never starts a shell. Every process is started with an
+// explicit argv through os/exec, and the one AppleScript it runs is a fixed
+// constant that reads the path from its arguments (`on run argv`), so a path
+// can never become script source. The only text that reaches a shell is the
+// allowlisted resume command typed into a new Ghostty tab, and the cd and
+// resume commands returned for the user to copy.
 //
 // When the preferred method is unavailable it falls back in a fixed order and
-// always ends with something the user can copy (a shell-quoted `cd` command
-// or the path), reporting which method was used and why earlier ones failed.
+// ends with something the user can copy (a shell-quoted `cd` command or the
+// path) when there is one, reporting which method was used and why earlier ones failed.
 // A launch never changes jj, plan or agent state.
 package launch
 

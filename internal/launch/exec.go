@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// RunTimeout bounds a launcher that should return promptly. osascript can
-// wait on the macOS Automation consent prompt, so it gets this long.
+// RunTimeout bounds every Run call (osascript, open, an editor). It is this
+// long because osascript can wait on the macOS Automation consent prompt.
 const RunTimeout = 2 * time.Minute
 
 // startGrace is how long Start waits for a detached process to fail fast

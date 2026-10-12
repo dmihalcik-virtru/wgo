@@ -1063,7 +1063,8 @@ Each button reports what happened under it:
   path) with a **Copy** button.
 
 Errors appear in the same place, for example a workspace that no longer
-exists or a ticket with no spec ("create it with `wgo spec new GH-70`").
+exists, or a ticket with no spec, which names the command to write one
+(`wgo spec new GH-70`).
 
 A launch never changes jj, the plan or agent state.
 
@@ -1075,8 +1076,8 @@ A launch never changes jj, the plan or agent state.
 - **Resume:** runs in a Ghostty tab. With any other terminal, wgo opens the
   tab and gives you the command to paste.
 - **Editor, Plan and Spec:** `[dash] editor`, then `code`, then `xed`, then
-  Finder, then the path to copy. Plan and Spec open at the right line with
-  `code -g file:line` or `xed -l line`.
+  Finder, then the path to copy. Plan opens at its Active Branches line
+  with `code -g file:line` or `xed -l line`. Spec opens the file.
 
 **When the baseline moves.** Only Mark seen moves it. Loading the page,
 reloading it or closing it never does. The baseline is shared by every tab,
@@ -1085,10 +1086,10 @@ open tab is still showing.
 
 ### Security model
 
-The action endpoints only accept requests from the page that this
-`wgo dash` launch served:
+The action endpoints only accept requests from the page that this run of
+`wgo dash` served:
 
-- **Page token.** Each launch makes a random 256-bit token. It is embedded
+- **Page token.** Each run of `wgo dash` makes a random 256-bit token. It is embedded
   only in the served page, never in a URL or a log, and pages carry
   `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. The page
   sends it in an `X-Wgo-Token` header, which the server compares in
@@ -1103,12 +1104,15 @@ The action endpoints only accept requests from the page that this
   gets 405.
 - **IDs, not paths.** A request names only an action kind and a workspace
   ID. The server re-resolves the ID through discovery every time. It checks
-  that the directory is a real jj workspace inside a `[discovery] base_dirs`
-  root, after resolving symlinks. It then derives every path itself. An
+  that the directory exists, contains `.jj`, and is inside a `[discovery]
+  base_dirs` root, after resolving symlinks. It then derives every path itself. An
   unknown or stale ID gets a 404 and launches nothing.
-- **No shell.** Launchers run as argv lists. Ghostty is driven by a fixed
-  AppleScript that receives the path as an argument and never interpolates
-  it. Resume runs only an allowlisted tool.
+- **No shell from a request.** wgo never starts a shell itself: launchers
+  run as argv lists. Ghostty is driven by a fixed AppleScript that receives
+  the path as an argument and never interpolates it. The one text that
+  reaches a shell is Resume's command, typed into the new tab's shell, and
+  it is only ever `claude --continue` or `codex resume --last` from your
+  config, never anything from the request.
 
 ### macOS Automation prompt
 
@@ -1116,7 +1120,7 @@ The first Open tab or Resume with Ghostty runs `osascript`. macOS then asks
 whether **"wgo" wants to control "Ghostty"**; the prompt may name your
 terminal or `osascript` instead. Click **Allow**. If you click **Don't
 Allow**, or the prompt times out, wgo falls back to the next launcher.
-The error message says how to fix the permission.
+When macOS reports the denial, the fallback note says how to fix it.
 
 To change your answer, open **System Settings > Privacy & Security >
 Automation**, expand the app that ran `wgo dash`, and toggle **Ghostty**. To
@@ -1143,15 +1147,26 @@ terminal = "ghostty"       # Open tab: ghostty | iterm | terminal | command
 # An element that is exactly "{workspace}" becomes the workspace path; no shell.
 terminal_command = ["wezterm", "start", "--cwd", "{workspace}"]
 resume = "claude"          # Resume: "claude" or "codex"; unset hides Resume
-editor = "zed"             # preferred over code and xed
+editor = "zed"             # tried before code and xed; one executable, no arguments
 ```
 
 An out-of-range `port`, `days` or `refresh_seconds` stops `wgo dash` with
 an error naming the setting; these are never silently adjusted. `--json`
 ignores `port` and `refresh_seconds`, since it prints one snapshot without
-serving. An invalid `terminal`, `terminal_command` or `resume` setting does
-not stop the dashboard. `wgo dash` prints a warning on stderr and uses the
-default for that setting.
+serving.
+
+A `terminal`, `terminal_command` or `resume` value of the right type that
+wgo does not support (an unknown terminal, `terminal = "command"` with no
+command, a resume tool not on the list) does not stop the dashboard. `wgo
+dash` prints a warning on stderr and ignores it. `terminal` and
+`terminal_command` are checked together and dropped together, which means
+Ghostty on macOS. A value of the wrong type is a config error like any
+other key.
+
+`editor` is a single executable name or path; `~` is expanded. It cannot
+carry arguments, so `"code --wait"` is not found. Use an editor command
+that returns at once, since wgo waits for it (up to two minutes) before
+reporting.
 
 ---
 
