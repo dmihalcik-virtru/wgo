@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/dash"
 )
 
@@ -329,6 +331,49 @@ func TestDashFetchersAbsentIntegrations(t *testing.T) {
 	for k, why := range want {
 		if f.Missing[k] != why {
 			t.Fatalf("Missing[%s] = %q, want %q", k, f.Missing[k], why)
+		}
+	}
+}
+
+func TestApplyDashConfigFlagsWin(t *testing.T) {
+	oldDays, oldPort, oldFlags := dashDays, dashPort, dashFlags
+	t.Cleanup(func() { dashDays, dashPort, dashFlags = oldDays, oldPort, oldFlags })
+	fs := (&cobra.Command{}).Flags()
+	fs.IntVar(&dashPort, "port", DefaultDashPort, "")
+	fs.IntVar(&dashDays, "days", dash.DefaultDays, "")
+	dashFlags = fs
+
+	if err := applyDashConfig(config.DashConfig{Port: 9000, Days: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if dashPort != 9000 || dashDays != 30 {
+		t.Fatalf("config not applied: port %d days %d", dashPort, dashDays)
+	}
+	if err := fs.Parse([]string{"--port", "9100", "--days", "7"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyDashConfig(config.DashConfig{Port: 9000, Days: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if dashPort != 9100 || dashDays != 7 {
+		t.Fatalf("flags lost: port %d days %d", dashPort, dashDays)
+	}
+	fs = (&cobra.Command{}).Flags()
+	fs.IntVar(&dashPort, "port", DefaultDashPort, "")
+	fs.IntVar(&dashDays, "days", dash.DefaultDays, "")
+	dashFlags = fs
+	if err := applyDashConfig(config.DashConfig{Port: 70000}); err == nil || !strings.Contains(err.Error(), "[dash] port") {
+		t.Fatalf("bad port: %v", err)
+	}
+	if err := applyDashConfig(config.DashConfig{Days: 999}); err == nil || !strings.Contains(err.Error(), "[dash] days") {
+		t.Fatalf("bad days: %v", err)
+	}
+}
+
+func TestDashInterval(t *testing.T) {
+	for in, want := range map[int]time.Duration{0: dash.DefaultRefreshInterval, -3: dash.DefaultRefreshInterval, 1: 5 * time.Second, 60: time.Minute} {
+		if got := dashInterval(config.DashConfig{RefreshSeconds: in}); got != want {
+			t.Errorf("refresh_seconds %d: %v, want %v", in, got, want)
 		}
 	}
 }

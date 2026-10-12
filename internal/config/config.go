@@ -24,6 +24,19 @@ type Config struct {
 	Cache     CacheConfig     `mapstructure:"cache"`
 	Sync      SyncConfig      `mapstructure:"sync"`
 	Rig       RigConfig       `mapstructure:"rig"`
+	Dash      DashConfig      `mapstructure:"dash"`
+}
+
+// DashConfig controls `wgo dash`, the local live dashboard. Zero values mean
+// the built-in default; command-line flags override port and days.
+type DashConfig struct {
+	// Port is the loopback port to serve on (8766 when zero).
+	Port int `mapstructure:"port"`
+	// RefreshSeconds is the background re-collection interval: 30 when zero
+	// or negative, and never less than 5.
+	RefreshSeconds int `mapstructure:"refresh_seconds"`
+	// Days is the activity window of the small multiples (14 when zero).
+	Days int `mapstructure:"days"`
 }
 
 // RigConfig controls `wgo rig`, which materialises one pinned checkout per
@@ -377,6 +390,12 @@ create_prs = false
 #   "off"  - always use the wgo-stack marker
 #   "on"   - require native linking; error if "gh stack" is unavailable
 gh_stack = "auto"
+
+# [dash]
+# Settings for "wgo dash", the local live dashboard. All optional.
+# port = 8766                   # loopback port (--port overrides)
+# refresh_seconds = 30          # background re-collection interval (minimum 5)
+# days = 14                     # activity window (--days overrides)
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)
