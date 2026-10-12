@@ -48,3 +48,22 @@ func TestRenderPageRejectsBadAddonsAndModes(t *testing.T) {
 	_, err = RenderPage(Page{Mode: ModeReview})
 	assert.Error(t, err, "review mode needs a graph")
 }
+
+// TestServedJSHooksExistInApp pins what web/served.js reaches into app.js
+// for. served.js returns silently when a hook is missing, so an app.js
+// refactor would otherwise drop every review-to-live link unnoticed.
+func TestServedJSHooksExistInApp(t *testing.T) {
+	app, err := webFS.ReadFile("web/app.js")
+	require.NoError(t, err)
+	for _, hook := range []string{
+		"window.__wgoStore = store",            // the store handle
+		"subscribe: function (fn)",             // store.subscribe
+		"select: function (ids, add)",          // store.select
+		"opts: { collapse:",                    // store.opts.collapse
+		`"selection"`,                          // the notify reason served.js listens for
+		`"hdr"`, `"bar"`, `"side"`, `"detail"`, // the elements it decorates
+		`"Collapse PRs`, // the checkbox label it flips
+	} {
+		assert.Contains(t, string(app), hook, "served.js relies on app.js having %s", hook)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -148,17 +149,81 @@ func TestLivePageRendersBeforeAnySnapshot(t *testing.T) {
 	}
 }
 
-func TestLiveAppIssuesOnlyGets(t *testing.T) {
-	// Slice 2 is read-only: no POST, no tokens, no launch actions.
+// liveAppSource is live.js as inlined into the live page, without the other
+// assets (style, d3-force) that would make a substring search meaningless.
+func liveAppSource(t *testing.T) string {
+	t.Helper()
 	live, err := review.RenderPage(review.Page{Mode: review.ModeLive, Boot: liveBoot{Mode: "live"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := string(live)
-	app = app[strings.Index(app, "/* wgo dash live explorer"):]
-	for _, bad := range []string{"method:", "POST", "XMLHttpRequest", "token", "eval(", "new Function", ".innerHTML", "document.write"} {
-		if strings.Contains(app, bad) {
-			t.Errorf("live app contains %q", bad)
+	page := string(live)
+	i := strings.Index(page, "/* wgo dash live explorer")
+	if i < 0 {
+		t.Fatal("live page has no live.js header comment")
+	}
+	j := strings.Index(page[i:], "</script>")
+	if j < 0 {
+		t.Fatal("live.js is not closed by </script>")
+	}
+	return page[i : i+j]
+}
+
+// hasJSONPath reports whether the JSON field path names a field of ty,
+// following pointers, slices and nested structs.
+func hasJSONPath(ty reflect.Type, path []string) bool {
+	for ty.Kind() == reflect.Pointer || ty.Kind() == reflect.Slice {
+		ty = ty.Elem()
+	}
+	if len(path) == 0 {
+		return true
+	}
+	if ty.Kind() != reflect.Struct {
+		return false
+	}
+	for f := range ty.Fields() {
+		if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name == path[0] {
+			return hasJSONPath(f.Type, path[1:])
+		}
+	}
+	return false
+}
+
+// setInJSON reports whether some value in vs has the field path set,
+// looking into every element of a list on the way.
+func setInJSON(vs []any, path []string) bool {
+	if len(path) == 0 {
+		return len(vs) > 0
+	}
+	var next []any
+	for _, v := range vs {
+		m, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch c := m[path[0]].(type) {
+		case nil:
+		case []any:
+			if len(path) == 1 {
+				next = append(next, c)
+			} else {
+				next = append(next, c...)
+			}
+		default:
+			next = append(next, c)
+		}
+	}
+	return setInJSON(next, path[1:])
+}
+
+// TestLiveAppIssuesOnlyGets: until the page has an action endpoint, live.js
+// sends nothing but GETs and writes no markup from strings.
+func TestLiveAppIssuesOnlyGets(t *testing.T) {
+	app := liveAppSource(t)
+	for _, bad := range []string{`method\s*:`, `\bPOST\b`, `XMLHttpRequest`, `sendBeacon`, `\btoken\b`, `\beval\(`, `new Function`,
+		`\.innerHTML`, `\.outerHTML`, `insertAdjacentHTML`, `document\.write`, `\.submit\(`} {
+		if loc := regexp.MustCompile(bad).FindStringIndex(app); loc != nil {
+			t.Errorf("live app matches %s: %q", bad, app[max(0, loc[0]-40):min(len(app), loc[1]+40)])
 		}
 	}
 }
@@ -200,37 +265,41 @@ func TestLiveDataContract(t *testing.T) {
 		t.Errorf("delta = %v", d)
 	}
 
-	// Every per-kind field the page reads must exist in the served JSON and
-	// be referenced by the page, so the two cannot drift apart unnoticed.
+	// Every per-kind field the page reads must be a JSON field of the model,
+	// be read by live.js itself, and be set somewhere in the fixture, so a
+	// rename on either side fails here instead of showing as "missing".
+	// Nested fields are dotted paths; a path through a list means any element.
 	fields := map[string][]string{
-		"effort":    {"group", "description", "source", "conflicts", "workspace_id", "claimed_by"},
-		"workspace": {"bookmark", "stack", "position", "size", "bookmarks", "description", "last_activity", "annotation", "error", "is_main", "repo_slug", "path", "change_id", "changes"},
+		"effort":    {"group", "description", "source", "conflicts", "conflicts.workspace_id", "conflicts.claimed_by"},
+		"workspace": {"bookmark", "stack", "stack.position", "stack.size", "stack.bookmarks", "description", "last_activity", "annotation", "error", "is_main", "repo_slug", "path", "change_id", "changes"},
 		"bookmark":  {"pr_lookup", "pr_count", "pr_fetched_at"},
 		"pr":        {"state", "is_draft", "checks", "review_decision", "requested_reviewers", "reviewers_known", "freshness", "url", "title", "updated_at"},
 		"ticket":    {"status", "freshness", "url", "title", "system"},
 		"agent":     {"tool", "status", "liveness", "branch", "start_time", "last_activity", "conflict", "conflicts_with", "session_id"},
 	}
-	live, _ := review.RenderPage(review.Page{Mode: review.ModeLive, Boot: liveBoot{Mode: "live"}})
-	for kind, keys := range fields {
-		var found bool
+	models := map[string]reflect.Type{
+		"effort": reflect.TypeFor[EffortInfo](), "workspace": reflect.TypeFor[WorkspaceInfo](), "bookmark": reflect.TypeFor[BookmarkInfo](),
+		"pr": reflect.TypeFor[PRInfo](), "ticket": reflect.TypeFor[TicketInfo](), "agent": reflect.TypeFor[AgentInfo](),
+	}
+	app := liveAppSource(t)
+	for kind, paths := range fields {
+		var infos []any
 		for _, n := range snap["nodes"].([]any) {
-			node := n.(map[string]any)
-			if node["kind"] != kind {
-				continue
-			}
-			found = true
-			raw, _ := json.Marshal(node)
-			for _, k := range keys {
-				if !strings.Contains(string(raw), `"`+k+`"`) {
-					continue // omitempty and unset on this node
-				}
-				if !strings.Contains(string(live), "."+k) && !strings.Contains(string(live), `"`+k+`"`) {
-					t.Errorf("%s.%s is served but the live page never reads it", kind, k)
-				}
+			if node := n.(map[string]any); node["kind"] == kind && node[kind] != nil {
+				infos = append(infos, node[kind])
 			}
 		}
-		if !found {
-			t.Errorf("fixture has no %s node", kind)
+		for _, path := range paths {
+			if !hasJSONPath(models[kind], strings.Split(path, ".")) {
+				t.Errorf("%s.%s: the page reads it, but %s has no such JSON field", kind, path, models[kind].Name())
+			}
+			leaf := path[strings.LastIndex(path, ".")+1:]
+			if !regexp.MustCompile(`\.` + leaf + `\b|"` + leaf + `"`).MatchString(app) {
+				t.Errorf("%s.%s: live.js never reads it", kind, path)
+			}
+			if !setInJSON(infos, strings.Split(path, ".")) {
+				t.Errorf("%s.%s: no %s node in the fixture sets it", kind, path, kind)
+			}
 		}
 	}
 	// The fixture exercises the states the page must label distinctly.
