@@ -100,7 +100,18 @@ func TestPlistArgvs(t *testing.T) {
 func newInstaller(t *testing.T, r *fakeRunner) (*Installer, *bytes.Buffer) {
 	t.Helper()
 	var out bytes.Buffer
+	if r.before == nil {
+		r.before = compileLeavesApplet
+	}
 	return &Installer{GOOS: "darwin", Home: t.TempDir(), Executable: "/usr/local/bin/wgo", PathEnv: "/usr/bin", Run: r, Out: &out}, &out
+}
+
+// compileLeavesApplet makes the fake osacompile leave a bundle at its -o
+// path, as the real one does.
+func compileLeavesApplet(argv []string) {
+	if argv[0] == "osacompile" {
+		_ = os.MkdirAll(filepath.Join(argv[2], "Contents"), 0o755)
+	}
 }
 
 func TestInstallRunsStepsInOrder(t *testing.T) {
@@ -110,6 +121,7 @@ func TestInstallRunsStepsInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := AppPath(in.Home)
+	built := filepath.Join(StagingDir(in.Home), AppName)
 	var names []string
 	for _, c := range r.calls {
 		names = append(names, c[0])
@@ -118,72 +130,163 @@ func TestInstallRunsStepsInOrder(t *testing.T) {
 	if !slices.Equal(names, want) {
 		t.Fatalf("ran %q, want %q", names, want)
 	}
-	if c := r.calls[0]; c[2] != app {
-		t.Errorf("osacompile -o %q, want %q", c[2], app)
+	if c := r.calls[0]; c[2] != built {
+		t.Errorf("osacompile -o %q, want the staging path %q", c[2], built)
+	}
+	if c := r.calls[4]; c[len(c)-1] != built {
+		t.Errorf("codesign argv = %q, want the staged applet", c)
 	}
 	if c := r.calls[5]; !slices.Equal(c, []string{LSRegister, "-f", app}) {
 		t.Errorf("lsregister argv = %q", c)
 	}
-	if fi, err := os.Stat(filepath.Dir(app)); err != nil || !fi.IsDir() {
-		t.Errorf("~/Applications not created: %v", err)
+	if fi, err := os.Stat(filepath.Join(app, "Contents")); err != nil || !fi.IsDir() {
+		t.Errorf("applet not moved into place: %v", err)
+	}
+	if _, err := os.Lstat(StagingDir(in.Home)); !os.IsNotExist(err) {
+		t.Errorf("staging folder left behind: %v", err)
 	}
 	if !strings.Contains(out.String(), "--uninstall") {
 		t.Errorf("output does not name the uninstall command: %s", out.String())
 	}
 }
 
-func TestInstallFailureRemovesPartialApplet(t *testing.T) {
-	r := &fakeRunner{err: map[string]error{"codesign": errors.New("boom")}}
-	in, _ := newInstaller(t, r)
+// mkOurApplet leaves an installed applet whose Info.plist the fake runner
+// reports as ours, with a file to tell it apart from a new build.
+func mkOurApplet(t *testing.T, in *Installer, r *fakeRunner) string {
+	t.Helper()
 	app := AppPath(in.Home)
-	r.before = func(argv []string) {
-		if argv[0] == "osacompile" {
-			_ = os.MkdirAll(filepath.Join(app, "Contents"), 0o755)
-		}
+	if err := os.MkdirAll(filepath.Join(app, "Contents"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	var removed []string
-	in.RemoveAll = func(p string) error { removed = append(removed, p); return nil }
-	if err := in.Install(context.Background()); err == nil {
-		t.Fatal("want an error")
+	if err := os.WriteFile(filepath.Join(app, "Contents", "old"), nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !slices.Equal(removed, []string{app}) {
-		t.Fatalf("removed %q, want the partial applet", removed)
+	r.extract = map[string]string{MarkerKey: MarkerValue, "CFBundleIdentifier": BundleID}
+	return app
+}
+
+func TestInstallReplacesOwnApplet(t *testing.T) {
+	r := &fakeRunner{}
+	in, _ := newInstaller(t, r)
+	app := mkOurApplet(t, in, r)
+	if err := in.Install(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range r.calls {
-		if c[0] == LSRegister {
-			t.Fatal("must not register after a failed step")
-		}
+	if _, err := os.Stat(filepath.Join(app, "Contents", "old")); !os.IsNotExist(err) {
+		t.Fatalf("previous applet was not replaced: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(app, "Contents")); err != nil {
+		t.Fatalf("new applet missing: %v", err)
+	}
+	if _, err := os.Lstat(StagingDir(in.Home)); !os.IsNotExist(err) {
+		t.Errorf("staging folder left behind: %v", err)
 	}
 }
 
-// A failing osacompile may leave a half-built applet behind; this install
-// created it, so it is removed.
-func TestInstallOsacompileFailureRemovesPartialApplet(t *testing.T) {
-	r := &fakeRunner{err: map[string]error{"osacompile": errors.New("syntax error")}}
-	in, _ := newInstaller(t, r)
-	app := AppPath(in.Home)
-	r.before = func(argv []string) {
-		if argv[0] == "osacompile" {
-			_ = os.MkdirAll(filepath.Join(app, "Contents"), 0o755)
-		}
-	}
-	if err := in.Install(context.Background()); err == nil || !strings.Contains(err.Error(), "partial applet was removed") {
-		t.Fatalf("err = %v", err)
-	}
-	if _, err := os.Lstat(app); !os.IsNotExist(err) {
-		t.Fatalf("partial applet left behind: %v", err)
-	}
-	if len(r.calls) != 1 {
-		t.Fatalf("ran %q after osacompile failed", r.calls)
+// A failed rebuild must not cost the user the handler they already have.
+func TestInstallFailureKeepsPreviousApplet(t *testing.T) {
+	for _, step := range []string{"osacompile", "codesign"} {
+		t.Run(step, func(t *testing.T) {
+			r := &fakeRunner{err: map[string]error{step: errors.New("boom")}}
+			in, _ := newInstaller(t, r)
+			app := mkOurApplet(t, in, r)
+			err := in.Install(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "partial build was removed") || !strings.Contains(err.Error(), "previous wgo URL handler was left in place") {
+				t.Fatalf("err = %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(app, "Contents", "old")); err != nil {
+				t.Fatalf("previous applet lost: %v", err)
+			}
+			if _, err := os.Lstat(StagingDir(in.Home)); !os.IsNotExist(err) {
+				t.Errorf("partial build left behind: %v", err)
+			}
+			for _, c := range r.calls {
+				if c[0] == LSRegister {
+					t.Fatal("must not register after a failed step")
+				}
+			}
+		})
 	}
 }
 
-func TestInstallOsacompileFailureWithoutPartial(t *testing.T) {
-	r := &fakeRunner{err: map[string]error{"osacompile": errors.New("syntax error")}}
+func TestInstallRestoresPreviousWhenSwapFails(t *testing.T) {
+	r := &fakeRunner{}
 	in, _ := newInstaller(t, r)
-	in.RemoveAll = func(p string) error { t.Fatalf("removed %s, which does not exist", p); return nil }
-	if err := in.Install(context.Background()); err == nil || strings.Contains(err.Error(), "removed") {
+	app := mkOurApplet(t, in, r)
+	in.Rename = func(oldpath, newpath string) error {
+		if newpath == app && strings.HasPrefix(oldpath, StagingDir(in.Home)) && filepath.Base(oldpath) == AppName {
+			return errors.New("cross-device link")
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	if err := in.Install(context.Background()); err == nil || !strings.Contains(err.Error(), "left in place") {
 		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(app, "Contents", "old")); err != nil {
+		t.Fatalf("previous applet not restored: %v", err)
+	}
+}
+
+func TestInstallRegisterFailureKeepsNewApplet(t *testing.T) {
+	r := &fakeRunner{err: map[string]error{LSRegister: errors.New("boom")}}
+	in, _ := newInstaller(t, r)
+	app := AppPath(in.Home)
+	if err := in.Install(context.Background()); err == nil || !strings.Contains(err.Error(), "is installed, but registering") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(app, "Contents")); err != nil {
+		t.Fatalf("signed applet was removed: %v", err)
+	}
+}
+
+func TestInstallClearsLeftoverStaging(t *testing.T) {
+	r := &fakeRunner{}
+	in, _ := newInstaller(t, r)
+	leftover := filepath.Join(StagingDir(in.Home), AppName, "Contents", "stale")
+	if err := os.MkdirAll(filepath.Dir(leftover), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(leftover, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(AppPath(in.Home), "Contents", "stale")); !os.IsNotExist(err) {
+		t.Fatalf("leftover build was installed: %v", err)
+	}
+}
+
+func TestInstallRefusesSymlinkOrFile(t *testing.T) {
+	for name, mk := range map[string]func(app, target string) error{
+		"symlink": func(app, target string) error { return os.Symlink(target, app) },
+		"file":    func(app, _ string) error { return os.WriteFile(app, nil, 0o644) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := &fakeRunner{extract: map[string]string{MarkerKey: MarkerValue, "CFBundleIdentifier": BundleID}}
+			in, _ := newInstaller(t, r)
+			app := AppPath(in.Home)
+			target := filepath.Join(in.Home, "elsewhere")
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(app), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := mk(app, target); err != nil {
+				t.Fatal(err)
+			}
+			in.RemoveAll = func(p string) error { t.Fatalf("removed %s", p); return nil }
+			if err := in.Install(context.Background()); err == nil || !strings.Contains(err.Error(), "left alone") {
+				t.Fatalf("err = %v, want a refusal", err)
+			}
+			if len(r.calls) != 0 {
+				t.Fatalf("ran %q after refusing", r.calls)
+			}
+			if _, err := os.Stat(target); err != nil {
+				t.Fatalf("target lost: %v", err)
+			}
+		})
 	}
 }
 

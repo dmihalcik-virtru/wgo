@@ -36,6 +36,12 @@ const defaultPathEnv = "/usr/bin:/bin:/usr/sbin:/sbin"
 // AppPath is where the applet lives for a user whose home is home.
 func AppPath(home string) string { return filepath.Join(home, "Applications", AppName) }
 
+// StagingDir is where Install builds a new applet before moving it into
+// place.
+func StagingDir(home string) string {
+	return filepath.Join(home, "Applications", ".wgo-url-handler-staging")
+}
+
 // AppleScriptString returns s as an AppleScript string literal. Backslashes
 // and double quotes are escaped; control characters (including newlines)
 // are rejected, since no executable path or PATH needs them.
@@ -127,9 +133,10 @@ type Installer struct {
 	Out     io.Writer
 	// DryRun prints the steps and runs nothing.
 	DryRun bool
-	// RemoveAll and MkdirAll default to the os functions.
+	// RemoveAll, MkdirAll and Rename default to the os functions.
 	RemoveAll func(string) error
 	MkdirAll  func(string, os.FileMode) error
+	Rename    func(oldpath, newpath string) error
 }
 
 // ErrUnsupported reports a non-macOS build.
@@ -153,6 +160,9 @@ func (in *Installer) check() error {
 	}
 	if in.MkdirAll == nil {
 		in.MkdirAll = os.MkdirAll
+	}
+	if in.Rename == nil {
+		in.Rename = os.Rename
 	}
 	return nil
 }
@@ -194,81 +204,98 @@ func (in *Installer) verifyOurs(ctx context.Context, app string) error {
 }
 
 // Install builds the applet in ~/Applications and registers it for wgo://.
-// An existing applet is replaced only when it carries the wgo marker.
+// An existing applet is replaced only when it carries the wgo marker, and
+// only once its replacement is built and signed: the new applet is built
+// in a staging folder beside it, so a failed build leaves the working
+// handler in place.
 func (in *Installer) Install(ctx context.Context) error {
 	if err := in.check(); err != nil {
 		return err
-	}
-	if !filepath.IsAbs(in.Executable) {
-		return fmt.Errorf("the wgo executable path %q is not absolute", in.Executable)
 	}
 	src, err := AppletSource(in.Executable, in.PathEnv)
 	if err != nil {
 		return err
 	}
 	app := AppPath(in.Home)
+	stage := StagingDir(in.Home)
+	built := filepath.Join(stage, AppName)
+	previous := filepath.Join(stage, "previous.app")
 	if in.DryRun {
 		fmt.Fprintf(in.Out, "Dry run: wgo setup url-handler would, running nothing now:\n")
 	}
 	_, statErr := os.Lstat(app)
+	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+		return fmt.Errorf("could not check %s: %w", app, statErr)
+	}
 	exists := statErr == nil
-	// created records that the app path is ours to clean up: it did not
-	// exist when the build started (any earlier applet carried the wgo
-	// marker and was removed above), so whatever is there after a failed
-	// step was made by this install.
-	created := false
 	if exists {
 		if in.DryRun {
-			fmt.Fprintf(in.Out, "  verify %s carries the %s marker, then remove it to replace it\n", app, MarkerKey)
-		} else {
-			if err := in.verifyOurs(ctx, app); err != nil {
-				return err
-			}
-			if err := in.RemoveAll(app); err != nil {
-				return fmt.Errorf("remove the previous %s: %w", app, err)
-			}
+			fmt.Fprintf(in.Out, "  verify %s carries the %s marker; it stays until its replacement is built\n", app, MarkerKey)
+		} else if err := in.verifyOurs(ctx, app); err != nil {
+			return err
 		}
 	}
 	if in.DryRun {
-		fmt.Fprintf(in.Out, "  create %s\n", filepath.Dir(app))
-	} else if err := in.MkdirAll(filepath.Dir(app), 0o755); err != nil {
-		return err
-	}
-	if !in.DryRun {
-		if _, err := os.Lstat(app); errors.Is(err, fs.ErrNotExist) {
-			created = true
+		fmt.Fprintf(in.Out, "  build in %s\n", stage)
+	} else {
+		// The staging folder is wgo's alone; a killed earlier run may have
+		// left one behind.
+		if err := in.RemoveAll(stage); err != nil {
+			return fmt.Errorf("could not clear the leftover build folder %s: %w", stage, err)
+		}
+		if err := in.MkdirAll(stage, 0o755); err != nil {
+			return fmt.Errorf("could not create the build folder %s: %w", stage, err)
 		}
 	}
-	cleanup := func(err error, what string) error {
-		if !created {
-			return fmt.Errorf("%s failed: %w", what, err)
-		}
-		if _, serr := os.Lstat(app); errors.Is(serr, fs.ErrNotExist) {
-			return fmt.Errorf("%s failed: %w", what, err)
-		}
-		if rerr := in.RemoveAll(app); rerr != nil {
-			return fmt.Errorf("%s failed: %w (and removing the partial %s failed: %v)", what, err, app, rerr)
-		}
-		return fmt.Errorf("%s failed: %w; the partial applet was removed", what, err)
+	kept := ""
+	if exists {
+		kept = "; your previous wgo URL handler was left in place"
 	}
-	if err := in.run(ctx, OsacompileArgv(app, src)); err != nil {
-		return cleanup(err, "compiling the applet")
+	fail := func(err error, what string) error {
+		if rerr := in.RemoveAll(stage); rerr != nil {
+			return fmt.Errorf("%s failed: %w%s (and removing the partial build in %s failed: %v)", what, err, kept, stage, rerr)
+		}
+		return fmt.Errorf("%s failed: %w; the partial build was removed%s", what, err, kept)
 	}
-	steps := append(PlistArgvs(app),
+	if err := in.run(ctx, OsacompileArgv(built, src)); err != nil {
+		return fail(err, "compiling the applet")
+	}
+	steps := append(PlistArgvs(built),
 		// Editing Info.plist invalidates the applet's signature; re-sign it
 		// ad hoc so macOS will launch it.
-		[]string{"codesign", "--force", "--sign", "-", app},
-		[]string{LSRegister, "-f", app},
+		[]string{"codesign", "--force", "--sign", "-", built},
 	)
 	for _, argv := range steps {
 		if err := in.run(ctx, argv); err != nil {
-			// The applet is ours and half-built: remove it rather than
-			// leave a handler that does not work.
-			return cleanup(err, filepath.Base(argv[0]))
+			return fail(err, filepath.Base(argv[0]))
 		}
 	}
 	if in.DryRun {
+		fmt.Fprintf(in.Out, "  move %s to %s\n", built, app)
+	} else {
+		if exists {
+			if err := in.Rename(app, previous); err != nil {
+				return fail(err, "moving the previous applet aside")
+			}
+		}
+		if err := in.Rename(built, app); err != nil {
+			if exists {
+				if rerr := in.Rename(previous, app); rerr != nil {
+					return fmt.Errorf("moving the new applet into place failed: %w, and restoring the previous one from %s failed: %v; run wgo setup url-handler again", err, previous, rerr)
+				}
+			}
+			return fail(err, "moving the new applet into place")
+		}
+	}
+	regErr := in.run(ctx, []string{LSRegister, "-f", app})
+	if in.DryRun {
 		return nil
+	}
+	if err := in.RemoveAll(stage); err != nil {
+		fmt.Fprintf(in.Out, "Note: could not remove the build folder %s: %v\n", stage, err)
+	}
+	if regErr != nil {
+		return fmt.Errorf("%s is installed, but registering it for wgo:// links failed: %w; run wgo setup url-handler again", app, regErr)
 	}
 	fmt.Fprintf(in.Out, "Installed %s for wgo:// links.\nIt runs %s open <url>; the first link to each workspace asks before opening it.\nRemove it with: wgo setup url-handler --uninstall\n", app, in.Executable)
 	return nil
