@@ -61,6 +61,35 @@ func TestListenDashBusyPortSuggestsPort(t *testing.T) {
 	}
 }
 
+// A server on the wildcard address also answers on loopback, so it makes the
+// port busy even though 127.0.0.1:P itself would bind on macOS.
+func TestListenDashBusyWildcardPort(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:0", "[::]:0"} {
+		busy, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Logf("%s: %v (skipped)", addr, err)
+			continue
+		}
+		port := busy.Addr().(*net.TCPAddr).Port
+		ln, err := listenDash(port)
+		busy.Close()
+		if err == nil {
+			ln.Close()
+			t.Errorf("listenDash(%d) succeeded while %s held the port", port, busy.Addr())
+			continue
+		}
+		if !strings.Contains(err.Error(), "already in use") {
+			t.Errorf("%s: want a busy-port error, got %q", addr, err)
+		}
+	}
+}
+
+func TestBusyPortErrorStaysInRange(t *testing.T) {
+	if msg := busyPortError("127.0.0.1:65535", 65535).Error(); !strings.Contains(msg, "--port 65534") {
+		t.Fatalf("busy 65535 should suggest 65534, got %q", msg)
+	}
+}
+
 type nilSource struct{}
 
 func (nilSource) Current() *dash.View { return nil }

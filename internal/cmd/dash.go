@@ -194,13 +194,41 @@ func dashFetchers() dash.Fetchers {
 func listenDash(port int) (net.Listener, error) {
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	ln, err := net.Listen("tcp", addr)
-	if err == nil {
-		return ln, nil
+	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return nil, busyPortError(addr, port)
+		}
+		return nil, fmt.Errorf("wgo dash: listen on %s: %w. Pick another port with --port", addr, err)
 	}
-	if errors.Is(err, syscall.EADDRINUSE) {
-		return nil, fmt.Errorf("wgo dash: %s is already in use (is another wgo dash running?). Pick another port: wgo dash --port %d", addr, port+1)
+	// On macOS and the BSDs, SO_REUSEADDR (which Go sets) lets 127.0.0.1:P
+	// bind beside a socket on the wildcard address 0.0.0.0:P or [::]:P, and
+	// the two then split loopback traffic. A wildcard bind collides with such
+	// a holder but not with our own specific one, so probing it finds the
+	// port shared rather than free.
+	if port != 0 {
+		for _, wild := range []string{"0.0.0.0", "::"} {
+			probe, err := net.Listen("tcp", net.JoinHostPort(wild, strconv.Itoa(port)))
+			if err == nil {
+				probe.Close()
+				continue
+			}
+			if errors.Is(err, syscall.EADDRINUSE) {
+				ln.Close()
+				return nil, busyPortError(net.JoinHostPort(wild, strconv.Itoa(port)), port)
+			}
+			// Any other failure (no IPv6, say) says nothing about the port.
+		}
 	}
-	return nil, fmt.Errorf("wgo dash: listen on %s: %w. Pick another port with --port", addr, err)
+	return ln, nil
+}
+
+// busyPortError reports that addr is taken and suggests another port.
+func busyPortError(addr string, port int) error {
+	next := port + 1
+	if next > 65535 {
+		next = port - 1
+	}
+	return fmt.Errorf("wgo dash: %s is already in use (is another wgo dash running?). Pick another port: wgo dash --port %d", addr, next)
 }
 
 // dashServer is what serveDash runs.
