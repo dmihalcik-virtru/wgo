@@ -2,7 +2,9 @@ package dash
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -489,32 +491,64 @@ func aggregate(s SourceStatus) Freshness {
 // Discovered reports the currently discovered workspaces by ID. It runs
 // discovery and read-only `jj workspace list`, but no per-workspace queries.
 func (c *Collector) Discovered() (map[string]Target, error) {
+	found, _, err := c.discovered()
+	return found, err
+}
+
+// discovered is Discovered plus discovery's diagnostics: repos whose
+// workspaces could not be listed and workspaces that could not be checked,
+// any of which may be why an ID is missing.
+func (c *Collector) discovered() (map[string]Target, []string, error) {
 	set, err := c.discoverWorkspaces()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	diags := set.diags
 	out := make(map[string]Target, len(set.list))
 	for _, w := range set.list {
-		if fi, err := os.Stat(filepath.Join(w.root, ".jj")); err != nil || !fi.IsDir() {
+		fi, err := os.Stat(filepath.Join(w.root, ".jj"))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			diags = append(diags, fmt.Sprintf("workspace %s: could not check its .jj directory: %v", w.root, err))
+		}
+		if err != nil || !fi.IsDir() {
 			continue
 		}
 		out[w.id] = Target{ID: w.id, Root: w.root, MainClone: w.mainClone}
 	}
-	return out, nil
+	return out, diags, nil
 }
 
+// DiscoveryIncompleteError is ErrUnknownWorkspace from a discovery that
+// reported problems, any of which may be why the workspace was not found
+// (say, jj could not list a repo's workspaces).
+type DiscoveryIncompleteError struct {
+	Diagnostics []string
+}
+
+func (e *DiscoveryIncompleteError) Error() string {
+	return ErrUnknownWorkspace.Error() + "; discovery reported: " + strings.Join(e.Diagnostics, "; ")
+}
+
+// Unwrap makes errors.Is(err, ErrUnknownWorkspace) hold.
+func (e *DiscoveryIncompleteError) Unwrap() error { return ErrUnknownWorkspace }
+
 // Resolve implements Resolver from discovery alone, without a snapshot: an
-// ID that is not discovered now is ErrUnknownWorkspace. `wgo open` uses it.
+// ID that is not discovered now is ErrUnknownWorkspace, or a
+// *DiscoveryIncompleteError when discovery reported problems. `wgo open`
+// uses it.
 func (c *Collector) Resolve(id string) (Target, error) {
 	if !ValidWorkspaceID(id) {
 		return Target{}, ErrUnknownWorkspace
 	}
-	found, err := c.Discovered()
+	found, diags, err := c.discovered()
 	if err != nil {
 		return Target{}, err
 	}
 	if t, ok := found[id]; ok {
 		return t, nil
+	}
+	if len(diags) > 0 {
+		return Target{}, &DiscoveryIncompleteError{Diagnostics: diags}
 	}
 	return Target{}, ErrUnknownWorkspace
 }

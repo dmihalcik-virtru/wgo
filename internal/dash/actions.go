@@ -61,7 +61,9 @@ func NewToken() (string, error) {
 }
 
 // Resolver resolves a workspace ID against the currently discovered
-// workspaces. Dash implements it.
+// workspaces. Dash implements it from its snapshot (and can report
+// ErrStaleWorkspace); Collector implements it from discovery alone for
+// `wgo open`.
 type Resolver interface {
 	Resolve(id string) (Target, error)
 }
@@ -329,8 +331,9 @@ func (s *server) specFile(ctx context.Context, t Target, dir string) (launch.Act
 }
 
 // NotContainedError is a workspace ID that resolved through discovery but
-// whose directory fails the containment check: it is gone, no longer a jj
-// workspace, or not beneath a discovery root.
+// whose directory fails the containment check (see containedWorkspace):
+// for example it is gone, unreadable, no longer a jj workspace, or not
+// beneath a readable discovery root.
 type NotContainedError struct{ err error }
 
 func (e *NotContainedError) Error() string { return e.err.Error() }
@@ -342,10 +345,13 @@ func (e *NotContainedError) Unwrap() error { return e.err }
 // /api/action and `wgo open` alike: it resolves id through r (current
 // discovery) and verifies the result is an existing jj workspace beneath
 // one of roots after resolving symlinks. It returns the target and the
-// verified directory, which is the only path that may be launched.
+// verified directory, which is the only path that may be launched. On a
+// *NotContainedError the resolved target is still returned (with an empty
+// directory) so callers can name the workspace.
 //
 // Errors: ErrUnknownWorkspace (also for a malformed ID) and
-// ErrStaleWorkspace from the resolver, a *NotContainedError for a failed
+// ErrStaleWorkspace from the resolver (possibly wrapped, as in
+// *DiscoveryIncompleteError), a *NotContainedError for a failed
 // containment check, or the resolver's discovery error.
 func ResolveWorkspace(r Resolver, id string, roots []string) (Target, string, error) {
 	if !ValidWorkspaceID(id) {
@@ -355,7 +361,7 @@ func ResolveWorkspace(r Resolver, id string, roots []string) (Target, string, er
 	if err != nil {
 		return Target{}, "", err
 	}
-	if t.ID != "" && t.ID != id {
+	if t.ID != id {
 		return Target{}, "", ErrUnknownWorkspace
 	}
 	dir, err := containedWorkspace(t.Root, roots)
