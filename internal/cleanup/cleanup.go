@@ -16,10 +16,11 @@ import (
 type CandidateKind int
 
 const (
-	KindWorktree     CandidateKind = iota // A non-main git worktree
-	KindLocalBranch                       // A local branch
-	KindRemoteBranch                      // A remote branch (via gh)
-	KindRepo                              // A full cloned repo directory
+	KindWorktree        CandidateKind = iota // A non-main git worktree
+	KindLocalBranch                          // A local branch
+	KindRemoteBranch                         // A remote branch (via gh)
+	KindRepo                                 // A full cloned repo directory
+	KindOrphanWorkspace                      // A workspace jj lists but whose directory is gone
 )
 
 func (k CandidateKind) String() string {
@@ -32,6 +33,8 @@ func (k CandidateKind) String() string {
 		return "remote branch"
 	case KindRepo:
 		return "repo"
+	case KindOrphanWorkspace:
+		return "orphaned workspace"
 	default:
 		return "unknown"
 	}
@@ -39,13 +42,14 @@ func (k CandidateKind) String() string {
 
 // Candidate represents a cleanup candidate.
 type Candidate struct {
-	Kind     CandidateKind
-	Path     string         // filesystem path (worktree or repo)
-	RepoPath string         // main repo root
-	Branch   string         // branch name
-	Reason   string         // human-readable reason, e.g. "merged PR #42"
-	IsDirty  bool           // has uncommitted changes
-	PRInfo   *github.PRInfo // non-nil if a PR was found
+	Kind          CandidateKind
+	Path          string         // filesystem path (worktree or repo); "" for a workspace whose directory is gone
+	RepoPath      string         // main repo root
+	WorkspaceName string         // jj workspace name, for worktrees and orphaned workspaces
+	Branch        string         // branch name
+	Reason        string         // human-readable reason, e.g. "merged PR #42"
+	IsDirty       bool           // has uncommitted changes
+	PRInfo        *github.PRInfo // non-nil if a PR was found
 }
 
 // FindCandidates discovers all cleanup candidates across tracked repos.
@@ -145,12 +149,31 @@ func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, s
 			if rig.IsWorkspace(rigDir, ws.Path, ws.Name) {
 				continue
 			}
+			// An orphaned workspace has no working copy to read, so it must be
+			// caught before the bookmark lookup: CurrentChange("") would read
+			// whichever repo wgo was run from. One that cannot be checked at
+			// all is left alone rather than guessed at.
+			reason, orphaned, err := jj.OrphanReason(ws)
+			if err != nil {
+				continue
+			}
+			if orphaned {
+				candidates = append(candidates, Candidate{
+					Kind:          KindOrphanWorkspace,
+					Path:          ws.Path,
+					RepoPath:      repoPath,
+					WorkspaceName: ws.Name,
+					Reason:        reason,
+				})
+				continue
+			}
 			bookmark := workspaceBookmark(jjc, ws.Path)
 			c := Candidate{
-				Kind:     KindWorktree,
-				Path:     ws.Path,
-				RepoPath: repoPath,
-				Branch:   bookmark,
+				Kind:          KindWorktree,
+				Path:          ws.Path,
+				RepoPath:      repoPath,
+				WorkspaceName: ws.Name,
+				Branch:        bookmark,
 			}
 
 			// Check if dirty
@@ -383,6 +406,9 @@ func FilterKinds(candidates []Candidate, kinds ...CandidateKind) []Candidate {
 func (c *Candidate) DisplayPath() string {
 	if c.Path != "" {
 		return c.Path
+	}
+	if c.Kind == KindOrphanWorkspace {
+		return c.RepoPath + " [workspace " + c.WorkspaceName + "]"
 	}
 	if c.RepoPath != "" && c.Branch != "" {
 		return c.RepoPath + " [" + c.Branch + "]"

@@ -29,7 +29,7 @@ var (
 )
 
 func init() {
-	cleanCmd.Flags().BoolVar(&cleanWorktrees, "worktrees", false, "Only clean worktrees")
+	cleanCmd.Flags().BoolVar(&cleanWorktrees, "worktrees", false, "Only clean worktrees, including orphaned workspaces")
 	cleanCmd.Flags().BoolVar(&cleanBranches, "branches", false, "Only clean local branches")
 	cleanCmd.Flags().BoolVar(&cleanRepos, "repos", false, "Only clean full repos")
 	cleanCmd.Flags().BoolVar(&cleanRemote, "remote", false, "Only clean remote branches")
@@ -44,10 +44,17 @@ var cleanCmd = &cobra.Command{
 	Short: "Remove stale worktrees, branches, and repos",
 	Long: `Find and remove stale git worktrees, merged/closed branches, and unused repos.
 
+Also forgets jj workspaces whose directory is gone (the warnings wgo dash
+shows). Forgetting never touches the disk, and --worktrees includes them.
+
 Shows a dry-run summary first, then prompts y/n per item (or use --yes to skip).
 Uses GitHub CLI (gh) for PR status when available.`,
 	RunE: runClean,
 }
+
+// worktreeKinds are the candidates --worktrees selects: workspaces to delete
+// and workspaces whose directory is already gone, which only need forgetting.
+var worktreeKinds = []cleanup.CandidateKind{cleanup.KindWorktree, cleanup.KindOrphanWorkspace}
 
 func runClean(cmd *cobra.Command, args []string) error {
 	if err := config.Init(); err != nil {
@@ -69,7 +76,7 @@ func runClean(cmd *cobra.Command, args []string) error {
 	if cleanWorktrees || cleanBranches || cleanRepos || cleanRemote {
 		var kinds []cleanup.CandidateKind
 		if cleanWorktrees {
-			kinds = append(kinds, cleanup.KindWorktree)
+			kinds = append(kinds, worktreeKinds...)
 		}
 		if cleanBranches {
 			kinds = append(kinds, cleanup.KindLocalBranch)
@@ -244,14 +251,20 @@ type Candidate = cleanup.Candidate
 func executeRemoval(c Candidate, jjc jj.Client, ghClient github.Client, _ *store.State) error {
 	switch c.Kind {
 	case cleanup.KindWorktree:
-		// Look up the workspace name from its on-disk path.
-		wsName := workspaceNameForPath(jjc, c.RepoPath, c.Path)
+		wsName := c.WorkspaceName
+		if wsName == "" {
+			// Look up the workspace name from its on-disk path.
+			wsName = workspaceNameForPath(jjc, c.RepoPath, c.Path)
+		}
 		if wsName != "" {
 			if err := jjc.WorkspaceForget(c.RepoPath, wsName); err != nil {
 				return err
 			}
 		}
 		return os.RemoveAll(c.Path)
+
+	case cleanup.KindOrphanWorkspace:
+		return forgetOrphanWorkspace(c, jjc)
 
 	case cleanup.KindLocalBranch:
 		force := cleanForce
@@ -373,6 +386,38 @@ func isAncestor(jjc jj.Client, repo, anc, desc string) bool {
 // workspaceNameForPath returns the jj workspace name whose on-disk root
 // matches wsPath, or "" if no match. Required because jj.WorkspaceForget
 // takes a workspace name, not a path.
+// forgetOrphanWorkspace stops jj tracking a workspace whose directory is gone.
+// It never touches the disk: a root that lost its .jj directory may now hold
+// someone else's files. The workspace is re-checked first, so one that came
+// back between the scan and the prompt is not forgotten.
+func forgetOrphanWorkspace(c Candidate, jjc jj.Client) error {
+	wss, err := jjc.ListWorkspaces(c.RepoPath)
+	if err != nil {
+		return err
+	}
+	for _, w := range wss {
+		if w.Name != c.WorkspaceName {
+			continue
+		}
+		_, orphaned, err := jj.OrphanReason(w)
+		if err != nil {
+			return fmt.Errorf("workspace %q: could not check its .jj directory: %w", w.Name, err)
+		}
+		if !orphaned {
+			return fmt.Errorf("workspace %q is back at %s; not forgetting it", w.Name, w.Path)
+		}
+		if err := jjc.WorkspaceForget(c.RepoPath, w.Name); err != nil {
+			return err
+		}
+		if _, err := os.Stat(w.Path); w.Path != "" && err == nil {
+			fmt.Printf("  Left %s in place; delete it yourself if it is no longer needed\n", w.Path)
+		}
+		return nil
+	}
+	// Already forgotten (by jj or another wgo): nothing left to do.
+	return nil
+}
+
 func workspaceNameForPath(jjc jj.Client, repoPath, wsPath string) string {
 	ws, err := jjc.ListWorkspaces(repoPath)
 	if err != nil {

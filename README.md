@@ -763,6 +763,11 @@ wgo clean --repos        # remove unused fork checkouts
 wgo clean --remote       # close draft/stale PRs on GitHub (with confirmation)
 ```
 
+`--worktrees` (and plain `wgo clean`) also forgets jj workspaces whose directory
+was deleted — the "listed by jj but its directory is gone" warnings in `wgo dash`.
+That only runs `jj workspace forget`: nothing on disk is removed, and edits in the
+workspace's working-copy change stay in the repo.
+
 For scripting or CI, skip prompts with `--yes`:
 
 ```bash
