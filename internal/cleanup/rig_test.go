@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -41,17 +42,27 @@ func (s *stubJJ) BookmarkList(string, jj.BookmarkListOpts) ([]jj.Bookmark, error
 	return nil, nil
 }
 
+// liveWorkspace creates path under root with a .jj directory, so the orphan
+// check reads it as a workspace that still exists, and returns path.
+func liveWorkspace(t *testing.T, root, rel string) string {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	require.NoError(t, os.MkdirAll(filepath.Join(path, ".jj"), 0o755))
+	return path
+}
+
 // A rig workspace pinned to a released tag can end up with a local bookmark on
 // its @ — someone runs `jj bookmark set` there, or an old bookmark already
 // points at the tagged commit. At that moment it looks exactly like an
 // abandoned, fully-merged worktree, which is what `wgo clean` offers to delete.
 func TestFindRepoCandidateSkipsRigWorkspaces(t *testing.T) {
-	repoPath := filepath.FromSlash("/home/u/mains/opentdf/platform")
-	rigDir := filepath.FromSlash("/home/u/rigs")
+	home := t.TempDir()
+	repoPath := liveWorkspace(t, home, "mains/opentdf/platform")
+	rigDir := filepath.Join(home, "rigs")
 
-	rigWS := filepath.Join(rigDir, "dsp-2.7.1", "src", "platform-service-v0.11.6")
-	strayWS := filepath.FromSlash("/tmp/scratch/platform-sdk-v0.10.1")
-	realWS := filepath.FromSlash("/home/u/worktrees/WGO-136/platform")
+	rigWS := liveWorkspace(t, rigDir, "dsp-2.7.1/src/platform-service-v0.11.6")
+	strayWS := liveWorkspace(t, home, "scratch/platform-sdk-v0.10.1")
+	realWS := liveWorkspace(t, home, "worktrees/WGO-136/platform")
 
 	jjc := &stubJJ{
 		workspaces: []jj.Workspace{
@@ -78,8 +89,9 @@ func TestFindRepoCandidateSkipsRigWorkspaces(t *testing.T) {
 // Without the exclusion every rig checkout is offered for deletion. This
 // asserts the guard is what is doing the work, not some unrelated filter.
 func TestFindRepoCandidateWithoutRigExclusion(t *testing.T) {
-	repoPath := filepath.FromSlash("/home/u/mains/opentdf/platform")
-	rigWS := filepath.FromSlash("/home/u/rigs/dsp-2.7.1/src/platform-service-v0.11.6")
+	home := t.TempDir()
+	repoPath := liveWorkspace(t, home, "mains/opentdf/platform")
+	rigWS := liveWorkspace(t, home, "rigs/dsp-2.7.1/src/platform-service-v0.11.6")
 
 	jjc := &stubJJ{
 		workspaces: []jj.Workspace{

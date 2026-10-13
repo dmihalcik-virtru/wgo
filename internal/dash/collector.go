@@ -187,15 +187,14 @@ func (c *Collector) discoverWorkspaces() (workspaceSet, error) {
 				continue
 			}
 			for _, w := range wss {
-				if w.Path == "" {
-					// jj reports no root once the workspace directory is gone.
-					set.diags = append(set.diags, fmt.Sprintf("repo %s: workspace %q is listed by jj but its directory is gone; if it was deleted, run: jj -R %s workspace forget %s",
-						main, w.Name, main, w.Name))
+				reason, orphaned, err := jj.OrphanReason(w)
+				if err != nil {
+					set.diags = append(set.diags, fmt.Sprintf("workspace %s: could not check its .jj directory: %v", w.Path, err))
 					continue
 				}
-				if fi, err := os.Stat(filepath.Join(w.Path, ".jj")); err != nil || !fi.IsDir() {
-					set.diags = append(set.diags, fmt.Sprintf("repo %s: workspace %q is listed by jj but %s has no .jj directory; if it was deleted, run: jj -R %s workspace forget %s",
-						main, w.Name, w.Path, main, w.Name))
+				if orphaned {
+					set.diags = append(set.diags, fmt.Sprintf("repo %s: workspace %q is listed by jj but %s; if it was deleted, run: wgo clean --worktrees (or: jj -R %s workspace forget %s)",
+						main, w.Name, reason, main, w.Name))
 					continue
 				}
 				add(w.Path, main)

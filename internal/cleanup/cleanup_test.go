@@ -18,6 +18,7 @@ func TestCandidateKindString(t *testing.T) {
 		{KindLocalBranch, "local branch"},
 		{KindRemoteBranch, "remote branch"},
 		{KindRepo, "repo"},
+		{KindOrphanWorkspace, "orphaned workspace"},
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, tt.kind.String(), "CandidateKind(%d).String()", tt.kind)

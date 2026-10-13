@@ -1315,3 +1315,30 @@ func TestBriefErrorStripsCommandLine(t *testing.T) {
 		t.Errorf("BriefError(plain) = %q", got)
 	}
 }
+
+// jj keeps reporting a workspace's old root after its directory is deleted,
+// so OrphanReason must notice the missing root rather than rely on jj
+// reporting none.
+func TestOrphanReasonDeletedWorkspace(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	ws := jjtest.NewWorkspace(t, repo, "deleted")
+	if err := os.RemoveAll(ws); err != nil {
+		t.Fatal(err)
+	}
+	wss, err := c.ListWorkspaces(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range wss {
+		reason, orphaned, err := jj.OrphanReason(w)
+		if err != nil {
+			t.Fatalf("%s: %v", w.Name, err)
+		}
+		if orphaned != (w.Name == "deleted") {
+			t.Errorf("%s: orphaned = %v (%q)", w.Name, orphaned, reason)
+		}
+		if w.Name == "deleted" && !strings.Contains(reason, "is gone") {
+			t.Errorf("deleted workspace reason = %q, want it to say the directory is gone", reason)
+		}
+	}
+}
