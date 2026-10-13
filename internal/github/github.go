@@ -19,10 +19,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/virtru/wgo/internal/jj"
 
 	"github.com/virtru/wgo/models"
 )
@@ -348,6 +351,13 @@ type CLIClient struct {
 	// slugResolver lets tests inject a fake repo-path -> "owner/repo" lookup.
 	// In production we shell out to `jj git remote list -R <path>`.
 	slugResolver func(repoPath string) (string, error)
+
+	// headOwnerResolver returns the GitHub owners whose repos carry branch,
+	// beyond the base repo's own owner. A PR opened from a fork lists its head
+	// as "fork-owner:branch", so a lookup that only asks under the base owner
+	// never finds it. In production this reads the remotes jj records for the
+	// bookmark; tests inject a fixed answer.
+	headOwnerResolver func(repoPath, branch string) []string
 }
 
 // ClientOption configures a CLIClient at construction time.
@@ -367,6 +377,12 @@ func WithHTTPClient(h *http.Client) ClientOption {
 // resolver. The default uses `jj git remote list` to derive the slug.
 func WithSlugResolver(fn func(repoPath string) (string, error)) ClientOption {
 	return func(c *CLIClient) { c.slugResolver = fn }
+}
+
+// WithHeadOwnerResolver lets tests inject the repo-path + branch -> fork
+// owners lookup used to find PRs opened from forks.
+func WithHeadOwnerResolver(fn func(repoPath, branch string) []string) ClientOption {
+	return func(c *CLIClient) { c.headOwnerResolver = fn }
 }
 
 // WithToken sets a fixed API token, bypassing GITHUB_TOKEN/gh resolution.
@@ -390,6 +406,7 @@ func NewClient(opts ...ClientOption) *CLIClient {
 		tokens:  &tokenSource{},
 	}
 	c.slugResolver = c.defaultSlugResolver
+	c.headOwnerResolver = defaultHeadOwnerResolver
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -460,27 +477,58 @@ func (c *CLIClient) GetPRStatus(repoPath, branch string) (*PRInfo, error) {
 	if err != nil || slug == "" {
 		return nil, nil
 	}
-	pr, err := c.firstOpenPRForBranch(slug, branch)
-	if err != nil || pr == nil {
+	list, err := c.listPRsForHead(repoPath, slug, branch, "open", 1)
+	if err != nil || len(list) == 0 {
 		return nil, nil
 	}
-	return pr.toPRInfo(), nil
+	return list[0].toPRInfo(), nil
 }
 
-// firstOpenPRForBranch returns the first open PR with head == branch, or
-// nil if none exists. The slug is "owner/repo".
-func (c *CLIClient) firstOpenPRForBranch(slug, branch string) (*apiPullRequest, error) {
-	owner, _ := splitOwnerRepo(slug)
-	endpoint := fmt.Sprintf("/repos/%s/pulls?head=%s:%s&state=open&per_page=1",
-		slug, owner, url.QueryEscape(branch))
-	var list []apiPullRequest
-	if err := c.getJSON(endpoint, &list); err != nil {
-		return nil, err
+// listPRsForHead lists PRs against slug whose head is branch, in any of the
+// repos that carry it: the base repo itself, plus every fork owner the
+// headOwnerResolver reports. Results are concatenated in that order, each
+// owner's query capped at perPage. Any failed query fails the whole call so
+// a partial answer is never cached as authoritative.
+func (c *CLIClient) listPRsForHead(repoPath, slug, branch, state string, perPage int) ([]apiPullRequest, error) {
+	baseOwner, _ := splitOwnerRepo(slug)
+	owners := []string{baseOwner}
+	if c.headOwnerResolver != nil {
+		for _, o := range c.headOwnerResolver(repoPath, branch) {
+			if o != "" && !slices.ContainsFunc(owners, func(s string) bool { return strings.EqualFold(s, o) }) {
+				owners = append(owners, o)
+			}
+		}
 	}
-	if len(list) == 0 {
-		return nil, nil
+	var out []apiPullRequest
+	for _, owner := range owners {
+		endpoint := fmt.Sprintf("/repos/%s/pulls?head=%s:%s&state=%s&per_page=%d",
+			slug, owner, url.QueryEscape(branch), state, perPage)
+		var list []apiPullRequest
+		if err := c.getJSON(endpoint, &list); err != nil {
+			return nil, err
+		}
+		out = append(out, list...)
 	}
-	return &list[0], nil
+	return out, nil
+}
+
+// defaultHeadOwnerResolver reports the GitHub owners of the remotes jj has
+// recorded the bookmark on — e.g. the "pr-4060-fork" remote `wto` adds for a
+// fork PR. It is a best-effort read: any failure yields no extra owners.
+func defaultHeadOwnerResolver(repoPath, branch string) []string {
+	// --ignore-working-copy: a PR lookup must not snapshot the workspace.
+	jjc := &jj.CLIClient{Binary: "jj", IgnoreWorkingCopy: true}
+	urls, err := jjc.BookmarkRemoteURLs(repoPath, branch)
+	if err != nil {
+		return nil
+	}
+	var owners []string
+	for _, u := range urls {
+		if owner, _ := splitOwnerRepo(SlugFromRemoteURL(u)); owner != "" {
+			owners = append(owners, owner)
+		}
+	}
+	return owners
 }
 
 // CreatePR opens a pull request via POST /repos/{slug}/pulls and returns the
@@ -566,7 +614,8 @@ func (c *CLIClient) ListPRsByBase(repoPath, base string) ([]PRInfo, error) {
 // no GITHUB_TOKEN and no gh CLI to fall back on.
 var ErrNoAuth = errors.New("no GitHub credentials: set GITHUB_TOKEN or run `gh auth login`")
 
-// ListPRsForBranch returns all PRs (any state) whose head branch matches.
+// ListPRsForBranch returns all PRs (any state) whose head branch matches,
+// including PRs opened from forks the bookmark has been fetched from.
 //
 // Every failure mode is reported as an error rather than an empty list. The
 // distinction matters because the caller caches the result: an empty list is
@@ -584,11 +633,8 @@ func (c *CLIClient) ListPRsForBranch(repoPath, branch string) ([]PRInfo, error) 
 	if slug == "" {
 		return nil, fmt.Errorf("could not determine GitHub repo slug for %s", repoPath)
 	}
-	owner, _ := splitOwnerRepo(slug)
-	endpoint := fmt.Sprintf("/repos/%s/pulls?head=%s:%s&state=all&per_page=5",
-		slug, owner, url.QueryEscape(branch))
-	var list []apiPullRequest
-	if err := c.getJSON(endpoint, &list); err != nil {
+	list, err := c.listPRsForHead(repoPath, slug, branch, "all", 5)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]PRInfo, 0, len(list))

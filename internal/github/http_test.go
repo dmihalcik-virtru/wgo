@@ -24,6 +24,8 @@ func newTestClient(t *testing.T, srv *httptest.Server, slug string) *CLIClient {
 		WithBaseURL(srv.URL),
 		WithToken("test-token"),
 		WithSlugResolver(func(string) (string, error) { return slug, nil }),
+		// Keep tests hermetic: no shelling out to jj for fork remotes.
+		WithHeadOwnerResolver(func(string, string) []string { return nil }),
 	)
 }
 
@@ -858,4 +860,95 @@ func TestListPRsForBranch_NoAuthReturnsError(t *testing.T) {
 	prs, err := c.ListPRsForBranch("/tmp", "a")
 	assert.Nil(t, prs)
 	assert.ErrorIs(t, err, ErrNoAuth)
+}
+
+// forkPRServer answers the head-filtered PR list: nothing under the base
+// owner, PR #4060 under the fork owner. It counts requests per head filter.
+func forkPRServer(t *testing.T, heads map[string]int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		head := r.URL.Query().Get("head")
+		heads[head]++
+		if head == "fork-owner:feat/x" {
+			_, _ = w.Write([]byte(`[{"number": 4060, "state": "open", "title": "feat: x",
+				"head": {"ref": "feat/x", "sha": "abc", "repo": {"full_name": "fork-owner/r"}},
+				"user": {"login": "fork-owner"}}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+}
+
+// TestListPRsForBranch_ForkHead: a PR opened from a fork has head
+// "fork-owner:branch", so the lookup must also ask under the owner of every
+// remote carrying the bookmark — asking only under the base owner misses it.
+func TestListPRsForBranch_ForkHead(t *testing.T) {
+	heads := map[string]int{}
+	srv := forkPRServer(t, heads)
+	defer srv.Close()
+	c := NewClient(
+		WithBaseURL(srv.URL),
+		WithToken("test-token"),
+		WithSlugResolver(func(string) (string, error) { return "o/r", nil }),
+		WithHeadOwnerResolver(func(_, branch string) []string {
+			assert.Equal(t, "feat/x", branch)
+			return []string{"fork-owner"}
+		}),
+	)
+
+	prs, err := c.ListPRsForBranch("/tmp", "feat/x")
+	require.NoError(t, err)
+	require.Len(t, prs, 1)
+	assert.Equal(t, 4060, prs[0].Number)
+
+	pr, err := c.GetPRStatus("/tmp", "feat/x")
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, 4060, pr.Number)
+
+	assert.Equal(t, 2, heads["o:feat/x"], "base owner still queried")
+	assert.Equal(t, 2, heads["fork-owner:feat/x"], "fork owner queried")
+}
+
+// TestListPRsForBranch_BaseOwnerNotRequeried: a remote owned by the base
+// repo's owner (e.g. origin itself) does not cost a duplicate request, even
+// when the case differs.
+func TestListPRsForBranch_BaseOwnerNotRequeried(t *testing.T) {
+	heads := map[string]int{}
+	srv := forkPRServer(t, heads)
+	defer srv.Close()
+	c := NewClient(
+		WithBaseURL(srv.URL),
+		WithToken("test-token"),
+		WithSlugResolver(func(string) (string, error) { return "o/r", nil }),
+		WithHeadOwnerResolver(func(string, string) []string { return []string{"O", "o", ""} }),
+	)
+
+	prs, err := c.ListPRsForBranch("/tmp", "feat/x")
+	require.NoError(t, err)
+	assert.Empty(t, prs)
+	assert.Equal(t, map[string]int{"o:feat/x": 1}, heads)
+}
+
+// TestListPRsForBranch_ForkQueryErrorFails: a failed fork-owner query fails
+// the lookup rather than returning the base owner's (empty) answer, which the
+// PR cache would otherwise record as an authoritative "no PRs" (WGO-137).
+func TestListPRsForBranch_ForkQueryErrorFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Query().Get("head"), "fork-owner:") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+	c := NewClient(
+		WithBaseURL(srv.URL),
+		WithToken("test-token"),
+		WithSlugResolver(func(string) (string, error) { return "o/r", nil }),
+		WithHeadOwnerResolver(func(string, string) []string { return []string{"fork-owner"} }),
+	)
+
+	_, err := c.ListPRsForBranch("/tmp", "feat/x")
+	assert.Error(t, err)
 }

@@ -1342,3 +1342,47 @@ func TestOrphanReasonDeletedWorkspace(t *testing.T) {
 		}
 	}
 }
+
+// TestBookmarkRemoteURLs: only remotes that actually carry the named bookmark
+// are reported — not every configured remote, not a remote holding a bookmark
+// that merely shares a prefix, and not jj's internal "git" pseudo-remote.
+func TestBookmarkRemoteURLs(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	origin := jjtest.NewBareRemote(t)
+	fork := jjtest.NewBareRemote(t)
+	for name, url := range map[string]string{"origin": origin, "fork": fork} {
+		if err := c.GitRemoteAdd(repo, name, url); err != nil {
+			t.Fatalf("GitRemoteAdd %s: %v", name, err)
+		}
+	}
+	jjtest.Commit(t, repo, "feature", map[string]string{"f.txt": "x"})
+	jjtest.Bookmark(t, repo, "feat/x", "@-")
+	jjtest.Bookmark(t, repo, "feat/xy", "@-")
+	for _, push := range [][]string{
+		{"jj", "git", "push", "--remote", "fork", "-b", "feat/x"},
+		{"jj", "git", "push", "--remote", "origin", "-b", "feat/xy"},
+	} {
+		if out, err := runRaw(t, repo, push[0], push[1:]...); err != nil {
+			t.Fatalf("%v: %v: %s", push, err, out)
+		}
+	}
+
+	urls, err := c.BookmarkRemoteURLs(repo, "feat/x")
+	if err != nil {
+		t.Fatalf("BookmarkRemoteURLs: %v", err)
+	}
+	// jj stores the remote URL with symlinks resolved (/var -> /private/var
+	// on macOS), so compare canonical paths.
+	wantFork, _ := filepath.EvalSymlinks(fork)
+	if len(urls) != 1 || urls[0] != wantFork {
+		t.Fatalf("BookmarkRemoteURLs(feat/x) = %v, want [%s]", urls, wantFork)
+	}
+
+	urls, err = c.BookmarkRemoteURLs(repo, "local-only")
+	if err != nil {
+		t.Fatalf("BookmarkRemoteURLs(local-only): %v", err)
+	}
+	if len(urls) != 0 {
+		t.Fatalf("BookmarkRemoteURLs(local-only) = %v, want none", urls)
+	}
+}

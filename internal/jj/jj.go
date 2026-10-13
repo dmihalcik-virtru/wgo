@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -325,6 +326,39 @@ func (c *CLIClient) RemoteURLs(path string) (map[string]string, error) {
 		remotes[parts[0]] = parts[1]
 	}
 	return remotes, nil
+}
+
+// BookmarkRemoteURLs returns the URLs of the remotes that carry a bookmark
+// named exactly name, in remote-name order. jj's internal "git" pseudo-remote
+// (colocated repos) is skipped since it has no URL. A bookmark that exists
+// only locally yields an empty slice.
+func (c *CLIClient) BookmarkRemoteURLs(repo, name string) ([]string, error) {
+	bms, err := c.BookmarkList(repo, BookmarkListOpts{
+		AllRemotes: true,
+		Names:      []string{"exact:" + strconv.Quote(name)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	remotes, err := c.RemoteURLs(repo)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, b := range bms {
+		if b.Remote == "" || b.Remote == "git" || !b.Present {
+			continue
+		}
+		if _, ok := remotes[b.Remote]; ok {
+			names = append(names, b.Remote)
+		}
+	}
+	sort.Strings(names)
+	urls := make([]string, 0, len(names))
+	for _, n := range names {
+		urls = append(urls, remotes[n])
+	}
+	return urls, nil
 }
 
 // ListWorkspaces enumerates the workspaces attached to repo.
