@@ -1,0 +1,340 @@
+package urlhandler
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/virtru/wgo/internal/launch"
+)
+
+// The installed applet.
+const (
+	// AppName is the applet bundle created in ~/Applications.
+	AppName = "wgo URL Handler.app"
+	// BundleID is the applet's CFBundleIdentifier.
+	BundleID = "com.virtru.wgo.url-handler"
+	// MarkerKey and MarkerValue are an Info.plist entry that marks the
+	// applet as created by wgo; --uninstall removes nothing without it.
+	MarkerKey   = "WgoURLHandler"
+	MarkerValue = "wgo setup url-handler v1"
+	// LSRegister is the LaunchServices registration tool.
+	LSRegister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+)
+
+// urlTypesJSON is the CFBundleURLTypes value: the wgo scheme only.
+const urlTypesJSON = `[{"CFBundleURLName":"` + BundleID + `","CFBundleURLSchemes":["` + Scheme + `"]}]`
+
+// defaultPathEnv is the PATH the applet uses when none was recorded.
+const defaultPathEnv = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+// AppPath is where the applet lives for a user whose home is home.
+func AppPath(home string) string { return filepath.Join(home, "Applications", AppName) }
+
+// StagingDir is where Install builds a new applet before moving it into
+// place.
+func StagingDir(home string) string {
+	return filepath.Join(home, "Applications", ".wgo-url-handler-staging")
+}
+
+// AppleScriptString returns s as an AppleScript string literal. Backslashes
+// and double quotes are escaped; control characters (including newlines)
+// are rejected, since no executable path or PATH needs them.
+func AppleScriptString(s string) (string, error) {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("%q contains a control character", s)
+		}
+	}
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`, nil
+}
+
+// AppletSource is the applet's AppleScript. wgoPath (absolute) and pathEnv
+// are fixed at install time as string literals. A received URL is handed to
+// `wgo open` as exactly one shell-quoted argument; wgo decides everything
+// else. A failure (a rejected link, an unknown workspace) is shown in a
+// notification, never a modal alert.
+func AppletSource(wgoPath, pathEnv string) (string, error) {
+	if !filepath.IsAbs(wgoPath) {
+		return "", fmt.Errorf("the wgo executable path %q is not absolute", wgoPath)
+	}
+	if pathEnv == "" {
+		pathEnv = defaultPathEnv
+	}
+	wq, err := AppleScriptString(wgoPath)
+	if err != nil {
+		return "", fmt.Errorf("the wgo executable path cannot be embedded: %w", err)
+	}
+	pq, err := AppleScriptString(pathEnv)
+	if err != nil {
+		return "", fmt.Errorf("PATH cannot be embedded: %w", err)
+	}
+	// Locals, not properties: an applet saves changed properties back into
+	// its bundle, which would break its signature.
+	return `-- Created by wgo setup url-handler. Remove with: wgo setup url-handler --uninstall
+on open location theURL
+	set wgoPath to ` + wq + `
+	set envPath to ` + pq + `
+	try
+		do shell script "PATH=" & quoted form of envPath & " " & quoted form of wgoPath & " open " & quoted form of theURL
+	on error errMsg
+		-- A notification, not a modal alert: a web page can trigger this
+		-- without any user interaction. wgo's messages never quote the URL.
+		display notification errMsg with title "wgo did not open the link"
+	end try
+end open location
+
+on run
+	display dialog "This applet opens wgo:// links with wgo. Remove it with: wgo setup url-handler --uninstall" with title "wgo URL Handler" buttons {"OK"} default button "OK"
+end run
+`, nil
+}
+
+// OsacompileArgv compiles source into the applet at app, one -e per line,
+// so the source never passes through a file or a shell.
+func OsacompileArgv(app, source string) []string {
+	argv := []string{"osacompile", "-o", app}
+	for _, line := range strings.Split(strings.TrimRight(source, "\n"), "\n") {
+		argv = append(argv, "-e", line)
+	}
+	return argv
+}
+
+// PlistArgvs are the plutil edits to the applet's Info.plist: its bundle
+// ID, the wgo URL scheme and the wgo marker.
+func PlistArgvs(app string) [][]string {
+	plist := infoPlist(app)
+	return [][]string{
+		{"plutil", "-replace", "CFBundleIdentifier", "-string", BundleID, plist},
+		{"plutil", "-replace", "CFBundleURLTypes", "-json", urlTypesJSON, plist},
+		{"plutil", "-replace", MarkerKey, "-string", MarkerValue, plist},
+	}
+}
+
+func infoPlist(app string) string { return filepath.Join(app, "Contents", "Info.plist") }
+
+// Installer installs and removes the applet. Every process goes through
+// Run, so tests never run osacompile, plutil, codesign or lsregister.
+type Installer struct {
+	GOOS string
+	Home string
+	// Executable is the absolute, symlink-resolved path of wgo to embed.
+	Executable string
+	// PathEnv is the PATH the applet gives wgo (jj must be on it).
+	PathEnv string
+	Run     Runner
+	Out     io.Writer
+	// DryRun prints the steps and runs nothing.
+	DryRun bool
+	// RemoveAll, MkdirAll and Rename default to the os functions.
+	RemoveAll func(string) error
+	MkdirAll  func(string, os.FileMode) error
+	Rename    func(oldpath, newpath string) error
+}
+
+// ErrUnsupported reports a non-macOS build.
+var ErrUnsupported = errors.New("URL-handler setup is unavailable")
+
+func (in *Installer) check() error {
+	if in.GOOS != "darwin" {
+		return fmt.Errorf("%w on %s: the wgo:// handler is a macOS applet. wgo dash works without it", ErrUnsupported, in.GOOS)
+	}
+	if in.Home == "" || !filepath.IsAbs(in.Home) {
+		return errors.New("cannot find your home directory")
+	}
+	if in.Run == nil {
+		in.Run = ExecRunner{}
+	}
+	if in.Out == nil {
+		in.Out = io.Discard
+	}
+	if in.RemoveAll == nil {
+		in.RemoveAll = os.RemoveAll
+	}
+	if in.MkdirAll == nil {
+		in.MkdirAll = os.MkdirAll
+	}
+	if in.Rename == nil {
+		in.Rename = os.Rename
+	}
+	return nil
+}
+
+func quoteArgv(argv []string) string {
+	q := make([]string, len(argv))
+	for i, a := range argv {
+		q[i] = launch.ShellQuote(a)
+	}
+	return strings.Join(q, " ")
+}
+
+func (in *Installer) run(ctx context.Context, argv []string) error {
+	if in.DryRun {
+		fmt.Fprintf(in.Out, "  %s\n", quoteArgv(argv))
+		return nil
+	}
+	_, err := in.Run.Output(ctx, argv)
+	return err
+}
+
+// verifyOurs checks app is a real directory (not a symlink) whose
+// Info.plist carries the wgo marker and bundle ID.
+func (in *Installer) verifyOurs(ctx context.Context, app string) error {
+	fi, err := os.Lstat(app)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("%s is not an application folder wgo created; it was left alone", app)
+	}
+	for _, kv := range [][2]string{{MarkerKey, MarkerValue}, {"CFBundleIdentifier", BundleID}} {
+		plist := infoPlist(app)
+		out, err := in.Run.Output(ctx, []string{"plutil", "-extract", kv[0], "raw", "-o", "-", plist})
+		// plutil reports a missing key, which means not ours, with this
+		// text; any other failure (no Info.plist, a damaged one) means wgo
+		// cannot tell, and says so rather than calling the applet foreign.
+		if err != nil && !strings.Contains(err.Error(), "No value at that key path") {
+			return fmt.Errorf("could not read %s from %s: %w; %s was left alone. Remove it yourself if it is a broken wgo URL Handler, then run wgo setup url-handler again", kv[0], plist, err, app)
+		}
+		if err != nil || strings.TrimSpace(out) != kv[1] {
+			return fmt.Errorf("%s was not created by wgo setup url-handler (its Info.plist has no %s = %q); it was left alone. Remove it yourself if you mean to", app, kv[0], kv[1])
+		}
+	}
+	return nil
+}
+
+// Install builds the applet in ~/Applications and registers it for wgo://.
+// An existing applet is replaced only when it carries the wgo marker, and
+// only once its replacement is built and signed: the new applet is built
+// in a staging folder beside it, so a failed build leaves the working
+// handler in place.
+func (in *Installer) Install(ctx context.Context) error {
+	if err := in.check(); err != nil {
+		return err
+	}
+	src, err := AppletSource(in.Executable, in.PathEnv)
+	if err != nil {
+		return err
+	}
+	app := AppPath(in.Home)
+	stage := StagingDir(in.Home)
+	built := filepath.Join(stage, AppName)
+	previous := filepath.Join(stage, "previous.app")
+	if in.DryRun {
+		fmt.Fprintf(in.Out, "Dry run: wgo setup url-handler would, running nothing now:\n")
+	}
+	_, statErr := os.Lstat(app)
+	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+		return fmt.Errorf("could not check %s: %w", app, statErr)
+	}
+	exists := statErr == nil
+	if exists {
+		if in.DryRun {
+			fmt.Fprintf(in.Out, "  verify %s carries the %s marker; it stays until its replacement is built\n", app, MarkerKey)
+		} else if err := in.verifyOurs(ctx, app); err != nil {
+			return err
+		}
+	}
+	if in.DryRun {
+		fmt.Fprintf(in.Out, "  build in %s\n", stage)
+	} else {
+		// The staging folder is wgo's alone; a killed earlier run may have
+		// left one behind.
+		if err := in.RemoveAll(stage); err != nil {
+			return fmt.Errorf("could not clear the leftover build folder %s: %w", stage, err)
+		}
+		if err := in.MkdirAll(stage, 0o755); err != nil {
+			return fmt.Errorf("could not create the build folder %s: %w", stage, err)
+		}
+	}
+	kept := ""
+	if exists {
+		kept = "; your previous wgo URL handler was left in place"
+	}
+	fail := func(err error, what string) error {
+		if rerr := in.RemoveAll(stage); rerr != nil {
+			return fmt.Errorf("%s failed: %w%s (and removing the partial build in %s failed: %v)", what, err, kept, stage, rerr)
+		}
+		return fmt.Errorf("%s failed: %w; the partial build was removed%s", what, err, kept)
+	}
+	if err := in.run(ctx, OsacompileArgv(built, src)); err != nil {
+		return fail(err, "compiling the applet")
+	}
+	steps := append(PlistArgvs(built),
+		// Editing Info.plist invalidates the applet's signature; re-sign it
+		// ad hoc so macOS will launch it.
+		[]string{"codesign", "--force", "--sign", "-", built},
+	)
+	for _, argv := range steps {
+		if err := in.run(ctx, argv); err != nil {
+			return fail(err, filepath.Base(argv[0]))
+		}
+	}
+	if in.DryRun {
+		fmt.Fprintf(in.Out, "  move %s to %s\n", built, app)
+	} else {
+		if exists {
+			if err := in.Rename(app, previous); err != nil {
+				return fail(err, "moving the previous applet aside")
+			}
+		}
+		if err := in.Rename(built, app); err != nil {
+			if exists {
+				if rerr := in.Rename(previous, app); rerr != nil {
+					return fmt.Errorf("moving the new applet into place failed: %w, and restoring the previous one from %s failed: %v; run wgo setup url-handler again", err, previous, rerr)
+				}
+			}
+			return fail(err, "moving the new applet into place")
+		}
+	}
+	regErr := in.run(ctx, []string{LSRegister, "-f", app})
+	if in.DryRun {
+		return nil
+	}
+	if err := in.RemoveAll(stage); err != nil {
+		fmt.Fprintf(in.Out, "Note: could not remove the build folder %s: %v\n", stage, err)
+	}
+	if regErr != nil {
+		return fmt.Errorf("%s is installed, but registering it for wgo:// links failed: %w; run wgo setup url-handler again", app, regErr)
+	}
+	fmt.Fprintf(in.Out, "Installed %s for wgo:// links.\nIt runs %s open <url>; the first link to each workspace asks before opening it.\nRemove it with: wgo setup url-handler --uninstall\n", app, in.Executable)
+	return nil
+}
+
+// Uninstall unregisters and removes the applet, but only after verifying
+// it is the one wgo created.
+func (in *Installer) Uninstall(ctx context.Context) error {
+	if err := in.check(); err != nil {
+		return err
+	}
+	app := AppPath(in.Home)
+	if _, err := os.Lstat(app); errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(in.Out, "No wgo URL handler is installed at %s; nothing to remove.\n", app)
+		return nil
+	}
+	if in.DryRun {
+		fmt.Fprintf(in.Out, "Dry run: wgo setup url-handler --uninstall would, running nothing now:\n")
+		fmt.Fprintf(in.Out, "  verify %s carries the %s marker\n", app, MarkerKey)
+		fmt.Fprintf(in.Out, "  %s\n", quoteArgv([]string{LSRegister, "-u", app}))
+		fmt.Fprintf(in.Out, "  remove %s\n", app)
+		return nil
+	}
+	if err := in.verifyOurs(ctx, app); err != nil {
+		return err
+	}
+	if err := in.run(ctx, []string{LSRegister, "-u", app}); err != nil {
+		return fmt.Errorf("unregister %s: %w; it was not removed", app, err)
+	}
+	if err := in.RemoveAll(app); err != nil {
+		return fmt.Errorf("unregistered %s, so wgo:// links no longer open it, but could not delete it: %w; remove it manually", app, err)
+	}
+	fmt.Fprintf(in.Out, "Removed %s; wgo:// links no longer open anything.\n", app)
+	return nil
+}

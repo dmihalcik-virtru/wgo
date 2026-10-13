@@ -1039,6 +1039,10 @@ with `--ignore-working-copy` so it never snapshots a workspace. It also
 refreshes stale PR, Jira and GitHub issue data. Year-in-review runs are
 served under `/review/`. Stop the server with Ctrl-C.
 
+To open a workspace from a `wgo://open?ws=<id>` link outside the dashboard,
+install the optional [macOS URL handler](#wgo-links-with-wgo-setup-url-handler).
+The dashboard does not need it.
+
 ### Actions
 
 Select a workspace to get these buttons:
@@ -1168,6 +1172,150 @@ carry arguments, so `"code --wait"` is not found. Use an editor command
 that returns at once, since wgo waits for it (up to two minutes) before
 reporting.
 
+## wgo:// links with `wgo setup url-handler`
+
+On macOS you can let `wgo://open?ws=<id>` links open a terminal tab in a
+workspace, for example from notes or a chat message. This is optional,
+installed only when you ask for it, and independent of `wgo dash`.
+
+```
+wgo setup url-handler --dry-run     # print the steps, run nothing
+wgo setup url-handler               # install and register the handler
+wgo setup url-handler --uninstall   # unregister and remove it
+wgo open 'wgo://open?ws=ws-0123456789abcdef'   # what a click runs
+```
+
+Setup builds a small AppleScript applet, `~/Applications/wgo URL
+Handler.app`, with `osacompile`. It adds the `wgo` URL scheme and a wgo
+marker to the applet's `Info.plist` with `plutil`, re-signs it ad hoc with
+`codesign`, and registers it with LaunchServices (`lsregister -f`). The
+applet passes the whole URL to the `wgo` binary that ran setup. It runs it
+through AppleScript's `do shell script`, with the URL quoted by `quoted
+form of`, so it arrives as one argument:
+
+```
+<absolute path of wgo> open '<url>'
+```
+
+Setup records that wgo path and your current `PATH` in the applet; wgo
+needs `jj` on that `PATH`. Run setup again after moving wgo or jj. A
+`go run` build is refused, because it is deleted when it exits. On other
+systems setup reports that it is unavailable.
+
+Workspace IDs are the `ws-…` IDs in the dashboard. List them with:
+
+```
+wgo dash --json | jq -r '.snapshot.nodes[] | select(.kind == "workspace") | "\(.id)  \(.workspace.path)"'
+```
+
+### What a link can do
+
+Any web page can send you to a `wgo://` link, so `wgo open` treats the URL
+as hostile:
+
+- **One form only.** It accepts exactly `wgo://open?ws=<id>`, where the ID
+  is `ws-` and 16 lowercase hex digits. The input must match the canonical
+  form byte for byte. It rejects:
+  - other hosts, paths, ports, user info and fragments;
+  - extra, empty or repeated query parameters, and a trailing `&` or `;`;
+  - percent-encoding, `+`, spaces, control characters and over-long URLs;
+  - any `command`, `resume` or other parameter.
+- **Known workspaces only.** The ID is resolved through current discovery.
+  The directory must be an existing jj workspace under a `[discovery]
+  base_dirs` root after resolving symlinks. This is the same check the
+  dashboard's buttons use. An unknown, deleted or moved workspace is an
+  error.
+- **Open tab only.** A link opens a terminal tab with the dashboard's
+  launcher and `[dash]` terminal settings. When no terminal can be opened,
+  it prints a `cd` command to copy. It never resumes an agent and never
+  runs anything from the URL.
+- **First use asks.** The first link to a workspace shows a dialog with the
+  workspace's full path. **Cancel** is the default, and the dialog cancels
+  itself after two minutes. Click **Open** only if you just clicked that
+  link. If you click **Open**, wgo remembers that per workspace ID and path
+  in `~/.wgo/url-handler-approvals.json`, and later links to that workspace
+  open without asking. If the ID later resolves to another path, wgo asks
+  again. If the dialog cannot be shown (another OS, or no GUI session),
+  `wgo open` asks y/N when you run it in a terminal, and otherwise refuses.
+  It never accepts on its own.
+- **Declining pauses that workspace.** **Cancel**, Escape, a timed-out
+  dialog or a y/N "no" is not remembered as a refusal, but for the next 5
+  minutes links to that workspace are refused with a notification instead
+  of a dialog. A page that fires the same link again and again cannot wear
+  you down into clicking **Open**. Other workspaces are not affected, and
+  running `wgo open` yourself in a terminal skips the pause. Open it from
+  `wgo dash` meanwhile.
+- **No hidden formatting characters.** A workspace path containing control
+  characters or invisible Unicode formatting characters (category Cf) is
+  refused before any dialog.
+  This covers bidi overrides and isolates (U+202A–U+202E, U+2066–U+2069),
+  direction marks (U+200E, U+200F, U+061C) and zero-width characters, any
+  of which could make the path in the dialog read as another. Look-alike
+  letters and unusual spaces are not detected, so read the path.
+- **One link at a time.** `wgo open` takes a non-blocking lock,
+  `~/.wgo/url-handler.lock`. While one `wgo open` is handling a link, for
+  example while its dialog is up, another `wgo open` exits at once with
+  "another wgo:// link is already being handled", so a page cannot stack up
+  dialogs. Separately, macOS itself may not deliver links that arrive
+  while the applet is busy: in one test, of three links sent within a
+  second, only the first ran and the others were dropped without a dialog
+  or notification. That is macOS behavior, not something wgo enforces.
+
+When `wgo open` fails, the applet shows why in a macOS notification, never
+a modal alert. A web page can trigger this without any click from you.
+Clicking **Cancel** is not a failure and shows nothing; a link refused
+during the pause after it does show a notification. The messages never
+include any part of the URL, so a page cannot put its own words in a wgo
+notification.
+
+When a link opens, the applet discards everything `wgo open` printed,
+including warnings (say, approvals that could not be saved, or a `[dash]`
+setting that was ignored). So `wgo open` also appends what each link did,
+with a timestamp, to `~/.wgo/url-handler.log`. It records the workspace ID
+and what happened, including local paths in error and fallback messages,
+but never any part of the URL. Past 256 KiB the log starts over, keeping the previous one
+as `url-handler.log.1`. To see why links misbehave:
+
+```
+tail ~/.wgo/url-handler.log
+```
+
+### Known limitation
+
+Workspace IDs are unsalted hashes of the workspace and main clone paths.
+A page that targets you and guesses your directory layout could compute a
+real ID:
+
+- For a workspace you have not approved, that only makes the first-use
+  dialog appear.
+- For one you have approved, the link opens a terminal tab in it with no
+  prompt. It still cannot run anything in that tab.
+
+A per-install salt would make IDs unguessable. That is a possible
+follow-up. It would change the dashboard's workspace IDs.
+
+### Automation prompt for links
+
+The applet runs `wgo`, which drives Ghostty through `osascript`. The first
+time a link opens a tab, macOS may ask whether **"wgo URL Handler"** may
+control **"Ghostty"**. This is the same Automation (TCC) prompt described in
+[macOS Automation prompt](#macos-automation-prompt), but it is a separate
+grant for the applet. Change it under **System Settings > Privacy &
+Security > Automation > wgo URL Handler**.
+
+### Removing the handler
+
+```
+wgo setup url-handler --uninstall
+```
+
+This unregisters the applet from LaunchServices and deletes it. It first
+checks that the applet's `Info.plist` carries the marker and bundle ID that
+setup wrote. It refuses to touch anything else at that path, including a
+symlink. Your approvals, the log and the lock stay behind in `~/.wgo/`
+(`url-handler-approvals.json`, `url-handler.log*`, `url-handler.lock`);
+delete them to forget your answers.
+
 ---
 
 ## Commands Reference
@@ -1197,6 +1345,8 @@ reporting.
 | `wgo status --sort activity` | Sort repos by last commit time |
 | `wgo dash` | Live web dashboard of all ongoing work, with workspace actions ([details](#live-dashboard-with-wgo-dash)) |
 | `wgo dash --json` | One dashboard snapshot as JSON |
+| `wgo setup url-handler` | Optional macOS `wgo://` link handler; `--uninstall` removes it ([details](#wgo-links-with-wgo-setup-url-handler)) |
+| `wgo open <wgo://open?ws=ID>` | Open a terminal tab for a `wgo://` workspace link |
 | `wgo today` | Morning review: commits, PRs, branches, tasks |
 | `wgo today --yesterday` | Review the previous day |
 | `wgo pr` | PRs needing attention across all repos |
