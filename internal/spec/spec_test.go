@@ -176,3 +176,25 @@ func TestFindByTicketErrorShape(t *testing.T) {
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, fs.ErrNotExist, "unreadable spec/ must be distinguishable")
 }
+
+func TestRenderTemplateTitleRoundTrips(t *testing.T) {
+	for _, title := range []string{
+		"",
+		"plain title",
+		"web-sdk: plaintext byte-range decrypt",
+		"[draft] something",
+		"# not a comment",
+		`say "hi"`,
+		"it's",
+		"true",
+		"line one\nline two",
+	} {
+		t.Run(title, func(t *testing.T) {
+			data, err := RenderTemplate(TemplateData{Ticket: "ABC-1", Title: title, Now: time.Now()})
+			require.NoError(t, err, "RenderTemplate")
+			sf, err := ParseBytes(data)
+			require.NoError(t, err, "ParseBytes")
+			assert.Equal(t, title, sf.Frontmatter.Title)
+		})
+	}
+}
