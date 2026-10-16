@@ -1,6 +1,6 @@
 ---
 ticket: {{ .Ticket }}
-title: {{ .Title }}
+title: {{ yaml .Title }}
 status: draft
 authors: [{{ range $i, $a := .Authors }}{{ if $i }}, {{ end }}{{ $a }}{{ end }}]
 branches: [{{ range $i, $b := .Branches }}{{ if $i }}, {{ end }}{{ $b }}{{ end }}]
