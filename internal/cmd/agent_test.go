@@ -465,7 +465,7 @@ func TestRunAgentStatusListsSessionsSorted(t *testing.T) {
 // TestNewerStateRefusesWrites: an older binary (this one, relative to a
 // version-4 file) still reads but will not write newer state.
 func TestNewerStateRefusesWrites(t *testing.T) {
-	newAgentEnv(t)
+	e := newAgentEnv(t)
 	home, _ := os.UserHomeDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(home, ".wgo"), 0o755))
 	path := filepath.Join(home, ".wgo", "state.json")
@@ -478,19 +478,30 @@ func TestNewerStateRefusesWrites(t *testing.T) {
 	assert.Contains(t, err.Error(), "Upgrade wgo")
 
 	t.Setenv("CLAUDECODE", "1")
-	e := heartbeatEnvWarnings(t)
-	heartbeatAgent("/ws", "/ws", "feat") // never fails the hot path...
+	heartbeatAgent("/ws", "/ws", "feat") // never fails the hot path
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, body, after)
-	assert.Contains(t, e.String(), "Upgrade wgo", "...but says why tracking stopped")
+	assert.Empty(t, e.warnings.String())
 }
 
-func heartbeatEnvWarnings(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	b, ok := agentWarnOut.(*bytes.Buffer)
-	require.True(t, ok, "newAgentEnv captures warnings")
-	return b
+// TestHotPathQuietOnUnreadableState: with a state file wgo cannot parse, the
+// `wgo .`/statusline heartbeat and agent lookup print nothing (their stderr
+// would land in a prompt), while `wgo agent status` fails and the hook warns.
+func TestHotPathQuietOnUnreadableState(t *testing.T) {
+	e := newAgentEnv(t)
+	home, _ := os.UserHomeDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".wgo"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".wgo", "state.json"), []byte("{not json"), 0o644))
+
+	t.Setenv("CLAUDECODE", "1")
+	heartbeatAgent("/ws", "/ws", "feat")
+	assert.Nil(t, resolveAgent("/ws"))
+	assert.Empty(t, e.warnings.String())
+
+	assert.Error(t, runAgentStatus(io.Discard, false))
+	runHookFixture(t, "stop.json", "Stop")
+	assert.Contains(t, e.warnings.String(), "failed to parse state file")
 }
 
 // TestStatuslineHeartbeatRespectsExplicitSession: after an explicit

@@ -562,7 +562,8 @@ func detectAgent() string {
 
 // heartbeatAgent is the implicit heartbeat on the `wgo .`/statusline hot path.
 // It is env-detected, best-effort, throttled, and local-disk only (no network,
-// no subprocess).
+// no subprocess). It never prints: errors are logged under WGO_DEBUG (see
+// warnAgentState for why).
 //
 // branch is the workspace's bookmark: "(no bookmark)" when it has none, and ""
 // when the lookup failed, which keeps the recorded bookmark rather than
@@ -585,7 +586,7 @@ func heartbeatAgent(wsRoot, repoPath, branch string) {
 	}
 	s, err := store.New()
 	if err != nil {
-		warnAgentState("agent heartbeat", err)
+		debugf("agent heartbeat: %v", err)
 		return
 	}
 	// MutateState holds a lock across load+save so this hot-path write can't
@@ -634,7 +635,7 @@ func heartbeatAgent(wsRoot, repoPath, branch string) {
 		return true, nil
 	})
 	if err != nil {
-		warnAgentState("agent heartbeat", err)
+		debugf("agent heartbeat: %v", err)
 	}
 }
 
@@ -681,11 +682,13 @@ var agentWarnOut io.Writer = os.Stderr
 
 var agentStateWarned bool
 
-// warnAgentState reports an error from the best-effort agent paths (hooks,
-// the `wgo .` heartbeat). These paths never fail their caller, but a state
-// file wgo cannot read or write (newer schema, unparseable, lock or write
-// failure) disables session tracking entirely, so it is printed even without
-// WGO_DEBUG, once per process.
+// warnAgentState reports an error from `wgo agent hook`. The hook never fails
+// its caller, but a state file wgo cannot read or write (newer schema,
+// unparseable, lock or write failure) disables session tracking entirely, so
+// it is printed even without WGO_DEBUG, once per process. The `wgo .` and
+// statusline paths (heartbeatAgent, resolveAgent) do not use it: their stderr
+// lands in a shell prompt or an agent's tool output, so they log only under
+// WGO_DEBUG and leave the error to `wgo agent status`, which fails on it.
 func warnAgentState(what string, err error) {
 	debugf("%s: %v", what, err)
 	if agentStateWarned || os.Getenv("WGO_DEBUG") != "" {
@@ -703,12 +706,12 @@ func resolveAgent(wsRoot string) *models.AgentRef {
 	}
 	s, err := store.New()
 	if err != nil {
-		warnAgentState("resolve agent", err)
+		debugf("resolve agent: %v", err)
 		return nil
 	}
 	state, err := s.LoadState()
 	if err != nil {
-		warnAgentState("resolve agent", err)
+		debugf("resolve agent: %v", err)
 		return nil
 	}
 	var ref *models.AgentRef
