@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -177,10 +178,15 @@ var workspaceRoot = func() (string, error) {
 	return workspaceRootOf(cwd)
 }
 
+// errNotJJRepo reports a directory outside any jj workspace. It is checked on
+// the filesystem, so unlike other workspace lookup errors it does not mean
+// that jj itself failed.
+var errNotJJRepo = errors.New("not a jj repository")
+
 func workspaceRootOf(dir string) (string, error) {
 	jjc := jj.NewCLI()
 	if !jjc.IsRepo(dir) {
-		return "", fmt.Errorf("not a jj repository")
+		return "", errNotJJRepo
 	}
 	wsRoot, err := jjc.Root(dir)
 	if err != nil {

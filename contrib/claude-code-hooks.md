@@ -65,8 +65,9 @@ per-tool cost stays small.
   `session_id`, or no event exits non-zero, which Claude Code shows as a
   non-blocking hook error. Everything else exits 0. A `cwd` outside a jj
   workspace is skipped silently (run with `WGO_DEBUG=1` to see it). A state
-  file wgo cannot read or write, such as one from a newer wgo, means sessions
-  are not being tracked, so it is shown as a warning on the next
+  file wgo cannot read or write, such as one from a newer wgo, or a workspace
+  jj fails on, such as when `jj` is not on Claude Code's `PATH`, means
+  sessions are not being tracked, so it is shown as a warning on the next
   `PostToolUse` or `UserPromptSubmit` (Claude Code drops a hook's
   `systemMessage` on the other events, and never shows stderr from a hook
   that exits 0). The same problem is repeated at most once an hour, tracked

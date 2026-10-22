@@ -101,7 +101,7 @@ func newAgentEnv(t *testing.T) *agentEnv {
 		if ws, ok := e.workspaces[dir]; ok {
 			return ws, nil
 		}
-		return workspaceInfo{}, fmt.Errorf("not a jj repository")
+		return workspaceInfo{}, errNotJJRepo
 	}
 	workspaceRoot = func() (string, error) {
 		ws, err := lookupWorkspace(e.cwd)

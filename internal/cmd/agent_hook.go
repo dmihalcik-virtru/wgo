@@ -39,12 +39,13 @@ process), the next event finds the new one.
 
 Malformed input, a missing or invalid session_id, or no event exits non-zero.
 A cwd outside any jj workspace is skipped silently (logged under WGO_DEBUG=1).
-A state file wgo cannot read or write (for example one written by a newer wgo)
-is reported as a JSON systemMessage on stdout, which Claude Code shows the
-user; that is written only on PostToolUse and UserPromptSubmit, where Claude
-Code displays it, and at most once an hour for the same problem. Otherwise
-the command prints nothing on stdout. Either way it exits 0, so it never
-disrupts the agent. See contrib/claude-code-hooks.md.`,
+A state file wgo cannot read or write (for example one written by a newer
+wgo), or a workspace jj fails on (for example because jj is not on Claude
+Code's PATH), is reported as a JSON systemMessage on stdout, which Claude
+Code shows the user; that is written only on PostToolUse and
+UserPromptSubmit, where Claude Code displays it, and at most once an hour for
+the same problem. Otherwise the command prints nothing on stdout. Either way
+it exits 0, so it never disrupts the agent. See contrib/claude-code-hooks.md.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		event := ""
@@ -168,13 +169,18 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			}
 		}
 		ws, err = lookupWorkspace(dir)
-		if err != nil {
-			if existing == nil {
-				return fmt.Errorf("not tracking session %s: %s: %v: %w", p.SessionID, dir, err, errHookSkipped)
-			}
+		switch {
+		case err == nil:
+		case existing != nil:
 			debugf("agent hook: session %s: cannot resolve workspace for %s: %v; keeping %s",
 				p.SessionID, dir, err, existing.WorktreePath)
 			ws = workspaceInfo{}
+		case errors.Is(err, errNotJJRepo):
+			return fmt.Errorf("not tracking session %s: %s: %v: %w", p.SessionID, dir, err, errHookSkipped)
+		default:
+			// dir is in a jj workspace, but jj failed on it: it is missing from
+			// the PATH Claude Code runs hooks with, too old, or misconfigured.
+			return fmt.Errorf("cannot resolve the jj workspace at %s (check that jj is on the PATH Claude Code runs hooks with): %w", dir, err)
 		}
 	}
 	// Find the agent process when none is recorded, or when the recorded one

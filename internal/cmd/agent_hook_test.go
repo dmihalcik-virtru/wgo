@@ -276,3 +276,18 @@ func TestAgentHookReportsStateProblems(t *testing.T) {
 	assert.Empty(t, e.warnings.String(), "outside a jj workspace is expected, not a warning")
 	assert.Nil(t, loadState(t).GetAgentSession("s1"))
 }
+
+// TestAgentHookReportsJJFailure: a cwd in a jj workspace that jj fails on (jj
+// missing from Claude Code's PATH, say) is reported, unlike a cwd outside any
+// workspace, because no session there would ever be tracked.
+func TestAgentHookReportsJJFailure(t *testing.T) {
+	e := newAgentEnv(t)
+	lookupWorkspace = func(string) (workspaceInfo, error) {
+		return workspaceInfo{}, fmt.Errorf("failed to get workspace root: exec: \"jj\": executable file not found in $PATH")
+	}
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	assert.Nil(t, loadState(t).GetAgentSession(hookSessionID))
+	msg := hookWarning(t, e.warnings.String())
+	assert.Contains(t, msg, "/ws/sub/dir")
+	assert.Contains(t, msg, "PATH Claude Code runs hooks with")
+}
