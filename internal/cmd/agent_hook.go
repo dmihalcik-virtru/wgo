@@ -37,12 +37,14 @@ parent) so a quiet session stays visible while Claude is running. If that
 process has exited (claude --resume keeps the session but starts a new
 process), the next event finds the new one.
 
-The command prints nothing on stdout. Malformed input, a missing or invalid
-session_id, or no event exits non-zero. A cwd outside any jj workspace is
-skipped silently (logged under WGO_DEBUG=1). A state file wgo cannot read or
-write (for example one written by a newer wgo) is reported on stderr. Either
-way the command exits 0, so it never disrupts the agent. See
-contrib/claude-code-hooks.md.`,
+Malformed input, a missing or invalid session_id, or no event exits non-zero.
+A cwd outside any jj workspace is skipped silently (logged under WGO_DEBUG=1).
+A state file wgo cannot read or write (for example one written by a newer wgo)
+is reported as a JSON systemMessage on stdout, which Claude Code shows the
+user; that is written only on PostToolUse and UserPromptSubmit, where Claude
+Code displays it, and at most once an hour for the same problem. Otherwise
+the command prints nothing on stdout. Either way it exits 0, so it never
+disrupts the agent. See contrib/claude-code-hooks.md.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		event := ""
@@ -99,7 +101,7 @@ var errHookSkipped = errors.New("skipped")
 // runAgentHook applies one hook event. Only unusable input is an error; every
 // internal failure is swallowed, because a failing hook must not break the
 // user's agent session. Expected skips are logged via debugf; state problems
-// are reported on stderr (warnAgentState), because they silently disable
+// are reported to the user (warnAgentState), because they silently disable
 // session tracking.
 func runAgentHook(r io.Reader, event, tool string) error {
 	var p hookPayload
@@ -128,7 +130,7 @@ func runAgentHook(r io.Reader, event, tool string) error {
 	case errors.Is(err, errHookSkipped):
 		debugf("agent hook %s: %v", event, err)
 	case err != nil:
-		warnAgentState("agent hook "+event, err)
+		warnAgentState(event, err)
 	}
 	return nil
 }

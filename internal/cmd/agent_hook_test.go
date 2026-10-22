@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -228,22 +229,50 @@ func TestAgentHookBookmark(t *testing.T) {
 	assert.Empty(t, loadState(t).GetAgentSession(hookSessionID).Branch)
 }
 
+// hookWarning returns the systemMessage the hook wrote, checking that stdout
+// held that one JSON object and nothing else, as Claude Code requires.
+func hookWarning(t *testing.T, out string) string {
+	t.Helper()
+	var msg struct {
+		SystemMessage string `json:"systemMessage"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &msg), "stdout is one JSON object: %q", out)
+	return msg.SystemMessage
+}
+
 // TestAgentHookReportsStateProblems: a state file the hook cannot write is
-// reported on stderr (still exit 0); a cwd outside jj is skipped quietly.
+// reported as a JSON systemMessage on stdout (still exit 0), only on an event
+// whose message Claude Code shows, and at most hourly for the same problem;
+// a cwd outside jj is skipped quietly.
 func TestAgentHookReportsStateProblems(t *testing.T) {
 	e := newAgentEnv(t)
 	home, _ := os.UserHomeDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(home, ".wgo"), 0o755))
 	path := filepath.Join(home, ".wgo", "state.json")
 	require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, `{"version":%d}`, store.StateVersion+1), 0o644))
+	// Each hook event is a new process.
+	nextEvent := func() { e.warnings.Reset(); agentStateWarned = false }
 
 	runHookFixture(t, "stop.json", "Stop")
-	assert.Contains(t, e.warnings.String(), "Upgrade wgo")
+	assert.Empty(t, e.warnings.String(), "Claude Code discards a systemMessage on Stop, so the warning waits")
+
+	nextEvent()
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	assert.Contains(t, hookWarning(t, e.warnings.String()), "Upgrade wgo")
+
+	nextEvent()
+	e.advance(10 * time.Minute)
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	assert.Empty(t, e.warnings.String(), "the same problem is not repeated on every tool call")
+
+	nextEvent()
+	e.advance(hookWarnEvery)
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	assert.Contains(t, hookWarning(t, e.warnings.String()), "Upgrade wgo", "but is repeated hourly")
 
 	require.NoError(t, os.Remove(path))
-	e.warnings.Reset()
-	agentStateWarned = false
-	require.NoError(t, runAgentHook(strings.NewReader(`{"session_id":"s1","cwd":"/nowhere"}`), "Stop", "claude"))
+	nextEvent()
+	require.NoError(t, runAgentHook(strings.NewReader(`{"session_id":"s1","cwd":"/nowhere"}`), "PostToolUse", "claude"))
 	assert.Empty(t, e.warnings.String(), "outside a jj workspace is expected, not a warning")
 	assert.Nil(t, loadState(t).GetAgentSession("s1"))
 }

@@ -57,14 +57,20 @@ per-tool cost stays small.
   is decoded from stdin and only `session_id`, `cwd` and `hook_event_name` are
   used. Nothing from the payload is placed on a command line or handed to a
   shell. Session IDs are restricted to `[A-Za-z0-9._:-]`.
-- **Quiet output.** The hook prints nothing on stdout (for `SessionStart` and
-  `UserPromptSubmit`, Claude Code would add stdout to the conversation).
+- **Quiet output.** The hook prints nothing on stdout except the warning
+  below, and that only as a JSON `systemMessage`, which Claude Code shows you
+  but not Claude. Plain text would be added to the conversation on
+  `SessionStart` and `UserPromptSubmit`.
 - **It never breaks your session.** Malformed JSON, a missing or invalid
   `session_id`, or no event exits non-zero, which Claude Code shows as a
   non-blocking hook error. Everything else exits 0. A `cwd` outside a jj
   workspace is skipped silently (run with `WGO_DEBUG=1` to see it). A state
-  file wgo cannot read or write, such as one from a newer wgo, is reported
-  once on stderr, because it means sessions are not being tracked.
+  file wgo cannot read or write, such as one from a newer wgo, means sessions
+  are not being tracked, so it is shown as a warning on the next
+  `PostToolUse` or `UserPromptSubmit` (Claude Code drops a hook's
+  `systemMessage` on the other events, and never shows stderr from a hook
+  that exits 0). The same problem is repeated at most once an hour, tracked
+  in `~/.wgo/agent-hook-warning.json`.
 - **Liveness without timers.** wgo walks up from the hook's parent process to
   the `claude` process and records its PID and start time; it does this on
   each event until the process is found, and again when the recorded one has

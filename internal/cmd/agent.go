@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -671,26 +672,77 @@ func ownSession(managed []store.AgentSession, tool string) (store.AgentSession, 
 	return *maybe, true
 }
 
-// agentWarnOut receives warnings about agent-session state problems. A
-// variable so tests can capture it.
-var agentWarnOut io.Writer = os.Stderr
+// agentWarnOut receives the hook's warnings. It is stdout, which Claude Code
+// reads as hook JSON; a variable so tests can capture it.
+var agentWarnOut io.Writer = os.Stdout
 
 var agentStateWarned bool
 
-// warnAgentState reports an error from `wgo agent hook`. The hook never fails
-// its caller, but a state file wgo cannot read or write (newer schema,
-// unparseable, lock or write failure) disables session tracking entirely, so
-// it is printed even without WGO_DEBUG, once per process. The `wgo .` and
-// statusline paths (heartbeatAgent, resolveAgent) do not use it: their stderr
-// lands in a shell prompt or an agent's tool output, so they log only under
-// WGO_DEBUG and leave the error to `wgo agent status`, which fails on it.
-func warnAgentState(what string, err error) {
-	debugf("%s: %v", what, err)
-	if agentStateWarned || os.Getenv("WGO_DEBUG") != "" {
+// hookWarningEvents are the hook events (lower case) whose JSON systemMessage
+// Claude Code shows the user. It discards the field on the others
+// (SessionStart, Stop, Notification, SessionEnd), and it never shows stderr
+// from a hook that exits 0.
+var hookWarningEvents = map[string]bool{"posttooluse": true, "userpromptsubmit": true}
+
+// hookWarnEvery is how often the hook repeats a warning about the same
+// problem. Each hook event is its own process, so a marker file in ~/.wgo,
+// not process memory, keeps the warning from repeating on every tool call.
+const hookWarnEvery = time.Hour
+
+// warnAgentState reports a problem that keeps `wgo agent hook` from recording
+// a session, such as a state file wgo cannot read or write (newer schema,
+// unparseable, lock or write failure). The hook still exits 0, so the warning
+// is a JSON systemMessage on stdout, which Claude Code shows the user (not
+// Claude). It is written only on hookWarningEvents, at most once per process,
+// and at most once per hookWarnEvery for the same problem; otherwise the
+// problem is only logged under WGO_DEBUG.
+//
+// The `wgo .` and statusline paths (heartbeatAgent, resolveAgent) do not use
+// it: their output lands in a shell prompt or an agent's tool output, so they
+// log only under WGO_DEBUG. `wgo agent status` fails on a state file it cannot
+// read or parse, but it reads newer-schema state and never writes, so for
+// those problems the hook's warning is the only report.
+func warnAgentState(event string, err error) {
+	debugf("agent hook %s: %v", event, err)
+	if agentStateWarned || !hookWarningEvents[strings.ToLower(event)] || !claimHookWarning(err.Error()) {
 		return
 	}
 	agentStateWarned = true
-	fmt.Fprintf(agentWarnOut, "wgo: %s: %v\n", what, err)
+	out, _ := json.Marshal(struct {
+		SystemMessage string `json:"systemMessage"`
+	}{"wgo agent hook: could not record this session: " + err.Error()})
+	fmt.Fprintf(agentWarnOut, "%s\n", out)
+}
+
+// claimHookWarning reports whether a warning about problem is due, and if so
+// records it in ~/.wgo/agent-hook-warning.json. A marker that cannot be read
+// or written leaves the warning due, so a broken ~/.wgo is still reported.
+func claimHookWarning(problem string) bool {
+	s, err := store.New()
+	if err != nil {
+		return true
+	}
+	path := filepath.Join(s.BaseDir(), "agent-hook-warning.json")
+	var last struct {
+		Problem string    `json:"problem"`
+		Time    time.Time `json:"time"`
+	}
+	now := agentNow()
+	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &last) == nil &&
+		last.Problem == problem && now.Sub(last.Time) < hookWarnEvery {
+		return false
+	}
+	last.Problem, last.Time = problem, now
+	data, err := json.Marshal(last)
+	if err == nil {
+		if err = s.EnsureDir(); err == nil {
+			err = os.WriteFile(path, data, 0o644)
+		}
+	}
+	if err != nil {
+		debugf("agent hook: recording warning in %s: %v", path, err)
+	}
+	return true
 }
 
 // resolveAgent returns the most recently active visible session in wsRoot for

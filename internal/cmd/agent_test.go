@@ -500,8 +500,8 @@ func TestHotPathQuietOnUnreadableState(t *testing.T) {
 	assert.Empty(t, e.warnings.String())
 
 	assert.Error(t, runAgentStatus(io.Discard, false))
-	runHookFixture(t, "stop.json", "Stop")
-	assert.Contains(t, e.warnings.String(), "failed to parse state file")
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	assert.Contains(t, hookWarning(t, e.warnings.String()), "failed to parse state file")
 }
 
 // TestStatuslineHeartbeatRespectsExplicitSession: after an explicit
