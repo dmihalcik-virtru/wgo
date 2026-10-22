@@ -614,6 +614,56 @@ func TestHeartbeatRefreshesOwnSession(t *testing.T) {
 	assert.Equal(t, before, state.GetAgentSession("other").LastActivity)
 }
 
+// TestHeartbeatNeverRefreshesCrashedSession: when no session records this
+// agent's process, a more recent sibling whose process exited is not picked;
+// the session with no identity is, and the crashed one ages out.
+func TestHeartbeatNeverRefreshesCrashedSession(t *testing.T) {
+	e := newAgentEnv(t)
+	state := loadState(t)
+	_, err := state.UpsertAgentSession(store.AgentSession{ID: "mine", Tool: "claude", Source: store.SourceHook, WorktreePath: "/ws"}, e.now)
+	require.NoError(t, err)
+	e.advance(time.Second)
+	_, err = state.UpsertAgentSession(store.AgentSession{ID: "crashed", Tool: "claude", Source: store.SourceHook, WorktreePath: "/ws", PID: 999, ProcStart: 1}, e.now)
+	require.NoError(t, err)
+	saveState(t, state)
+	before := loadState(t).GetAgentSession("crashed").LastActivity
+
+	t.Setenv("CLAUDECODE", "1")
+	e.advance(5 * time.Minute)
+	heartbeatAgent("/ws", "/ws", "feat")
+	state = loadState(t)
+	assert.Equal(t, e.now, state.GetAgentSession("mine").LastActivity.UTC())
+	assert.Equal(t, before, state.GetAgentSession("crashed").LastActivity)
+
+	e.advance(agentStaleAfter)
+	heartbeatAgent("/ws", "/ws", "feat")
+	state = loadState(t)
+	assert.Nil(t, state.GetAgentSession("crashed"), "its process exited, so it is pruned once quiet")
+	assert.NotNil(t, state.GetAgentSession("mine"))
+}
+
+// TestHeartbeatSkipsAnotherAgentsSession: a lone managed session whose
+// recorded process is a different running agent is not this agent's, so the
+// heartbeat keeps its own inferred session instead of refreshing that one.
+func TestHeartbeatSkipsAnotherAgentsSession(t *testing.T) {
+	e := newAgentEnv(t)
+	e.procs[555] = proc.Info{PID: 555, PPID: 1, Name: "claude", Start: 7}
+	state := loadState(t)
+	_, err := state.UpsertAgentSession(store.AgentSession{ID: "theirs", Tool: "claude", Source: store.SourceHook, WorktreePath: "/ws", PID: 555, ProcStart: 7}, e.now)
+	require.NoError(t, err)
+	saveState(t, state)
+	before := loadState(t).GetAgentSession("theirs").LastActivity
+
+	t.Setenv("CLAUDECODE", "1")
+	e.advance(5 * time.Minute)
+	heartbeatAgent("/ws", "/ws", "feat")
+	state = loadState(t)
+	assert.Equal(t, before, state.GetAgentSession("theirs").LastActivity)
+	inferred := state.GetAgentSession(store.InferredAgentSessionID("claude", "/ws"))
+	require.NotNil(t, inferred, "this agent is still listed")
+	assert.Equal(t, e.now, inferred.LastActivity.UTC())
+}
+
 // TestToolNamesCompareNormalized: a hook sent with --tool Claude is the same
 // tool the statusline detects, so no inferred duplicate appears.
 func TestToolNamesCompareNormalized(t *testing.T) {

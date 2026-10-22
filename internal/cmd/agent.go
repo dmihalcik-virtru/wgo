@@ -568,13 +568,12 @@ func detectAgent() string {
 // when the lookup failed, which keeps the recorded bookmark rather than
 // clearing it.
 //
-// When a hook- or command-managed session for the same tool exists in the
-// workspace, it refreshes that session (last activity and bookmark, never its
-// status) and drops any inferred duplicate. With several, it refreshes the one
-// whose recorded process is this heartbeat's own agent, so one agent's
-// statusline never keeps another, crashed, session looking active. Otherwise
-// it keeps a single inferred session per tool and workspace, which expires on
-// the quiet timeout.
+// When the workspace has a hook- or command-managed session for the same tool
+// that can be this agent's (see ownSession), it refreshes that session (last
+// activity and bookmark, never its status) and drops any inferred duplicate.
+// Otherwise it keeps a single inferred session per tool and workspace, which
+// expires on the quiet timeout. A crashed session, or another agent's, is
+// never refreshed, so one agent's statusline cannot keep it looking active.
 func heartbeatAgent(wsRoot, repoPath, branch string) {
 	name := detectAgent()
 	if name == "" || wsRoot == "" {
@@ -613,11 +612,10 @@ func heartbeatAgent(wsRoot, repoPath, branch string) {
 			WorktreePath: wsRoot, RepoPath: repoPath, Branch: branch, Source: store.SourceInferred,
 		}
 		existing := inferred
-		if len(managed) > 0 {
+		if own, ok := ownSession(managed, name); ok {
 			if inferred != nil {
 				changed = dropInferredDuplicate(state, name, wsRoot) || changed
 			}
-			own := ownSession(managed, name)
 			// Refresh, don't clobber: only activity, bookmark and repo move.
 			target = store.AgentSession{ID: own.ID, Tool: own.Tool, WorktreePath: own.WorktreePath, RepoPath: repoPath, Branch: branch}
 			existing = &own
@@ -640,21 +638,41 @@ func heartbeatAgent(wsRoot, repoPath, branch string) {
 	}
 }
 
-// ownSession picks, from managed sessions of one tool in one workspace (most
-// recent first), the one belonging to the agent this process runs under. The
-// process walk only happens when there is a choice to make; without a match
-// the most recently active session is used.
-func ownSession(managed []store.AgentSession, tool string) store.AgentSession {
-	if len(managed) == 1 {
-		return managed[0]
+// ownSession picks, from the managed sessions of one tool in one workspace
+// (most recent first), the one belonging to the agent this process runs
+// under, and reports false when none can be. A session whose recorded process
+// is this agent's is its own. A session whose recorded process has exited is
+// never picked, nor is one with a different running process when this
+// agent's own process is known: refreshing those would keep a crashed or
+// foreign session looking active. Otherwise the most recent session that
+// might be its own (no process identity, or one that cannot be checked) is
+// used.
+func ownSession(managed []store.AgentSession, tool string) (store.AgentSession, bool) {
+	if len(managed) == 0 {
+		return store.AgentSession{}, false
 	}
 	pid, start := agentProcess(tool, 0)
-	for _, sess := range managed {
-		if pid != 0 && sess.PID == pid && sess.ProcStart == start {
-			return sess
+	var maybe *store.AgentSession
+	for i, sess := range managed {
+		switch proc.Check(procInspector, sess.PID, sess.ProcStart) {
+		case proc.Running:
+			if sess.PID == pid && sess.ProcStart == start {
+				return sess, true
+			}
+			if pid != 0 {
+				continue // another live agent's
+			}
+		case proc.Exited:
+			continue
+		}
+		if maybe == nil {
+			maybe = &managed[i]
 		}
 	}
-	return managed[0]
+	if maybe == nil {
+		return store.AgentSession{}, false
+	}
+	return *maybe, true
 }
 
 // agentWarnOut receives warnings about agent-session state problems. A

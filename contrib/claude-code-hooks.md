@@ -80,9 +80,12 @@ per-tool cost stays small.
 
 If `contrib/statusline.sh` (or `wgo .`) also runs inside Claude Code, its
 heartbeat refreshes the hook-managed session for the same workspace instead of
-adding a second one, and never overwrites the status the hooks set. Without
-hooks, the statusline keeps a single *inferred* session per workspace, which
-expires 10 minutes after the statusline stops rendering.
+adding a second one, and never overwrites the status the hooks set. With
+several sessions there, it refreshes the one recording the Claude process it
+runs under; it never refreshes a session whose process has exited or belongs
+to another running Claude, so a crashed session still expires. Without hooks,
+the statusline keeps a single *inferred* session per workspace, which expires
+10 minutes after the statusline stops rendering.
 
 ## Mixed wgo versions
 
