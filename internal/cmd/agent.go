@@ -190,9 +190,9 @@ func workspaceRootOf(dir string) (string, error) {
 // workspaceInfo is what a new session records about where it runs.
 type workspaceInfo struct {
 	Root, Repo, Branch string
-	// BranchUnknown is set when the bookmark lookup failed, so Branch ""
+	// BranchKnown is false when the bookmark lookup failed, so Branch ""
 	// does not mean "no bookmark".
-	BranchUnknown bool
+	BranchKnown bool
 }
 
 // lookupWorkspace resolves the workspace root, its repository's main root and
@@ -210,7 +210,7 @@ var lookupWorkspace = func(dir string) (workspaceInfo, error) {
 		repo = wsRoot
 	}
 	branch, known := bookmarkOf(jjc, wsRoot)
-	return workspaceInfo{Root: wsRoot, Repo: repo, Branch: branch, BranchUnknown: !known}, nil
+	return workspaceInfo{Root: wsRoot, Repo: repo, Branch: branch, BranchKnown: known}, nil
 }
 
 // bookmarkOf returns the workspace's nearest bookmark ("" for none). ok is
@@ -565,9 +565,8 @@ func detectAgent() string {
 // no subprocess). It never prints: errors are logged under WGO_DEBUG (see
 // warnAgentState for why).
 //
-// branch is the workspace's bookmark: "(no bookmark)" when it has none, and ""
-// when the lookup failed, which keeps the recorded bookmark rather than
-// clearing it.
+// branch is the workspace's bookmark ("" for none). branchKnown is false when
+// the lookup failed, which keeps the recorded bookmark rather than clearing it.
 //
 // When the workspace has a hook- or command-managed session for the same tool
 // that can be this agent's (see ownSession), it refreshes that session (last
@@ -575,14 +574,10 @@ func detectAgent() string {
 // Otherwise it keeps a single inferred session per tool and workspace, which
 // expires on the quiet timeout. A crashed session, or another agent's, is
 // never refreshed, so one agent's statusline cannot keep it looking active.
-func heartbeatAgent(wsRoot, repoPath, branch string) {
+func heartbeatAgent(wsRoot, repoPath, branch string, branchKnown bool) {
 	name := detectAgent()
 	if name == "" || wsRoot == "" {
 		return
-	}
-	branchKnown := branch != ""
-	if branch == "(no bookmark)" {
-		branch = ""
 	}
 	s, err := store.New()
 	if err != nil {

@@ -82,10 +82,10 @@ func newAgentEnv(t *testing.T) *agentEnv {
 			fakeClaudePID: {PID: fakeClaudePID, PPID: 1, Name: "claude", Start: fakeClaudeTok},
 		},
 		workspaces: map[string]workspaceInfo{
-			"/ws":         {Root: "/ws", Repo: "/ws", Branch: "feat"},
-			"/ws/sub/dir": {Root: "/ws", Repo: "/ws", Branch: "feat"},
-			"/wt/feat":    {Root: "/wt/feat", Repo: "/ws", Branch: "feat"},
-			"/wt/other":   {Root: "/wt/other", Repo: "/ws", Branch: "other"},
+			"/ws":         {Root: "/ws", Repo: "/ws", Branch: "feat", BranchKnown: true},
+			"/ws/sub/dir": {Root: "/ws", Repo: "/ws", Branch: "feat", BranchKnown: true},
+			"/wt/feat":    {Root: "/wt/feat", Repo: "/ws", Branch: "feat", BranchKnown: true},
+			"/wt/other":   {Root: "/wt/other", Repo: "/ws", Branch: "other", BranchKnown: true},
 		},
 		cwd:      "/ws",
 		warnings: &bytes.Buffer{},
@@ -323,7 +323,7 @@ func TestNoProcessIdentityIsUncertain(t *testing.T) {
 func TestInferredSessionExpires(t *testing.T) {
 	e := newAgentEnv(t)
 	t.Setenv("CLAUDECODE", "1")
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 	ref := resolveAgent("/ws")
 	require.NotNil(t, ref)
 	assert.Equal(t, "claude", ref.Name)
@@ -341,19 +341,19 @@ func TestInferredSessionExpires(t *testing.T) {
 func TestHeartbeatAgentWritesThenThrottles(t *testing.T) {
 	e := newAgentEnv(t)
 	t.Setenv("CLAUDECODE", "1")
-	heartbeatAgent("/ws", "/ws", "(no bookmark)")
+	heartbeatAgent("/ws", "/ws", "", true)
 	id := store.InferredAgentSessionID("claude", "/ws")
 	first := loadState(t).GetAgentSession(id)
 	require.NotNil(t, first)
 	assert.Equal(t, store.SourceInferred, first.Source)
-	assert.Empty(t, first.Branch, "the display placeholder is not stored as a bookmark")
+	assert.Empty(t, first.Branch, "no bookmark is recorded as empty")
 
 	e.advance(10 * time.Second)
-	heartbeatAgent("/ws", "/ws", "")
+	heartbeatAgent("/ws", "/ws", "", false)
 	assert.Equal(t, first.LastActivity, loadState(t).GetAgentSession(id).LastActivity)
 
 	e.advance(heartbeatThrottle)
-	heartbeatAgent("/ws", "/ws", "")
+	heartbeatAgent("/ws", "/ws", "", false)
 	assert.Equal(t, e.now, loadState(t).GetAgentSession(id).LastActivity.UTC())
 	assert.Len(t, loadState(t).AgentSessions, 1, "one inferred session per tool and workspace")
 }
@@ -361,7 +361,7 @@ func TestHeartbeatAgentWritesThenThrottles(t *testing.T) {
 // TestHeartbeatAgentNoEnvIsNoOp: without an agent env, nothing is recorded.
 func TestHeartbeatAgentNoEnvIsNoOp(t *testing.T) {
 	newAgentEnv(t)
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 	assert.Nil(t, resolveAgent("/ws"))
 }
 
@@ -374,7 +374,7 @@ func TestStatuslineHeartbeatRespectsHookSession(t *testing.T) {
 	t.Setenv("CLAUDECODE", "1")
 
 	// The statusline ran before any hook fired: an inferred session exists.
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 	require.Len(t, loadState(t).AgentSessions, 1)
 
 	runHookFixture(t, "stop.json", "Stop")
@@ -385,7 +385,7 @@ func TestStatuslineHeartbeatRespectsHookSession(t *testing.T) {
 	assert.Equal(t, store.AgentWaiting, hook.Status)
 
 	e.advance(5 * time.Minute)
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 	state = loadState(t)
 	require.Len(t, state.AgentSessions, 1, "no duplicate next to the hook session")
 	after := state.GetAgentSession(hookSessionID)
@@ -478,7 +478,7 @@ func TestNewerStateRefusesWrites(t *testing.T) {
 	assert.Contains(t, err.Error(), "Upgrade wgo")
 
 	t.Setenv("CLAUDECODE", "1")
-	heartbeatAgent("/ws", "/ws", "feat") // never fails the hot path
+	heartbeatAgent("/ws", "/ws", "feat", true) // never fails the hot path
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, body, after)
@@ -495,7 +495,7 @@ func TestHotPathQuietOnUnreadableState(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".wgo", "state.json"), []byte("{not json"), 0o644))
 
 	t.Setenv("CLAUDECODE", "1")
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 	assert.Nil(t, resolveAgent("/ws"))
 	assert.Empty(t, e.warnings.String())
 
@@ -514,7 +514,7 @@ func TestStatuslineHeartbeatRespectsExplicitSession(t *testing.T) {
 
 	t.Setenv("CLAUDECODE", "1")
 	e.advance(5 * time.Minute)
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 
 	state := loadState(t)
 	require.Len(t, state.AgentSessions, 1, "no inferred duplicate next to the explicit session")
@@ -575,7 +575,7 @@ func TestAgentStopUnknownSessionFails(t *testing.T) {
 }
 
 // TestHeartbeatTracksBookmark: a bookmark change is recorded even inside the
-// throttle window; moving off every bookmark clears it; a failed lookup ("")
+// throttle window; moving off every bookmark clears it; a failed lookup
 // keeps the recorded one.
 func TestHeartbeatTracksBookmark(t *testing.T) {
 	e := newAgentEnv(t)
@@ -583,15 +583,15 @@ func TestHeartbeatTracksBookmark(t *testing.T) {
 	t.Setenv("CLAUDECODE", "1")
 
 	e.advance(time.Second)
-	heartbeatAgent("/ws", "/ws", "next")
+	heartbeatAgent("/ws", "/ws", "next", true)
 	assert.Equal(t, "next", loadState(t).GetAgentSession("a").Branch, "a bookmark change bypasses the throttle")
 
 	e.advance(time.Second)
-	heartbeatAgent("/ws", "/ws", "")
+	heartbeatAgent("/ws", "/ws", "", false)
 	assert.Equal(t, "next", loadState(t).GetAgentSession("a").Branch, "an unknown bookmark keeps the recorded one")
 
 	e.advance(time.Second)
-	heartbeatAgent("/ws", "/ws", "(no bookmark)")
+	heartbeatAgent("/ws", "/ws", "", true)
 	assert.Empty(t, loadState(t).GetAgentSession("a").Branch, "no bookmark clears it, so it cannot cause a false conflict")
 }
 
@@ -619,7 +619,7 @@ func TestHeartbeatRefreshesOwnSession(t *testing.T) {
 
 	t.Setenv("CLAUDECODE", "1")
 	e.advance(5 * time.Minute)
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 	state = loadState(t)
 	assert.Equal(t, e.now, state.GetAgentSession("mine").LastActivity.UTC())
 	assert.Equal(t, before, state.GetAgentSession("other").LastActivity)
@@ -641,13 +641,13 @@ func TestHeartbeatNeverRefreshesCrashedSession(t *testing.T) {
 
 	t.Setenv("CLAUDECODE", "1")
 	e.advance(5 * time.Minute)
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 	state = loadState(t)
 	assert.Equal(t, e.now, state.GetAgentSession("mine").LastActivity.UTC())
 	assert.Equal(t, before, state.GetAgentSession("crashed").LastActivity)
 
 	e.advance(agentStaleAfter)
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 	state = loadState(t)
 	assert.Nil(t, state.GetAgentSession("crashed"), "its process exited, so it is pruned once quiet")
 	assert.NotNil(t, state.GetAgentSession("mine"))
@@ -667,7 +667,7 @@ func TestHeartbeatSkipsAnotherAgentsSession(t *testing.T) {
 
 	t.Setenv("CLAUDECODE", "1")
 	e.advance(5 * time.Minute)
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 	state = loadState(t)
 	assert.Equal(t, before, state.GetAgentSession("theirs").LastActivity)
 	inferred := state.GetAgentSession(store.InferredAgentSessionID("claude", "/ws"))
@@ -687,6 +687,6 @@ func TestToolNamesCompareNormalized(t *testing.T) {
 
 	t.Setenv("CLAUDECODE", "1")
 	e.advance(5 * time.Minute)
-	heartbeatAgent("/ws", "/ws", "feat")
+	heartbeatAgent("/ws", "/ws", "feat", true)
 	assert.Len(t, loadState(t).AgentSessions, 1)
 }

@@ -71,16 +71,9 @@ type hookAction struct {
 	status  store.AgentStatus // "" keeps the current status
 	remove  bool
 	refresh bool // re-read the workspace and bookmark from cwd
-	known   bool // the event is one wgo recognizes
 }
 
 func hookActionFor(event string) hookAction {
-	act := hookActionForKnown(event)
-	act.known = act != (hookAction{})
-	return act
-}
-
-func hookActionForKnown(event string) hookAction {
 	switch strings.ToLower(event) {
 	case "sessionend":
 		return hookAction{remove: true}
@@ -127,7 +120,7 @@ func runAgentHook(r io.Reader, event, tool string) error {
 		tool = "claude"
 	}
 	act := hookActionFor(event)
-	if !act.known {
+	if act == (hookAction{}) {
 		debugf("agent hook: unrecognized event %q; treating it as activity", event)
 	}
 	err := applyHook(p, act, tool)
@@ -219,7 +212,7 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		if err != nil {
 			return false, err
 		}
-		if ws.Root != "" && !ws.BranchUnknown {
+		if ws.Root != "" && ws.BranchKnown {
 			// A fresh lookup is authoritative, including "no bookmark", which
 			// the merge in UpsertAgentSession would otherwise ignore.
 			state.SetAgentBookmark(saved.ID, ws.Branch)

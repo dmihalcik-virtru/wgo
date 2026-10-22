@@ -215,13 +215,13 @@ func TestAgentHookBookmark(t *testing.T) {
 	require.Equal(t, "feat", loadState(t).GetAgentSession(hookSessionID).Branch)
 
 	ws := e.workspaces["/ws"]
-	ws.Branch, ws.BranchUnknown = "", true
+	ws.Branch, ws.BranchKnown = "", false
 	e.workspaces["/ws"] = ws
 	e.advance(time.Second)
 	runHookFixture(t, "stop.json", "Stop")
 	assert.Equal(t, "feat", loadState(t).GetAgentSession(hookSessionID).Branch, "a failed lookup is not \"no bookmark\"")
 
-	ws.BranchUnknown = false
+	ws.BranchKnown = true
 	e.workspaces["/ws"] = ws
 	e.advance(time.Second)
 	runHookFixture(t, "stop.json", "Stop")
