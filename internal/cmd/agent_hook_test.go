@@ -135,19 +135,50 @@ func TestAgentHookResumedSessionFindsNewProcess(t *testing.T) {
 	require.NotNil(t, loadState(t).GetAgentSession(hookSessionID), "a quiet resumed session stays live")
 }
 
+// TestAgentHookResumedUnfindableProcessIsUncertain: when the recorded process
+// has exited and the walk finds no new one, the dead identity is dropped, so
+// the quiet session is shown as uncertain instead of being pruned as exited.
+func TestAgentHookResumedUnfindableProcessIsUncertain(t *testing.T) {
+	e := newAgentEnv(t)
+	runHookFixture(t, "stop.json", "Stop")
+	require.Equal(t, fakeClaudePID, loadState(t).GetAgentSession(hookSessionID).PID)
+
+	// The original claude exits; the resumed one runs under something the
+	// walk does not recognize.
+	delete(e.procs, fakeClaudePID)
+	e.procs[fakeShellPID] = proc.Info{PID: fakeShellPID, PPID: 1, Name: "zsh", Start: 9}
+
+	e.advance(2 * time.Minute)
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	sess := loadState(t).GetAgentSession(hookSessionID)
+	require.NotNil(t, sess)
+	assert.False(t, sess.HasProcess(), "the dead identity is not kept")
+
+	e.advance(agentStaleAfter + time.Hour)
+	startAgent(t, agentStartOpts{Tool: "codex", Session: "x"}) // prunes
+	require.NotNil(t, loadState(t).GetAgentSession(hookSessionID), "a quiet session with no identity stays")
+	assert.Contains(t, agentStatusOut(t), "uncertain")
+}
+
 // TestAgentHookAfterPruneRecreatesSession: a non-refresh event from a session
-// that was pruned while quiet re-creates it in its old workspace rather than
-// failing silently.
+// that is prunable (quiet past the max age) keeps it, with its workspace,
+// repo, bookmark and start time, rather than failing silently or recreating
+// it without them.
 func TestAgentHookAfterPruneRecreatesSession(t *testing.T) {
 	e := newAgentEnv(t)
 	e.noAgentProcess()
 	runHookFixture(t, "stop.json", "Stop")
+	before := loadState(t).GetAgentSession(hookSessionID)
+	require.NotNil(t, before)
 	e.advance(agentMaxAge + time.Hour) // past the max age: prunable
 
 	runHookFixture(t, "post_tool_use.json", "PostToolUse")
 	sess := loadState(t).GetAgentSession(hookSessionID)
 	require.NotNil(t, sess)
 	assert.Equal(t, "/ws", sess.WorktreePath)
+	assert.Equal(t, "/ws", sess.RepoPath)
+	assert.Equal(t, "feat", sess.Branch)
+	assert.Equal(t, before.StartTime, sess.StartTime)
 	assert.Equal(t, store.AgentWorking, sess.Status)
 	assert.Empty(t, e.warnings.String())
 }

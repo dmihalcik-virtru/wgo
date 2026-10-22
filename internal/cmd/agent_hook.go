@@ -194,10 +194,7 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 
 	return s.MutateState(func(state *store.State) (bool, error) {
 		now := agentNow()
-		// Read the session before pruning: an event from a session that was
-		// quiet long enough to be pruned still knows its workspace.
 		cur := state.GetAgentSession(p.SessionID)
-		state.PruneAgentSessions(now, agentPolicy())
 		sess := store.AgentSession{
 			ID: p.SessionID, Tool: tool, Source: store.SourceHook, Status: act.status,
 			WorktreePath: ws.Root, RepoPath: ws.Repo, Branch: ws.Branch,
@@ -211,6 +208,9 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			}
 			sess.WorktreePath = cur.WorktreePath
 		}
+		// Merge before pruning: this event shows the session is in use, so one
+		// quiet long enough to be prunable keeps its start time, effort, repo
+		// and bookmark rather than being deleted and recreated without them.
 		saved, err := state.UpsertAgentSession(sess, now)
 		if err != nil {
 			return false, err
@@ -220,6 +220,14 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			// the merge in UpsertAgentSession would otherwise ignore.
 			state.SetAgentBookmark(saved.ID, ws.Branch)
 		}
+		if pid == 0 && proc.Check(procInspector, saved.PID, saved.ProcStart) == proc.Exited {
+			// The recorded process is gone and the walk found no new one (a
+			// resumed claude under a launcher wgo does not recognize, say).
+			// The merge kept the dead identity; drop it, so the session turns
+			// uncertain when quiet instead of being pruned as exited.
+			state.ClearAgentProcess(saved.ID)
+		}
+		state.PruneAgentSessions(now, agentPolicy())
 		dropInferredDuplicate(state, tool, saved.WorktreePath)
 		return true, nil
 	})

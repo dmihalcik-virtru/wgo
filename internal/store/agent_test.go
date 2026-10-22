@@ -235,6 +235,19 @@ func TestSetAgentBookmarkClears(t *testing.T) {
 	assert.False(t, s.SetAgentBookmark("missing", "x"))
 }
 
+// TestClearAgentProcess: the merge keeps a process identity when given none,
+// so clearing goes through ClearAgentProcess.
+func TestClearAgentProcess(t *testing.T) {
+	s := NewState()
+	mustUpsert(t, s, AgentSession{ID: "a", Tool: "claude", WorktreePath: "/ws", PID: 200, ProcStart: 42}, t0)
+	assert.True(t, mustUpsert(t, s, AgentSession{ID: "a", Tool: "claude", WorktreePath: "/ws"}, t0).HasProcess())
+	require.True(t, s.ClearAgentProcess("a"))
+	sess := s.GetAgentSession("a")
+	assert.Zero(t, sess.PID)
+	assert.Zero(t, sess.ProcStart)
+	assert.False(t, s.ClearAgentProcess("missing"))
+}
+
 func TestParseAgentStatusRejectsUnknown(t *testing.T) {
 	st, err := ParseAgentStatus(" Waiting ")
 	require.NoError(t, err)

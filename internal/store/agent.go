@@ -144,7 +144,8 @@ type ObservedSession struct {
 // the same ID. Tool and WorktreePath are always taken from sess (Tool is
 // normalized to lower case). On merge StartTime, ThemeID, RepoPath, Branch,
 // Status and process identity are kept unless sess supplies a new value, so an
-// empty field never clears one; use SetAgentBookmark to clear a bookmark.
+// empty field never clears one; use SetAgentBookmark to clear a bookmark and
+// ClearAgentProcess to clear a process identity.
 // Source is never downgraded to inferred. A PID without a start token is
 // dropped, since it cannot be verified. LastActivity is set to now. Sessions
 // without an ID, tool or workspace are rejected.
@@ -205,6 +206,19 @@ func (s *State) SetAgentBookmark(id, branch string) bool {
 		return false
 	}
 	sess.Branch = branch
+	s.AgentSessions[id] = sess
+	return true
+}
+
+// ClearAgentProcess forgets the session's process identity, which
+// UpsertAgentSession's merge cannot express. It reports whether the session
+// exists.
+func (s *State) ClearAgentProcess(id string) bool {
+	sess, ok := s.AgentSessions[id]
+	if !ok {
+		return false
+	}
+	sess.PID, sess.ProcStart = 0, 0
 	s.AgentSessions[id] = sess
 	return true
 }
