@@ -183,6 +183,30 @@ func TestAgentHookAfterPruneRecreatesSession(t *testing.T) {
 	assert.Empty(t, e.warnings.String())
 }
 
+// TestAgentHookDoesNotResurrectEndedSession: an event in flight when its
+// session ends (here, SessionEnd lands while Stop resolves the workspace) does
+// not bring the session back, though a later event, as from a resume, does.
+func TestAgentHookDoesNotResurrectEndedSession(t *testing.T) {
+	e := newAgentEnv(t)
+	runHookFixture(t, "stop.json", "Stop")
+	require.NotNil(t, loadState(t).GetAgentSession(hookSessionID))
+
+	lookup := lookupWorkspace
+	lookupWorkspace = func(dir string) (workspaceInfo, error) {
+		runHookFixture(t, "session_end.json", "SessionEnd")
+		return lookup(dir)
+	}
+	e.advance(time.Second)
+	runHookFixture(t, "stop.json", "Stop")
+	assert.Nil(t, loadState(t).GetAgentSession(hookSessionID), "a refresh event in flight does not resurrect it")
+	assert.Empty(t, e.warnings.String())
+
+	lookupWorkspace = lookup
+	e.advance(time.Second)
+	runHookFixture(t, "stop.json", "Stop")
+	assert.NotNil(t, loadState(t).GetAgentSession(hookSessionID), "a resumed session is recorded again")
+}
+
 // TestAgentHookBookmark: a fresh lookup that finds no bookmark clears the
 // recorded one; a failed bookmark lookup keeps it.
 func TestAgentHookBookmark(t *testing.T) {

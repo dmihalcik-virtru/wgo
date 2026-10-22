@@ -195,17 +195,21 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 	return s.MutateState(func(state *store.State) (bool, error) {
 		now := agentNow()
 		cur := state.GetAgentSession(p.SessionID)
+		if existing != nil && cur == nil {
+			// The session was removed between the snapshot and the lock, by its
+			// SessionEnd or `wgo agent stop`: this event was in flight when the
+			// session ended and must not resurrect it, whatever the event. (If
+			// another wgo pruned it instead, only this event is lost; the next
+			// one recreates the session. A later resume starts from a snapshot
+			// without the session, so it is recorded again.)
+			return false, fmt.Errorf("session %s was removed while this event was in flight; not recreating it: %w", p.SessionID, errHookSkipped)
+		}
 		sess := store.AgentSession{
 			ID: p.SessionID, Tool: tool, Source: store.SourceHook, Status: act.status,
 			WorktreePath: ws.Root, RepoPath: ws.Repo, Branch: ws.Branch,
 			PID: pid, ProcStart: start,
 		}
-		if sess.WorktreePath == "" {
-			if cur == nil {
-				// The session ended (SessionEnd) between the snapshot and the
-				// lock; an in-flight event must not resurrect it.
-				return false, fmt.Errorf("session %s ended; not recreating it: %w", p.SessionID, errHookSkipped)
-			}
+		if sess.WorktreePath == "" && cur != nil {
 			sess.WorktreePath = cur.WorktreePath
 		}
 		// Merge before pruning: this event shows the session is in use, so one
