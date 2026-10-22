@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -313,7 +314,7 @@ func runAgentStart(w io.Writer, o agentStartOpts) error {
 		if err != nil {
 			return false, err
 		}
-		dropInferredDuplicate(state, tool, ws.Root)
+		dropInferredDuplicate(state, tool, ws.Root, sess.PID, sess.ProcStart)
 		saved = sess
 		conflicts = store.AgentConflicts(state.ObserveAgentSessions(now, agentPolicy()))[sess.ID]
 		return true, nil
@@ -333,10 +334,25 @@ func runAgentStart(w io.Writer, o agentStartOpts) error {
 }
 
 // dropInferredDuplicate removes the statusline's inferred session for a tool
-// and workspace once a managed session exists there, so the two never both
-// appear.
-func dropInferredDuplicate(state *store.State, tool, wsRoot string) bool {
-	return state.RemoveAgentSession(store.InferredAgentSessionID(tool, wsRoot))
+// and workspace once the agent whose process is pid/start has a managed
+// session there, so that agent is not listed twice. An inferred session that
+// records a different running agent (another claude without hooks, say) is
+// that agent's only session and is kept; removing it would have the two
+// agents delete and recreate it on every render.
+func dropInferredDuplicate(state *store.State, tool, wsRoot string, pid int, start int64) bool {
+	id := store.InferredAgentSessionID(tool, wsRoot)
+	if sess := state.GetAgentSession(id); sess == nil || recordsOtherAgent(*sess, pid, start) {
+		return false
+	}
+	return state.RemoveAgentSession(id)
+}
+
+// recordsOtherAgent reports whether sess records a running process other
+// than the agent process pid/start. When that agent's process is unknown
+// (pid 0), no session is known to be another's.
+func recordsOtherAgent(sess store.AgentSession, pid int, start int64) bool {
+	return pid != 0 && proc.Check(procInspector, sess.PID, sess.ProcStart) == proc.Running &&
+		(sess.PID != pid || sess.ProcStart != start)
 }
 
 // selectSession resolves an explicit or implied session ID. An omitted ID is
@@ -571,10 +587,12 @@ func detectAgent() string {
 //
 // When the workspace has a hook- or command-managed session for the same tool
 // that can be this agent's (see ownSession), it refreshes that session (last
-// activity and bookmark, never its status) and drops any inferred duplicate.
-// Otherwise it keeps a single inferred session per tool and workspace, which
-// expires on the quiet timeout. A crashed session, or another agent's, is
-// never refreshed, so one agent's statusline cannot keep it looking active.
+// activity and bookmark, never its status) and drops the inferred session if
+// it is this agent's duplicate (see dropInferredDuplicate). Otherwise it
+// keeps a single inferred session per tool and workspace, recording this
+// agent's process to show whose it is; it expires on the quiet timeout. A
+// crashed session, or another agent's, is never refreshed, so one agent's
+// statusline cannot keep it looking active.
 func heartbeatAgent(wsRoot, repoPath, branch string, branchKnown bool) {
 	name := detectAgent()
 	if name == "" || wsRoot == "" {
@@ -585,6 +603,8 @@ func heartbeatAgent(wsRoot, repoPath, branch string, branchKnown bool) {
 		debugf("agent heartbeat: %v", err)
 		return
 	}
+	// This agent's process, found only when a decision needs it.
+	self := sync.OnceValues(func() (int, int64) { return agentProcess(name, 0) })
 	// MutateState holds a lock across load+save so this hot-path write can't
 	// clobber a concurrent state mutation. Returning changed=false (throttled,
 	// nothing pruned) skips the write entirely.
@@ -609,9 +629,10 @@ func heartbeatAgent(wsRoot, repoPath, branch string, branchKnown bool) {
 			WorktreePath: wsRoot, RepoPath: repoPath, Branch: branch, Source: store.SourceInferred,
 		}
 		existing := inferred
-		if own, ok := ownSession(managed, name); ok {
+		if own, ok := ownSession(managed, self); ok {
 			if inferred != nil {
-				changed = dropInferredDuplicate(state, name, wsRoot) || changed
+				pid, start := self()
+				changed = dropInferredDuplicate(state, name, wsRoot, pid, start) || changed
 			}
 			// Refresh, don't clobber: only activity, bookmark and repo move.
 			target = store.AgentSession{ID: own.ID, Tool: own.Tool, WorktreePath: own.WorktreePath, RepoPath: repoPath, Branch: branch}
@@ -620,6 +641,9 @@ func heartbeatAgent(wsRoot, repoPath, branch string, branchKnown bool) {
 		bookmarkChanged := branchKnown && (existing == nil || branch != existing.Branch)
 		if existing != nil && now.Sub(existing.LastActivity) < heartbeatThrottle && !bookmarkChanged {
 			return changed, nil
+		}
+		if target.Source == store.SourceInferred {
+			target.PID, target.ProcStart = self()
 		}
 		saved, err := state.UpsertAgentSession(target, now)
 		if err != nil {
@@ -643,12 +667,13 @@ func heartbeatAgent(wsRoot, repoPath, branch string, branchKnown bool) {
 // agent's own process is known: refreshing those would keep a crashed or
 // foreign session looking active. Otherwise the most recent session that
 // might be its own (no process identity, or one that cannot be checked) is
-// used.
-func ownSession(managed []store.AgentSession, tool string) (store.AgentSession, bool) {
+// used. self returns this agent's process; it is called only when there is a
+// session to compare.
+func ownSession(managed []store.AgentSession, self func() (int, int64)) (store.AgentSession, bool) {
 	if len(managed) == 0 {
 		return store.AgentSession{}, false
 	}
-	pid, start := agentProcess(tool, 0)
+	pid, start := self()
 	var maybe *store.AgentSession
 	for i, sess := range managed {
 		switch proc.Check(procInspector, sess.PID, sess.ProcStart) {

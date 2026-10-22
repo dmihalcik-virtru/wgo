@@ -111,11 +111,16 @@ type AgentPolicy struct {
 // process that definitely exited or was reused makes the session gone. When
 // the process cannot be checked (sandboxed lookup, unsupported platform, a
 // PID recorded on another machine), the session is treated as having no
-// identity: uncertain, never deleted on that basis alone.
+// identity: uncertain, never deleted on that basis alone. An inferred session
+// expires once quiet, whatever its process: its identity records which agent
+// it belongs to, not that the statusline keeping it is still running.
 func (s AgentSession) Liveness(now time.Time, p AgentPolicy) AgentLiveness {
 	quiet := now.Sub(s.LastActivity)
 	if quiet <= p.Window {
 		return LivenessActive
+	}
+	if s.Source == SourceInferred {
+		return LivenessGone
 	}
 	if s.HasProcess() {
 		switch proc.Check(p.Procs, s.PID, s.ProcStart) {
@@ -125,10 +130,7 @@ func (s AgentSession) Liveness(now time.Time, p AgentPolicy) AgentLiveness {
 			return LivenessGone
 		}
 	}
-	switch {
-	case s.Source == SourceInferred:
-		return LivenessGone
-	case p.MaxAge > 0 && quiet > p.MaxAge:
+	if p.MaxAge > 0 && quiet > p.MaxAge {
 		return LivenessGone
 	}
 	return LivenessUncertain

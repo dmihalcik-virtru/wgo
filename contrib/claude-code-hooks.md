@@ -91,7 +91,10 @@ several sessions there, it refreshes the one recording the Claude process it
 runs under; it never refreshes a session whose process has exited or belongs
 to another running Claude, so a crashed session still expires. Without hooks,
 the statusline keeps a single *inferred* session per workspace, which expires
-10 minutes after the statusline stops rendering.
+10 minutes after the statusline stops rendering. That session records the
+Claude process it belongs to, so a Claude without hooks working next to one
+with hooks keeps its entry: the other Claude's hooks and statusline leave it
+alone.
 
 ## Mixed wgo versions
 

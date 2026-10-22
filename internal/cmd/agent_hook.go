@@ -227,7 +227,7 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			state.ClearAgentProcess(saved.ID)
 		}
 		state.PruneAgentSessions(now, agentPolicy())
-		dropInferredDuplicate(state, tool, saved.WorktreePath)
+		dropInferredDuplicate(state, tool, saved.WorktreePath, saved.PID, saved.ProcStart)
 		return true, nil
 	})
 }

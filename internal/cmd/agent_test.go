@@ -675,6 +675,47 @@ func TestHeartbeatSkipsAnotherAgentsSession(t *testing.T) {
 	assert.Equal(t, e.now, inferred.LastActivity.UTC())
 }
 
+// TestHooklessAgentKeepsInferredSession: next to a claude whose hooks manage
+// its session, a claude without hooks keeps its inferred session. The other
+// agent's statusline and hook events leave it alone instead of deleting it on
+// every render, and it still expires once its statusline stops.
+func TestHooklessAgentKeepsInferredSession(t *testing.T) {
+	e := newAgentEnv(t)
+	// The hooked agent is the fake claude (200) under its shell (300); the
+	// hookless one is claude 555 under shell 556.
+	e.procs[555] = proc.Info{PID: 555, PPID: 1, Name: "claude", Start: 7}
+	e.procs[556] = proc.Info{PID: 556, PPID: 555, Name: "zsh", Start: 8}
+	asHooked := func() { agentParentPID = func() int { return fakeShellPID } }
+	asHookless := func() { agentParentPID = func() int { return 556 } }
+	inferredID := store.InferredAgentSessionID("claude", "/ws")
+
+	runHookFixture(t, "stop.json", "Stop")
+	require.Equal(t, fakeClaudePID, loadState(t).GetAgentSession(hookSessionID).PID)
+
+	t.Setenv("CLAUDECODE", "1")
+	asHookless()
+	e.advance(time.Second)
+	heartbeatAgent("/ws", "/ws", "feat", true)
+	inferred := loadState(t).GetAgentSession(inferredID)
+	require.NotNil(t, inferred, "the hookless agent is listed")
+	assert.Equal(t, 555, inferred.PID, "with its process, which shows whose it is")
+	started := inferred.StartTime
+
+	asHooked()
+	e.advance(5 * time.Second)
+	heartbeatAgent("/ws", "/ws", "feat", true)
+	require.NotNil(t, loadState(t).GetAgentSession(inferredID), "the hooked agent's statusline leaves it alone")
+	e.advance(5 * time.Second)
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	inferred = loadState(t).GetAgentSession(inferredID)
+	require.NotNil(t, inferred, "and so do its hook events")
+	assert.Equal(t, started, inferred.StartTime, "never recreated")
+
+	e.advance(agentStaleAfter + time.Minute)
+	heartbeatAgent("/ws", "/ws", "feat", true)
+	assert.Nil(t, loadState(t).GetAgentSession(inferredID), "it expires once quiet, though claude 555 still runs")
+}
+
 // TestToolNamesCompareNormalized: a hook sent with --tool Claude is the same
 // tool the statusline detects, so no inferred duplicate appears.
 func TestToolNamesCompareNormalized(t *testing.T) {

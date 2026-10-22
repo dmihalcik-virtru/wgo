@@ -117,6 +117,7 @@ func TestLivenessRules(t *testing.T) {
 		{"no identity is uncertain", quiet(AgentSession{ID: "u", Source: SourceExplicit}), LivenessUncertain},
 		{"hook without identity is uncertain", quiet(AgentSession{ID: "h", Source: SourceHook}), LivenessUncertain},
 		{"inferred expires", quiet(AgentSession{ID: "i", Source: SourceInferred}), LivenessGone},
+		{"inferred expires though its process runs", quiet(AgentSession{ID: "ip", Source: SourceInferred, PID: 100, ProcStart: 5000}), LivenessGone},
 		{"a PID without a start token is no identity", quiet(AgentSession{ID: "p", Source: SourceExplicit, PID: 100}), LivenessUncertain},
 	}
 	for _, tc := range cases {
