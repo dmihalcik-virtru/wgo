@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/virtru/wgo/internal/proc"
 	"github.com/virtru/wgo/internal/store"
 )
 
@@ -106,4 +109,254 @@ func TestHookActionFor(t *testing.T) {
 	assert.Equal(t, store.AgentWaiting, hookActionFor("Stop").status)
 	assert.True(t, hookActionFor("SessionEnd").remove)
 	assert.Equal(t, hookAction{}, hookActionFor("SomethingNew"))
+}
+
+// TestAgentHookResumedSessionFindsNewProcess: claude --resume keeps the
+// session ID but runs a new process. The next event records the new process,
+// so the session survives going quiet instead of being pruned (#61).
+func TestAgentHookResumedSessionFindsNewProcess(t *testing.T) {
+	e := newAgentEnv(t)
+	runHookFixture(t, "stop.json", "Stop")
+	require.Equal(t, fakeClaudePID, loadState(t).GetAgentSession(hookSessionID).PID)
+
+	// The original claude exits; a resumed one takes over under a new PID.
+	delete(e.procs, fakeClaudePID)
+	e.procs[201] = proc.Info{PID: 201, PPID: 1, Name: "claude", Start: 515151}
+	e.procs[fakeShellPID] = proc.Info{PID: fakeShellPID, PPID: 201, Name: "zsh", Start: 9}
+
+	e.advance(2 * time.Minute)
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	sess := loadState(t).GetAgentSession(hookSessionID)
+	require.NotNil(t, sess)
+	assert.Equal(t, 201, sess.PID)
+	assert.Equal(t, int64(515151), sess.ProcStart)
+
+	e.advance(agentStaleAfter + time.Hour)
+	startAgent(t, agentStartOpts{Tool: "codex", Session: "x"}) // prunes
+	require.NotNil(t, loadState(t).GetAgentSession(hookSessionID), "a quiet resumed session stays live")
+}
+
+// TestAgentHookResumedUnfindableProcessIsUncertain: when the recorded process
+// has exited and the walk finds no new one, the dead identity is dropped, so
+// the quiet session is shown as uncertain instead of being pruned as exited.
+func TestAgentHookResumedUnfindableProcessIsUncertain(t *testing.T) {
+	e := newAgentEnv(t)
+	runHookFixture(t, "stop.json", "Stop")
+	require.Equal(t, fakeClaudePID, loadState(t).GetAgentSession(hookSessionID).PID)
+
+	// The original claude exits; the resumed one runs under something the
+	// walk does not recognize.
+	delete(e.procs, fakeClaudePID)
+	e.procs[fakeShellPID] = proc.Info{PID: fakeShellPID, PPID: 1, Name: "zsh", Start: 9}
+
+	e.advance(2 * time.Minute)
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	sess := loadState(t).GetAgentSession(hookSessionID)
+	require.NotNil(t, sess)
+	assert.False(t, sess.HasProcess(), "the dead identity is not kept")
+
+	e.advance(agentStaleAfter + time.Hour)
+	startAgent(t, agentStartOpts{Tool: "codex", Session: "x"}) // prunes
+	require.NotNil(t, loadState(t).GetAgentSession(hookSessionID), "a quiet session with no identity stays")
+	assert.Contains(t, agentStatusOut(t), "uncertain")
+}
+
+// TestAgentHookAfterPruneRecreatesSession: a non-refresh event from a session
+// that is prunable (quiet past the max age) keeps it, with its workspace,
+// repo, bookmark and start time, rather than failing silently or recreating
+// it without them.
+func TestAgentHookAfterPruneRecreatesSession(t *testing.T) {
+	e := newAgentEnv(t)
+	e.noAgentProcess()
+	runHookFixture(t, "stop.json", "Stop")
+	before := loadState(t).GetAgentSession(hookSessionID)
+	require.NotNil(t, before)
+	e.advance(agentMaxAge + time.Hour) // past the max age: prunable
+
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	sess := loadState(t).GetAgentSession(hookSessionID)
+	require.NotNil(t, sess)
+	assert.Equal(t, "/ws", sess.WorktreePath)
+	assert.Equal(t, "/ws", sess.RepoPath)
+	assert.Equal(t, "feat", sess.Branch)
+	assert.Equal(t, before.StartTime, sess.StartTime)
+	assert.Equal(t, store.AgentWorking, sess.Status)
+	assert.Empty(t, e.warnings.String())
+}
+
+// TestAgentHookDoesNotResurrectEndedSession: an event in flight when its
+// session ends (here, SessionEnd lands while UserPromptSubmit resolves the
+// workspace) does not bring the session back, and is not reported as a
+// problem, though a later event, as from a resume, does bring it back.
+func TestAgentHookDoesNotResurrectEndedSession(t *testing.T) {
+	e := newAgentEnv(t)
+	runHookFixture(t, "stop.json", "Stop")
+	require.NotNil(t, loadState(t).GetAgentSession(hookSessionID))
+
+	lookup := lookupWorkspace
+	lookupWorkspace = func(dir string) (workspaceInfo, error) {
+		runHookFixture(t, "session_end.json", "SessionEnd")
+		return lookup(dir)
+	}
+	e.advance(time.Second)
+	runHookFixture(t, "stop.json", "UserPromptSubmit") // an event that shows warnings
+	assert.Nil(t, loadState(t).GetAgentSession(hookSessionID), "a refresh event in flight does not resurrect it")
+	assert.Empty(t, e.warnings.String())
+
+	lookupWorkspace = lookup
+	e.advance(time.Second)
+	runHookFixture(t, "stop.json", "Stop")
+	assert.NotNil(t, loadState(t).GetAgentSession(hookSessionID), "a resumed session is recorded again")
+}
+
+// TestAgentHookKeepsSessionWhenWorkspaceLookupFails: once a session exists,
+// a refresh event from a cwd outside jj (claude cd'd elsewhere) or one jj
+// fails on still updates its status, keeps its workspace, repo and bookmark,
+// and is not reported.
+func TestAgentHookKeepsSessionWhenWorkspaceLookupFails(t *testing.T) {
+	e := newAgentEnv(t)
+	fake := lookupWorkspace
+	lookupWorkspace = func(dir string) (workspaceInfo, error) {
+		if dir == "/broken" {
+			return workspaceInfo{}, fmt.Errorf("failed to get workspace root: exec: \"jj\": executable file not found in $PATH")
+		}
+		return fake(dir)
+	}
+	runHookFixture(t, "stop.json", "Stop")
+	require.NotNil(t, loadState(t).GetAgentSession(hookSessionID))
+
+	for _, cwd := range []string{"/broken", "/tmp"} {
+		e.advance(time.Second)
+		require.NoError(t, runAgentHook(strings.NewReader(fmt.Sprintf(`{"session_id":%q,"cwd":%q}`, hookSessionID, cwd)), "UserPromptSubmit", "claude"))
+		sess := loadState(t).GetAgentSession(hookSessionID)
+		require.NotNil(t, sess, cwd)
+		assert.Equal(t, store.AgentWorking, sess.Status, cwd)
+		assert.Equal(t, "/ws", sess.WorktreePath, cwd)
+		assert.Equal(t, "/ws", sess.RepoPath, cwd)
+		assert.Equal(t, "feat", sess.Branch, cwd)
+		assert.Empty(t, e.warnings.String(), cwd)
+
+		e.advance(time.Second)
+		runHookFixture(t, "stop.json", "Stop")
+	}
+}
+
+// TestAgentHookBookmark: a fresh lookup that finds no bookmark clears the
+// recorded one; a failed bookmark lookup keeps it.
+func TestAgentHookBookmark(t *testing.T) {
+	e := newAgentEnv(t)
+	runHookFixture(t, "stop.json", "Stop")
+	require.Equal(t, "feat", loadState(t).GetAgentSession(hookSessionID).Branch)
+
+	ws := e.workspaces["/ws"]
+	ws.Branch, ws.BranchKnown = "", false
+	e.workspaces["/ws"] = ws
+	e.advance(time.Second)
+	runHookFixture(t, "stop.json", "Stop")
+	assert.Equal(t, "feat", loadState(t).GetAgentSession(hookSessionID).Branch, "a failed lookup is not \"no bookmark\"")
+
+	ws.BranchKnown = true
+	e.workspaces["/ws"] = ws
+	e.advance(time.Second)
+	runHookFixture(t, "stop.json", "Stop")
+	assert.Empty(t, loadState(t).GetAgentSession(hookSessionID).Branch)
+}
+
+// hookWarning returns the systemMessage the hook wrote, checking that stdout
+// held that one JSON object and nothing else, as Claude Code requires.
+func hookWarning(t *testing.T, out string) string {
+	t.Helper()
+	var msg struct {
+		SystemMessage string `json:"systemMessage"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &msg), "stdout is one JSON object: %q", out)
+	return msg.SystemMessage
+}
+
+// TestAgentHookReportsStateProblems: a state file the hook cannot write is
+// reported as a JSON systemMessage on stdout (still exit 0), only on an event
+// whose message Claude Code shows, and at most hourly for the same problem;
+// a cwd outside jj is skipped quietly.
+func TestAgentHookReportsStateProblems(t *testing.T) {
+	e := newAgentEnv(t)
+	home, _ := os.UserHomeDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".wgo"), 0o755))
+	path := filepath.Join(home, ".wgo", "state.json")
+	require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, `{"version":%d}`, store.StateVersion+1), 0o644))
+	// Each hook event is a new process.
+	nextEvent := func() { e.warnings.Reset(); agentStateWarned = false }
+
+	runHookFixture(t, "stop.json", "Stop")
+	assert.Empty(t, e.warnings.String(), "Claude Code discards a systemMessage on Stop, so the warning waits")
+
+	nextEvent()
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	assert.Contains(t, hookWarning(t, e.warnings.String()), "Upgrade wgo")
+
+	nextEvent()
+	e.advance(10 * time.Minute)
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	assert.Empty(t, e.warnings.String(), "the same problem is not repeated on every tool call")
+
+	nextEvent()
+	e.advance(hookWarnEvery)
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	assert.Contains(t, hookWarning(t, e.warnings.String()), "Upgrade wgo", "but is repeated hourly")
+
+	require.NoError(t, os.Remove(path))
+	nextEvent()
+	require.NoError(t, runAgentHook(strings.NewReader(`{"session_id":"s1","cwd":"/nowhere"}`), "PostToolUse", "claude"))
+	assert.Empty(t, e.warnings.String(), "outside a jj workspace is expected, not a warning")
+	assert.Nil(t, loadState(t).GetAgentSession("s1"))
+}
+
+// TestAgentHookReportsJJFailure: a cwd in a jj workspace that jj fails on (jj
+// missing from Claude Code's PATH, say) is reported, unlike a cwd outside any
+// workspace, because no session there would ever be tracked.
+func TestAgentHookReportsJJFailure(t *testing.T) {
+	e := newAgentEnv(t)
+	lookupWorkspace = func(string) (workspaceInfo, error) {
+		return workspaceInfo{}, fmt.Errorf("failed to get workspace root: exec: \"jj\": executable file not found in $PATH")
+	}
+	runHookFixture(t, "post_tool_use.json", "PostToolUse")
+	assert.Nil(t, loadState(t).GetAgentSession(hookSessionID))
+	msg := hookWarning(t, e.warnings.String())
+	assert.Contains(t, msg, "/ws/sub/dir")
+	assert.Contains(t, msg, "PATH Claude Code runs hooks with")
+}
+
+// TestAgentHookWarningLimitIsPerProblem: sessions in different directories
+// that hit the same jj failure in turn share one hourly warning, a different
+// problem within the hour is still shown, and a marker dated ahead of the
+// clock does not hold a warning off.
+func TestAgentHookWarningLimitIsPerProblem(t *testing.T) {
+	e := newAgentEnv(t)
+	fake := lookupWorkspace
+	lookupWorkspace = func(dir string) (workspaceInfo, error) {
+		if strings.HasPrefix(dir, "/broken/") {
+			return workspaceInfo{}, fmt.Errorf("failed to get workspace root: exec: \"jj\": executable file not found in $PATH")
+		}
+		return fake(dir)
+	}
+	hook := func(session, cwd string) string {
+		e.warnings.Reset()
+		agentStateWarned = false // each hook event is a new process
+		e.advance(time.Minute)
+		require.NoError(t, runAgentHook(strings.NewReader(fmt.Sprintf(`{"session_id":%q,"cwd":%q}`, session, cwd)), "PostToolUse", "claude"))
+		return e.warnings.String()
+	}
+
+	assert.Contains(t, hookWarning(t, hook("a", "/broken/a")), "/broken/a")
+	for range 2 {
+		assert.Empty(t, hook("b", "/broken/b"), "the same jj failure in another directory is the same problem")
+		assert.Empty(t, hook("a", "/broken/a"))
+	}
+
+	home, _ := os.UserHomeDir()
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".wgo", "state.json"), fmt.Appendf(nil, `{"version":%d}`, store.StateVersion+1), 0o644))
+	assert.Contains(t, hookWarning(t, hook("c", "/ws")), "Upgrade wgo", "a different problem is shown within the hour")
+	assert.Empty(t, hook("a", "/broken/a"), "and does not displace the first")
+
+	e.advance(-2 * hookWarnEvery)
+	assert.Contains(t, hookWarning(t, hook("a", "/broken/a")), "/broken/a", "a marker from the future does not suppress it")
 }

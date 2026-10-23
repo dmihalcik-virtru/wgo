@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,8 +26,10 @@ const (
 	// alone.
 	heartbeatThrottle = 60 * time.Second
 	// agentStaleAfter is the quiet window. A session with activity inside it
-	// is active. Past it, a session with a verified live process stays live,
-	// an inferred session expires, and any other session becomes uncertain.
+	// is active. Past it, an inferred session is removed whatever its
+	// process. Otherwise a session with a verified live process stays live, one
+	// whose recorded process exited is removed, and any other session (no
+	// process identity, or one that cannot be checked) becomes uncertain.
 	agentStaleAfter = 10 * time.Minute
 	// agentMaxAge bounds how long a session without a verifiable process is
 	// kept after its last activity, so abandoned sessions cannot accumulate.
@@ -67,13 +72,15 @@ effort. Sessions come from three places:
   wgo agent start      an explicit session, for any tool or script
   wgo agent hook       Claude Code hooks (see contrib/claude-code-hooks.md)
   wgo . / statusline   inside Claude Code (CLAUDECODE set), a heartbeat that
-                       refreshes the workspace's session, or keeps a single
-                       inferred one when none exists
+                       refreshes its agent's session in the workspace, or
+                       keeps a single inferred one when that agent has none
 
 Liveness: a session with activity in the last 10 minutes is active. After that,
-a session whose agent process is verified alive (PID and start time match)
-stays live however quiet it is; an inferred session expires; any other session
-is shown as uncertain and removed after 24 hours or by "wgo agent stop".`,
+an inferred session is removed, whatever its process. Otherwise a session whose
+agent process is verified alive (PID and start time match) stays live however
+quiet it is; a session whose recorded process has exited is removed; any other
+session (no recorded process, or one wgo cannot check) is shown as uncertain
+and removed after 24 hours or by "wgo agent stop".`,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return runAgentStatus(os.Stdout, false)
 	},
@@ -171,10 +178,15 @@ var workspaceRoot = func() (string, error) {
 	return workspaceRootOf(cwd)
 }
 
+// errNotJJRepo reports a directory outside any jj workspace. It is checked on
+// the filesystem, so unlike other workspace lookup errors it does not mean
+// that jj itself failed.
+var errNotJJRepo = errors.New("not a jj repository")
+
 func workspaceRootOf(dir string) (string, error) {
 	jjc := jj.NewCLI()
 	if !jjc.IsRepo(dir) {
-		return "", fmt.Errorf("not a jj repository")
+		return "", errNotJJRepo
 	}
 	wsRoot, err := jjc.Root(dir)
 	if err != nil {
@@ -186,6 +198,9 @@ func workspaceRootOf(dir string) (string, error) {
 // workspaceInfo is what a new session records about where it runs.
 type workspaceInfo struct {
 	Root, Repo, Branch string
+	// BranchKnown is false when the bookmark lookup failed, so Branch ""
+	// does not mean "no bookmark".
+	BranchKnown bool
 }
 
 // lookupWorkspace resolves the workspace root, its repository's main root and
@@ -202,7 +217,20 @@ var lookupWorkspace = func(dir string) (workspaceInfo, error) {
 		debugf("agent: main workspace root for %s: %v; using the workspace itself, so conflicts with other workspaces of this repo go undetected", wsRoot, err)
 		repo = wsRoot
 	}
-	return workspaceInfo{Root: wsRoot, Repo: repo, Branch: currentBookmark(jjc, wsRoot)}, nil
+	branch, known := bookmarkOf(jjc, wsRoot)
+	return workspaceInfo{Root: wsRoot, Repo: repo, Branch: branch, BranchKnown: known}, nil
+}
+
+// bookmarkOf returns the workspace's nearest bookmark ("" for none). ok is
+// false when the lookup failed (jj busy, say), so callers keep what they
+// recorded instead of treating the failure as "no bookmark".
+func bookmarkOf(jjc jj.Client, workspacePath string) (bookmark string, ok bool) {
+	bm, err := jjc.NearestBookmark(workspacePath)
+	if err != nil {
+		debugf("agent: bookmark for %s: %v", workspacePath, err)
+		return "", false
+	}
+	return bm, true
 }
 
 var currentWorkspace = func() (workspaceInfo, error) {
@@ -226,9 +254,13 @@ func agentProcess(tool string, pid int) (int, int64) {
 		}
 		return info.PID, info.Start
 	}
-	info, ok := proc.FindAncestor(procInspector, agentParentPID(), agentAncestorDepth, func(i proc.Info) bool {
+	info, ok, err := proc.FindAncestor(procInspector, agentParentPID(), agentAncestorDepth, func(i proc.Info) bool {
 		return proc.MatchesTool(procInspector, i, tool)
 	})
+	if err != nil {
+		debugf("agent: process walk for %s failed (%v); recording no process identity", tool, err)
+		return 0, 0
+	}
 	if !ok {
 		debugf("agent: no %s process among ancestors; recording no process identity", tool)
 		return 0, 0
@@ -243,7 +275,7 @@ type agentStartOpts struct {
 }
 
 func runAgentStart(w io.Writer, o agentStartOpts) error {
-	tool := strings.TrimSpace(o.Tool)
+	tool := store.NormalizeAgentTool(o.Tool)
 	if tool == "" {
 		tool = detectAgent()
 	}
@@ -288,7 +320,7 @@ func runAgentStart(w io.Writer, o agentStartOpts) error {
 		if err != nil {
 			return false, err
 		}
-		dropInferredDuplicate(state, tool, ws.Root)
+		dropInferredDuplicate(state, tool, ws.Root, sess.PID, sess.ProcStart)
 		saved = sess
 		conflicts = store.AgentConflicts(state.ObserveAgentSessions(now, agentPolicy()))[sess.ID]
 		return true, nil
@@ -308,10 +340,28 @@ func runAgentStart(w io.Writer, o agentStartOpts) error {
 }
 
 // dropInferredDuplicate removes the statusline's inferred session for a tool
-// and workspace once a managed session exists there, so the two never both
-// appear.
-func dropInferredDuplicate(state *store.State, tool, wsRoot string) bool {
-	return state.RemoveAgentSession(store.InferredAgentSessionID(tool, wsRoot))
+// and workspace once the agent whose process is pid/start has a managed
+// session there, so that agent is not listed twice. An inferred session that
+// records a different running agent (another claude without hooks, say) is
+// that agent's only session and is kept; removing it would have the two
+// agents delete and recreate it on every render. A session that only has the
+// inferred ID, because `agent start --session` adopted it, is not inferred
+// and is kept.
+func dropInferredDuplicate(state *store.State, tool, wsRoot string, pid int, start int64) bool {
+	id := store.InferredAgentSessionID(tool, wsRoot)
+	sess := state.GetAgentSession(id)
+	if sess == nil || sess.Source != store.SourceInferred || recordsOtherAgent(*sess, pid, start) {
+		return false
+	}
+	return state.RemoveAgentSession(id)
+}
+
+// recordsOtherAgent reports whether sess records a running process other
+// than the agent process pid/start. When that agent's process is unknown
+// (pid 0), no session is known to be another's.
+func recordsOtherAgent(sess store.AgentSession, pid int, start int64) bool {
+	return pid != 0 && proc.Check(procInspector, sess.PID, sess.ProcStart) == proc.Running &&
+		(sess.PID != pid || sess.ProcStart != start)
 }
 
 // selectSession resolves an explicit or implied session ID. An omitted ID is
@@ -414,6 +464,9 @@ func runAgentStop(w io.Writer, id string) error {
 		return err
 	}
 	if !found {
+		if id != "" {
+			return fmt.Errorf("no agent session %s; list sessions with: wgo agent status", id)
+		}
 		fmt.Fprintf(w, "no agent session for %s\n", where)
 		return nil
 	}
@@ -482,7 +535,10 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 	}
 
 	// Mark the current workspace when it is a jj repo (best-effort).
-	current, _ := workspaceRoot()
+	current, err := workspaceRoot()
+	if err != nil {
+		current = ""
+	}
 	for _, o := range observed {
 		branch := o.Branch
 		if branch == "" {
@@ -501,7 +557,7 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 		if o.Source == store.SourceInferred {
 			notes = append(notes, "inferred")
 		}
-		if o.WorktreePath == current {
+		if current != "" && o.WorktreePath == current {
 			notes = append(notes, "current")
 		}
 		line := fmt.Sprintf("🤖 %-8s %-8s %s  %s  since %s  session %s",
@@ -532,26 +588,32 @@ func detectAgent() string {
 
 // heartbeatAgent is the implicit heartbeat on the `wgo .`/statusline hot path.
 // It is env-detected, best-effort, throttled, and local-disk only (no network,
-// no subprocess).
+// no subprocess). It never prints: errors are logged under WGO_DEBUG (see
+// warnAgentState for why).
 //
-// When a hook- or command-managed session for the same tool exists in the
-// workspace, it refreshes the most recent one (last activity and bookmark,
-// never its status) and drops any inferred duplicate. Otherwise it keeps a
-// single inferred session per tool and workspace, which expires on the quiet
-// timeout.
-func heartbeatAgent(wsRoot, repoPath, branch string) {
+// branch is the workspace's bookmark ("" for none). branchKnown is false when
+// the lookup failed, which keeps the recorded bookmark rather than clearing it.
+//
+// When the workspace has a hook- or command-managed session for the same tool
+// that can be this agent's (see ownSession), it refreshes that session (last
+// activity and bookmark, never its status) and drops the inferred session if
+// it is this agent's duplicate (see dropInferredDuplicate). Otherwise it
+// keeps a single inferred session per tool and workspace, recording this
+// agent's process to show whose it is; it expires on the quiet timeout. A
+// crashed session, or another agent's, is never refreshed, so one agent's
+// statusline cannot keep it looking active.
+func heartbeatAgent(wsRoot, repoPath, branch string, branchKnown bool) {
 	name := detectAgent()
 	if name == "" || wsRoot == "" {
 		return
-	}
-	if branch == "(no bookmark)" {
-		branch = ""
 	}
 	s, err := store.New()
 	if err != nil {
 		debugf("agent heartbeat: %v", err)
 		return
 	}
+	// This agent's process, found only when a decision needs it.
+	self := sync.OnceValues(func() (int, int64) { return agentProcess(name, 0) })
 	// MutateState holds a lock across load+save so this hot-path write can't
 	// clobber a concurrent state mutation. Returning changed=false (throttled,
 	// nothing pruned) skips the write entirely.
@@ -559,17 +621,16 @@ func heartbeatAgent(wsRoot, repoPath, branch string) {
 		now := agentNow()
 		changed := state.PruneAgentSessions(now, agentPolicy()) > 0
 
-		var managed, inferred *store.AgentSession
+		var managed []store.AgentSession
+		var inferred *store.AgentSession
 		for _, sess := range state.AgentSessionsIn(wsRoot) {
 			if sess.Tool != name {
 				continue
 			}
-			if sess.Source == store.SourceInferred {
-				if inferred == nil {
-					inferred = &sess
-				}
-			} else if managed == nil {
-				managed = &sess
+			if sess.Source != store.SourceInferred {
+				managed = append(managed, sess)
+			} else if inferred == nil {
+				inferred = &sess
 			}
 		}
 		target := store.AgentSession{
@@ -577,26 +638,173 @@ func heartbeatAgent(wsRoot, repoPath, branch string) {
 			WorktreePath: wsRoot, RepoPath: repoPath, Branch: branch, Source: store.SourceInferred,
 		}
 		existing := inferred
-		if managed != nil {
+		if own, ok := ownSession(managed, self); ok {
 			if inferred != nil {
-				changed = dropInferredDuplicate(state, name, wsRoot) || changed
+				pid, start := self()
+				changed = dropInferredDuplicate(state, name, wsRoot, pid, start) || changed
 			}
 			// Refresh, don't clobber: only activity, bookmark and repo move.
-			target = store.AgentSession{ID: managed.ID, Tool: managed.Tool, WorktreePath: managed.WorktreePath, RepoPath: repoPath, Branch: branch}
-			existing = managed
+			target = store.AgentSession{ID: own.ID, Tool: own.Tool, WorktreePath: own.WorktreePath, RepoPath: repoPath, Branch: branch}
+			existing = &own
 		}
-		if existing != nil && now.Sub(existing.LastActivity) < heartbeatThrottle &&
-			(branch == "" || branch == existing.Branch) {
+		bookmarkChanged := branchKnown && (existing == nil || branch != existing.Branch)
+		if existing != nil && now.Sub(existing.LastActivity) < heartbeatThrottle && !bookmarkChanged {
 			return changed, nil
 		}
-		if _, err := state.UpsertAgentSession(target, now); err != nil {
+		if target.Source == store.SourceInferred {
+			target.PID, target.ProcStart = self()
+		}
+		saved, err := state.UpsertAgentSession(target, now)
+		if err != nil {
 			return false, err
+		}
+		if branchKnown {
+			state.SetAgentBookmark(saved.ID, branch)
 		}
 		return true, nil
 	})
 	if err != nil {
 		debugf("agent heartbeat: %v", err)
 	}
+}
+
+// ownSession picks, from the managed sessions of one tool in one workspace
+// (most recent first), the one belonging to the agent this process runs
+// under, and reports false when none can be. A session whose recorded process
+// is this agent's is its own. A session whose recorded process has exited is
+// never picked, nor is one with a different running process when this
+// agent's own process is known: refreshing those would keep a crashed or
+// foreign session looking active. Otherwise the most recent session that
+// might be its own (no process identity, or one that cannot be checked) is
+// used. self returns this agent's process; it is called only when there is a
+// session to compare.
+func ownSession(managed []store.AgentSession, self func() (int, int64)) (store.AgentSession, bool) {
+	if len(managed) == 0 {
+		return store.AgentSession{}, false
+	}
+	pid, start := self()
+	var maybe *store.AgentSession
+	for i, sess := range managed {
+		switch proc.Check(procInspector, sess.PID, sess.ProcStart) {
+		case proc.Running:
+			if sess.PID == pid && sess.ProcStart == start {
+				return sess, true
+			}
+			if pid != 0 {
+				continue // another live agent's
+			}
+		case proc.Exited:
+			continue
+		}
+		if maybe == nil {
+			maybe = &managed[i]
+		}
+	}
+	if maybe == nil {
+		return store.AgentSession{}, false
+	}
+	return *maybe, true
+}
+
+// agentWarnOut receives the hook's warnings. It is stdout, which Claude Code
+// reads as hook JSON; a variable so tests can capture it.
+var agentWarnOut io.Writer = os.Stdout
+
+var agentStateWarned bool
+
+// hookWarningEvents are the hook events (lower case) whose JSON systemMessage
+// Claude Code shows the user. It discards the field on the others
+// (SessionStart, Stop, Notification, SessionEnd), and it never shows stderr
+// from a hook that exits 0.
+var hookWarningEvents = map[string]bool{"posttooluse": true, "userpromptsubmit": true}
+
+// hookWarnEvery is how often the hook repeats a warning about the same
+// problem. Each hook event is its own process, so a marker file in ~/.wgo,
+// not process memory, keeps the warning from repeating on every tool call.
+const hookWarnEvery = time.Hour
+
+// hookProblem is a hook failure whose message names something that varies
+// between sessions, such as the directory, while the problem does not. Its
+// warning is rate-limited under key instead of the message, so sessions in
+// different directories that hit the same problem share one hourly warning.
+type hookProblem struct {
+	key string
+	err error
+}
+
+func (p *hookProblem) Error() string { return p.err.Error() }
+func (p *hookProblem) Unwrap() error { return p.err }
+
+// warnAgentState reports a problem that keeps `wgo agent hook` from recording
+// a session: a state file wgo cannot read or write (newer schema,
+// unparseable, lock or write failure), or a workspace jj fails on. The hook
+// still exits 0, so the warning is a JSON systemMessage on stdout, which
+// Claude Code shows the user (not Claude). It is written only on
+// hookWarningEvents, at most once per process, and at most once per
+// hookWarnEvery for the same problem (its message, or a hookProblem's key);
+// otherwise the problem is only logged under WGO_DEBUG.
+//
+// The `wgo .` and statusline paths (heartbeatAgent, resolveAgent) do not use
+// it: their output lands in a shell prompt or an agent's tool output, so they
+// log only under WGO_DEBUG. `wgo agent status` fails on a state file it cannot
+// read or parse, but it reads newer-schema state and never writes, so for
+// those problems the hook's warning is the only report.
+func warnAgentState(event string, err error) {
+	debugf("agent hook %s: %v", event, err)
+	problem := err.Error()
+	var hp *hookProblem
+	if errors.As(err, &hp) {
+		problem = hp.key
+	}
+	if agentStateWarned || !hookWarningEvents[strings.ToLower(event)] || !claimHookWarning(problem) {
+		return
+	}
+	agentStateWarned = true
+	out, _ := json.Marshal(struct {
+		SystemMessage string `json:"systemMessage"`
+	}{"wgo agent hook: could not record this session: " + err.Error()})
+	fmt.Fprintf(agentWarnOut, "%s\n", out)
+}
+
+// claimHookWarning reports whether a warning about problem is due, and if so
+// records it in ~/.wgo/agent-hook-warning.json, which maps every problem
+// warned about in the last hookWarnEvery to when. Remembering only the last
+// one would let two sessions with different problems take turns to warn on
+// every event. A marker that cannot be read or written leaves the warning
+// due, so a broken ~/.wgo is still reported.
+func claimHookWarning(problem string) bool {
+	s, err := store.New()
+	if err != nil {
+		return true
+	}
+	path := filepath.Join(s.BaseDir(), "agent-hook-warning.json")
+	now := agentNow()
+	// A time ahead of now (the clock went back) does not hold a warning off.
+	recent := func(t time.Time) bool { d := now.Sub(t); return d >= 0 && d < hookWarnEvery }
+	warned := map[string]time.Time{}
+	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &warned) != nil {
+		warned = map[string]time.Time{}
+	}
+	if recent(warned[problem]) {
+		return false
+	}
+	for p, t := range warned {
+		if !recent(t) {
+			delete(warned, p)
+		}
+	}
+	warned[problem] = now
+	data, err := json.Marshal(warned)
+	if err == nil {
+		err = s.EnsureDir()
+	}
+	if err == nil {
+		err = os.WriteFile(path, data, 0o644)
+	}
+	if err != nil {
+		debugf("agent hook: recording warning in %s: %v", path, err)
+	}
+	return true
 }
 
 // resolveAgent returns the most recently active visible session in wsRoot for
