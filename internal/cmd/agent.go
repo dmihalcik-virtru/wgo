@@ -26,10 +26,10 @@ const (
 	// alone.
 	heartbeatThrottle = 60 * time.Second
 	// agentStaleAfter is the quiet window. A session with activity inside it
-	// is active. Past it, a session with a verified live process stays live; a
-	// session whose recorded process exited, or an inferred session, is
-	// removed; any other session (no process identity, or one that cannot be
-	// checked) becomes uncertain.
+	// is active. Past it, an inferred session is removed whatever its
+	// process. Otherwise a session with a verified live process stays live, one
+	// whose recorded process exited is removed, and any other session (no
+	// process identity, or one that cannot be checked) becomes uncertain.
 	agentStaleAfter = 10 * time.Minute
 	// agentMaxAge bounds how long a session without a verifiable process is
 	// kept after its last activity, so abandoned sessions cannot accumulate.
@@ -72,15 +72,15 @@ effort. Sessions come from three places:
   wgo agent start      an explicit session, for any tool or script
   wgo agent hook       Claude Code hooks (see contrib/claude-code-hooks.md)
   wgo . / statusline   inside Claude Code (CLAUDECODE set), a heartbeat that
-                       refreshes the workspace's session, or keeps a single
-                       inferred one when none exists
+                       refreshes its agent's session in the workspace, or
+                       keeps a single inferred one when that agent has none
 
 Liveness: a session with activity in the last 10 minutes is active. After that,
-a session whose agent process is verified alive (PID and start time match)
-stays live however quiet it is; a session whose recorded process has exited,
-and an inferred session, are removed; any other session (no recorded process,
-or one wgo cannot check) is shown as uncertain and removed after 24 hours or by
-"wgo agent stop".`,
+an inferred session is removed, whatever its process. Otherwise a session whose
+agent process is verified alive (PID and start time match) stays live however
+quiet it is; a session whose recorded process has exited is removed; any other
+session (no recorded process, or one wgo cannot check) is shown as uncertain
+and removed after 24 hours or by "wgo agent stop".`,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return runAgentStatus(os.Stdout, false)
 	},

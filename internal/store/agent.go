@@ -106,14 +106,15 @@ type AgentPolicy struct {
 	Procs proc.Inspector
 }
 
-// Liveness classifies a session. A verified live process always wins over
-// quiet time, so a long-running quiet agent never expires (#61); a recorded
-// process that definitely exited or was reused makes the session gone. When
-// the process cannot be checked (sandboxed lookup, unsupported platform, a
-// PID recorded on another machine), the session is treated as having no
-// identity: uncertain, never deleted on that basis alone. An inferred session
-// expires once quiet, whatever its process: its identity records which agent
-// it belongs to, not that the statusline keeping it is still running.
+// Liveness classifies a session. An inferred session is gone once quiet,
+// whatever its process: its identity records which agent it belongs to, not
+// that the statusline keeping it is still running. For any other session a
+// verified live process wins over quiet time, so a long-running quiet agent
+// never expires (#61); a recorded process that definitely exited or was
+// reused makes the session gone. When the process cannot be checked
+// (sandboxed lookup, unsupported platform, a PID recorded on another
+// machine), the session is treated as having no identity: uncertain, never
+// deleted on that basis alone.
 func (s AgentSession) Liveness(now time.Time, p AgentPolicy) AgentLiveness {
 	quiet := now.Sub(s.LastActivity)
 	if quiet <= p.Window {
@@ -281,8 +282,8 @@ func (s *State) ObserveAgentSessions(now time.Time, p AgentPolicy) []ObservedSes
 
 // PruneAgentSessions deletes sessions whose liveness is gone and returns how
 // many it removed. It applies the same rules as ObserveAgentSessions, so a
-// session that is listed is never pruned, and a session with a verified live
-// process is never pruned at all.
+// session that is listed is never pruned, and an explicit or hook session with
+// a verified live process is never pruned at all.
 func (s *State) PruneAgentSessions(now time.Time, p AgentPolicy) int {
 	removed := 0
 	for id, sess := range s.AgentSessions {
