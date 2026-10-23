@@ -344,10 +344,13 @@ func runAgentStart(w io.Writer, o agentStartOpts) error {
 // session there, so that agent is not listed twice. An inferred session that
 // records a different running agent (another claude without hooks, say) is
 // that agent's only session and is kept; removing it would have the two
-// agents delete and recreate it on every render.
+// agents delete and recreate it on every render. A session that only has the
+// inferred ID, because `agent start --session` adopted it, is not inferred
+// and is kept.
 func dropInferredDuplicate(state *store.State, tool, wsRoot string, pid int, start int64) bool {
 	id := store.InferredAgentSessionID(tool, wsRoot)
-	if sess := state.GetAgentSession(id); sess == nil || recordsOtherAgent(*sess, pid, start) {
+	sess := state.GetAgentSession(id)
+	if sess == nil || sess.Source != store.SourceInferred || recordsOtherAgent(*sess, pid, start) {
 		return false
 	}
 	return state.RemoveAgentSession(id)

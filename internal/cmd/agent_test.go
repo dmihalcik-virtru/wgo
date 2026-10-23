@@ -565,6 +565,24 @@ func TestAgentStartWithPID(t *testing.T) {
 	assert.Zero(t, sess.PID)
 }
 
+// TestAgentStartAdoptsInferredID: `agent start --session` with an inferred
+// session's ID, as copied from `wgo agent status`, keeps the session it
+// records instead of dropping it as the statusline's duplicate.
+func TestAgentStartAdoptsInferredID(t *testing.T) {
+	e := newAgentEnv(t)
+	inferredID := store.InferredAgentSessionID("claude", "/ws")
+	t.Setenv("CLAUDECODE", "1")
+	heartbeatAgent("/ws", "/ws", "feat", true)
+	require.NotNil(t, loadState(t).GetAgentSession(inferredID))
+
+	e.advance(time.Second)
+	startAgent(t, agentStartOpts{Tool: "claude", Session: inferredID})
+	sess := loadState(t).GetAgentSession(inferredID)
+	require.NotNil(t, sess, "the adopted session is kept")
+	assert.Equal(t, store.SourceExplicit, sess.Source)
+	assert.Equal(t, fakeClaudePID, sess.PID)
+}
+
 // TestAgentStopUnknownSessionFails: naming a session that does not exist is an
 // error, so a typo in a script does not pass silently.
 func TestAgentStopUnknownSessionFails(t *testing.T) {
