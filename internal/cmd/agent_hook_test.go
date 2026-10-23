@@ -291,3 +291,39 @@ func TestAgentHookReportsJJFailure(t *testing.T) {
 	assert.Contains(t, msg, "/ws/sub/dir")
 	assert.Contains(t, msg, "PATH Claude Code runs hooks with")
 }
+
+// TestAgentHookWarningLimitIsPerProblem: sessions in different directories
+// that hit the same jj failure in turn share one hourly warning, a different
+// problem within the hour is still shown, and a marker dated ahead of the
+// clock does not hold a warning off.
+func TestAgentHookWarningLimitIsPerProblem(t *testing.T) {
+	e := newAgentEnv(t)
+	fake := lookupWorkspace
+	lookupWorkspace = func(dir string) (workspaceInfo, error) {
+		if strings.HasPrefix(dir, "/broken/") {
+			return workspaceInfo{}, fmt.Errorf("failed to get workspace root: exec: \"jj\": executable file not found in $PATH")
+		}
+		return fake(dir)
+	}
+	hook := func(session, cwd string) string {
+		e.warnings.Reset()
+		agentStateWarned = false // each hook event is a new process
+		e.advance(time.Minute)
+		require.NoError(t, runAgentHook(strings.NewReader(fmt.Sprintf(`{"session_id":%q,"cwd":%q}`, session, cwd)), "PostToolUse", "claude"))
+		return e.warnings.String()
+	}
+
+	assert.Contains(t, hookWarning(t, hook("a", "/broken/a")), "/broken/a")
+	for range 2 {
+		assert.Empty(t, hook("b", "/broken/b"), "the same jj failure in another directory is the same problem")
+		assert.Empty(t, hook("a", "/broken/a"))
+	}
+
+	home, _ := os.UserHomeDir()
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".wgo", "state.json"), fmt.Appendf(nil, `{"version":%d}`, store.StateVersion+1), 0o644))
+	assert.Contains(t, hookWarning(t, hook("c", "/ws")), "Upgrade wgo", "a different problem is shown within the hour")
+	assert.Empty(t, hook("a", "/broken/a"), "and does not displace the first")
+
+	e.advance(-2 * hookWarnEvery)
+	assert.Contains(t, hookWarning(t, hook("a", "/broken/a")), "/broken/a", "a marker from the future does not suppress it")
+}

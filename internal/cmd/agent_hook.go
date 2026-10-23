@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/proc"
 	"github.com/virtru/wgo/internal/store"
 )
@@ -44,8 +45,9 @@ wgo), or a workspace jj fails on (for example because jj is not on Claude
 Code's PATH), is reported as a JSON systemMessage on stdout, which Claude
 Code shows the user; that is written only on PostToolUse and
 UserPromptSubmit, where Claude Code displays it, and at most once an hour for
-the same problem. Otherwise the command prints nothing on stdout. Either way
-it exits 0, so it never disrupts the agent. See contrib/claude-code-hooks.md.`,
+the same problem across all sessions. Otherwise the command prints nothing on
+stdout. Either way it exits 0, so it never disrupts the agent. See
+contrib/claude-code-hooks.md.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		event := ""
@@ -180,7 +182,12 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		default:
 			// dir is in a jj workspace, but jj failed on it: it is missing from
 			// the PATH Claude Code runs hooks with, too old, or misconfigured.
-			return fmt.Errorf("cannot resolve the jj workspace at %s (check that jj is on the PATH Claude Code runs hooks with): %w", dir, err)
+			// The warning is keyed on jj's error, not dir, so every session it
+			// fails for shares one hourly warning.
+			return &hookProblem{
+				key: "jj: " + jj.BriefError(err),
+				err: fmt.Errorf("cannot resolve the jj workspace at %s (check that jj is on the PATH Claude Code runs hooks with): %w", dir, err),
+			}
 		}
 	}
 	// Find the agent process when none is recorded, or when the recorded one

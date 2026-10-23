@@ -70,8 +70,9 @@ per-tool cost stays small.
   sessions are not being tracked, so it is shown as a warning on the next
   `PostToolUse` or `UserPromptSubmit` (Claude Code drops a hook's
   `systemMessage` on the other events, and never shows stderr from a hook
-  that exits 0). The same problem is repeated at most once an hour, tracked
-  in `~/.wgo/agent-hook-warning.json`.
+  that exits 0). The same problem is repeated at most once an hour across
+  all your sessions, tracked in `~/.wgo/agent-hook-warning.json`; a jj
+  failure counts as one problem whichever workspace it happens in.
 - **Liveness without timers.** wgo walks up from the hook's parent process to
   the `claude` process and records its PID and start time; it does this on
   each event until the process is found, and again when the recorded one has

@@ -720,13 +720,26 @@ var hookWarningEvents = map[string]bool{"posttooluse": true, "userpromptsubmit":
 // not process memory, keeps the warning from repeating on every tool call.
 const hookWarnEvery = time.Hour
 
+// hookProblem is a hook failure whose message names something that varies
+// between sessions, such as the directory, while the problem does not. Its
+// warning is rate-limited under key instead of the message, so sessions in
+// different directories that hit the same problem share one hourly warning.
+type hookProblem struct {
+	key string
+	err error
+}
+
+func (p *hookProblem) Error() string { return p.err.Error() }
+func (p *hookProblem) Unwrap() error { return p.err }
+
 // warnAgentState reports a problem that keeps `wgo agent hook` from recording
-// a session, such as a state file wgo cannot read or write (newer schema,
-// unparseable, lock or write failure). The hook still exits 0, so the warning
-// is a JSON systemMessage on stdout, which Claude Code shows the user (not
-// Claude). It is written only on hookWarningEvents, at most once per process,
-// and at most once per hookWarnEvery for the same problem; otherwise the
-// problem is only logged under WGO_DEBUG.
+// a session: a state file wgo cannot read or write (newer schema,
+// unparseable, lock or write failure), or a workspace jj fails on. The hook
+// still exits 0, so the warning is a JSON systemMessage on stdout, which
+// Claude Code shows the user (not Claude). It is written only on
+// hookWarningEvents, at most once per process, and at most once per
+// hookWarnEvery for the same problem (its message, or a hookProblem's key);
+// otherwise the problem is only logged under WGO_DEBUG.
 //
 // The `wgo .` and statusline paths (heartbeatAgent, resolveAgent) do not use
 // it: their output lands in a shell prompt or an agent's tool output, so they
@@ -735,7 +748,12 @@ const hookWarnEvery = time.Hour
 // those problems the hook's warning is the only report.
 func warnAgentState(event string, err error) {
 	debugf("agent hook %s: %v", event, err)
-	if agentStateWarned || !hookWarningEvents[strings.ToLower(event)] || !claimHookWarning(err.Error()) {
+	problem := err.Error()
+	var hp *hookProblem
+	if errors.As(err, &hp) {
+		problem = hp.key
+	}
+	if agentStateWarned || !hookWarningEvents[strings.ToLower(event)] || !claimHookWarning(problem) {
 		return
 	}
 	agentStateWarned = true
@@ -746,29 +764,39 @@ func warnAgentState(event string, err error) {
 }
 
 // claimHookWarning reports whether a warning about problem is due, and if so
-// records it in ~/.wgo/agent-hook-warning.json. A marker that cannot be read
-// or written leaves the warning due, so a broken ~/.wgo is still reported.
+// records it in ~/.wgo/agent-hook-warning.json, which maps every problem
+// warned about in the last hookWarnEvery to when. Remembering only the last
+// one would let two sessions with different problems take turns to warn on
+// every event. A marker that cannot be read or written leaves the warning
+// due, so a broken ~/.wgo is still reported.
 func claimHookWarning(problem string) bool {
 	s, err := store.New()
 	if err != nil {
 		return true
 	}
 	path := filepath.Join(s.BaseDir(), "agent-hook-warning.json")
-	var last struct {
-		Problem string    `json:"problem"`
-		Time    time.Time `json:"time"`
-	}
 	now := agentNow()
-	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &last) == nil &&
-		last.Problem == problem && now.Sub(last.Time) < hookWarnEvery {
+	// A time ahead of now (the clock went back) does not hold a warning off.
+	recent := func(t time.Time) bool { d := now.Sub(t); return d >= 0 && d < hookWarnEvery }
+	warned := map[string]time.Time{}
+	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &warned) != nil {
+		warned = map[string]time.Time{}
+	}
+	if recent(warned[problem]) {
 		return false
 	}
-	last.Problem, last.Time = problem, now
-	data, err := json.Marshal(last)
-	if err == nil {
-		if err = s.EnsureDir(); err == nil {
-			err = os.WriteFile(path, data, 0o644)
+	for p, t := range warned {
+		if !recent(t) {
+			delete(warned, p)
 		}
+	}
+	warned[problem] = now
+	data, err := json.Marshal(warned)
+	if err == nil {
+		err = s.EnsureDir()
+	}
+	if err == nil {
+		err = os.WriteFile(path, data, 0o644)
 	}
 	if err != nil {
 		debugf("agent hook: recording warning in %s: %v", path, err)
