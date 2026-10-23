@@ -185,8 +185,9 @@ func TestAgentHookAfterPruneRecreatesSession(t *testing.T) {
 }
 
 // TestAgentHookDoesNotResurrectEndedSession: an event in flight when its
-// session ends (here, SessionEnd lands while Stop resolves the workspace) does
-// not bring the session back, though a later event, as from a resume, does.
+// session ends (here, SessionEnd lands while UserPromptSubmit resolves the
+// workspace) does not bring the session back, and is not reported as a
+// problem, though a later event, as from a resume, does bring it back.
 func TestAgentHookDoesNotResurrectEndedSession(t *testing.T) {
 	e := newAgentEnv(t)
 	runHookFixture(t, "stop.json", "Stop")
@@ -198,7 +199,7 @@ func TestAgentHookDoesNotResurrectEndedSession(t *testing.T) {
 		return lookup(dir)
 	}
 	e.advance(time.Second)
-	runHookFixture(t, "stop.json", "Stop")
+	runHookFixture(t, "stop.json", "UserPromptSubmit") // an event that shows warnings
 	assert.Nil(t, loadState(t).GetAgentSession(hookSessionID), "a refresh event in flight does not resurrect it")
 	assert.Empty(t, e.warnings.String())
 
@@ -206,6 +207,38 @@ func TestAgentHookDoesNotResurrectEndedSession(t *testing.T) {
 	e.advance(time.Second)
 	runHookFixture(t, "stop.json", "Stop")
 	assert.NotNil(t, loadState(t).GetAgentSession(hookSessionID), "a resumed session is recorded again")
+}
+
+// TestAgentHookKeepsSessionWhenWorkspaceLookupFails: once a session exists,
+// a refresh event from a cwd outside jj (claude cd'd elsewhere) or one jj
+// fails on still updates its status, keeps its workspace, repo and bookmark,
+// and is not reported.
+func TestAgentHookKeepsSessionWhenWorkspaceLookupFails(t *testing.T) {
+	e := newAgentEnv(t)
+	fake := lookupWorkspace
+	lookupWorkspace = func(dir string) (workspaceInfo, error) {
+		if dir == "/broken" {
+			return workspaceInfo{}, fmt.Errorf("failed to get workspace root: exec: \"jj\": executable file not found in $PATH")
+		}
+		return fake(dir)
+	}
+	runHookFixture(t, "stop.json", "Stop")
+	require.NotNil(t, loadState(t).GetAgentSession(hookSessionID))
+
+	for _, cwd := range []string{"/broken", "/tmp"} {
+		e.advance(time.Second)
+		require.NoError(t, runAgentHook(strings.NewReader(fmt.Sprintf(`{"session_id":%q,"cwd":%q}`, hookSessionID, cwd)), "UserPromptSubmit", "claude"))
+		sess := loadState(t).GetAgentSession(hookSessionID)
+		require.NotNil(t, sess, cwd)
+		assert.Equal(t, store.AgentWorking, sess.Status, cwd)
+		assert.Equal(t, "/ws", sess.WorktreePath, cwd)
+		assert.Equal(t, "/ws", sess.RepoPath, cwd)
+		assert.Equal(t, "feat", sess.Branch, cwd)
+		assert.Empty(t, e.warnings.String(), cwd)
+
+		e.advance(time.Second)
+		runHookFixture(t, "stop.json", "Stop")
+	}
 }
 
 // TestAgentHookBookmark: a fresh lookup that finds no bookmark clears the

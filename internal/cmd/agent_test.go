@@ -36,6 +36,15 @@ func captureStdout(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
+// captureOutput is captureStdout for stdout and stderr together, for paths
+// that must print nothing at all.
+func captureOutput(t *testing.T, fn func()) string {
+	t.Helper()
+	oldErr := os.Stderr
+	defer func() { os.Stderr = oldErr }()
+	return captureStdout(t, func() { os.Stderr = os.Stdout; fn() })
+}
+
 // indexOf is a tiny helper for asserting relative order in captured output.
 func indexOf(haystack, needle string) int {
 	return bytes.Index([]byte(haystack), []byte(needle))
@@ -478,7 +487,8 @@ func TestNewerStateRefusesWrites(t *testing.T) {
 	assert.Contains(t, err.Error(), "Upgrade wgo")
 
 	t.Setenv("CLAUDECODE", "1")
-	heartbeatAgent("/ws", "/ws", "feat", true) // never fails the hot path
+	out := captureOutput(t, func() { heartbeatAgent("/ws", "/ws", "feat", true) })
+	assert.Empty(t, out, "the hot path prints nothing")
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, body, after)
@@ -495,8 +505,11 @@ func TestHotPathQuietOnUnreadableState(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".wgo", "state.json"), []byte("{not json"), 0o644))
 
 	t.Setenv("CLAUDECODE", "1")
-	heartbeatAgent("/ws", "/ws", "feat", true)
-	assert.Nil(t, resolveAgent("/ws"))
+	out := captureOutput(t, func() {
+		heartbeatAgent("/ws", "/ws", "feat", true)
+		assert.Nil(t, resolveAgent("/ws"))
+	})
+	assert.Empty(t, out, "nothing on stdout or stderr")
 	assert.Empty(t, e.warnings.String())
 
 	assert.Error(t, runAgentStatus(io.Discard, false))
@@ -563,6 +576,21 @@ func TestAgentStartWithPID(t *testing.T) {
 	sess = loadState(t).GetAgentSession("b")
 	assert.False(t, sess.HasProcess())
 	assert.Zero(t, sess.PID)
+}
+
+// TestLookupWorkspaceTellsNoRepoFromJJFailure: a directory outside any jj
+// workspace is errNotJJRepo, which the hook skips quietly; a workspace jj
+// cannot run in (here, jj is not on PATH) is another error, which it reports.
+func TestLookupWorkspaceTellsNoRepoFromJJFailure(t *testing.T) {
+	_, err := lookupWorkspace(t.TempDir())
+	require.ErrorIs(t, err, errNotJJRepo)
+
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, ".jj"), 0o755))
+	t.Setenv("PATH", "")
+	_, err = lookupWorkspace(dir)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errNotJJRepo)
 }
 
 // TestAgentStartAdoptsInferredID: `agent start --session` with an inferred
