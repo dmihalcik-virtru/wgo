@@ -427,9 +427,16 @@ func NewClient(opts ...ClientOption) *CLIClient {
 // defaultClient is used by package-level functions (PRBranch, IssueTitle,
 // RepoDefaultBranch). It memoizes a single client across calls so that
 // caching/auth state is shared.
-var defaultClientInstance *CLIClient
+var (
+	defaultClientMu       sync.Mutex
+	defaultClientInstance *CLIClient
+)
 
+// defaultClient creates the shared client on first use. Callers may run
+// concurrently (wgo clean scans repos in parallel), so creation is locked.
 func defaultClient() *CLIClient {
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
 	if defaultClientInstance == nil {
 		defaultClientInstance = NewClient()
 	}
@@ -463,6 +470,44 @@ func (c *CLIClient) GetPRByNumber(repoPath string, number int) (*PRInfo, error) 
 		return nil, err
 	}
 	return pr.toPRInfo(), nil
+}
+
+// PRCommit is one commit on a pull request's head branch.
+type PRCommit struct {
+	SHA         string    // full commit id
+	CommittedAt time.Time // committer date
+}
+
+// ListPRCommits returns the commits of PR number in branch order, oldest
+// first. GitHub reports at most 250; a longer PR is truncated there. The list
+// of a merged PR never changes, so callers may cache it indefinitely.
+func (c *CLIClient) ListPRCommits(repoPath string, number int) ([]PRCommit, error) {
+	slug, err := c.resolveSlug(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	var out []PRCommit
+	for page := 1; page <= 3; page++ {
+		var batch []struct {
+			SHA    string `json:"sha"`
+			Commit struct {
+				Committer struct {
+					Date time.Time `json:"date"`
+				} `json:"committer"`
+			} `json:"commit"`
+		}
+		endpoint := fmt.Sprintf("/repos/%s/pulls/%d/commits?per_page=100&page=%d", slug, number, page)
+		if err := c.getJSON(endpoint, &batch); err != nil {
+			return nil, fmt.Errorf("list commits of PR #%d: %w", number, err)
+		}
+		for _, b := range batch {
+			out = append(out, PRCommit{SHA: b.SHA, CommittedAt: b.Commit.Committer.Date})
+		}
+		if len(batch) < 100 {
+			break
+		}
+	}
+	return out, nil
 }
 
 // GetPRStatus fetches PR status for a branch. Returns (nil, nil) if no PR

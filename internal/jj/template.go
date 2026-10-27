@@ -10,7 +10,7 @@ import (
 // TemplateSchemaVersion is bumped whenever any template constant or its
 // matching parser changes shape. Used by SmokeCheck to fail loudly when jj
 // upstream renames a template field we depend on.
-const TemplateSchemaVersion = 3
+const TemplateSchemaVersion = 4
 
 // LogEntryTemplate renders a `jj log` record as a single line of JSON. Pair
 // with `--no-graph` and ParseLogEntries to consume.
@@ -33,6 +33,9 @@ const TemplateSchemaVersion = 3
 //	                     escape_json'd directly)
 //	author_email_domain  domain part of author email
 //	author_timestamp     ISO 8601 ("%+") author timestamp
+//	committer_timestamp  ISO 8601 ("%+") committer timestamp, which moves on
+//	                     every rewrite (amend, rebase) while the author
+//	                     timestamp stays
 //	empty                true if the change touches no files
 //	immutable            true if the change is in jj's immutable set
 //	current_working_copy true if this is the workspace's @
@@ -44,6 +47,7 @@ const LogEntryTemplate = `"{\"change_id\":" ++ change_id.short(32).escape_json()
 	`++ "],\"author_email_local\":" ++ author.email().local().escape_json() ` +
 	`++ ",\"author_email_domain\":" ++ author.email().domain().escape_json() ` +
 	`++ ",\"author_timestamp\":" ++ author.timestamp().format("%+").escape_json() ` +
+	`++ ",\"committer_timestamp\":" ++ committer.timestamp().format("%+").escape_json() ` +
 	`++ ",\"empty\":" ++ if(empty, "true", "false") ` +
 	`++ ",\"immutable\":" ++ if(immutable, "true", "false") ` +
 	`++ ",\"current_working_copy\":" ++ if(current_working_copy, "true", "false") ` +
@@ -102,6 +106,7 @@ type rawLogEntry struct {
 	AuthorEmailLocal   string   `json:"author_email_local"`
 	AuthorEmailDomain  string   `json:"author_email_domain"`
 	AuthorTimestamp    string   `json:"author_timestamp"`
+	CommitterTimestamp string   `json:"committer_timestamp"`
 	Empty              bool     `json:"empty"`
 	Immutable          bool     `json:"immutable"`
 	CurrentWorkingCopy bool     `json:"current_working_copy"`
@@ -126,6 +131,35 @@ type rawWorkspace struct {
 	CommitID string `json:"commit_id"`
 }
 
+// entry converts the wire record into a LogEntry.
+func (raw rawLogEntry) entry() (LogEntry, error) {
+	ts, err := parseTimestamp(raw.AuthorTimestamp)
+	if err != nil {
+		return LogEntry{}, fmt.Errorf("timestamp %q: %w", raw.AuthorTimestamp, err)
+	}
+	cts, err := parseTimestamp(raw.CommitterTimestamp)
+	if err != nil {
+		return LogEntry{}, fmt.Errorf("committer timestamp %q: %w", raw.CommitterTimestamp, err)
+	}
+	email := raw.AuthorEmailLocal
+	if raw.AuthorEmailDomain != "" {
+		email = raw.AuthorEmailLocal + "@" + raw.AuthorEmailDomain
+	}
+	return LogEntry{
+		ChangeID:           raw.ChangeID,
+		CommitID:           raw.CommitID,
+		Description:        raw.Description,
+		Bookmarks:          raw.Bookmarks,
+		Parents:            raw.Parents,
+		AuthorEmail:        email,
+		AuthorTimestamp:    ts,
+		CommitterTimestamp: cts,
+		Empty:              raw.Empty,
+		Immutable:          raw.Immutable,
+		CurrentWorkingCopy: raw.CurrentWorkingCopy,
+	}, nil
+}
+
 // ParseLogEntries parses line-delimited JSON produced by `jj log -T LogEntryTemplate`.
 // Blank lines are tolerated; malformed lines abort the parse with a wrapped
 // error that includes the offending payload.
@@ -140,26 +174,11 @@ func ParseLogEntries(stdout []byte) ([]LogEntry, error) {
 		if err := json.Unmarshal(line, &raw); err != nil {
 			return nil, fmt.Errorf("parse log entry %d: %w: %s", i, err, string(line))
 		}
-		ts, err := parseTimestamp(raw.AuthorTimestamp)
+		e, err := raw.entry()
 		if err != nil {
-			return nil, fmt.Errorf("parse log entry %d timestamp %q: %w", i, raw.AuthorTimestamp, err)
+			return nil, fmt.Errorf("parse log entry %d: %w", i, err)
 		}
-		email := raw.AuthorEmailLocal
-		if raw.AuthorEmailDomain != "" {
-			email = raw.AuthorEmailLocal + "@" + raw.AuthorEmailDomain
-		}
-		out = append(out, LogEntry{
-			ChangeID:           raw.ChangeID,
-			CommitID:           raw.CommitID,
-			Description:        raw.Description,
-			Bookmarks:          raw.Bookmarks,
-			Parents:            raw.Parents,
-			AuthorEmail:        email,
-			AuthorTimestamp:    ts,
-			Empty:              raw.Empty,
-			Immutable:          raw.Immutable,
-			CurrentWorkingCopy: raw.CurrentWorkingCopy,
-		})
+		out = append(out, e)
 	}
 	return out, nil
 }

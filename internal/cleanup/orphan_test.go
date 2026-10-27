@@ -29,7 +29,7 @@ func TestFindRepoCandidateOrphanedWorkspaces(t *testing.T) {
 		},
 	}
 
-	got, err := findRepoCandidate(repoPath, jjc, nil, 30, "")
+	got, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll})
 	require.NoError(t, err)
 	require.Len(t, got, 2, "rig workspaces stay owned by `wgo rig rm`, even orphaned")
 
@@ -44,11 +44,11 @@ func TestFindRepoCandidateOrphanedWorkspaces(t *testing.T) {
 	assert.Contains(t, got[1].Reason, "has no .jj directory")
 }
 
-// CurrentChange("") runs jj in the process's cwd, so a gone workspace used to
-// borrow the bookmark of whatever repo `wgo clean` was run from and could be
-// offered as a merged worktree. The stub maps "" to a merged bookmark to stand
-// in for that cwd.
-func TestFindRepoCandidateOrphanIgnoresCwdBookmark(t *testing.T) {
+// Reading a workspace at "" runs jj in the process's cwd, so a gone workspace
+// used to borrow the bookmark of whatever repo `wgo clean` was run from and
+// could be offered as a merged worktree. An orphan must never reach the
+// classifier.
+func TestFindRepoCandidateOrphanIsNeverClassified(t *testing.T) {
 	home := t.TempDir()
 	repoPath := liveWorkspace(t, home, "mains/wgo")
 
@@ -57,10 +57,13 @@ func TestFindRepoCandidateOrphanIgnoresCwdBookmark(t *testing.T) {
 			{Name: "default", Path: repoPath},
 			{Name: "gone", Path: ""},
 		},
-		bookmarks: map[string]string{"": "feature-from-cwd"},
+	}
+	classify := func(ref WorkspaceRef) Classification {
+		t.Errorf("orphaned workspace %q was classified", ref.Name)
+		return removeAll(ref)
 	}
 
-	got, err := findRepoCandidate(repoPath, jjc, nil, 30, "")
+	got, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: classify})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, KindOrphanWorkspace, got[0].Kind)
