@@ -168,6 +168,13 @@
     if (l === "uncertain") return "uncertain (process not confirmed)";
     return l || "unknown liveness";
   };
+  // bookmarkText places a workspace against its bookmark: on it, behind
+  // the bookmarks that moved on without it, or none.
+  L.bookmarkText = function (w) {
+    var ahead = w.bookmarks_ahead || [];
+    if (ahead.length) return "behind " + ahead.join(", ");
+    return w.bookmark ? "on " + w.bookmark : "no bookmark";
+  };
 
   // stateText is the State column of the table.
   L.stateText = function (n) {
@@ -176,7 +183,7 @@
       case "workspace": {
         var w = n.workspace || {};
         if (w.error) return "unavailable: " + w.error;
-        var s = w.bookmark ? "on " + w.bookmark : "no bookmark";
+        var s = L.bookmarkText(w);
         if (w.stack) s += " (" + w.stack.position + "/" + w.stack.size + " in stack)";
         return s;
       }
@@ -845,7 +852,7 @@
         if (wi.is_main) el("span", "badge", "main clone", li);
         if (wi.error) { el("div", "err", "jj unavailable: " + wi.error, li); return; }
         var meta = [];
-        meta.push(wi.bookmark ? "on " + wi.bookmark : "no bookmark");
+        meta.push(L.bookmarkText(wi));
         if (wi.stack) meta.push("stack " + wi.stack.position + "/" + wi.stack.size + (wi.stack.size > 1 ? " (" + wi.stack.bookmarks.join(" › ") + ")" : ""));
         if (wi.last_activity) meta.push("active " + L.relTime(wi.last_activity, Date.now()));
         el("div", "meta", meta.join(" · "), li);
@@ -896,6 +903,7 @@
       } else if (n.workspace) {
         var w = n.workspace;
         kv(detailBox, "Repository", w.repo_slug || w.repo); kv(detailBox, "Path", w.path); kv(detailBox, "Bookmark", w.bookmark || "none");
+        kv(detailBox, "Behind", (w.bookmarks_ahead || []).join(", "));
         if (w.stack) kv(detailBox, "Stack", w.stack.position + "/" + w.stack.size + " — " + w.stack.bookmarks.join(" › "));
         kv(detailBox, "Change", w.change_id); kv(detailBox, "Description", w.description);
         kv(detailBox, "Visible changes", (w.changes || []).length + (w.changes_truncated ? " (+" + w.changes_truncated + " beyond the window)" : ""));

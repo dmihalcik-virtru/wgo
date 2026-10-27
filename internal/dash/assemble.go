@@ -336,6 +336,7 @@ func workspaceInfo(w *wsData, repo, repoSlug, effortID string, annotations map[s
 		return wi
 	}
 	wi.Bookmark = w.bookmark
+	wi.BookmarksAhead = append([]string(nil), w.ahead...)
 	wi.ChangeID = w.current.ChangeID
 	wi.LastActivity = w.current.AuthorTimestamp
 	for _, ch := range w.changes {
