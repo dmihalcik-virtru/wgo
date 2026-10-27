@@ -416,10 +416,10 @@ func TestAttributeWorkspaces_AmbiguousPlanRefFallsBackToState(t *testing.T) {
 	}
 }
 
-func TestAttributeWorkspaces_BookmarkErrAndIdleSuppressNoBookmarkDiagnostic(t *testing.T) {
-	ws := []WorkspaceInfo{{Path: "/w/x", BookmarkErr: true}, {Path: "/w/y"}, {Path: "/w/z", Idle: true}}
+func TestAttributeWorkspaces_BookmarkErrIdleAndCoveredSuppressNoBookmarkDiagnostic(t *testing.T) {
+	ws := []WorkspaceInfo{{Path: "/w/x", BookmarkErr: true}, {Path: "/w/y"}, {Path: "/w/z", Idle: true}, {Path: "/w/c", Covered: true}}
 	r := AttributeWorkspaces(ws, nil, map[string]MergedEffort{}, nil)
-	if len(r.Ungrouped) != 3 {
+	if len(r.Ungrouped) != 4 {
 		t.Fatalf("ungrouped = %d", len(r.Ungrouped))
 	}
 	if len(r.Diagnostics) != 1 || !strings.Contains(r.Diagnostics[0], "/w/y has no bookmark") {

@@ -152,8 +152,14 @@ type WorkspaceInfo struct {
 	// MainClone is the main workspace root of the repository.
 	MainClone string `json:"main_clone"`
 	IsMain    bool   `json:"is_main,omitempty"`
-	// Bookmark is the nearest local bookmark at or below @.
+	// Bookmark is the nearest local bookmark at or below @, or else the only
+	// one in BookmarksAhead.
 	Bookmark string `json:"bookmark,omitempty"`
+	// BookmarksAhead is set when no bookmark is at or below @ but the nearest
+	// bookmarks above it hold all of the workspace's own work: its bookmark
+	// moved on (trunk merged into it, or a push from another workspace) and
+	// left @ behind. One per commit, sorted.
+	BookmarksAhead []string `json:"bookmarks_ahead,omitempty"`
 	// ChangeID is @ as of the workspace's last jj snapshot.
 	ChangeID string `json:"change_id,omitempty"`
 	// Description is the first line of the newest described change.

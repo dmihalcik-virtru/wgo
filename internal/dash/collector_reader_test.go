@@ -129,10 +129,11 @@ func TestReaderWorkersBounded(t *testing.T) {
 	}
 }
 
-// TestReaderErrorIsolation: a failure in any of the three reader calls marks
-// only that workspace.
+// TestReaderErrorIsolation: a failure in any of the reader calls marks only
+// that workspace. The bookmarks-ahead lookup runs only for a workspace with
+// work of its own and no bookmark at or below @.
 func TestReaderErrorIsolation(t *testing.T) {
-	stages := []string{"log @", "nearest bookmark", "log window"}
+	stages := []string{"log @", "nearest bookmark", "log window", "bookmarks ahead"}
 	for _, stage := range stages {
 		t.Run(stage, func(t *testing.T) {
 			roots := tempRoots(t, 4)
@@ -140,12 +141,16 @@ func TestReaderErrorIsolation(t *testing.T) {
 			boom := errors.New("jj exploded: " + stage)
 			fr := &fakeReader{
 				log: func(repo, revset string) ([]jj.LogEntry, error) {
-					if repo == victim && ((stage == "log @" && revset == "@") || (stage == "log window" && revset != "@")) {
+					if repo == victim && ((stage == "log @" && revset == "@") || (stage == "log window" && revset != "@") ||
+						(stage == "bookmarks ahead" && strings.HasPrefix(revset, "heads("))) {
 						return nil, boom
 					}
 					return defaultLog(repo, revset), nil
 				},
 				nearest: func(ws string) (string, error) {
+					if ws == victim && stage == "bookmarks ahead" {
+						return "", nil
+					}
 					if ws == victim && stage == "nearest bookmark" {
 						return "", boom
 					}

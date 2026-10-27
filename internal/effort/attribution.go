@@ -24,6 +24,11 @@ type WorkspaceInfo struct {
 	// deleted after its PR merged, or a rig pinned to a release tag. Having no
 	// bookmark is then expected, so attribution does not report it.
 	Idle bool
+	// Covered is set when no bookmark is at or below @ but bookmarks above it
+	// hold all of the workspace's own work: its bookmark moved on and left @
+	// behind. None of that work exists only here, so attribution does not
+	// report it.
+	Covered bool
 }
 
 // EffortSource says where a merged effort came from.
@@ -150,7 +155,7 @@ func setDiff(a, b []string) []string {
 // 5. Fallback to parsed ticket ID group, then Ungrouped
 // 6. Multiple claimants = conflict in Ungrouped
 // 7. No-bookmark workspaces stay in Ungrouped, with a diagnostic unless the
-// bookmark could not be read or the workspace is Idle
+// bookmark could not be read, the workspace is Idle, or its work is Covered
 //
 // The result is deterministic for the same inputs.
 func AttributeWorkspaces(
@@ -210,7 +215,7 @@ func AttributeWorkspaces(
 
 		if ws.Bookmark == "" {
 			result.Ungrouped = append(result.Ungrouped, ws)
-			if !ws.BookmarkErr && !ws.Idle {
+			if !ws.BookmarkErr && !ws.Idle && !ws.Covered {
 				result.Diagnostics = append(result.Diagnostics,
 					"workspace "+ws.Path+" has no bookmark")
 			}

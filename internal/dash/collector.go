@@ -130,6 +130,10 @@ type wsData struct {
 	// treat as immutable: the user's own work rather than release history or
 	// someone else's PR.
 	ownWork bool
+	// ahead lists the nearest bookmarks above @ that hold all of its own
+	// work, read only when no bookmark is at or below @. With exactly one,
+	// bookmark is set to it.
+	ahead []string
 	// warning is a non-fatal problem found while reading, surfaced as a
 	// diagnostic by collectLocal once the fan-out has finished.
 	warning string
@@ -368,6 +372,7 @@ func (c *Collector) collectLocal(ctx context.Context) (*localState, error) {
 			Bookmark:     w.bookmark,
 			BookmarkErr:  w.err != nil,
 			Idle:         w.idle(),
+			Covered:      len(w.ahead) > 0,
 		})
 	}
 	ls.attribution = effort.AttributeWorkspaces(infos, ls.clones, merged, override)
@@ -429,6 +434,10 @@ func (c *Collector) readWorkspaces(ctx context.Context, wss []*wsData) {
 // @ not yet in trunk, pushed or not. It is not jj's mutable() set.
 const mutableRange = "trunk()..@"
 
+// ownWorkRange is the workspace's own work as ownWork reads it: the non-empty
+// changes in mutableRange that jj does not treat as immutable.
+const ownWorkRange = "(" + mutableRange + ") & mutable() ~ empty()"
+
 // readWorkspace fills w from jjc. It writes only to w, so concurrent calls
 // on distinct workspaces do not race.
 func readWorkspace(jjc wsReader, w *wsData) error {
@@ -471,7 +480,46 @@ func readWorkspace(jjc wsReader, w *wsData) error {
 	for i := len(entries) - 1; i >= 0; i-- {
 		w.stack = append(w.stack, entries[i].Bookmarks...)
 	}
+	// Attribution would report this workspace as having no bookmark; first
+	// look for one that moved on above @.
+	if w.bookmark == "" && !w.idle() {
+		if w.ahead, err = bookmarksAhead(jjc, w.root); err != nil {
+			return err
+		}
+		if len(w.ahead) == 1 {
+			w.bookmark = w.ahead[0]
+		}
+	}
 	return nil
+}
+
+// bookmarksAhead returns the nearest local bookmarks above @ that hold all of
+// the workspace's own work, one per commit, sorted. It is asked only when no
+// bookmark is at or below @, which happens when the workspace's bookmark moved
+// on without it: trunk merged into the branch, or a push from another
+// workspace. A bookmark holding only part of the work does not count, so work
+// that exists only in this workspace is still reported as having no bookmark.
+func bookmarksAhead(jjc wsReader, root string) ([]string, error) {
+	heads, err := jjc.Log(root, "heads("+ownWorkRange+")")
+	if err != nil || len(heads) == 0 {
+		return nil, err
+	}
+	holders := []string{"bookmarks()"}
+	for _, h := range heads {
+		holders = append(holders, "descendants("+h.CommitID+")")
+	}
+	nearest, err := jjc.Log(root, "roots("+strings.Join(holders, " & ")+")")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range nearest {
+		if len(e.Bookmarks) > 0 {
+			names = append(names, e.Bookmarks[0])
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // idle reports whether w was read and holds no work of its own beyond trunk:

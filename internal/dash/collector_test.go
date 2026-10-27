@@ -223,6 +223,78 @@ func TestCollectorJJ(t *testing.T) {
 	}
 }
 
+// TestCollectorBookmarkAhead: a workspace whose bookmark moved on without it
+// is attributed through that bookmark and not reported as having none. One
+// whose work several bookmarks hold is left ungrouped without a warning, and
+// work on top that no bookmark holds is still reported.
+func TestCollectorBookmarkAhead(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo, jjc := jjtest.NewRepo(t)
+	behind := jjtest.NewWorkspace(t, repo, "behind")
+	forked := jjtest.NewWorkspace(t, repo, "forked")
+	loose := jjtest.NewWorkspace(t, repo, "loose")
+	// moveOn makes a child of from in the main workspace and bookmarks it,
+	// as a merge of trunk or a push from elsewhere would.
+	moveOn := func(from, msg, bookmark string) {
+		t.Helper()
+		if err := jjc.New(repo, from, msg); err != nil {
+			t.Fatal(err)
+		}
+		jjtest.Bookmark(t, repo, bookmark, "@")
+	}
+	jjtest.Commit(t, behind, "feat: behind", map[string]string{"behind.txt": "1"})
+	moveOn("behind@-", "Merge main into WGO-7-behind", "WGO-7-behind")
+	// A merged PR with two follow-ups stacked on it.
+	jjtest.Commit(t, forked, "feat: forked", map[string]string{"forked.txt": "1"})
+	moveOn("forked@-", "feat: follow-up one", "WGO-8-one")
+	moveOn("forked@-", "feat: follow-up two", "WGO-9-two")
+	jjtest.Commit(t, loose, "feat: base", map[string]string{"loose.txt": "1"})
+	moveOn("loose@-", "Merge main into WGO-10-base", "WGO-10-base")
+	jjtest.Commit(t, loose, "wip: only here", map[string]string{"loose.txt": "2"})
+
+	c := NewCollector(Config{
+		JJ: jjc,
+		Discover: func() ([]discovery.DiscoveredRepo, error) {
+			return []discovery.DiscoveredRepo{{Path: repo, Name: "repo"}}, nil
+		},
+		Store: memSource{},
+		Now:   time.Now,
+	})
+	s, _, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wss := workspaces(s)
+	for _, tc := range []struct {
+		ws, bookmark, ahead, effort string
+	}{
+		{"behind-ws", "WGO-7-behind", "WGO-7-behind", effortNodeID("ticket-wgo-7")},
+		{"forked-ws", "", "WGO-8-one,WGO-9-two", UngroupedID},
+		{"loose-ws", "", "", UngroupedID},
+	} {
+		w := wss[tc.ws]
+		if w == nil {
+			t.Fatalf("missing workspace %s: %v", tc.ws, keys(wss))
+		}
+		if w.Error != "" || w.Bookmark != tc.bookmark || strings.Join(w.BookmarksAhead, ",") != tc.ahead || w.EffortID != tc.effort {
+			t.Errorf("%s: bookmark=%q ahead=%q effort=%s error=%q; want bookmark=%q ahead=%q effort=%s",
+				tc.ws, w.Bookmark, w.BookmarksAhead, w.EffortID, w.Error, tc.bookmark, tc.ahead, tc.effort)
+		}
+	}
+	var noBookmark []string
+	for _, d := range s.Diagnostics {
+		if strings.Contains(d, "has no bookmark") {
+			noBookmark = append(noBookmark, d)
+		}
+	}
+	if len(noBookmark) != 1 || !strings.HasSuffix(noBookmark[0], string(filepath.Separator)+"loose-ws has no bookmark") {
+		t.Fatalf("no-bookmark diagnostics = %q, want only loose-ws", noBookmark)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("collected snapshot is invalid: %v", err)
+	}
+}
+
 func keys[V any](m map[string]V) []string {
 	var out []string
 	for k := range m {

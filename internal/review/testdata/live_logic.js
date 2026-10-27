@@ -105,6 +105,15 @@ test("prune after a generation swap keeps only surviving IDs", () => {
   assert.deepEqual(sorted(sel), ["pr1", "t2", "ws1"], "prune must not mutate its input");
 });
 
+test("a workspace is on its bookmark, behind bookmarks that moved on, or has none", () => {
+  const ws = (w) => L.stateText({ kind: "workspace", workspace: w });
+  assert.equal(ws({ bookmark: "feat", stack: { position: 2, size: 3 } }), "on feat (2/3 in stack)");
+  assert.equal(ws({ bookmark: "feat", bookmarks_ahead: ["feat"] }), "behind feat");
+  assert.equal(ws({ bookmarks_ahead: ["one", "two"] }), "behind one, two");
+  assert.equal(ws({}), "no bookmark");
+  assert.equal(ws({ error: "jj exploded" }), "unavailable: jj exploded");
+});
+
 test("sortRows sorts both directions with stable tie-breaks", () => {
   const rows = [
     { id: "c", label: "same", kind: "pr", activity: "2026-10-01" },
