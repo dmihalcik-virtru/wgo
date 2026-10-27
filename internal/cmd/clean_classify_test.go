@@ -35,6 +35,32 @@ func TestRecheckWorkspaceCatchesUnsnapshottedEdits(t *testing.T) {
 	assert.Contains(t, why, "unpushed")
 }
 
+// A workspace that needs a decision is removed on the evidence the person
+// confirmed. Edits that appear afterwards are not in that evidence, so the
+// removal is skipped even when they leave the verdict unchanged.
+func TestRecheckWorkspaceSkipsAChangedDecision(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	ws := jjtest.NewWorkspace(t, repo, "draft")
+	jjtest.Commit(t, ws, "feat: draft", map[string]string{"draft.txt": "draft\n"})
+	classifier := cleanup.NewClassifier(c.ReadOnly(), nil, cleanup.ClassifyOptions{
+		StaleAfter: 14 * 24 * time.Hour,
+		LastUsed:   func(string) time.Time { return time.Now().Add(-90 * 24 * time.Hour) },
+	})
+	ref := cleanup.WorkspaceRef{Name: "draft", Path: ws, RepoPath: repo, DefaultBranch: "main"}
+	cl := classifier.Classify(ref)
+	require.Equal(t, cleanup.TypeUnpushed, cl.Type, "evidence: %q", cl.Evidence)
+	require.Equal(t, cleanup.TierDecide, cl.Tier)
+	cand := Candidate{Kind: cleanup.KindWorktree, Path: ws, RepoPath: repo, WorkspaceName: "draft", Class: &cl}
+
+	assert.Empty(t, recheckWorkspace(cand, c, classifier), "an untouched workspace passes")
+
+	require.NoError(t, os.WriteFile(filepath.Join(ws, "more.txt"), []byte("written after the prompt\n"), 0o644))
+	assert.Contains(t, recheckWorkspace(cand, c, classifier), "changed after you confirmed it")
+	now := classifier.Classify(ref)
+	assert.Equal(t, cleanup.TypeUnpushed, now.Type, "the verdict alone would not catch the new file")
+	assert.Equal(t, cleanup.TierDecide, now.Tier)
+}
+
 func TestSplitByTier(t *testing.T) {
 	decide := func(typ cleanup.WorkspaceType, path string) Candidate {
 		return Candidate{Kind: cleanup.KindWorktree, Path: path, Class: &cleanup.Classification{Type: typ, Tier: cleanup.TierDecide}}

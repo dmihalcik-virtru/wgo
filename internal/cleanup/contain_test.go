@@ -43,7 +43,9 @@ func TestParseGitDiff(t *testing.T) {
 	n := files["new.txt"]
 	require.NotNil(t, n)
 	assert.True(t, n.created)
+	assert.Equal(t, "100644", n.mode)
 	assert.Equal(t, []string{"hello" + noEOL}, n.hunks[0].newLines)
+	assert.Empty(t, a.mode, "a modified file keeps its mode")
 
 	assert.True(t, files["img.png"].opaque)
 }
@@ -123,4 +125,27 @@ func TestFileContained(t *testing.T) {
 	ok, why = fileContained(&fileDiff{path: "f", hunks: work.hunks}, nil)
 	assert.False(t, ok, "a file missing from the work's diff is never contained")
 	assert.Equal(t, "not in the work's diff", why)
+
+	// The same lines with the file gone on one side only.
+	emptied := []hunk{{start: 0, oldLines: []string{"a"}}}
+	ok, why = fileContained(&fileDiff{path: "f", hunks: emptied}, &fileDiff{path: "f", deleted: true, hunks: emptied})
+	assert.False(t, ok, "trunk emptied the file the work deletes")
+	assert.Equal(t, "still on trunk", why)
+}
+
+// Both sides create the file with the same bytes, so only the mode can tell
+// them apart.
+func TestFileContainedComparesModes(t *testing.T) {
+	newFile := func(mode string) *fileDiff {
+		return &fileDiff{path: "f", created: true, mode: mode, hunks: []hunk{{start: 0, newLines: []string{"echo hi"}}}}
+	}
+	ok, _ := fileContained(newFile("100755"), newFile("100755"))
+	assert.True(t, ok)
+
+	ok, why := fileContained(newFile("100644"), newFile("100755"))
+	assert.False(t, ok, "the work's executable bit is not on trunk")
+	assert.Equal(t, "mode 100644 on trunk, 100755 in the work", why)
+
+	ok, _ = fileContained(newFile("100644"), newFile("120000"))
+	assert.False(t, ok, "a symlink is not a file holding its target")
 }

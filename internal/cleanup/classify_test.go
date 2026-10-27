@@ -165,6 +165,19 @@ func TestClassifyProbablyLanded(t *testing.T) {
 	assert.Contains(t, strings.Join(cl.Evidence, "\n"), "c.txt (differs from trunk)")
 }
 
+// Trunk has the work's bytes but not its executable bit, which exists nowhere
+// else, so the content proof must not count the file as landed.
+func TestClassifyContentProofComparesModes(t *testing.T) {
+	r := newTrunkRepo(t)
+	ws := r.workspace("script")
+	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "run.sh"), []byte("echo hi\n"), 0o755))
+	run(t, ws.Path, "commit", "-m", "feat: script")
+	r.land("feat: script (#8)", map[string]string{"run.sh": "echo hi\n"})
+
+	cl := classifier(r.jj, nil, longAgo).Classify(ws)
+	assertVerdict(t, cl, TypeProbablyLanded, TierDecide, "run.sh (mode 100644 on trunk, 100755 in the work)")
+}
+
 func TestClassifyDeletionsOnly(t *testing.T) {
 	r := newTrunkRepo(t)
 	ws := r.workspace("oops")

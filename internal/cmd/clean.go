@@ -72,7 +72,8 @@ removed only when you confirm each one; --yes never removes them:
 Workspaces in use (active, planned, fresh, in-progress) are kept. The scan
 never snapshots a workspace; before removing one, wgo snapshots it (updating
 it first if it is stale) and classifies it again if its working copy changed,
-so edits jj had not yet seen are never deleted.
+so edits jj had not yet seen are never deleted. One that needed a decision is
+skipped instead if it changed, since the evidence you confirmed predates it.
 
 Also forgets jj workspaces whose directory is gone (the warnings wgo dash
 shows). Forgetting never touches the disk, and --worktrees includes them.
@@ -269,7 +270,9 @@ func splitByTier(candidates []Candidate) (remove, decide []Candidate) {
 // recheckWorkspace snapshots a workspace before it is removed — the scan read
 // it without doing so — and classifies it again if its @ moved, so files edited
 // since jj last looked are never deleted unexamined. It returns why the
-// workspace must be skipped, or "".
+// workspace must be skipped, or "". A proven workspace that classifies the
+// same way is proven again; one that needed a decision is skipped whenever its
+// @ moved, since the person confirmed evidence that predates the change.
 //
 // A workspace whose @ a fetch rebased is stale and cannot be snapshotted until
 // it is updated. `jj workspace update-stale` keeps edits jj had not recorded,
@@ -320,6 +323,11 @@ func recheckWorkspace(c Candidate, jjc *jj.CLIClient, classifier *cleanup.Classi
 	}
 	if at[0].CommitID == c.Class.AtCommit {
 		return ""
+	}
+	if c.Class.Tier == cleanup.TierDecide {
+		// Removal rests on the person's confirmation of the evidence shown,
+		// and that evidence did not include whatever moved @.
+		return "it changed after you confirmed it; run wgo clean again to review it"
 	}
 	if classifier == nil {
 		return "its working copy changed since the scan"

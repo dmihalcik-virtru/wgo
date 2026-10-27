@@ -33,6 +33,10 @@ type fileDiff struct {
 	path    string
 	created bool // the file is absent from the old side
 	deleted bool // the file is absent from the new side
+	// mode is the new side's mode when the diff states one ("new file mode"),
+	// such as 100755 for an executable or 120000 for a symlink. It is empty
+	// when the file keeps the old side's mode.
+	mode string
 	// opaque marks a section whose content the hunks do not describe: a
 	// binary file, a rename or copy, or a mode change.
 	opaque bool
@@ -96,8 +100,9 @@ func parseGitDiff(out string) (map[string]*fileDiff, error) {
 			if strings.TrimPrefix(line, "+++ ") == "/dev/null" {
 				cur.deleted = true
 			}
-		case strings.HasPrefix(line, "new file mode"):
+		case strings.HasPrefix(line, "new file mode "):
 			cur.created = true
+			cur.mode = strings.TrimPrefix(line, "new file mode ")
 		case strings.HasPrefix(line, "deleted file mode"):
 			cur.deleted = true
 		case strings.HasPrefix(line, "Binary files"), strings.HasPrefix(line, "GIT binary patch"),
@@ -164,6 +169,10 @@ func parseRange(s string) (start, count int, err error) {
 // fileContained reports whether trunk (the diff from O to C) already contains
 // the work's change to one file (the diff from O to W). toTrunk is nil when C
 // leaves the file as it was at O. The reason says why not, for the evidence.
+//
+// The hunks describe only the lines, so whether the file exists and its mode
+// are compared first: a file both sides create with the same bytes is not
+// contained when one made it executable or a symlink and the other did not.
 func fileContained(toTrunk, toWork *fileDiff) (bool, string) {
 	switch {
 	case toWork == nil:
@@ -176,6 +185,10 @@ func fileContained(toTrunk, toWork *fileDiff) (bool, string) {
 		return false, "unchanged on trunk"
 	case toTrunk.deleted && !toWork.deleted:
 		return false, "deleted on trunk"
+	case toWork.deleted && !toTrunk.deleted:
+		return false, "still on trunk"
+	case toTrunk.mode != toWork.mode:
+		return false, "mode " + toTrunk.mode + " on trunk, " + toWork.mode + " in the work"
 	}
 	if hunksContained(toTrunk.hunks, toWork.hunks) {
 		return true, ""
