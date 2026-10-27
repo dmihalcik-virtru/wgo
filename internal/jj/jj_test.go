@@ -29,7 +29,14 @@ func TestSmokeTemplate(t *testing.T) {
 	if entries[0].ChangeID == "" || entries[0].CommitID == "" {
 		t.Fatalf("template drift: empty id field in %+v", entries[0])
 	}
-	if jj.TemplateSchemaVersion != 2 {
+	if !entries[0].Immutable {
+		t.Fatalf("template drift: root() must be immutable: %+v", entries[0])
+	}
+	wc, err := c.Log(repo, "@")
+	if err != nil || len(wc) != 1 || wc[0].Immutable {
+		t.Fatalf("template drift: @ must be mutable: %+v, %v", wc, err)
+	}
+	if jj.TemplateSchemaVersion != 3 {
 		t.Fatalf("TemplateSchemaVersion drifted to %d; update parser if intentional", jj.TemplateSchemaVersion)
 	}
 }

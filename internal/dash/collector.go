@@ -126,6 +126,10 @@ type wsData struct {
 	// truncatedUnknown is set when the workspace may hold more changes than
 	// the window but jj could not count them.
 	truncatedUnknown bool
+	// ownWork is set when the window holds a non-empty change jj does not
+	// treat as immutable: the user's own work rather than release history or
+	// someone else's PR.
+	ownWork bool
 	// warning is a non-fatal problem found while reading, surfaced as a
 	// diagnostic by collectLocal once the fan-out has finished.
 	warning string
@@ -358,7 +362,13 @@ func (c *Collector) collectLocal(ctx context.Context) (*localState, error) {
 
 	infos := make([]effort.WorkspaceInfo, 0, len(ls.workspaces))
 	for _, w := range ls.workspaces {
-		infos = append(infos, effort.WorkspaceInfo{Path: w.root, MainRepoPath: w.mainClone, Bookmark: w.bookmark})
+		infos = append(infos, effort.WorkspaceInfo{
+			Path:         w.root,
+			MainRepoPath: w.mainClone,
+			Bookmark:     w.bookmark,
+			BookmarkErr:  w.err != nil,
+			Idle:         w.idle(),
+		})
 	}
 	ls.attribution = effort.AttributeWorkspaces(infos, ls.clones, merged, override)
 	ls.diags = append(ls.diags, ls.attribution.Diagnostics...)
@@ -448,6 +458,9 @@ func readWorkspace(jjc wsReader, w *wsData) error {
 		}
 	}
 	for _, e := range entries {
+		if !e.Empty && !e.Immutable {
+			w.ownWork = true
+		}
 		if e.Empty && strings.TrimSpace(e.Description) == "" {
 			continue // the empty working-copy change, or other placeholders
 		}
@@ -459,6 +472,13 @@ func readWorkspace(jjc wsReader, w *wsData) error {
 		w.stack = append(w.stack, entries[i].Bookmarks...)
 	}
 	return nil
+}
+
+// idle reports whether w was read and holds no work of its own beyond trunk:
+// only empty changes and immutable history. A window that missed changes is
+// never idle, since the missing ones may be work.
+func (w *wsData) idle() bool {
+	return w.err == nil && !w.ownWork && w.truncated == 0 && !w.truncatedUnknown
 }
 
 // Collect builds a snapshot from local data and cached remote data only. It
