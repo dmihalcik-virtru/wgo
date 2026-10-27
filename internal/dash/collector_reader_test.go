@@ -177,6 +177,54 @@ func TestReaderErrorIsolation(t *testing.T) {
 	}
 }
 
+// TestReaderNoBookmarkDiagnostic: only a workspace with work of its own
+// beyond trunk is reported as having no bookmark. One parked on trunk or
+// pinned to a release tag is expected to have none, and one jj could not read
+// already carries its error.
+func TestReaderNoBookmarkDiagnostic(t *testing.T) {
+	roots := tempRoots(t, 4)
+	idle, pinned, busy, broken := roots[0], roots[1], roots[2], roots[3]
+	at := time.Unix(1_800_000_000, 0)
+	fr := &fakeReader{
+		log: func(repo, revset string) ([]jj.LogEntry, error) {
+			switch {
+			case repo == broken && revset == "@":
+				return nil, errors.New("jj exploded")
+			case repo == idle && revset != "@":
+				// trunk()..@ is just the empty working-copy change.
+				return defaultLog(repo, "@"), nil
+			case repo == pinned && revset != "@":
+				// A described empty @ on a release branch's immutable history.
+				return []jj.LogEntry{
+					{ChangeID: "wc", Description: "rig checkout", Empty: true, AuthorTimestamp: at},
+					{ChangeID: "release", Description: "chore: release 1.2.3", Immutable: true, AuthorTimestamp: at},
+				}, nil
+			}
+			return defaultLog(repo, revset), nil
+		},
+		nearest: func(string) (string, error) { return "", nil },
+	}
+	c := readerCollector(t, fr, memSource{}, roots...)
+	s, _, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, d := range s.Diagnostics {
+		if strings.Contains(d, "has no bookmark") {
+			got = append(got, d)
+		}
+	}
+	if len(got) != 1 || got[0] != "workspace "+busy+" has no bookmark" {
+		t.Fatalf("no-bookmark diagnostics = %q, want only %s", got, busy)
+	}
+	for _, w := range roots {
+		if id := s.Node(WorkspaceID(w, w)).Workspace.EffortID; id != UngroupedID {
+			t.Fatalf("%s attributed to %s, want ungrouped", w, id)
+		}
+	}
+}
+
 func TestReaderCountFailureMarksTruncationUnknown(t *testing.T) {
 	roots := tempRoots(t, 3)
 	unknown, known, small := roots[0], roots[1], roots[2]

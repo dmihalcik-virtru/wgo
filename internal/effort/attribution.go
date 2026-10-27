@@ -19,6 +19,11 @@ type WorkspaceInfo struct {
 	// BookmarkErr is set when reading the bookmark failed, so attribution does
 	// not also report the workspace as having none.
 	BookmarkErr bool
+	// Idle is set when the workspace holds no work of its own beyond trunk,
+	// such as a main clone parked on trunk, a checkout whose bookmark was
+	// deleted after its PR merged, or a rig pinned to a release tag. Having no
+	// bookmark is then expected, so attribution does not report it.
+	Idle bool
 }
 
 // EffortSource says where a merged effort came from.
@@ -144,7 +149,8 @@ func setDiff(a, b []string) []string {
 // 4. Never match a bookmark name across repos
 // 5. Fallback to parsed ticket ID group, then Ungrouped
 // 6. Multiple claimants = conflict in Ungrouped
-// 7. No-bookmark workspaces stay in Ungrouped
+// 7. No-bookmark workspaces stay in Ungrouped, with a diagnostic unless the
+// bookmark could not be read or the workspace is Idle
 //
 // The result is deterministic for the same inputs.
 func AttributeWorkspaces(
@@ -204,7 +210,7 @@ func AttributeWorkspaces(
 
 		if ws.Bookmark == "" {
 			result.Ungrouped = append(result.Ungrouped, ws)
-			if !ws.BookmarkErr {
+			if !ws.BookmarkErr && !ws.Idle {
 				result.Diagnostics = append(result.Diagnostics,
 					"workspace "+ws.Path+" has no bookmark")
 			}

@@ -72,6 +72,9 @@ type Change struct {
 	AuthorTimestamp time.Time
 	// Empty indicates the change touches no files (e.g. fresh `jj new`).
 	Empty bool
+	// Immutable is true when the change is in jj's immutable set: trunk,
+	// tags and untracked remote bookmarks by default.
+	Immutable bool
 	// CurrentWorkingCopy is true when this change is the `@` of the current
 	// workspace.
 	CurrentWorkingCopy bool

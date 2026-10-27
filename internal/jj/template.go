@@ -10,7 +10,7 @@ import (
 // TemplateSchemaVersion is bumped whenever any template constant or its
 // matching parser changes shape. Used by SmokeCheck to fail loudly when jj
 // upstream renames a template field we depend on.
-const TemplateSchemaVersion = 2
+const TemplateSchemaVersion = 3
 
 // LogEntryTemplate renders a `jj log` record as a single line of JSON. Pair
 // with `--no-graph` and ParseLogEntries to consume.
@@ -34,6 +34,7 @@ const TemplateSchemaVersion = 2
 //	author_email_domain  domain part of author email
 //	author_timestamp     ISO 8601 ("%+") author timestamp
 //	empty                true if the change touches no files
+//	immutable            true if the change is in jj's immutable set
 //	current_working_copy true if this is the workspace's @
 const LogEntryTemplate = `"{\"change_id\":" ++ change_id.short(32).escape_json() ` +
 	`++ ",\"commit_id\":" ++ commit_id.short(40).escape_json() ` +
@@ -44,6 +45,7 @@ const LogEntryTemplate = `"{\"change_id\":" ++ change_id.short(32).escape_json()
 	`++ ",\"author_email_domain\":" ++ author.email().domain().escape_json() ` +
 	`++ ",\"author_timestamp\":" ++ author.timestamp().format("%+").escape_json() ` +
 	`++ ",\"empty\":" ++ if(empty, "true", "false") ` +
+	`++ ",\"immutable\":" ++ if(immutable, "true", "false") ` +
 	`++ ",\"current_working_copy\":" ++ if(current_working_copy, "true", "false") ` +
 	`++ "}\n"`
 
@@ -101,6 +103,7 @@ type rawLogEntry struct {
 	AuthorEmailDomain  string   `json:"author_email_domain"`
 	AuthorTimestamp    string   `json:"author_timestamp"`
 	Empty              bool     `json:"empty"`
+	Immutable          bool     `json:"immutable"`
 	CurrentWorkingCopy bool     `json:"current_working_copy"`
 }
 
@@ -154,6 +157,7 @@ func ParseLogEntries(stdout []byte) ([]LogEntry, error) {
 			AuthorEmail:        email,
 			AuthorTimestamp:    ts,
 			Empty:              raw.Empty,
+			Immutable:          raw.Immutable,
 			CurrentWorkingCopy: raw.CurrentWorkingCopy,
 		})
 	}
