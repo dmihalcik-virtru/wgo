@@ -70,6 +70,10 @@ type Change struct {
 	AuthorEmail string
 	// AuthorTimestamp is the change author timestamp parsed from `%+`.
 	AuthorTimestamp time.Time
+	// CommitterTimestamp is the committer timestamp parsed from `%+`. Unlike
+	// the author timestamp it moves on every rewrite, so of two revisions of
+	// one change the newer has the later committer timestamp.
+	CommitterTimestamp time.Time
 	// Empty indicates the change touches no files (e.g. fresh `jj new`).
 	Empty bool
 	// Immutable is true when the change is in jj's immutable set: trunk,
@@ -95,9 +99,10 @@ type Status struct {
 	Added []string
 	// Deleted files reported as `D`.
 	Deleted []string
-	// Untracked is always empty in jj's model and exists only so callers
-	// written against a git-shaped API compile cleanly. jj auto-tracks new
-	// files into Added.
+	// Untracked are the paths jj saw but refused to snapshot, listed under
+	// "Untracked paths:" (marked `?`): new files over
+	// snapshot.max-new-file-size, or files snapshot.auto-track leaves out.
+	// Everything else new is auto-tracked into Added.
 	Untracked []string
 	// CurrentChange describes the workspace's `@` change.
 	CurrentChange Change

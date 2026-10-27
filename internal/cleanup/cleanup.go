@@ -3,6 +3,9 @@ package cleanup
 
 import (
 	"fmt"
+	"runtime"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/virtru/wgo/internal/config"
@@ -48,38 +51,121 @@ type Candidate struct {
 	WorkspaceName string         // jj workspace name, for worktrees and orphaned workspaces
 	Branch        string         // branch name
 	Reason        string         // human-readable reason, e.g. "merged PR #42"
-	IsDirty       bool           // has uncommitted changes
 	PRInfo        *github.PRInfo // non-nil if a PR was found
+	// Class is why a workspace (KindWorktree) is offered: its Tier says
+	// whether --yes may remove it or the user must decide.
+	Class *Classification
 }
 
-// FindCandidates discovers all cleanup candidates across tracked repos.
-func FindCandidates(cfg *config.Config, jjc jj.Client, ghClient github.Client) ([]Candidate, error) {
+// Scan is what FindCandidates found.
+type Scan struct {
+	// Candidates are offered for removal: every kind of item, including
+	// workspaces whose Class.Tier is TierRemove or TierDecide.
+	Candidates []Candidate
+	// Kept are workspaces classified TierKeep, reported but never offered.
+	Kept []Candidate
+}
+
+// classifyWorkers bounds how many workspaces are classified at once, across
+// all repos. A classification is mostly one jj process at a time.
+func classifyWorkers() int { return max(4, runtime.NumCPU()) }
+
+// repoWorkers bounds how many repos are scanned at once.
+const repoWorkers = 6
+
+// NewScanClassifier returns the classifier FindCandidates uses: jj reads that
+// never snapshot a workspace, GitHub when it is reachable, and the idle
+// threshold from status.stale_days. It returns nil when jjc cannot serve the
+// classifier's reads.
+func NewScanClassifier(cfg *config.Config, jjc jj.Client, ghClient github.Client) *Classifier {
+	var r Reader
+	switch v := jjc.(type) {
+	case *jj.CLIClient:
+		r = v.ReadOnly()
+	case Reader:
+		r = v
+	default:
+		return nil
+	}
+	var prs PRSource
+	if ghClient != nil && ghClient.Available() {
+		prs, _ = ghClient.(PRSource)
+	}
+	return NewClassifier(r, prs, ClassifyOptions{
+		StaleAfter: time.Duration(cfg.Status.StaleDays) * 24 * time.Hour,
+	})
+}
+
+// FindCandidates discovers cleanup candidates across tracked repos. With kinds
+// it scans only for those: workspaces (KindWorktree, KindOrphanWorkspace)
+// and bookmarks (KindLocalBranch, KindRemoteBranch) are separate passes, and
+// the bookmark pass costs GitHub calls per bookmark. No kinds means all.
+func FindCandidates(cfg *config.Config, jjc jj.Client, ghClient github.Client, kinds ...CandidateKind) (Scan, error) {
 	disc := discovery.FromConfig(cfg)
 	repos, err := disc.DiscoverAll()
 	if err != nil {
-		return nil, fmt.Errorf("discovery failed: %w", err)
+		return Scan{}, fmt.Errorf("discovery failed: %w", err)
+	}
+
+	wants := func(ks ...CandidateKind) bool {
+		if len(kinds) == 0 {
+			return true
+		}
+		for _, k := range ks {
+			if slices.Contains(kinds, k) {
+				return true
+			}
+		}
+		return false
+	}
+	pass := repoPass{
+		workspaces: wants(KindWorktree, KindOrphanWorkspace),
+		bookmarks:  wants(KindLocalBranch, KindRemoteBranch),
+		rigDir:     cfg.Rig.Dir,
+	}
+	if c := NewScanClassifier(cfg, jjc, ghClient); c != nil {
+		pass.classify = c.Classify
 	}
 
 	// Only process main workspaces (not secondary workspaces found during discovery)
-	var candidates []Candidate
+	var scan Scan
 	seen := map[string]bool{}
+	var mains []string
 	for _, repo := range repos {
-		if repo.IsWorktree {
-			continue
-		}
-		if seen[repo.Path] {
+		if repo.IsWorktree || seen[repo.Path] {
 			continue
 		}
 		seen[repo.Path] = true
-
-		found, err := findRepoCandidate(repo.Path, jjc, ghClient, cfg.Status.StaleDays, cfg.Rig.Dir)
-		if err != nil {
-			continue
-		}
-		candidates = append(candidates, found...)
+		mains = append(mains, repo.Path)
 	}
 
-	return candidates, nil
+	// Repos are scanned concurrently — each spends most of its time waiting
+	// on jj and GitHub — while their workspaces share one pool of classifier
+	// workers. Results keep the discovery order.
+	pass.workers = make(chan struct{}, classifyWorkers())
+	type repoResult struct{ found, kept []Candidate }
+	results := make([]repoResult, len(mains))
+	repoSlots := make(chan struct{}, repoWorkers)
+	var wg sync.WaitGroup
+	for i, path := range mains {
+		wg.Add(1)
+		repoSlots <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-repoSlots }()
+			found, kept, err := findRepoCandidate(path, jjc, ghClient, pass)
+			if err == nil {
+				results[i] = repoResult{found, kept}
+			}
+		}()
+	}
+	wg.Wait()
+	for _, r := range results {
+		scan.Candidates = append(scan.Candidates, r.found...)
+		scan.Kept = append(scan.Kept, r.kept...)
+	}
+
+	return scan, nil
 }
 
 // repoDefaultBranch derives the GitHub default branch for a jj repo path,
@@ -117,42 +203,56 @@ func splitSlug(slug string) []string {
 	return nil
 }
 
-// workspaceBookmark returns the first local bookmark on the workspace's @,
-// or "" when the @ has no bookmark.
-func workspaceBookmark(jjc jj.Client, wsPath string) string {
-	ch, err := jjc.CurrentChange(wsPath)
-	if err != nil || len(ch.Bookmarks) == 0 {
-		return ""
-	}
-	return ch.Bookmarks[0]
+// repoPass says what findRepoCandidate scans in each repo.
+type repoPass struct {
+	workspaces bool // classify workspaces and find orphans
+	bookmarks  bool // check local bookmarks and their remote branches
+	// classify judges each live workspace; nil means workspaces cannot be
+	// judged and are all kept.
+	classify func(WorkspaceRef) Classification
+	// workers is the classifier pool shared by every repo; nil means a pool
+	// of this repo's own.
+	workers chan struct{}
+	// rigDir is needed here, and not just in discovery, because workspaces
+	// are reached through ListWorkspaces on the main clone rather than
+	// through a filesystem walk: keeping rig.dir out of discovery hides the
+	// rig's directories but not its workspaces.
+	rigDir string
 }
 
-// findRepoCandidate inspects one main repo. rigDir is needed here, and not just
-// in discovery, because workspaces are reached through ListWorkspaces on the
-// main clone rather than through a filesystem walk: keeping rig.dir out of
-// discovery hides the rig's directories but not its workspaces.
-func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, staleDays int, rigDir string) ([]Candidate, error) {
-	var candidates []Candidate
-
+// findRepoCandidate inspects one main repo.
+func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, pass repoPass) (candidates, kept []Candidate, err error) {
 	defaultBranch := repoDefaultBranch(jjc, repoPath)
 
 	// --- Workspaces (the jj equivalent of git worktrees) ---
+	// The workspace list is read even for a bookmark-only pass: a bookmark on
+	// a workspace's @ is left to the workspace.
 	workspaces, err := jjc.ListWorkspaces(repoPath)
+	// onWorkspace holds the commit each non-default workspace's @ sits on, so
+	// a bookmark there is left to the workspace rather than offered alone.
+	onWorkspace := map[string]bool{}
 	if err == nil {
+		var live []jj.Workspace
 		for _, ws := range workspaces {
 			if ws.Name == "default" {
+				continue
+			}
+			if ws.CommitID != "" {
+				onWorkspace[ws.CommitID] = true
+			}
+			if !pass.workspaces {
 				continue
 			}
 			// A rig workspace is pinned to a released tag and deliberately
 			// carries no bookmark, which is exactly the shape the checks below
 			// read as an abandoned worktree. Rigs are owned by `wgo rig rm`.
-			if rig.IsWorkspace(rigDir, ws.Path, ws.Name) {
+			if rig.IsWorkspace(pass.rigDir, ws.Path, ws.Name) {
 				continue
 			}
 			// An orphaned workspace has no working copy to read, so it must be
-			// caught before the bookmark lookup: CurrentChange("") would read
-			// whichever repo wgo was run from. One that cannot be checked at
-			// all is left alone rather than guessed at.
+			// caught before it is classified: reading "" would read whichever
+			// repo wgo was run from. One that cannot be checked at all is left
+			// alone rather than guessed at.
 			reason, orphaned, err := jj.OrphanReason(ws)
 			if err != nil {
 				continue
@@ -167,63 +267,51 @@ func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, s
 				})
 				continue
 			}
-			bookmark := workspaceBookmark(jjc, ws.Path)
+			live = append(live, ws)
+		}
+
+		refs := make([]WorkspaceRef, len(live))
+		for i, ws := range live {
+			refs[i] = WorkspaceRef{Name: ws.Name, Path: ws.Path, RepoPath: repoPath, DefaultBranch: defaultBranch}
+		}
+		for i, cl := range classifyAll(pass.classify, refs, pass.workers) {
 			c := Candidate{
 				Kind:          KindWorktree,
-				Path:          ws.Path,
+				Path:          live[i].Path,
 				RepoPath:      repoPath,
-				WorkspaceName: ws.Name,
-				Branch:        bookmark,
+				WorkspaceName: live[i].Name,
+				Reason:        cl.Reason(),
+				PRInfo:        cl.PR,
+				Class:         &cl,
 			}
-
-			// Check if dirty
-			if st, err := jjc.Status(ws.Path); err == nil {
-				c.IsDirty = !st.Clean
+			if len(cl.Bookmarks) > 0 {
+				c.Branch = cl.Bookmarks[0]
 			}
-
-			// Check PR status
-			if ghClient != nil && ghClient.Available() && bookmark != "" {
-				pr, _ := ghClient.GetPRStatus(repoPath, bookmark)
-				if pr != nil {
-					c.PRInfo = pr
-					if pr.IsMerged() {
-						c.Reason = fmt.Sprintf("merged PR #%d", pr.Number)
-						candidates = append(candidates, c)
-						continue
-					}
-					if pr.IsClosed() {
-						c.Reason = fmt.Sprintf("closed PR #%d", pr.Number)
-						candidates = append(candidates, c)
-						continue
-					}
-				}
-			}
-
-			// Check if bookmark is locally merged into default.
-			if bookmark != "" && bookmark != defaultBranch {
-				if isMergedInto(jjc, repoPath, bookmark, defaultBranch+"@origin") {
-					c.Reason = fmt.Sprintf("merged into %s", defaultBranch)
-					candidates = append(candidates, c)
-				}
+			if cl.Tier == TierKeep {
+				kept = append(kept, c)
+			} else {
+				candidates = append(candidates, c)
 			}
 		}
+	}
+
+	if !pass.bookmarks {
+		return candidates, kept, nil
 	}
 
 	// --- Local bookmarks ---
 	localBookmarks, err := jjc.BookmarkList(repoPath, jj.BookmarkListOpts{Local: true})
 	if err != nil {
-		return candidates, nil
+		return candidates, kept, nil
 	}
-
-	staleThreshold := time.Now().AddDate(0, 0, -staleDays)
 
 	for _, bm := range localBookmarks {
 		branch := bm.Name
 		if branch == defaultBranch {
 			continue
 		}
-		if isWorkspaceBookmark(jjc, branch, workspaces) {
-			// Already handled above
+		if bm.CommitID != "" && onWorkspace[bm.CommitID] {
+			// The bookmark is on a workspace's @; the workspace decides.
 			continue
 		}
 
@@ -265,10 +353,6 @@ func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, s
 			candidates = append(candidates, c)
 			continue
 		}
-
-		// Check staleness by last commit
-		_ = staleThreshold
-		// (commit time check could be added here via Log)
 	}
 
 	branches := make([]string, 0, len(localBookmarks))
@@ -305,7 +389,36 @@ func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, s
 		}
 	}
 
-	return candidates, nil
+	return candidates, kept, nil
+}
+
+// classifyAll classifies refs concurrently, at most cap(workers) at a time,
+// keeping their order.
+func classifyAll(classify func(WorkspaceRef) Classification, refs []WorkspaceRef, workers chan struct{}) []Classification {
+	out := make([]Classification, len(refs))
+	if classify == nil {
+		for i := range out {
+			out[i] = Classification{Type: TypeUnreadable, Tier: TierKeep,
+				Evidence: []string{"this jj client cannot classify workspaces"}}
+		}
+		return out
+	}
+	sem := workers
+	if sem == nil {
+		sem = make(chan struct{}, classifyWorkers())
+	}
+	var wg sync.WaitGroup
+	for i, ref := range refs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			out[i] = classify(ref)
+		}()
+	}
+	wg.Wait()
+	return out
 }
 
 // isMergedInto reports whether all commits reachable from branch are also
@@ -317,20 +430,6 @@ func isMergedInto(jjc jj.Client, repoPath, branch, target string) bool {
 		return false
 	}
 	return n == 0
-}
-
-// isWorkspaceBookmark returns true if the named bookmark is currently
-// attached to any non-default workspace's @.
-func isWorkspaceBookmark(jjc jj.Client, branch string, workspaces []jj.Workspace) bool {
-	for _, ws := range workspaces {
-		if ws.Name == "default" {
-			continue
-		}
-		if workspaceBookmark(jjc, ws.Path) == branch {
-			return true
-		}
-	}
-	return false
 }
 
 // SenescenceReason returns a human-readable reason string for a senescent PR.
@@ -352,6 +451,10 @@ func SenescenceReason(pr *github.PRInfo) string {
 	}
 	return ""
 }
+
+// FormatAge renders how long ago t was: "today", "yesterday", "3d ago",
+// "5w ago".
+func FormatAge(t time.Time) string { return formatAge(t) }
 
 func formatAge(t time.Time) string {
 	d := time.Since(t)

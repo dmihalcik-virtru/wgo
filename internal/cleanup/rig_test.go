@@ -17,29 +17,23 @@ import (
 type stubJJ struct {
 	jj.Client
 	workspaces []jj.Workspace
-	bookmarks  map[string]string // workspace path -> bookmark on @
 }
 
 func (s *stubJJ) RemoteURLs(string) (map[string]string, error) { return nil, nil }
 
 func (s *stubJJ) ListWorkspaces(string) ([]jj.Workspace, error) { return s.workspaces, nil }
 
-func (s *stubJJ) CurrentChange(wsPath string) (jj.Change, error) {
-	bm := s.bookmarks[wsPath]
-	if bm == "" {
-		return jj.Change{}, nil
-	}
-	return jj.Change{Bookmarks: []string{bm}}, nil
-}
-
-func (s *stubJJ) Status(string) (jj.Status, error) { return jj.Status{Clean: true}, nil }
-
-// Every bookmark reads as fully merged into the default branch — the worst
-// case for a rig, since that is what makes a workspace a cleanup candidate.
+// Every bookmark reads as fully merged into the default branch.
 func (s *stubJJ) CountRevset(string, string) (int, error) { return 0, nil }
 
 func (s *stubJJ) BookmarkList(string, jj.BookmarkListOpts) ([]jj.Bookmark, error) {
 	return nil, nil
+}
+
+// removeAll classifies every workspace as removable, so a test sees exactly
+// which workspaces reach the classifier.
+func removeAll(WorkspaceRef) Classification {
+	return Classification{Type: TypeIdle, Tier: TierRemove, Evidence: []string{"test"}}
 }
 
 // liveWorkspace creates path under root with a .jj directory, so the orphan
@@ -71,14 +65,9 @@ func TestFindRepoCandidateSkipsRigWorkspaces(t *testing.T) {
 			{Name: "rig-dsp-2.7.1-sdk", Path: strayWS},
 			{Name: "WGO-136-add-rig", Path: realWS},
 		},
-		bookmarks: map[string]string{
-			rigWS:   "service/v0.11.6",
-			strayWS: "sdk/v0.10.1",
-			realWS:  "WGO-136-add-rig",
-		},
 	}
 
-	got, err := findRepoCandidate(repoPath, jjc, nil, 30, rigDir)
+	got, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll, rigDir: rigDir})
 	require.NoError(t, err)
 
 	require.Len(t, got, 1, "only the ordinary worktree is a candidate")
@@ -98,10 +87,9 @@ func TestFindRepoCandidateWithoutRigExclusion(t *testing.T) {
 			{Name: "default", Path: repoPath},
 			{Name: "service-v0-11-6", Path: rigWS},
 		},
-		bookmarks: map[string]string{rigWS: "service/v0.11.6"},
 	}
 
-	got, err := findRepoCandidate(repoPath, jjc, nil, 30, "")
+	got, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, rigWS, got[0].Path)

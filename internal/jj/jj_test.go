@@ -36,7 +36,10 @@ func TestSmokeTemplate(t *testing.T) {
 	if err != nil || len(wc) != 1 || wc[0].Immutable {
 		t.Fatalf("template drift: @ must be mutable: %+v, %v", wc, err)
 	}
-	if jj.TemplateSchemaVersion != 3 {
+	if wc[0].CommitterTimestamp.IsZero() {
+		t.Fatalf("template drift: committer timestamp missing: %+v", wc[0])
+	}
+	if jj.TemplateSchemaVersion != 4 {
 		t.Fatalf("TemplateSchemaVersion drifted to %d; update parser if intentional", jj.TemplateSchemaVersion)
 	}
 }

@@ -621,25 +621,35 @@ func (c *CLIClient) IsClean(workspacePath string) (bool, []string, error) {
 }
 
 // parseStatus translates `jj status` plain-text output into a Status.
-// jj status surfaces a single block of "Working copy changes:" lines of
-// the form "<flag> <path>" where flag is one of A/M/D. A "The working copy
-// has no changes." string indicates a clean copy.
+// jj status surfaces a block of "Working copy changes:" lines of the form
+// "<flag> <path>" where flag is one of A/M/D, and an "Untracked paths:" block
+// of "? <path>" lines. A "The working copy has no changes." string indicates
+// a clean copy.
 func parseStatus(out string) Status {
 	st := Status{Clean: true}
-	inChanges := false
+	inChanges, inUntracked := false, false
 	for _, raw := range strings.Split(out, "\n") {
 		line := strings.TrimRight(raw, "\r")
 		switch {
 		case strings.HasPrefix(line, "Working copy changes:"):
-			inChanges = true
+			inChanges, inUntracked = true, false
 			st.Clean = false
 			continue
+		case strings.HasPrefix(line, "Untracked paths:"):
+			inChanges, inUntracked = false, true
+			continue
 		case strings.HasPrefix(line, "Working copy "), strings.HasPrefix(line, "Parent commit "):
-			inChanges = false
+			inChanges, inUntracked = false, false
 			continue
 		case strings.HasPrefix(line, "The working copy has no changes."):
 			st.Clean = true
 			inChanges = false
+			continue
+		}
+		if inUntracked {
+			if path, ok := strings.CutPrefix(strings.TrimSpace(line), "? "); ok {
+				st.Untracked = append(st.Untracked, strings.TrimSpace(path))
+			}
 			continue
 		}
 		if !inChanges {
