@@ -109,7 +109,7 @@ type DashFactsConfig struct {
 	StaleDays *int `mapstructure:"stale_days"`
 	// SystemicRatio is the share of a repository's open PRs, among those
 	// that ran a check, on which it must fail to count as failing
-	// everywhere; SystemicMinPRs is how many of them it must fail on.
+	// everywhere; SystemicMinPRs is how many open PRs it must have run on.
 	SystemicRatio  *float64 `mapstructure:"systemic_ratio"`
 	SystemicMinPRs *int     `mapstructure:"systemic_min_prs"`
 }
@@ -669,11 +669,11 @@ gh_stack = "auto"
 # name = "Alice"                # display name (optional)
 #
 # Thresholds of the derived facts: whose move a PR is, and which checks
-# fail on most open PRs in a repository rather than because of one PR.
+# fail across a repository's open PRs rather than because of one PR.
 # [dash.facts]
 # stale_days = 30               # an open PR not updated this long is stale (1 to 3650)
 # systemic_ratio = 0.6          # a check failing on this share of a repo's open PRs fails everywhere (above 0, at most 1)
-# systemic_min_prs = 3          # ...and on at least this many of them (2 to 1000)
+# systemic_min_prs = 3          # ...if it ran on at least this many open PRs (2 to 1000)
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)

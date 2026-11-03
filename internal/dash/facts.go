@@ -11,7 +11,7 @@ import (
 
 // This file derives the attention facts of gh-99 from an assembled snapshot:
 // whose move each PR is, why, since when and on whom; whether its CI failures
-// are its own or fail on most open PRs in its repository; how big and how
+// are its own or fail across its repository's open PRs; how big and how
 // stale it is; and where a Jira ticket and its PRs disagree. Each reason and
 // mismatch carries a one-line evidence string built from its inputs, and
 // there is deliberately no composite score (gh-96 principle 3). A fact whose
@@ -37,8 +37,8 @@ type FactThresholds struct {
 	// ticket, may go without an update before it is stale.
 	StaleDays int
 	// SystemicRatio and SystemicMinPRs decide when a check fails everywhere
-	// in a repository: on at least SystemicRatio of the open PRs that ran
-	// it, and on at least SystemicMinPRs of them.
+	// in a repository: it failed on at least SystemicRatio of the open PRs
+	// that ran it, and it ran on at least SystemicMinPRs open PRs.
 	SystemicRatio  float64
 	SystemicMinPRs int
 }
@@ -181,8 +181,9 @@ type TicketFacts struct {
 type LinkedPR struct {
 	ID  string `json:"id"`
 	Ref string `json:"ref"`
-	// State is draft, open, approved, merged or closed.
-	State string `json:"state"`
+	// State is draft, open, approved, merged or closed; omitted when the
+	// PR's state is unknown.
+	State string `json:"state,omitempty"`
 }
 
 // CheckStat is how one check fared on a repository's open PRs
@@ -450,11 +451,11 @@ type ciEval struct {
 	unc string
 }
 
-// evalCI reads p's CI. Without a check list it falls back on the rollup:
-// success, pending and none say there is no failure, but a failure cannot
-// be told systemic or not. A truncated list can hide failures beyond it
-// unless the rollup is success or pending, which GitHub reports only when
-// nothing failed.
+// evalCI reads p's CI. Without a check list, or with an empty one, it falls
+// back on the rollup: success, pending and none say there is no failure,
+// but a failure cannot be told systemic or not. A truncated list can hide
+// failures beyond it unless the rollup is success or pending, which GitHub
+// reports only when nothing failed.
 func evalCI(p *PRInfo, stats map[string]CheckStat) ciEval {
 	var e ciEval
 	if p.CheckDetails == nil {
@@ -497,7 +498,16 @@ func evalCI(p *PRInfo, stats map[string]CheckStat) ciEval {
 	case e.pendingAny:
 		e.ci = CIPending
 	case len(order) == 0 && !p.ChecksTruncated:
-		e.ci = CINone
+		switch p.Checks {
+		case "failure":
+			e.ci, e.failing, e.unc = CIUnknown, triUnknown, "check_details"
+		case "pending":
+			e.ci, e.pendingAny = CIPending, true
+		case "success":
+			e.ci = CIGreen
+		default:
+			e.ci = CINone
+		}
 	default:
 		e.ci = CIGreen
 	}
@@ -655,7 +665,7 @@ func prFacts(p *PRInfo, ticketEdge bool, stats map[string]CheckStat, people []Pe
 		{ReasonDraft, MoveAuthor, triOf(p.IsDraft), draftEvidence(p, now)},
 		{ReasonChangesRequested, MoveAuthor, r3, changesRequestedEvidence(blocking, now)},
 		{ReasonConflicts, MoveAuthor, r4, conflictsEvidence(p)},
-		{ReasonCIFailing, MoveAuthor, ci.failing, ciFailingEvidence(ci, p.Repo)},
+		{ReasonCIFailing, MoveAuthor, ci.failing, ciFailingEvidence(ci, stats, p.Repo)},
 		{ReasonApprovedUnmerged, MoveAuthor, r6, approvedEvidence(p, now)},
 		{ReasonAwaitingReview, MoveReviewer, r7, awaitingEvidence(p, out, viaTeam, len(users) == 0, now)},
 		{ReasonNoReviewer, MoveNobody, r8, noReviewerEvidence(p, now)},
@@ -885,9 +895,16 @@ func ticketFacts(id string, t *TicketInfo, g *factGraph, th FactThresholds, now 
 			allClosed.t, anyOpen.t = triFalse, triTrue
 			open = append(open, n.Label+" "+st)
 		default:
-			allClosed = operand{and3(allClosed.t, triUnknown), "state:" + n.Label}
+			// A PR of unknown state may be open, merged or closed.
+			unknown := operand{triUnknown, "state:" + n.Label}
+			if allClosed.t != triFalse {
+				allClosed = unknown
+			}
+			if anyMerged.t != triTrue {
+				anyMerged = unknown
+			}
 			if anyOpen.t != triTrue {
-				anyOpen = operand{triUnknown, "state:" + n.Label}
+				anyOpen = unknown
 			}
 		}
 	}
@@ -1014,7 +1031,7 @@ func decide(unc *names, ops ...operand) tri {
 }
 
 // linkedState is a linked PR's state: draft, open or approved while open,
-// else merged or closed; "" when unknown.
+// else merged or closed; "" (omitted) when unknown.
 func linkedState(p *PRInfo) string {
 	switch p.State {
 	case "merged", "closed":
@@ -1163,13 +1180,24 @@ func conflictsEvidence(p *PRInfo) string {
 	return "merge conflicts"
 }
 
-func ciFailingEvidence(ci ciEval, repo string) string {
+func ciFailingEvidence(ci ciEval, stats map[string]CheckStat, repo string) string {
 	s := checkList(ci.own, "fails", "fail")
 	if len(ci.systemic) > 0 {
-		s += "; " + joinNames(ci.systemic, 3) + plural(len(ci.systemic), " also fails, but fails", " also fail, but fail") +
-			" on most open PRs in " + strings.ToLower(repo)
+		s += "; " + joinNames(ci.systemic, 0) + plural(len(ci.systemic), " fails", " fail") + " too, as on " +
+			systemicCounts(ci.systemic, stats) + " open PRs in " + strings.ToLower(repo)
 	}
 	return s
+}
+
+// systemicCounts is "5 of 6" for each check, as check_stats counts it,
+// joined like the names: "4 of 6 and 5 of 6".
+func systemicCounts(checks []string, stats map[string]CheckStat) string {
+	var parts []string
+	for _, name := range checks {
+		st := stats[name]
+		parts = append(parts, fmt.Sprintf("%d of %d", st.Failures, st.Runs))
+	}
+	return joinNames(parts, 0)
 }
 
 // checkList is "unit-tests fails" or "2 checks fail: a and b".
@@ -1184,12 +1212,8 @@ func systemicEvidence(ci ciEval, stats map[string]CheckStat, repo string) string
 	if len(ci.systemic) == 1 {
 		return "only " + ci.systemic[0] + " fails; it " + stats[ci.systemic[0]].Evidence
 	}
-	var parts []string
-	for _, name := range ci.systemic {
-		st := stats[name]
-		parts = append(parts, fmt.Sprintf("%s (%d of %d)", name, st.Failures, st.Runs))
-	}
-	return "only checks that fail on most open PRs fail: " + joinNames(parts, 3) + " open PRs by the configured people in " + strings.ToLower(repo)
+	return "only " + joinNames(ci.systemic, 0) + " fail; they fail on " + systemicCounts(ci.systemic, stats) +
+		" open PRs by the configured people in " + strings.ToLower(repo)
 }
 
 func pendingEvidence(ci ciEval) string {

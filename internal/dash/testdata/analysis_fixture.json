@@ -292,7 +292,7 @@
           "reasons": [
             {"code": "draft", "evidence": "draft, opened Oct 28"},
             {"code": "conflicts", "evidence": "merge conflicts with main"},
-            {"code": "ci_failing", "evidence": "unit-tests fails; vendor-hsm-tests also fails, but fails on most open PRs in acme/api"},
+            {"code": "ci_failing", "evidence": "unit-tests fails; vendor-hsm-tests fails too, as on 5 of 6 open PRs in acme/api"},
             {"code": "no_reviewer", "evidence": "no review requested and no approval"},
             {"code": "ci_pending", "evidence": "lint is pending"},
             {"code": "no_ticket", "evidence": "no ticket key in the branch, title or body"}

@@ -1267,7 +1267,7 @@ A value outside 60 to 86400 stops `wgo dash` with an error naming it.
 [dash.facts]
 stale_days = 30           # an open PR not updated this long is stale (1 to 3650)
 systemic_ratio = 0.6      # a check failing on this share of a repository's open PRs fails everywhere (above 0, at most 1)
-systemic_min_prs = 3      # ...if it failed on at least this many of them (2 to 1000)
+systemic_min_prs = 3      # ...if it ran on at least this many open PRs (2 to 1000)
 ```
 
 A value out of range, `0` included, stops `wgo dash` with an error naming
@@ -1423,9 +1423,10 @@ requesting changes. A request of unknown time may have started the wait
 earlier, and the page then says "or earlier"; with no request time known,
 the wait is unknown.
 
-**Fails everywhere.** For each repository, a check that failed on at least
-`systemic_ratio` of the open PRs that ran it, and on at least
-`systemic_min_prs` of them, fails everywhere (`check_stats` in the JSON).
+**Fails everywhere.** For each repository, a check that ran on at least
+`systemic_min_prs` open PRs and failed on at least `systemic_ratio` of
+them fails everywhere (`check_stats` in the JSON). With the defaults, a
+check failing on 2 of 3 open PRs does.
 The count covers only the PRs the dashboard sees, those of the people you
 follow, and the evidence says so. A PR whose only failures are such checks
 has `ci: systemic_only`, and CI does not make it the author's move. A PR

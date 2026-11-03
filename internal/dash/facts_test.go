@@ -316,6 +316,16 @@ func TestPRUnknownInputs(t *testing.T) {
 		}, MoveAuthor, CIUnknown, []string{"check_details"}, nil},
 		{"the rollup alone can say green", func(p *PRInfo) { p.CheckDetails = nil }, MoveNobody, CIGreen, nil, nil},
 		{"no rollup and no details", func(p *PRInfo) { p.CheckDetails, p.Checks = nil, "" }, MoveUnknown, CIUnknown, []string{"checks"}, nil},
+		{"an empty check list does not hide a failing rollup", func(p *PRInfo) {
+			p.CheckDetails, p.Checks = []CheckDetail{}, "failure"
+			withRequests(p, requestUser("bob", day(26, 10)))
+		}, MoveUnknown, CIUnknown, []string{"check_details"}, nil},
+		{"an empty check list with a pending rollup is pending", func(p *PRInfo) { p.CheckDetails, p.Checks = []CheckDetail{}, "pending" }, MoveNobody, CIPending, nil,
+			func(t *testing.T, f *PRFacts) {
+				if !slices.Contains(codes(f.Reasons), ReasonCIPending) {
+					t.Errorf("reasons %v lack ci_pending", codes(f.Reasons))
+				}
+			}},
 		{"a truncated list may hide a failure", func(p *PRInfo) {
 			p.ChecksTruncated, p.Checks = true, "failure"
 			withRequests(p, requestUser("bob", day(26, 10)))
@@ -455,6 +465,42 @@ func TestCheckStats(t *testing.T) {
 	if st["acme/api"][0].Systemic || !st["acme/web"][0].Systemic {
 		t.Errorf("with ratio 0.8 and min 2: %+v", st)
 	}
+	// systemic_min_prs counts the PRs a check ran on, not its failures
+	// (gh-99 requirement 12): with the defaults, 2 failures in 3 runs is
+	// systemic.
+	two := statsSnapshot(checksPR("acme/api", "open", "x", f), checksPR("acme/api", "open", "x", f), checksPR("acme/api", "open", "x", ok))
+	if st := checkStats(two, DefaultFactThresholds())["acme/api"][0]; !st.Systemic || st.Failures != 2 || st.Runs != 3 {
+		t.Errorf("2 failures in 3 runs: %+v", st)
+	}
+}
+
+// TestSystemicEvidenceGivesCounts: the evidence states check_stats' counts,
+// never "most", which systemic_ratio at or below 0.5 would make untrue.
+func TestSystemicEvidenceGivesCounts(t *testing.T) {
+	stats := map[string]CheckStat{
+		"vendor-hsm-tests": {Name: "vendor-hsm-tests", Runs: 3, Failures: 1, Systemic: true, Evidence: "fails on 1 of 3 open PRs by the configured people in acme/api"},
+		"e2e":              {Name: "e2e", Runs: 6, Failures: 4, Systemic: true},
+	}
+	p := readyPR()
+	failCheck(p, "vendor-hsm-tests")
+	failCheck(p, "build")
+	f := prFacts(p, false, stats, factPeople, DefaultFactThresholds(), factsNow)
+	if ev := f.Reasons[0].Evidence; ev != "build fails; vendor-hsm-tests fails too, as on 1 of 3 open PRs in acme/api" {
+		t.Errorf("ci_failing evidence %q", ev)
+	}
+	p = readyPR()
+	failCheck(p, "vendor-hsm-tests")
+	failCheck(p, "e2e")
+	f = prFacts(p, false, stats, factPeople, DefaultFactThresholds(), factsNow)
+	i := slices.IndexFunc(f.Reasons, func(r Reason) bool { return r.Code == ReasonCISystemicOnly })
+	if i < 0 || f.Reasons[i].Evidence != "only vendor-hsm-tests and e2e fail; they fail on 1 of 3 and 4 of 6 open PRs by the configured people in acme/api" {
+		t.Errorf("ci_systemic_only evidence %+v", f.Reasons)
+	}
+	for _, r := range f.Reasons {
+		if strings.Contains(r.Evidence, "most") {
+			t.Errorf("%s evidence says most: %q", r.Code, r.Evidence)
+		}
+	}
 }
 
 // ticketSnapshot builds a snapshot around one Jira ticket.
@@ -558,6 +604,10 @@ func TestTicketMismatches(t *testing.T) {
 		{"a known mismatch beside an unknown one", newTicketCase(&TicketInfo{Key: "TEAM-1", StatusCategory: StatusToDo, Sprints: activeSprint, Freshness: Unknown}).pr(41, "merged", merged),
 			[]string{MismatchCodeMergedTicketOpen}, []string{"assignee"}, ""},
 		{"nothing to say", newTicketCase(todo()), []string{}, nil, ""},
+		{"a linked PR of unknown state leaves code merged unknown", newTicketCase(inProgress()).pr(41, "merged", merged).pr(42, "", nil),
+			nil, []string{"state:acme/api#42"}, ""},
+		{"only a linked PR of unknown state", newTicketCase(done()).pr(42, "", nil), nil, []string{"state:acme/api#42"}, ""},
+		{"an open PR decides beside one of unknown state", newTicketCase(done()).pr(41, "open", nil).pr(42, "", nil), []string{MismatchTicketDoneCodeOpen}, nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := tc.c.facts()
@@ -598,6 +648,17 @@ func TestTicketLinkedPRs(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("linked PRs\n got %+v\nwant %+v", got, want)
 	}
+	// A PR of unknown state is linked without a state, never "".
+	unk := newTicketCase(&TicketInfo{Key: "TEAM-3", StatusCategory: StatusToDo, Assignee: "Bob", Sprints: []SprintRef{}}).pr(7, "", nil)
+	b, _ := json.Marshal(unk.facts().LinkedPRs)
+	if string(b) != `[{"id":"pr:acme/api#7","ref":"acme/api#7"}]` {
+		t.Errorf("unknown state: %s", b)
+	}
+	unk.s.Schema = SchemaVersion
+	unk.s.Nodes[0].Ticket.Facts = unk.facts()
+	if err := unk.s.Validate(); err != nil && strings.Contains(err.Error(), "linked PR state") {
+		t.Errorf("validation: %v", err)
+	}
 	// A GitHub issue gets its linked PRs, and no Jira comparison.
 	gh := newTicketCase(&TicketInfo{Key: "gh-57", System: "github", Status: "open"}).pr(10, "merged", nil)
 	f := gh.facts()
@@ -605,7 +666,7 @@ func TestTicketLinkedPRs(t *testing.T) {
 		t.Errorf("github issue facts %+v", f)
 	}
 	// No linked PR is a known empty list.
-	b, _ := json.Marshal(newTicketCase(&TicketInfo{Key: "TEAM-2", StatusCategory: StatusToDo, Assignee: "Bob", Sprints: []SprintRef{}}).facts())
+	b, _ = json.Marshal(newTicketCase(&TicketInfo{Key: "TEAM-2", StatusCategory: StatusToDo, Assignee: "Bob", Sprints: []SprintRef{}}).facts())
 	if string(b) != `{"mismatches":[],"linked_prs":[]}` {
 		t.Errorf("no linked PRs: %s", b)
 	}
