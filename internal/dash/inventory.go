@@ -112,7 +112,8 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 			part := SourcePart{Name: k.String(), State: f, FetchedAt: res.FetchedAt, Truncated: res.Truncated}
 			if set == inventory.ClosedRecent {
 				part.Since = res.Since
-				if !f.hasData() || due || res.Since.IsZero() {
+				// A search GitHub cut short may lack merges anywhere.
+				if !f.hasData() || due || res.Since.IsZero() || res.Truncated {
 					covered = false
 				} else if res.Since.After(coveredSince) {
 					coveredSince = res.Since
