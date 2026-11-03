@@ -27,6 +27,7 @@ const (
 	TimelineMerged               = "merged"                 // MergedEvent
 	TimelineClosed               = "closed"                 // ClosedEvent
 	TimelineReopened             = "reopened"               // ReopenedEvent
+	TimelineReviewDismissed      = "review_dismissed"       // ReviewDismissedEvent
 )
 
 // TimelineEvent is one review-history event of a pull request (gh-104).
@@ -35,11 +36,15 @@ type TimelineEvent struct {
 	Type string    `json:"type"`
 	At   time.Time `json:"at"`
 	// Reviewer is the login, or "team:<slug>", a review was requested from
-	// or a request removed for; for a review, the reviewer's login.
+	// or a request removed for; for a review or a dismissal, the
+	// reviewer's login.
 	Reviewer string `json:"reviewer,omitempty"`
 	// State is a review's state: APPROVED, CHANGES_REQUESTED, COMMENTED or
-	// DISMISSED (GitHub reports a review's current state, so a dismissed
-	// approval reads DISMISSED at the time it was submitted).
+	// DISMISSED. GitHub reports a review's current state, so a dismissed
+	// review reads DISMISSED; when its dismissal is in the history, the
+	// review keeps the state it had, and the dismissal event carries it
+	// too. A dismissal whose review is not found leaves the review
+	// DISMISSED.
 	State string `json:"state,omitempty"`
 	// Teams are the teams a review was submitted on behalf of, as
 	// "team:<slug>": it answers their review requests too.
@@ -75,7 +80,8 @@ var timelineQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $number:
       state isDraft createdAt updatedAt
       author { login }
       timelineItems(first: %d, after: $after, itemTypes: [READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT,
-          REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT, PULL_REQUEST_REVIEW, MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT]) {
+          REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT, PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT,
+          MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT]) {
         pageInfo { hasNextPage endCursor }
         nodes {
           __typename
@@ -90,9 +96,13 @@ var timelineQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $number:
             requestedReviewer { __typename ... on Actor { login } ... on Team { slug } }
           }
           ... on PullRequestReview {
-            state submittedAt createdAt
+            id state submittedAt createdAt
             author { login }
             onBehalfOf(first: 10) { nodes { slug } }
+          }
+          ... on ReviewDismissedEvent {
+            createdAt previousReviewState
+            review { id author { login } }
           }
           ... on MergedEvent { createdAt }
           ... on ClosedEvent { createdAt }
@@ -105,6 +115,7 @@ var timelineQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $number:
 
 type gqlTimelineItem struct {
 	Typename          string       `json:"__typename"`
+	ID                string       `json:"id"`
 	CreatedAt         time.Time    `json:"createdAt"`
 	SubmittedAt       time.Time    `json:"submittedAt"`
 	State             string       `json:"state"`
@@ -115,6 +126,12 @@ type gqlTimelineItem struct {
 			Slug string `json:"slug"`
 		} `json:"nodes"`
 	} `json:"onBehalfOf"`
+	// ReviewDismissedEvent.
+	PreviousReviewState string `json:"previousReviewState"`
+	Review              *struct {
+		ID     string    `json:"id"`
+		Author *gqlActor `json:"author"`
+	} `json:"review"`
 }
 
 type gqlTimelineData struct {
@@ -180,6 +197,9 @@ func (c *CLIClient) PRTimeline(ctx context.Context, repo string, number int) (*P
 		return nil, fmt.Errorf("github timeline: %q#%d is not a pull request", repo, number)
 	}
 	out := &PRTimeline{Repo: repo, Number: number, Events: []TimelineEvent{}}
+	// reviews maps a review's ID to its event, and dismissed each dismissed
+	// review's ID to the state it had, so a dismissed review keeps it.
+	reviews, dismissed := map[string]int{}, map[string]string{}
 	after := ""
 	for page := 1; ; page++ {
 		if page > MaxTimelinePages {
@@ -210,15 +230,28 @@ func (c *CLIClient) PRTimeline(ctx context.Context, repo string, number int) (*P
 			}
 		}
 		for _, it := range pr.TimelineItems.Nodes {
-			if ev, ok := it.event(); ok {
-				out.Events = append(out.Events, ev)
+			ev, ok := it.event()
+			if !ok {
+				continue
 			}
+			switch {
+			case ev.Type == TimelineReview && it.ID != "":
+				reviews[it.ID] = len(out.Events)
+			case ev.Type == TimelineReviewDismissed && it.Review.ID != "":
+				dismissed[it.Review.ID] = ev.State
+			}
+			out.Events = append(out.Events, ev)
 		}
 		next := pr.TimelineItems.PageInfo
 		if !next.HasNextPage || next.EndCursor == "" {
 			break
 		}
 		after = next.EndCursor
+	}
+	for id, state := range dismissed {
+		if i, ok := reviews[id]; ok && state != "" && out.Events[i].State == "DISMISSED" {
+			out.Events[i].State = state
+		}
 	}
 	return out, nil
 }
@@ -264,6 +297,11 @@ func (it *gqlTimelineItem) event() (TimelineEvent, bool) {
 				}
 			}
 		}
+	case "ReviewDismissedEvent":
+		if it.Review == nil || it.Review.Author == nil || it.Review.Author.Login == "" {
+			return TimelineEvent{}, false
+		}
+		ev.Type, ev.Reviewer, ev.State = TimelineReviewDismissed, it.Review.Author.Login, it.PreviousReviewState
 	default:
 		return TimelineEvent{}, false
 	}

@@ -142,3 +142,28 @@ func TestPRTimelineStopsAtThePageBound(t *testing.T) {
 	assert.EqualValues(t, MaxTimelinePages, calls.Load())
 	assert.True(t, tl.Truncated)
 }
+
+// TestPRTimelineKeepsADismissedReviewsState: GitHub reports a dismissed
+// review as DISMISSED; its ReviewDismissedEvent says what it was, so the
+// review keeps that state and the dismissal is an event of its own.
+func TestPRTimelineKeepsADismissedReviewsState(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data": {"repository": {"pullRequest": {
+		  "state": "OPEN", "isDraft": false, "createdAt": "2026-10-20T09:00:00Z", "updatedAt": "2026-10-25T09:00:00Z", "author": {"login": "alice"},
+		  "timelineItems": {"pageInfo": {"hasNextPage": false}, "nodes": [
+		    {"__typename": "PullRequestReview", "id": "R1", "state": "DISMISSED", "submittedAt": "2026-10-22T10:00:00Z", "author": {"login": "bob"}},
+		    {"__typename": "PullRequestReview", "id": "R2", "state": "DISMISSED", "submittedAt": "2026-10-22T11:00:00Z", "author": {"login": "carol"}},
+		    {"__typename": "ReviewDismissedEvent", "createdAt": "2026-10-24T08:00:00Z", "previousReviewState": "APPROVED", "review": {"id": "R1", "author": {"login": "bob"}}},
+		    {"__typename": "ReviewDismissedEvent", "createdAt": "2026-10-24T09:00:00Z", "previousReviewState": "APPROVED", "review": null}
+		  ]}}}}}`))
+	}))
+	defer srv.Close()
+	tl, err := newTestClient(t, srv, "o/r").PRTimeline(context.Background(), "acme/api", 7)
+	require.NoError(t, err)
+	assert.Equal(t, []TimelineEvent{
+		{Type: TimelineReview, At: ts("2026-10-22T10:00:00Z"), Reviewer: "bob", State: "APPROVED"},
+		// No dismissal event names carol's review: it stays DISMISSED.
+		{Type: TimelineReview, At: ts("2026-10-22T11:00:00Z"), Reviewer: "carol", State: "DISMISSED"},
+		{Type: TimelineReviewDismissed, At: ts("2026-10-24T08:00:00Z"), Reviewer: "bob", State: "APPROVED"},
+	}, tl.Events)
+}
