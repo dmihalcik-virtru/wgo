@@ -32,6 +32,9 @@ const (
 	JobIdentity JobKind = "identity"
 	// JobSprints refreshes [jira] board's sprints and their tickets (gh-98).
 	JobSprints JobKind = "sprints"
+	// JobTimelines fetches the review histories of up to
+	// MaxTimelinesPerCycle PRs, one after another (gh-104).
+	JobTimelines JobKind = "timelines"
 )
 
 // Job is one remote cache entry to refresh.
@@ -51,6 +54,16 @@ type Job struct {
 	// each active sprint is searched for (sorted).
 	Board     int
 	Assignees []string
+	// Timeline lookups: the PRs, in the order to fetch them.
+	Timelines []TimelineRequest
+}
+
+// TimelineRequest is one PR whose history a JobTimelines job fetches, and the
+// updated_at it was found at: a history already fetched for it or later
+// (by another wgo process, say) is not fetched again.
+type TimelineRequest struct {
+	Key       inventory.TimelineKey
+	UpdatedAt time.Time
 }
 
 func (j Job) key() string {
@@ -65,6 +78,11 @@ func (j Job) key() string {
 		return "identity"
 	case JobSprints:
 		return "sprints\x00" + strconv.Itoa(j.Board) + "\x00" + strings.Join(j.Assignees, "\x00")
+	case JobTimelines:
+		// One key for every batch: a batch submitted while another is
+		// pending joins it, so at most one is ever in flight, and a
+		// waited-for refresh's follow-up rounds queue no second one.
+		return "timelines"
 	default:
 		return "issue\x00" + j.Issue.String()
 	}
@@ -80,6 +98,8 @@ type Fetchers struct {
 	Inventory inventory.Fetcher
 	// Sprints reads [jira] board's sprints (gh-98).
 	Sprints jiracache.SprintFetcher
+	// Timelines reads PR review histories (gh-104).
+	Timelines inventory.TimelineFetcher
 	// Missing optionally says why a kind has no fetcher ("acli not on
 	// PATH"), so a skipped batch can explain itself.
 	Missing map[JobKind]string
@@ -98,6 +118,8 @@ func (j Job) describe() string {
 		return "GitHub identity"
 	case JobSprints:
 		return "jira sprints of board " + strconv.Itoa(j.Board)
+	case JobTimelines:
+		return fmt.Sprintf("timelines of %d %s", len(j.Timelines), plural(len(j.Timelines), "PR", "PRs"))
 	default:
 		return "issue " + j.Issue.String()
 	}
@@ -302,6 +324,8 @@ func (r *Refresher) supports(j Job) bool {
 		return r.f.Inventory != nil
 	case JobSprints:
 		return r.f.Sprints != nil
+	case JobTimelines:
+		return r.f.Timelines != nil
 	}
 	return false
 }
@@ -394,8 +418,44 @@ func (r *Refresher) run(j Job) error {
 		if r.opts.IgnoreLeases || jiracache.LockSprintsRefresh(j.Board, r.opts.Backoff) {
 			return jiracache.RefreshSprints(r.f.Sprints, j.Board, j.Assignees)
 		}
+	case JobTimelines:
+		return r.runTimelines(j.Timelines)
 	}
 	return nil
+}
+
+// runTimelines fetches each PR's history in turn, serially as GitHub asks of
+// API clients. A PR already fetched for its updated_at is skipped; without
+// IgnoreLeases, so is one backing off after failures or whose lease another
+// refresher holds. A rate limit, or Close, stops the batch: the rest wait
+// for a later cycle.
+func (r *Refresher) runTimelines(reqs []TimelineRequest) error {
+	var failed []string
+	for _, req := range reqs {
+		if r.ctx.Err() != nil || time.Now().Before(inventory.TimelinesPausedUntil()) {
+			break
+		}
+		prior := inventory.ReadTimeline(req.Key)
+		if prior.Current(req.UpdatedAt) {
+			continue
+		}
+		if !r.opts.IgnoreLeases && (time.Now().Before(prior.NotBefore()) || !inventory.LockTimelineRefresh(req.Key, r.opts.Backoff)) {
+			continue
+		}
+		if _, err := inventory.RefreshTimeline(r.ctx, r.f.Timelines, req.Key); err != nil && r.ctx.Err() == nil {
+			failed = append(failed, err.Error())
+		}
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	const maxListed = 2
+	n, more := len(failed), ""
+	if n > maxListed {
+		more = fmt.Sprintf("; and %d more", n-maxListed)
+		failed = failed[:maxListed]
+	}
+	return fmt.Errorf("%d of %d failed (%s%s)", n, len(reqs), strings.Join(failed, "; "), more)
 }
 
 // refreshStaleIdentity re-reads the authenticated login once its cache has
@@ -439,6 +499,8 @@ func (r *Refresher) skipSummary(res BatchResult) string {
 			label = "GitHub identity"
 		case JobSprints:
 			label = "Jira sprint"
+		case JobTimelines:
+			label = "GitHub PR timeline"
 		}
 		p := fmt.Sprintf("%d %s lookups skipped", res.Skipped[k], label)
 		if why := r.f.Missing[k]; why != "" {

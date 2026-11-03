@@ -503,11 +503,13 @@ func dashFetchers() dash.Fetchers {
 		f.PR = newGHFetcher()
 		f.Issue = ghIssueFetcher{c: gc}
 		f.Inventory = gc
+		f.Timelines = gc
 	} else {
 		f.Missing[dash.JobPR] = "no GitHub token or gh"
 		f.Missing[dash.JobIssue] = "no GitHub token or gh"
 		f.Missing[dash.JobInventory] = "no GitHub token or gh"
 		f.Missing[dash.JobIdentity] = "no GitHub token or gh"
+		f.Missing[dash.JobTimelines] = "no GitHub token or gh"
 	}
 	if _, err := exec.LookPath("acli"); err == nil {
 		f.Jira = jiraFetcherFn()

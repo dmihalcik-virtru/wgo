@@ -40,7 +40,7 @@ func TestRefreshWaitPublishesFetchedData(t *testing.T) {
 	f := newFixture(t)
 	bf := &blockingFetchers{release: make(chan struct{})}
 	// One worker per job, so all four fetches block at once.
-	r := NewRefresher(Fetchers{PR: bf, Jira: bf, Issue: bf}, RefresherOptions{Workers: 4})
+	r := NewRefresher(Fetchers{PR: bf, Jira: bf, Issue: bf, Timelines: bf}, RefresherOptions{Workers: 4})
 	defer r.Close()
 	d, err := Open(Options{Dir: t.TempDir(), Collector: f.collector(t, time.Now(), memSource{}), Refresher: r})
 	if err != nil {
@@ -101,7 +101,7 @@ func TestRefreshWaitReportsFailedLookups(t *testing.T) {
 	// Once every lookup succeeds, the diagnostic clears.
 	bf := &blockingFetchers{release: make(chan struct{})}
 	close(bf.release)
-	r2 := NewRefresher(Fetchers{PR: bf, Jira: bf, Issue: bf}, RefresherOptions{Workers: 2, IgnoreLeases: true})
+	r2 := NewRefresher(Fetchers{PR: bf, Jira: bf, Issue: bf, Timelines: bf}, RefresherOptions{Workers: 2, IgnoreLeases: true})
 	defer r2.Close()
 	d.opts.Refresher = r2
 	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true}); err != nil {

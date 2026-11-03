@@ -41,7 +41,7 @@ func TestRefreshReportsSkippedIntegrationsWithoutError(t *testing.T) {
 	// The next refresh with working fetchers clears the diagnostic.
 	bf := &blockingFetchers{release: make(chan struct{})}
 	close(bf.release)
-	r2 := NewRefresher(Fetchers{PR: bf, Jira: bf, Issue: bf}, RefresherOptions{Workers: 2, IgnoreLeases: true})
+	r2 := NewRefresher(Fetchers{PR: bf, Jira: bf, Issue: bf, Timelines: bf}, RefresherOptions{Workers: 2, IgnoreLeases: true})
 	defer r2.Close()
 	d.opts.Refresher = r2
 	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true}); err != nil {
