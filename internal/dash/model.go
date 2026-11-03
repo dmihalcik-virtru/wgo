@@ -359,6 +359,11 @@ type TicketInfo struct {
 	// Facts are the derived facts (gh-99): linked PRs and where Jira and
 	// the code disagree. Set at the end of collection.
 	Facts *TicketFacts `json:"facts,omitempty"`
+	// SprintSearch lists the active sprints whose ticket search found the
+	// ticket (gh-105). That search asks for tickets assigned to the
+	// followed people, so it says whose ticket it is when the assignee's
+	// account ID cannot; see SprintInfo.Searched.
+	SprintSearch []int `json:"sprint_search,omitempty"`
 }
 
 // AgentInfo describes a gh-72 agent session, read only.

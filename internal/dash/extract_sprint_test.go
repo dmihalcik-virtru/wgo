@@ -96,7 +96,7 @@ func TestSprintExtractShowsTheSprint(t *testing.T) {
 		"**unassigned in sprint** (1)\n\n- [TEAM-106]",
 		"· sprint 1234 on board 42, fetched 2026-10-30 15:52 +00:00 · the query shows 6 of 6 tickets\n",
 		"Query: none (the whole sprint)\n",
-		"jira_sprints fresh (1 fresh, oldest fetch 2026-10-30 15:52 +00:00)",
+		"jira_sprints fresh (2 fresh, oldest fetch 2026-10-30 15:52 +00:00)",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("summary lacks %q:\n%s", want, md)
@@ -112,6 +112,28 @@ func TestSprintExtractShowsTheSprint(t *testing.T) {
 		"Query: `kind:ticket;mismatch:*` (saved filter jira-out-of-sync)\n"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("Web Sprint 4 lacks %q:\n%s", want, md)
+		}
+	}
+}
+
+// TestSprintExtractOrdersMismatchCodes: known codes in their order, then
+// codes from a newer wgo by name, never in map order.
+func TestSprintExtractOrdersMismatchCodes(t *testing.T) {
+	v := sprintView(t, func(s *Snapshot) {
+		for i := range s.Nodes {
+			if n := &s.Nodes[i]; n.ID == "ticket:jira:TEAM-105" {
+				n.Ticket.Facts.Mismatches = append(n.Ticket.Facts.Mismatches, Reason{Code: "zz_later", Evidence: "z"}, Reason{Code: "aa_first", Evidence: "a"}, Reason{Code: "mm_middle", Evidence: "m"})
+			}
+		}
+	})
+	for range 5 {
+		md, err := Extract(v, Fields(), nil, ExtractArgs{View: "sprint"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := func(s string) int { return strings.Index(md, s) }
+		if !(at("**unassigned in sprint**") < at("**aa first**") && at("**aa first**") < at("**mm middle**") && at("**mm middle**") < at("**zz later**")) {
+			t.Fatalf("mismatch codes out of order:\n%s", md)
 		}
 	}
 }
@@ -340,28 +362,83 @@ func TestDefaultSprint(t *testing.T) {
 	}
 	// Sprint 12: five of its six tickets are alice's or bob's (TEAM-106 is
 	// unassigned); Web Sprint 4's one ticket is carol's.
-	if a, b := active[0], active[1]; len(a.tickets) != 6 || a.people != 5 || len(b.tickets) != 1 || b.people != 0 {
-		t.Errorf("tickets and people: %d/%d, %d/%d", len(a.tickets), a.people, len(b.tickets), b.people)
+	if a, b := active[0], active[1]; len(a.tickets) != 6 || a.people != 5 || a.unknownPeople != 0 || len(b.tickets) != 1 || b.people != 0 || b.unknownPeople != 0 {
+		t.Errorf("tickets and people: %d/%d/%d, %d/%d/%d", len(a.tickets), a.people, a.unknownPeople, len(b.tickets), b.people, b.unknownPeople)
 	}
 	if d := defaultSprint(active); d.id() != 1234 {
 		t.Errorf("default = %d", d.id())
 	}
-	mk := func(id, tickets, people int, start string) *sprintSlice {
-		st, _ := time.Parse(time.RFC3339, start)
-		return &sprintSlice{node: &Node{Sprint: &SprintInfo{ID: id, Start: st}}, tickets: make([]*Node, tickets), people: people}
+	mk := func(id, tickets, people, unknown int) *sprintSlice {
+		return &sprintSlice{node: &Node{Sprint: &SprintInfo{ID: id}}, tickets: make([]*Node, tickets), people: people, unknownPeople: unknown}
 	}
 	for _, tc := range []struct {
 		list []*sprintSlice
 		want int
 	}{
-		{[]*sprintSlice{mk(1, 9, 1, "2026-10-01T00:00:00Z"), mk(2, 3, 2, "2026-10-02T00:00:00Z")}, 2}, // people first
-		{[]*sprintSlice{mk(1, 3, 2, "2026-10-01T00:00:00Z"), mk(2, 4, 2, "2026-10-02T00:00:00Z")}, 2}, // then tickets
-		{[]*sprintSlice{mk(1, 4, 2, "2026-10-01T00:00:00Z"), mk(2, 4, 2, "2026-10-02T00:00:00Z")}, 1}, // then the first
-		{[]*sprintSlice{mk(1, 0, 0, "2026-10-01T00:00:00Z"), mk(2, 0, 0, "2026-10-02T00:00:00Z")}, 1},
+		{[]*sprintSlice{mk(1, 9, 1, 0), mk(2, 3, 2, 0)}, 2}, // people first
+		{[]*sprintSlice{mk(1, 3, 2, 0), mk(2, 4, 2, 0)}, 2}, // then tickets
+		{[]*sprintSlice{mk(1, 4, 2, 0), mk(2, 4, 2, 0)}, 1}, // then the first
+		{[]*sprintSlice{mk(1, 0, 0, 0), mk(2, 0, 0, 0)}, 1},
+		// Unknown for some sprint: the most tickets.
+		{[]*sprintSlice{mk(1, 3, 3, 0), mk(2, 4, 0, 4)}, 2},
+		{[]*sprintSlice{mk(1, 4, 3, 1), mk(2, 4, 0, 0)}, 1},
 	} {
 		if d := defaultSprint(tc.list); d.id() != tc.want {
-			t.Errorf("default of %v = %d, want %d", tc.list, d.id(), tc.want)
+			t.Errorf("default of %+v = %d, want %d", tc.list, d.id(), tc.want)
 		}
+	}
+}
+
+// TestForPeople: whose ticket it is comes from account IDs or the sprint's
+// search, and is unknown, never "no", when neither can tell.
+// live_logic.js runs the same cases against S.forPeople.
+func TestForPeople(t *testing.T) {
+	acct := []Person{{Login: "alice", Jira: "acct-alice", Me: true}, {Login: "bob", Jira: "acct-bob"}}
+	placeholder := []Person{{Login: "alice", Jira: JiraCurrentUser, Me: true}, {Login: "bob", Jira: "acct-bob"}}
+	noJira := []Person{{Login: "alice", Jira: JiraCurrentUser, Me: true}, {Login: "bob"}}
+	searched := &SprintInfo{ID: 7, Searched: true}
+	for _, tc := range []struct {
+		name   string
+		t      TicketInfo
+		sp     *SprintInfo
+		people []Person
+		want   tri
+	}{
+		{"account ID", TicketInfo{AssigneeID: "ACCT-BOB"}, &SprintInfo{ID: 7}, placeholder, triTrue},
+		{"found by the search", TicketInfo{AssigneeID: "acct-x", SprintSearch: []int{7}}, &SprintInfo{ID: 7}, placeholder, triTrue},
+		{"found by another sprint's search", TicketInfo{AssigneeID: "acct-x", SprintSearch: []int{8}}, &SprintInfo{ID: 7}, placeholder, triUnknown},
+		{"unassigned", TicketInfo{Freshness: Fresh}, &SprintInfo{ID: 7}, placeholder, triFalse},
+		{"assignee unknown", TicketInfo{Freshness: Unknown}, &SprintInfo{ID: 7}, placeholder, triUnknown},
+		{"compared with every account ID", TicketInfo{AssigneeID: "acct-carol"}, &SprintInfo{ID: 7}, acct, triFalse},
+		{"currentUser() cannot be compared", TicketInfo{AssigneeID: "acct-carol"}, &SprintInfo{ID: 7}, placeholder, triUnknown},
+		{"an email cannot be compared", TicketInfo{AssigneeID: "acct-carol"}, &SprintInfo{ID: 7}, []Person{{Login: "alice", Jira: "alice@example.com"}}, triUnknown},
+		{"display names are not trusted", TicketInfo{Assignee: "Alice", Freshness: Fresh}, &SprintInfo{ID: 7}, []Person{{Login: "alice", Jira: JiraCurrentUser, Name: "Alice"}}, triUnknown},
+		{"the complete search missed it", TicketInfo{AssigneeID: "acct-carol"}, searched, placeholder, triFalse},
+		{"a truncated search", TicketInfo{AssigneeID: "acct-carol"}, &SprintInfo{ID: 7, Searched: true, Truncated: true}, placeholder, triUnknown},
+		{"a search that skipped someone", TicketInfo{AssigneeID: "acct-carol"}, searched, noJira, triUnknown},
+		{"nobody followed", TicketInfo{AssigneeID: "acct-carol"}, searched, nil, triUnknown},
+	} {
+		if got := forPeople(&tc.t, tc.sp, tc.people); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// Without account IDs or the search, the default is the sprint with
+	// the most tickets, not a sprint with zero "of the people".
+	s := loadAnalysisFixture(t)
+	s.People = placeholder
+	for i := range s.Nodes {
+		if n := &s.Nodes[i]; n.Ticket != nil {
+			n.Ticket.SprintSearch = nil
+		} else if n.Sprint != nil {
+			n.Sprint.Searched = false
+		}
+	}
+	active := activeSprints(s)
+	if a, b := active[0], active[1]; a.people != 1 || a.unknownPeople != 4 || b.people != 0 || b.unknownPeople != 1 {
+		t.Errorf("with currentUser(): %d/%d, %d/%d", a.people, a.unknownPeople, b.people, b.unknownPeople)
+	}
+	if d := defaultSprint(active); d.id() != 1234 {
+		t.Errorf("default = %d", d.id())
 	}
 }
 
@@ -418,7 +495,15 @@ func TestCountSprint(t *testing.T) {
 	if got := compareKeys("TEAM-9", "TEAM-10"); got >= 0 {
 		t.Errorf("TEAM-9 sorts after TEAM-10")
 	}
-	if pointsText(1) != "1 point" || pointsText(2.5) != "2.5 points" || pointsText(0) != "0 points" {
-		t.Error("pointsText")
+	// Two decimals, as the page's S.num (live_logic.js checks the same).
+	for f, want := range map[float64]string{1: "1 point", 2.5: "2.5 points", 0: "0 points", 0.1 + 0.2: "0.3 points", 1.0 / 3: "0.33 points", 1e-9: "0 points", 13: "13 points"} {
+		if got := pointsText(f); got != want {
+			t.Errorf("pointsText(%v) = %q, want %q", f, got, want)
+		}
+	}
+	tenth, fifth := 0.1, 0.2
+	q := countSprint([]*Node{{Ticket: &TicketInfo{StatusCategory: StatusDone, StoryPoints: &tenth, StoryPointsKnown: true}}, {Ticket: &TicketInfo{StatusCategory: StatusDone, StoryPoints: &fifth, StoryPointsKnown: true}}})
+	if got := pointsText(q.parts[0].points); got != "0.3 points" {
+		t.Errorf("a sum of fractions: %q", got)
 	}
 }

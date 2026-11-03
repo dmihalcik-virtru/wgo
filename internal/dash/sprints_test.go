@@ -108,7 +108,7 @@ func TestAssembleSprints(t *testing.T) {
 		t.Fatalf("sprint node: %+v", sp)
 	}
 	want := SprintInfo{ID: 1234, Name: "Sprint 12", State: SprintActive, Start: sprintStart, End: sprintEnd, Goal: "Ship token refresh", Board: 42, Freshness: Fresh,
-		TicketScope: TicketScopeConfiguredPeopleAndUnassigned, TicketLookup: Fresh}
+		TicketScope: TicketScopeConfiguredPeopleAndUnassigned, TicketLookup: Fresh, Searched: true}
 	got := *sp.Sprint
 	if got.FetchedAt.IsZero() || !got.TicketFetchedAt.Equal(got.FetchedAt) {
 		t.Fatalf("sprint fetched_at %v, ticket_fetched_at %v", got.FetchedAt, got.TicketFetchedAt)
@@ -128,10 +128,17 @@ func TestAssembleSprints(t *testing.T) {
 	if n := s.Node(sprintNodeID(1240)); n == nil || n.Sprint.State != SprintActive || n.Sprint.TicketCount == nil || *n.Sprint.TicketCount != 1 {
 		t.Fatalf("each parallel active sprint is a node with its own count: %+v", n)
 	}
-	if n := s.Node(sprintNodeID(1235)); n == nil || n.Sprint.State != SprintFuture {
+	if n := s.Node(sprintNodeID(1235)); n == nil || n.Sprint.State != SprintFuture || n.Sprint.Searched {
 		t.Fatalf("future sprint: %+v", n)
 	} else if n.Sprint.TicketScope != "" || n.Sprint.TicketLookup != "" || n.Sprint.TicketCount != nil {
 		t.Fatalf("a future sprint is not searched, so has no ticket coverage: %+v", n.Sprint)
+	}
+	// gh-105: which tickets each active sprint's search (the followed
+	// people's tickets) found.
+	for key, want := range map[string][]int{"TEAM-2": {1234}, "TEAM-3": {1234}, "TEAM-4": {1240}, "TEAM-5": nil} {
+		if got := s.Node(jiraTicketID(key)).Ticket.SprintSearch; !slices.Equal(got, want) {
+			t.Errorf("%s sprint_search = %v, want %v", key, got, want)
+		}
 	}
 
 	// Tickets nothing else leads to are tracked by their sprint's group.

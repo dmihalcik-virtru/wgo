@@ -1231,7 +1231,11 @@ says which and how to fix it.
 
 - **Which sprint.** One active sprint at a time. With several, buttons
   choose one (`sprint=<id>` in the address); the default is the one with
-  the most tickets assigned to the people the dashboard follows.
+  the most tickets assigned to the people the dashboard follows, matched
+  by Jira account ID or found by the sprint's search for their tickets.
+  When that cannot be told for some sprint (a `jira` of `currentUser()` or
+  an email), the default is the sprint with the most tickets, and the
+  button's tooltip says so.
 - **Header.** Name, dates, the goal as written (or "no sprint goal"), and a
   thin bar of elapsed time with "day 6 of 21". Days are calendar days in
   the snapshot's timezone, counted from the start day, so a Jira sprint of
