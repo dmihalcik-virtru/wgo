@@ -900,6 +900,7 @@
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
         "story_points": 5,
+        "story_points_known": true,
         "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
         "team": "Platform",
         "components": ["api", "web"],
@@ -928,6 +929,7 @@
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
         "story_points": 3,
+        "story_points_known": true,
         "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
         "team": "Platform",
         "components": ["api"],
@@ -958,6 +960,7 @@
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
         "story_points": 2,
+        "story_points_known": true,
         "team": "Platform",
         "components": ["api"],
         "labels": [],
@@ -984,6 +987,7 @@
         "sprints": [
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
+        "story_points_known": true,
         "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
         "team": "Platform",
         "components": [],
@@ -1012,6 +1016,7 @@
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
         "story_points": 8,
+        "story_points_known": true,
         "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
         "team": "Platform",
         "components": ["api"],
@@ -1038,7 +1043,6 @@
         "sprints": [
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
-        "story_points": 1,
         "team": "Platform",
         "components": ["api"],
         "labels": ["observability"],
@@ -1065,6 +1069,7 @@
           {"id": 1235, "name": "Sprint 13", "state": "future"}
         ],
         "story_points": 3,
+        "story_points_known": true,
         "team": "Platform",
         "components": ["web"],
         "labels": [],
