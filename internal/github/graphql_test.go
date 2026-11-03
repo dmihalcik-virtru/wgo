@@ -93,3 +93,69 @@ func TestGraphQLTransportErrorIsReturned(t *testing.T) {
 	var apiErr *APIError
 	assert.False(t, errors.As(err, &apiErr))
 }
+
+// TestGraphQLIncompleteBodies: a successful status whose body is empty, cut
+// off, not JSON, or holds neither data nor errors is an
+// IncompleteResponseError, which Transient retries; a well-formed body that
+// does not fit the caller's type is not.
+func TestGraphQLIncompleteBodies(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty":          "",
+		"blank":          "  \n",
+		"cut off":        `{"data": {"x": 4`,
+		"html":           `<html>upstream reset</html>`,
+		"null data":      `{"data": null}`,
+		"empty envelope": `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			var out struct{ X int }
+			err := newTestClient(t, srv, "o/r").GraphQL(context.Background(), "query { x }", nil, &out)
+			var incomplete *IncompleteResponseError
+			require.ErrorAs(t, err, &incomplete)
+			assert.Equal(t, http.StatusOK, incomplete.StatusCode)
+			assert.Equal(t, len(body), incomplete.Received)
+			assert.True(t, Transient(err))
+		})
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data": {"x": "not a number"}}`))
+	}))
+	defer srv.Close()
+	var out struct{ X int }
+	err := newTestClient(t, srv, "o/r").GraphQL(context.Background(), "query { x }", nil, &out)
+	require.Error(t, err)
+	var incomplete *IncompleteResponseError
+	assert.False(t, errors.As(err, &incomplete), "a complete body of the wrong shape is not transient")
+	assert.False(t, Transient(err))
+}
+
+// TestGraphQLBodyCutByTheConnection: a connection that closes before the
+// promised Content-Length arrives is an IncompleteResponseError too.
+func TestGraphQLBodyCutByTheConnection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		_, _ = w.Write([]byte(`{"data": {"x"`))
+	}))
+	defer srv.Close()
+	err := newTestClient(t, srv, "o/r").GraphQL(context.Background(), "query { x }", nil, nil)
+	var incomplete *IncompleteResponseError
+	require.ErrorAs(t, err, &incomplete)
+	assert.True(t, Transient(err))
+}
+
+// TestTransient: which failures are worth another attempt.
+func TestTransient(t *testing.T) {
+	assert.True(t, Transient(&APIError{StatusCode: 502}))
+	assert.False(t, Transient(&APIError{StatusCode: 404}))
+	assert.True(t, Transient(context.DeadlineExceeded))
+	assert.True(t, Transient(&GraphQLErrors{NoData: true, Errors: []GraphQLError{{Message: "This may be the result of a timeout"}}}))
+	assert.False(t, Transient(&GraphQLErrors{NoData: false, Errors: []GraphQLError{{Message: "This may be the result of a timeout"}}}),
+		"partial data with a timeout note is kept, not refetched")
+	assert.False(t, Transient(&GraphQLErrors{NoData: true, Errors: []GraphQLError{{Message: "Could not resolve to a Repository", Type: "NOT_FOUND"}}}))
+	assert.False(t, Transient(errors.New("boom")))
+}
