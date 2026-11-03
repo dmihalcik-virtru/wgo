@@ -155,6 +155,7 @@ var prSearchQuery = fmt.Sprintf(`query($q: String!, $after: String) {
           nodes { requestedReviewer { __typename ... on Actor { login } ... on Team { slug } } }
         }
         latestReviews(first: 100) { nodes { author { login } state submittedAt } }
+        latestOpinionatedReviews(first: 100) { nodes { author { login } state submittedAt } }
         timelineItems(last: 100, itemTypes: [READY_FOR_REVIEW_EVENT, REVIEW_REQUESTED_EVENT]) {
           nodes {
             __typename
@@ -207,6 +208,14 @@ func (r *gqlReviewer) id() (string, string) {
 	return r.Login, "user"
 }
 
+type gqlReviews struct {
+	Nodes []struct {
+		Author      *gqlActor `json:"author"`
+		State       string    `json:"state"`
+		SubmittedAt time.Time `json:"submittedAt"`
+	} `json:"nodes"`
+}
+
 type gqlContext struct {
 	Typename string `json:"__typename"`
 	// CheckRun.
@@ -248,14 +257,9 @@ type gqlPR struct {
 			RequestedReviewer *gqlReviewer `json:"requestedReviewer"`
 		} `json:"nodes"`
 	} `json:"reviewRequests"`
-	LatestReviews *struct {
-		Nodes []struct {
-			Author      *gqlActor `json:"author"`
-			State       string    `json:"state"`
-			SubmittedAt time.Time `json:"submittedAt"`
-		} `json:"nodes"`
-	} `json:"latestReviews"`
-	TimelineItems *struct {
+	LatestReviews            *gqlReviews `json:"latestReviews"`
+	LatestOpinionatedReviews *gqlReviews `json:"latestOpinionatedReviews"`
+	TimelineItems            *struct {
 		Nodes []struct {
 			Typename          string       `json:"__typename"`
 			CreatedAt         time.Time    `json:"createdAt"`
@@ -461,29 +465,7 @@ func (n *gqlPR) facts() (PRFacts, bool) {
 		}
 	}
 
-	if n.LatestReviews != nil {
-		p.Reviews = []ReviewFact{}
-		latest := map[string]int{}
-		for _, r := range n.LatestReviews.Nodes {
-			if r.Author == nil || r.Author.Login == "" {
-				continue
-			}
-			switch r.State {
-			case "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED":
-			default:
-				continue // PENDING: a draft review nobody else can see
-			}
-			rf := ReviewFact{Author: r.Author.Login, State: r.State, SubmittedAt: r.SubmittedAt}
-			if i, ok := latest[rf.Author]; ok {
-				if rf.SubmittedAt.After(p.Reviews[i].SubmittedAt) {
-					p.Reviews[i] = rf
-				}
-				continue
-			}
-			latest[rf.Author] = len(p.Reviews)
-			p.Reviews = append(p.Reviews, rf)
-		}
-	}
+	p.Reviews = latestReviewPerReviewer(p.Author, n.LatestReviews, n.LatestOpinionatedReviews)
 
 	if p.ReviewDecision == "" {
 		p.ReviewDecision = rollupLatestReviews(p.Reviews)
@@ -506,6 +488,57 @@ func (n *gqlPR) facts() (PRFacts, bool) {
 		}
 	}
 	return p, true
+}
+
+// latestReviewPerReviewer merges latestReviews and latestOpinionatedReviews
+// into one review per reviewer: their latest opinionated review (APPROVED,
+// CHANGES_REQUESTED or DISMISSED) if they have one, else their latest
+// comment. A comment after an approval or a change request thus does not
+// hide it, matching the REST rollup, which skips comments. The author's own
+// reviews (replies to review threads) are left out, as are pending ones. It
+// is nil when GitHub reported neither list.
+func latestReviewPerReviewer(author string, lists ...*gqlReviews) []ReviewFact {
+	var out []ReviewFact
+	at := map[string]int{}
+	known := false
+	for _, list := range lists {
+		if list == nil {
+			continue
+		}
+		known = true
+		for _, r := range list.Nodes {
+			if r.Author == nil || r.Author.Login == "" || strings.EqualFold(r.Author.Login, author) {
+				continue
+			}
+			rf := ReviewFact{Author: r.Author.Login, State: r.State, SubmittedAt: r.SubmittedAt}
+			opinion := false
+			switch r.State {
+			case "APPROVED", "CHANGES_REQUESTED", "DISMISSED":
+				opinion = true
+			case "COMMENTED":
+			default:
+				continue // PENDING: a draft review nobody else can see
+			}
+			i, seen := at[rf.Author]
+			if !seen {
+				at[rf.Author] = len(out)
+				out = append(out, rf)
+				continue
+			}
+			prev := out[i]
+			prevOpinion := prev.State != "COMMENTED"
+			if (opinion && !prevOpinion) || (opinion == prevOpinion && rf.SubmittedAt.After(prev.SubmittedAt)) {
+				out[i] = rf
+			}
+		}
+	}
+	if !known {
+		return nil
+	}
+	if out == nil {
+		out = []ReviewFact{}
+	}
+	return out
 }
 
 // rollupLatestReviews rolls the latest review per reviewer up into a

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -236,27 +237,35 @@ func (c *CLIClient) FetchMyLastActivityOnPR(owner, repo string, number int, myLo
 // We combine two endpoints because GitHub split checks across Check Runs
 // (GitHub Actions, etc.) and Commit Statuses (older integrations).
 func (c *CLIClient) FetchPRChecks(owner, repo string, number int) (passing, total int) {
+	passing, total, _ = c.fetchPRChecks(owner, repo, number)
+	return passing, total
+}
+
+// fetchPRChecks is FetchPRChecks plus the first error met, which callers
+// use to tell a rate limit from a PR without checks.
+func (c *CLIClient) fetchPRChecks(owner, repo string, number int) (passing, total int, err error) {
 	slug := owner + "/" + repo
 	pr, err := c.fetchPR(slug, number)
 	if err != nil || pr == nil || pr.Head.SHA == "" {
-		return -1, -1
+		return -1, -1, err
 	}
 
 	checkRunsEndpoint := fmt.Sprintf("/repos/%s/commits/%s/check-runs", slug, pr.Head.SHA)
 	var runs apiCheckRunsResponse
-	if err := c.getJSON(checkRunsEndpoint, &runs); err != nil {
-		runs = apiCheckRunsResponse{}
+	if rerr := c.getJSON(checkRunsEndpoint, &runs); rerr != nil {
+		runs, err = apiCheckRunsResponse{}, rerr
 	}
 
 	combinedEndpoint := fmt.Sprintf("/repos/%s/commits/%s/status", slug, pr.Head.SHA)
 	var combined apiCombinedStatus
-	if err := c.getJSON(combinedEndpoint, &combined); err != nil {
+	if cerr := c.getJSON(combinedEndpoint, &combined); cerr != nil {
 		combined = apiCombinedStatus{}
+		err = errors.Join(err, cerr)
 	}
 
 	total = len(runs.CheckRuns) + len(combined.Statuses)
 	if total == 0 {
-		return -1, -1
+		return -1, -1, err
 	}
 	for _, r := range runs.CheckRuns {
 		if strings.EqualFold(r.Conclusion, "success") {
@@ -268,7 +277,7 @@ func (c *CLIClient) FetchPRChecks(owner, repo string, number int) (passing, tota
 			passing++
 		}
 	}
-	return passing, total
+	return passing, total, err
 }
 
 // fetchCIStatus fetches the check-runs and legacy commit statuses for a head
@@ -412,24 +421,65 @@ func rollupReviewDecision(reviews []apiReview) string {
 	return ""
 }
 
-// EnrichWithActivity fetches last-activity timestamps for all PRs in parallel
-// and mutates the slice in place.
-func (c *CLIClient) EnrichWithActivity(prs []ExtendedPRInfo, myLogin string) {
-	var wg sync.WaitGroup
-	for i := range prs {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			pr := &prs[i]
-			if t, err := c.FetchMyLastActivityOnPR(pr.RepoOwner, pr.RepoName, pr.Number, myLogin); err == nil {
-				pr.MyLastActivity = t
-				if !t.IsZero() && pr.UpdatedAt.After(t) {
-					pr.HasNewActivity = true
-				}
+// EnrichWithActivity fetches last-activity timestamps for all PRs, at most
+// enrichConcurrency at a time, and mutates the slice in place. It returns a
+// *RateLimitError when GitHub's rate limit stopped some lookups; those PRs
+// show no activity. Other per-PR failures are skipped, as before.
+func (c *CLIClient) EnrichWithActivity(prs []ExtendedPRInfo, myLogin string) error {
+	return enrichEach(len(prs), func(i int) error {
+		pr := &prs[i]
+		t, err := c.FetchMyLastActivityOnPR(pr.RepoOwner, pr.RepoName, pr.Number, myLogin)
+		if err == nil {
+			pr.MyLastActivity = t
+			if !t.IsZero() && pr.UpdatedAt.After(t) {
+				pr.HasNewActivity = true
 			}
-		}(i)
+		}
+		return err
+	})
+}
+
+// enrichConcurrency bounds the per-PR enrichment lookups in flight. Each
+// makes two or three REST calls; with every result of a search now read
+// (hundreds of PRs), one goroutine per PR would exceed GitHub's secondary
+// rate limits.
+const enrichConcurrency = 8
+
+// enrichEach calls fn for 0..n-1, enrichConcurrency at a time, and returns
+// the first *RateLimitError any call returned. Once one has, the calls not
+// yet started are skipped: they would fail the same way.
+func enrichEach(n int, fn func(i int) error) error {
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		limited error
+	)
+	sem := make(chan struct{}, enrichConcurrency)
+	for i := range n {
+		sem <- struct{}{}
+		mu.Lock()
+		stop := limited != nil
+		mu.Unlock()
+		if stop {
+			<-sem
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			var rl *RateLimitError
+			if err := fn(i); errors.As(err, &rl) {
+				mu.Lock()
+				if limited == nil {
+					limited = rl
+				}
+				mu.Unlock()
+			}
+		}()
 	}
 	wg.Wait()
+	return limited
 }
 
 // CommentedPR represents a PR/issue that the user commented on.
@@ -584,18 +634,16 @@ func (c *CLIClient) GetSpecFrontmatterForBranch(slug, branch, specPath string) (
 	return string(decoded), nil
 }
 
-// EnrichWithChecks fetches CI check status for all PRs in parallel.
-func (c *CLIClient) EnrichWithChecks(prs []ExtendedPRInfo) {
-	var wg sync.WaitGroup
-	for i := range prs {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			pr := &prs[i]
-			passing, total := c.FetchPRChecks(pr.RepoOwner, pr.RepoName, pr.Number)
-			pr.CheckPassing = passing
-			pr.CheckTotal = total
-		}(i)
-	}
-	wg.Wait()
+// EnrichWithChecks fetches CI check status for all PRs, at most
+// enrichConcurrency at a time. It returns a *RateLimitError when GitHub's
+// rate limit stopped some lookups; those PRs keep CheckTotal -1 (unknown).
+// Other per-PR failures leave that PR unknown, as before.
+func (c *CLIClient) EnrichWithChecks(prs []ExtendedPRInfo) error {
+	return enrichEach(len(prs), func(i int) error {
+		pr := &prs[i]
+		passing, total, err := c.fetchPRChecks(pr.RepoOwner, pr.RepoName, pr.Number)
+		pr.CheckPassing = passing
+		pr.CheckTotal = total
+		return err
+	})
 }

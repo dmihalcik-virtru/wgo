@@ -392,6 +392,109 @@ func TestSearchPullRequestsRollsUpReviewDecision(t *testing.T) {
 	assert.Equal(t, []string{"APPROVED", "CHANGES_REQUESTED", "", "REVIEW_REQUIRED"}, got)
 }
 
+// TestSearchPullRequestsOpinionatedReviewsWin: a comment after an approval
+// or a change request does not hide it, from the reviews or the decision,
+// and the author's own thread replies are not reviews.
+func TestSearchPullRequestsOpinionatedReviewsWin(t *testing.T) {
+	review := func(login, state, at string) map[string]any {
+		return map[string]any{"author": map[string]any{"login": login}, "state": state, "submittedAt": at}
+	}
+	pr := func(n int, latest, opinionated []any) map[string]any {
+		p := minimalPR("acme/api", n)
+		p["author"] = map[string]any{"login": "alice"}
+		p["reviewDecision"] = nil
+		p["latestReviews"] = map[string]any{"nodes": latest}
+		p["latestOpinionatedReviews"] = map[string]any{"nodes": opinionated}
+		return p
+	}
+	s := &searchServer{nodes: []any{
+		// bob approved, then commented.
+		pr(1, []any{review("bob", "COMMENTED", "2026-10-25T10:00:00Z"), review("alice", "COMMENTED", "2026-10-25T11:00:00Z")},
+			[]any{review("bob", "APPROVED", "2026-10-24T10:00:00Z")}),
+		// carol requested changes, then commented; dave only commented.
+		pr(2, []any{review("carol", "COMMENTED", "2026-10-26T10:00:00Z"), review("dave", "COMMENTED", "2026-10-26T11:00:00Z")},
+			[]any{review("carol", "CHANGES_REQUESTED", "2026-10-25T10:00:00Z")}),
+	}}
+	res, err := newSearchClient(t, s).SearchPullRequests(context.Background(), "q")
+	require.NoError(t, err)
+	assert.Equal(t, []ReviewFact{{Author: "bob", State: "APPROVED", SubmittedAt: at("2026-10-24T10:00:00Z")}}, res.PRs[0].Reviews,
+		"bob's approval survives his later comment; alice's replies to her own PR are not reviews")
+	assert.Equal(t, "APPROVED", res.PRs[0].ReviewDecision)
+	assert.Equal(t, []ReviewFact{
+		{Author: "carol", State: "CHANGES_REQUESTED", SubmittedAt: at("2026-10-25T10:00:00Z")},
+		{Author: "dave", State: "COMMENTED", SubmittedAt: at("2026-10-26T11:00:00Z")},
+	}, res.PRs[1].Reviews)
+	assert.Equal(t, "CHANGES_REQUESTED", res.PRs[1].ReviewDecision)
+}
+
+// TestGraphQLRateLimitHonoursRetryAfter: a secondary rate limit says when
+// to come back.
+func TestGraphQLRateLimitHonoursRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message": "slow down"}`))
+	}))
+	defer srv.Close()
+	err := NewClient(WithBaseURL(srv.URL), WithToken("t")).GraphQL(context.Background(), "query { x }", nil, nil)
+	var rl *RateLimitError
+	require.ErrorAs(t, err, &rl)
+	assert.WithinDuration(t, time.Now().Add(2*time.Minute), rl.ResetAt, 10*time.Second)
+}
+
+// TestEnrichmentIsBoundedAndReportsRateLimits: enriching hundreds of PRs
+// keeps at most enrichConcurrency lookups in flight, and a rate limit is
+// returned rather than shown as PRs without checks.
+func TestEnrichmentIsBoundedAndReportsRateLimits(t *testing.T) {
+	var inFlight, peak atomic.Int32
+	var limited atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+		if limited.Load() {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message": "You have exceeded a secondary rate limit"}`))
+			return
+		}
+		switch {
+		case strings.Contains(r.URL.Path, "/pulls/"):
+			_, _ = w.Write([]byte(`{"number": 1, "head": {"sha": "abc"}}`))
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			_, _ = w.Write([]byte(`{"check_runs": [{"conclusion": "success", "status": "completed"}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"statuses": [], "state": "success"}`))
+		}
+	}))
+	defer srv.Close()
+	prs := make([]ExtendedPRInfo, 60)
+	for i := range prs {
+		prs[i] = ExtendedPRInfo{Number: i + 1, RepoOwner: "acme", RepoName: fmt.Sprintf("repo%d", i), CheckTotal: -1}
+	}
+	c := NewClient(WithBaseURL(srv.URL), WithToken("t"))
+	require.NoError(t, c.EnrichWithChecks(prs))
+	assert.LessOrEqual(t, peak.Load(), int32(enrichConcurrency))
+	for _, p := range prs {
+		assert.Equal(t, 1, p.CheckTotal)
+	}
+
+	limited.Store(true)
+	for i := range prs {
+		prs[i].CheckTotal = -1
+	}
+	err := NewClient(WithBaseURL(srv.URL), WithToken("t")).EnrichWithChecks(prs)
+	var rl *RateLimitError
+	require.ErrorAs(t, err, &rl, "a rate limit is reported, not shown as unknown checks")
+	err = NewClient(WithBaseURL(srv.URL), WithToken("t")).EnrichWithActivity(prs, "alice")
+	require.ErrorAs(t, err, &rl)
+}
+
 func TestViewer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
