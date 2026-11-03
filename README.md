@@ -1538,6 +1538,19 @@ after 2 minutes. Without `acli`, or with its login expired, the `jira` and
 the dashboard is unaffected. `wgo statusline` still reads only the ticket's
 cache entry.
 
+Once a Jira lookup fails because `acli`'s login expired (acli says
+"unauthorized", or, when a ticket view fails without saying why,
+`acli jira auth status` does), the remaining Jira ticket and sprint lookups
+are skipped rather than run into the same failure one by one. One
+diagnostic says ``acli is not authenticated: run `acli jira auth login`;
+N Jira lookups skipped``, the `jira` source is in error with that reason, and
+`wgo dash --json --refresh` does not exit non-zero for it. Should `acli`
+not be able to say whether it is logged in, three lookups in a row failing
+the same way pause the rest too; those three still count as failures. The
+served dashboard pauses Jira lookups for 5 minutes, then tries one; each
+failure doubles the pause, up to 30 minutes, and the first lookup that
+works ends it.
+
 A `terminal`, `terminal_command` or `resume` value of the right type that
 wgo does not support (an unknown terminal, `terminal = "command"` with no
 command, a resume tool not on the list) does not stop the dashboard. `wgo

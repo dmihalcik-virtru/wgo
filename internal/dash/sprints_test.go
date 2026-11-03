@@ -417,7 +417,7 @@ func (f *failingJiraFacts) FetchJira(ticket string) (jiracache.Info, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls[ticket]++
-	return jiracache.Info{}, errors.New("unauthorized")
+	return jiracache.Info{}, errors.New("HTTP 502")
 }
 
 // TestRefreshWaitRunsAFailedTicketLookupOnce: a sprint ticket whose lookup
@@ -426,7 +426,10 @@ func (f *failingJiraFacts) FetchJira(ticket string) (jiracache.Info, error) {
 func TestRefreshWaitRunsAFailedTicketLookupOnce(t *testing.T) {
 	f := newFixture(t)
 	jf := &failingJiraFacts{calls: map[string]int{}}
-	r := NewRefresher(Fetchers{Jira: jf, Sprints: &stubSprintFetcher{data: boardFixture()}}, RefresherOptions{Workers: 2, IgnoreLeases: true})
+	r := NewRefresher(Fetchers{
+		Jira: jf, Sprints: &stubSprintFetcher{data: boardFixture()},
+		JiraLogin: func() error { return nil },
+	}, RefresherOptions{Workers: 2, IgnoreLeases: true})
 	defer r.Close()
 	c := f.collector(t, time.Now(), memSource{})
 	c.cfg.JiraBoard = 42
