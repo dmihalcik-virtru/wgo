@@ -290,16 +290,41 @@ test("quoteValue round-trips through the parser", () => {
 });
 
 test("the URL hash round-trips and keeps unknown keys", () => {
-  const pairs = L.parseHash("#view=table&x=1&q=kind:pr;text:%22a%20b%22&sel=pr:acme%2Fapi%2341,ws-1");
+  const pairs = L.parseHash("#view=table&x=a%2Fb&q=kind:pr;text:%22a%20b%22&sel=pr:acme%2Fapi%2341,ws-1&sort=-waiting,size");
   const st = L.hashState(pairs);
-  assert.deepEqual(st, { view: "table", q: "kind:pr;text:\"a b\"", sort: "", cols: [], sel: ["pr:acme/api#41", "ws-1"] });
-  const h = L.buildHash(pairs, Object.assign({}, st, { sort: "-activity", cols: ["prstate", "repo"] }));
-  assert.equal(h, "#view=table&x=1&q=kind:pr;text:%22a%20b%22&sel=pr:acme/api%2341,ws-1&sort=-activity&cols=prstate,repo");
+  assert.deepEqual(st, { view: "table", q: "kind:pr;text:\"a b\"", sel: ["pr:acme/api#41", "ws-1"], values: { x: "a/b", sort: "-waiting,size" } });
+  // Unchanged values, and keys the page does not own, keep their spelling;
+  // sort stays the raw multi-key string for the view that owns it.
+  assert.equal(L.buildHash(pairs, st), "#view=table&x=a%2Fb&q=kind:pr;text:%22a%20b%22&sel=pr:acme/api%2341,ws-1&sort=-waiting,size");
+  const h = L.buildHash(pairs, { view: "table", q: st.q, sel: st.sel, values: Object.assign({}, st.values, { cols: "prstate,repo", y: "size", x: "" }) });
+  assert.equal(h, "#view=table&q=kind:pr;text:%22a%20b%22&sel=pr:acme/api%2341,ws-1&sort=-waiting,size&cols=prstate,repo&y=size");
   assert.deepEqual(L.hashState(L.parseHash(h)).sel, ["pr:acme/api#41", "ws-1"]);
-  assert.equal(L.buildHash(L.parseHash("#view=graph&q=a"), { view: "graph", q: "", sort: "", cols: [], sel: [] }), "", "defaults are dropped");
-  assert.deepEqual(L.hashState(L.parseHash("#view=table")), { view: "table", q: "", sort: "", cols: [], sel: [] }, "old #view=table links still work");
+  assert.equal(L.buildHash(L.parseHash("#view=graph&q=a"), { view: "graph", q: "", sel: [], values: {} }), "", "defaults are dropped");
+  assert.deepEqual(L.hashState(L.parseHash("#view=table")), { view: "table", q: "", sel: [], values: {} }, "old #view=table links still work");
   assert.deepEqual(L.hashState(L.parseHash("#sel=a%2Cb,c")).sel, ["a,b", "c"], "an ID with a comma survives");
   assert.equal(L.hashState(L.parseHash("#q=%E0%A4%A")).q, "%E0%A4%A", "a malformed escape is kept, not thrown");
+});
+
+test("history: a drag is one undoable entry, and a commit closes it", () => {
+  const steps = [];
+  let open = false;
+  for (const mode of ["live", "live", "live", "commit", "commit", "live", "normalize", "commit"]) {
+    const st = L.historyStep(open, mode, false);
+    steps.push(st.op); open = st.open;
+  }
+  // The first live change pushes, the next ones replace it, the release
+  // replaces it too; a plain click pushes; tidying the URL never pushes.
+  assert.deepEqual(steps, ["push", "replace", "replace", "replace", "push", "push", "replace", "replace"]);
+  assert.deepEqual(L.historyStep(true, "commit", true), { op: "", open: false }, "a commit with nothing new closes the open entry");
+  assert.deepEqual(L.historyStep(true, "live", true), { op: "", open: true });
+  assert.deepEqual(L.historyStep(false, "normalize", false), { op: "replace", open: false });
+});
+
+test("addons get the bootstrap without the action token", () => {
+  const b = L.addonBoot({ mode: "live", token: "secret", action_api: "/api/action", ack_api: "/api/ack", extract: "/api/extract", me: "alice" });
+  assert.deepEqual(b, { mode: "live", extract: "/api/extract", me: "alice" });
+  assert.ok(Object.isFrozen(b));
+  assert.ok(L.STATE_KEY.test("sprint") && L.STATE_KEY.test("x") && !L.STATE_KEY.test("a=b") && !L.STATE_KEY.test(""));
 });
 
 test("extractURL encodes the page state for /api/extract", () => {

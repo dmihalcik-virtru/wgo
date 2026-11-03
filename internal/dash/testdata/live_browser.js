@@ -2,20 +2,22 @@
 // built-in WebSocket; no dependencies). Run by TestLivePageInBrowser when
 // WGO_BROWSER_TESTS is set:
 //
-//	node live_browser.js <chrome> <page URL> [screenshot dir] [--no-checks]
+//	node live_browser.js <chrome> <page URL> [--perf=<URL>] [--shots=<dir>] [--no-checks]
 //
 // The page must serve the shared query vectors' snapshot with the probe
-// addon view. Prints "ok <checks>" or exits non-zero naming the failure.
-// With a screenshot dir it also saves light and dark screenshots; with
-// --no-checks it only takes them (for wgo dash --fixture, which has no
-// probe view).
+// addon (see page_browser_test.go). Prints "ok <checks> ..." or exits
+// non-zero naming the failure. --perf times filter changes on a page that
+// serves a 2,000-node snapshot; --shots saves light and dark screenshots;
+// --no-checks skips the checks (for wgo dash --fixture, which has no probe).
 "use strict";
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const [chrome, pageURL, shotDir, mode] = process.argv.slice(2);
+const [chrome, pageURL] = process.argv.slice(2);
+const flag = (name) => { const a = process.argv.slice(4).find((x) => x === name || x.startsWith(name + "=")); return a == null ? null : a.includes("=") ? a.slice(a.indexOf("=") + 1) : true; };
+const shotDir = flag("--shots"), perfURL = flag("--perf"), noChecks = flag("--no-checks");
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "wgo-chrome-"));
 const proc = spawn(chrome, ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + profile, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", "--window-size=1400,900", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
@@ -72,9 +74,10 @@ function check(cond, what) { if (!cond) throw new Error(what); checks++; }
   const origin = new URL(pageURL).origin;
   await send("Browser.grantPermissions", { origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] }, null);
 
-  if (mode !== "--no-checks") await runChecks();
+  if (!noChecks) await runChecks();
+  const perf = perfURL ? await timeRenders() : "";
   if (shotDir) await screenshots();
-  finish(0, "ok " + checks);
+  finish(0, "ok " + checks + (perf ? " " + perf : ""));
 })().catch((e) => finish(1, "FAIL " + e.message));
 
 async function runChecks() {
@@ -85,6 +88,7 @@ async function runChecks() {
   check(st.view === "table" && st.q === "prstate:open" && st.sel.join() === "pr:acme/api#41", "hash not restored: " + JSON.stringify(st));
   const tabs = await evaluate("Array.from(document.querySelectorAll('.view-tabs button')).map(b => b.textContent + ':' + b.getAttribute('aria-pressed'))");
   check(tabs.join() === "Graph:false,Table:true,Probe:false", "tabs: " + tabs);
+  check((await evaluate("Array.from(document.querySelectorAll('.mult')).map(m => m.textContent).includes('probe panel')")), "the addon panel renders");
   const table = await evaluate("({ rows: document.querySelectorAll('table.live tbody tr').length, ctx: document.querySelectorAll('table.live tbody tr.ctx').length, sel: document.querySelectorAll('table.live tbody tr.sel').length })");
   check(table.rows > 2 && table.ctx > 0 && table.sel === 1, "table: " + JSON.stringify(table));
   check((await evaluate("document.querySelector('input.query').value")) === "prstate:open", "query bar text");
@@ -105,6 +109,36 @@ async function runChecks() {
   await evaluate("history.forward()"); await sleep(300);
   check((await evaluate("window.__wgoStore.query")) === "prstate:draft;activity:2026-10-14;effort:api-widgets", "forward re-applies");
 
+  // 2b. A drag: live changes open one entry, the release commits it, and
+  // Back returns to the state before the drag.
+  // (Had each live change pushed, one Back would land on prstate:merged.)
+  const q0 = await evaluate("window.__wgoStore.query");
+  await evaluate("(() => { const s = window.__wgoStore; s.setQuery('prstate:open', {}); s.setQuery('prstate:merged', {}); s.setQuery('prstate:closed', {}); s.setQuery('prstate:closed', { commit: true }); })()");
+  check((await evaluate("location.hash")).includes("q=prstate:closed"), "the drag's end is in the URL");
+  await evaluate("history.back()"); await sleep(300);
+  check((await evaluate("window.__wgoStore.query")) === q0, "Back undoes the whole drag");
+  await evaluate("history.forward()"); await sleep(300);
+  check((await evaluate("window.__wgoStore.query")) === "prstate:closed", "the drag is a single entry");
+
+  // 2c. A click that would make an invalid query shows the error and a fix.
+  await evaluate("window.__wgoStore.setQuery('kind:agent', { commit: true })");
+  check((await clickBar("draft:")) === "kind:agent", "an invalid click is not applied");
+  const clickErr = await evaluate("document.querySelector('.qmsg .qerr').textContent + ' | ' + document.querySelector('.qmsg button.linkish').textContent");
+  check(clickErr.includes("leaves no rows") && clickErr.endsWith("Use prstate:draft"), "the click's error and fix: " + clickErr);
+  check((await evaluate("document.querySelector('input.query').value")) === "kind:agent;prstate:draft", "the bar shows the attempted query");
+  await evaluate("document.querySelector('.qmsg button.linkish').click()");
+  check((await evaluate("window.__wgoStore.query")) === "prstate:draft", "the fix replaces the conflicting kind clause");
+
+  // 2d. The query bar follows changes made elsewhere, even while focused.
+  await evaluate("(() => { const i = document.querySelector('input.query'); i.focus(); i.value = 'kind:pr'; i.dispatchEvent(new Event('input', { bubbles: true })); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()");
+  check((await evaluate("document.activeElement === document.querySelector('input.query')")), "the bar keeps focus after Enter");
+  await clickBar("open:");
+  check((await evaluate("document.querySelector('input.query').value")) === "kind:pr;prstate:open", "a chart click updates the focused bar");
+  await evaluate("history.back()"); await sleep(300);
+  check((await evaluate("document.querySelector('input.query').value")) === "kind:pr", "Back updates the bar");
+  await evaluate("history.forward()"); await sleep(300);
+  check((await evaluate("document.querySelector('.qmsg .qinfo').parentNode.getAttribute('role')")) === "status", "the summary is a status, not an alert");
+
   // 3. The query bar: errors inline with a fix, Enter applies, Esc reverts.
   const type = (text, key) => evaluate("(() => { const i = document.querySelector('input.query'); i.focus(); i.value = " + JSON.stringify(text) + "; i.dispatchEvent(new Event('input', { bubbles: true })); i.dispatchEvent(new KeyboardEvent('keydown', { key: " + JSON.stringify(key) + ", bubbles: true })); return window.__wgoStore.query })()");
   const before = await evaluate("window.__wgoStore.query");
@@ -117,16 +151,43 @@ async function runChecks() {
   check((await evaluate("document.querySelector('input.query').value")) === "kind:pr;prstate:open", "Esc reverts the text");
   check((await evaluate("document.querySelectorAll('table.live tbody tr.ctx').length")) === 0, "a kind clause hides context rows");
 
-  // 4. The addon view renders in its own container and is in the URL.
+  // 4. The addon view renders in its own container, is in the URL, keeps
+  // its own key with the history model, and never sees the action token.
   await evaluate("Array.from(document.querySelectorAll('.view-tabs button')).find(b => b.textContent === 'Probe').click()");
   await sleep(200);
-  check((await evaluate("Array.from(document.querySelectorAll('.viewwrap')).filter(d => !d.hidden).map(d => d.textContent).join()")) === "probe view: 2 rows", "probe view");
+  check((await evaluate("Array.from(document.querySelectorAll('.viewwrap')).filter(d => !d.hidden).map(d => d.textContent).join()")) === "probe view: 2 rows, x=", "probe view");
   check((await evaluate("location.hash")).includes("view=probe"), "view in the hash");
+  check((await evaluate("!!JSON.parse(document.getElementById('wgo-boot').textContent).token")), "the page itself has a token");
+  const pboot = await evaluate("window.__probe.boot");
+  check(!/(^|,)(token|action_api|ack_api)(,|$)/.test(pboot) && /(^|,)fields(,|$)/.test(pboot), "ctx.boot without the token: " + pboot);
+  await evaluate("(() => { const c = window.__probe.ctx; c.setState({ x: '5' }); c.setState({ x: '6' }); c.setState({ x: '7' }, { commit: true }); })()");
+  check((await evaluate("location.hash")).includes("x=7"), "ctx.setState writes its key");
+  check((await evaluate("window.__probe.ctx.getState('x')")) === "7", "ctx.getState");
+  await evaluate("history.back()"); await sleep(300);
+  const back = await evaluate("({ x: window.__probe.ctx.getState('x'), reason: window.__probe.renders[window.__probe.renders.length - 1], text: document.querySelector('.viewwrap:not([hidden])').textContent })");
+  check(back.x === "" && back.reason === "history" && back.text.endsWith("x="), "Back restores the addon key and renders with reason history: " + JSON.stringify(back));
+  check((await evaluate("window.__probe.notes")) > 0, "ctx.subscribe hears changes");
   await evaluate("history.back()"); await sleep(300);
   check((await evaluate("window.__wgoStore.view")) === "table", "back to the table view");
+  check((await evaluate("window.__probe.destroyed")) === 1, "leaving the view destroys it");
+  const notes = await evaluate("window.__probe.notes");
+  await evaluate("window.__wgoStore.select(['ws-0000000000000001'], false)");
+  check((await evaluate("window.__probe.notes")) === notes, "a destroyed view's subscriptions end");
+  await evaluate("WGOLive.registerPanel({ id: 'probe-panel', render: function (ctx) { ctx.container.textContent = 'probe panel 2'; } })");
+  check((await evaluate("window.__probe.panelDestroyed")) === 1, "replacing a panel destroys the old one");
+  check((await evaluate("Array.from(document.querySelectorAll('.mult')).map(m => m.textContent).includes('probe panel 2')")), "the replacement panel renders");
+
+  // 4b. sort= is kept raw for the view that owns it (gh-101's multi-key sort).
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: pageURL + "#view=table&sort=-waiting,size&y=size" });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the snapshot");
+  await sleep(300);
+  const kept = await evaluate("location.hash");
+  check(kept.includes("sort=-waiting,size") && kept.includes("y=size"), "sort and addon keys survive the first render: " + kept);
+  check((await evaluate("window.__wgoStore.getState('sort')")) === "-waiting,size", "getState('sort') is raw");
 
   // 5. Copy as Markdown under the CSP: the clipboard, then the fallback.
-  await evaluate("window.__wgoStore.select(['pr:acme/api#41'], false)");
+  await evaluate("window.__wgoStore.setQuery('kind:pr;prstate:open', { commit: true }); window.__wgoStore.select(['pr:acme/api#41'], false)");
   await send("Runtime.evaluate", { expression: "Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Copy as Markdown').click()", userGesture: true });
   await waitFor("document.querySelector('.status').textContent.startsWith('Copied') || document.querySelector('.status').textContent.includes('failed') || !document.querySelector('.copyout').hidden", "the copy to finish");
   const status = await evaluate("document.querySelector('.status').textContent");
@@ -144,6 +205,35 @@ async function runChecks() {
   const problems = events.filter((e) => (e.method === "Log.entryAdded" && e.params.entry.level === "error" && !/\/favicon\.ico$/.test(e.params.entry.url || "")) || e.method === "Runtime.exceptionThrown")
     .map((e) => e.method === "Runtime.exceptionThrown" ? e.params.exceptionDetails.text + " " + ((e.params.exceptionDetails.exception || {}).description || "") : e.params.entry.text + " " + (e.params.entry.url || ""));
   check(problems.length === 0, "console errors: " + problems.join(" | "));
+}
+
+// timeRenders times filter changes on the 2,000-node page: the synchronous
+// re-render, and to the next frame (style, layout, paint), median of 7.
+async function timeRenders() {
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: perfURL });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the 2,000-node snapshot");
+  await sleep(1500);
+  const out = [];
+  for (const view of ["graph", "table"]) {
+    await evaluate("window.__wgoStore.setState({ view: " + JSON.stringify(view) + " }, { commit: true })");
+    await sleep(500);
+    const r = await evaluate(`(async () => {
+      const s = window.__wgoStore, frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+      const med = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+      const sync = { apply: [], clear: [] }, toFrame = { apply: [], clear: [] };
+      for (let i = 0; i < 7; i++) {
+        for (const [k, q] of [["apply", "prstate:open;repo:acme/repo-3"], ["clear", ""]]) {
+          const t0 = performance.now(); s.setQuery(q, { commit: true }); const t1 = performance.now(); await frame(); const t2 = performance.now();
+          sync[k].push(t1 - t0); toFrame[k].push(t2 - t0);
+        }
+      }
+      return { n: s.idx.byId.size, apply: med(sync.apply), clear: med(sync.clear), applyFrame: med(toFrame.apply), clearFrame: med(toFrame.clear) };
+    })()`);
+    out.push(view + ": apply " + r.apply.toFixed(1) + " ms (" + r.applyFrame.toFixed(1) + " to frame), clear " + r.clear.toFixed(1) + " ms (" + r.clearFrame.toFixed(1) + " to frame)");
+    if (view === "graph") out.unshift("perf " + r.n + " nodes");
+  }
+  return out.join("; ");
 }
 
 async function screenshots() {
