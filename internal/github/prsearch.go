@@ -112,7 +112,7 @@ type PRSearchResult struct {
 }
 
 // PRSearchError is a PR search that failed on one page: after its retries
-// for a 5xx or a timeout, or at once for anything else.
+// for a transient failure (see Transient), or at once for anything else.
 type PRSearchError struct {
 	Page    int
 	Retries int
@@ -294,8 +294,8 @@ type gqlSearchData struct {
 
 // SearchPullRequests runs a GitHub search for pull requests through the
 // GraphQL search connection, PRSearchPageSize at a time, following the cursor
-// to the end. A page that fails with a 5xx or a timeout is retried after each
-// WithRetryBackoff wait; when the retries run out, or on any other failure,
+// to the end. A page that fails with a 5xx, a timeout or an incomplete body
+// is retried after each WithRetryBackoff wait; when the retries run out, or on any other failure,
 // the search fails with a *PRSearchError and no result. PRs in archived
 // repositories are dropped, and a PR listed twice (results shifting between
 // pages) is kept once.
@@ -357,8 +357,9 @@ func (c *CLIClient) SearchPullRequests(ctx context.Context, query string) (*PRSe
 	return res, nil
 }
 
-// graphQLWithRetry runs GraphQL, retrying a 5xx or a timeout after each
-// c.retryBackoff wait. It returns how many retries it made.
+// graphQLWithRetry runs GraphQL, retrying a transient failure (see
+// Transient) after each c.retryBackoff wait. It returns how many retries it
+// made.
 func (c *CLIClient) graphQLWithRetry(ctx context.Context, query string, vars map[string]any, data any) (int, error) {
 	for retries := 0; ; retries++ {
 		err := c.GraphQL(ctx, query, vars, data)
@@ -375,15 +376,28 @@ func (c *CLIClient) graphQLWithRetry(ctx context.Context, query string, vars map
 	}
 }
 
-// retryable reports whether a failed request is worth repeating: a server
-// error or a timeout, unless the caller's context is done.
+// retryable reports whether a failed request is worth repeating: a
+// transient failure, unless the caller's context is done.
 func retryable(ctx context.Context, err error) bool {
-	if ctx.Err() != nil {
-		return false
-	}
+	return ctx.Err() == nil && Transient(err)
+}
+
+// Transient reports whether a request failed in a way a later attempt may
+// not: a server error, a timeout (GitHub reports a GraphQL query that ran too
+// long as HTTP 200 with no data and a timeout error), or a successful status
+// whose body was empty, cut off or not JSON.
+func Transient(err error) bool {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode >= 500
+	}
+	var incomplete *IncompleteResponseError
+	if errors.As(err, &incomplete) {
+		return true
+	}
+	var gqlErrs *GraphQLErrors
+	if errors.As(err, &gqlErrs) {
+		return gqlErrs.timedOut()
 	}
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {

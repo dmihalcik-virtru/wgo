@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"slices"
 	"sort"
 	"strconv"
@@ -455,15 +454,9 @@ const timelinePruneEvery = 24 * time.Hour
 // retries: GitHub is struggling, and the rest can wait for a later cycle.
 const maxTransientTimelineFailures = 3
 
-// transientFailure reports whether err is a server error or a timeout.
-func transientFailure(err error) bool {
-	var apiErr *github.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.StatusCode >= 500
-	}
-	var ne net.Error
-	return (errors.As(err, &ne) && ne.Timeout()) || errors.Is(err, context.DeadlineExceeded)
-}
+// transientFailure reports whether err is a server error, a timeout or an
+// incomplete response (github.Transient).
+func transientFailure(err error) bool { return github.Transient(err) }
 
 // runTimelines fetches each PR's history in turn, serially as GitHub asks of
 // API clients. A PR already fetched for its updated_at is skipped; without

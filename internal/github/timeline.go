@@ -184,7 +184,8 @@ func (e *PRTimelineError) Unwrap() error { return e.Err }
 // PRTimeline reads the review history of PR number in repo (owner/repo)
 // through the GraphQL timelineItems connection, TimelinePageSize items at a
 // time, following the cursor to the end or MaxTimelinePages. A page that
-// fails with a 5xx or a timeout is retried after each WithRetryBackoff wait.
+// fails transiently (see Transient) is retried after each WithRetryBackoff
+// wait.
 // Any failure, a GraphQL error included (a PR the token cannot read comes
 // back as NOT_FOUND), fails the whole fetch with a *PRTimelineError: a
 // history with a hole would misstate where the time went.

@@ -359,8 +359,8 @@ type CLIClient struct {
 	// bookmark; tests inject a fixed answer.
 	headOwnerResolver func(repoPath, branch string) []string
 
-	// retryBackoff is the wait before each retry of a GraphQL search page
-	// that failed with a 5xx or a timeout; its length is the retry count.
+	// retryBackoff is the wait before each retry of a GraphQL page that
+	// failed transiently (see Transient); its length is the retry count.
 	retryBackoff []time.Duration
 }
 
@@ -398,8 +398,8 @@ func WithToken(tok string) ClientOption {
 	}
 }
 
-// WithRetryBackoff sets the waits before each retry of a GraphQL search page
-// that failed with a 5xx or a timeout: 1s, 2s and 4s by default. The number
+// WithRetryBackoff sets the waits before each retry of a GraphQL page that
+// failed transiently (see Transient): 1s, 2s and 4s by default. The number
 // of waits is the number of retries. Tests pass zeros.
 func WithRetryBackoff(waits ...time.Duration) ClientOption {
 	return func(c *CLIClient) { c.retryBackoff = append([]time.Duration{}, waits...) }
