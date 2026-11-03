@@ -41,8 +41,12 @@ type Page struct {
 	Boot any
 	// Addons names embedded scripts under web/ (outside vendor/), inlined
 	// before </body>, which in both shells is after the mode's app script;
-	// e.g. web/served.js for review pages served by `wgo dash`.
+	// e.g. web/served.js for review pages served by `wgo dash`, or the
+	// live-*.js views of the live page.
 	Addons []string
+	// AddonFS, when set, is where Addons are read from instead of the
+	// embedded files; tests use it to inline a probe addon.
+	AddonFS fs.FS
 }
 
 // Render returns a single self-contained HTML page that explores g. All
@@ -138,7 +142,13 @@ func renderShell(shellName string, styleNames []string, appName string, p Page, 
 		if !strings.HasPrefix(name, "web/") || !strings.HasSuffix(name, ".js") || strings.Contains(name, "/vendor/") {
 			return nil, fmt.Errorf("explorer addon %q is not a web/*.js script", name)
 		}
-		b, err := webFile(name)
+		var b string
+		if p.AddonFS != nil {
+			raw, rerr := fs.ReadFile(p.AddonFS, name)
+			b, err = string(raw), rerr
+		} else {
+			b, err = webFile(name)
+		}
 		if err != nil {
 			return nil, err
 		}

@@ -79,6 +79,10 @@ type DashConfig struct {
 	// project_rules projects are used. Local bookmarks' ticket prefixes
 	// always count.
 	TicketPrefixes []string `mapstructure:"ticket_prefixes"`
+	// Filters maps saved filter names to query expressions (gh-100); an
+	// entry overrides a built-in of the same name. Names are read
+	// lowercased, and may not contain ".".
+	Filters map[string]string `mapstructure:"filters"`
 }
 
 // DashPerson is one [[dash.people]] entry.
