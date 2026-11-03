@@ -335,6 +335,7 @@ func TestValidatePeople(t *testing.T) {
 	}{
 		{name: "none"},
 		{name: "valid", people: []DashPerson{{GitHub: "alice"}, {GitHub: "bob-2", Jira: "currentUser()"}}},
+		{name: "managed user", people: []DashPerson{{GitHub: "mona_octo"}}},
 		{name: "missing login", people: []DashPerson{{GitHub: "alice"}, {Jira: "acct-bob"}},
 			want: []string{"entry 2", "no github login", `github = "<login>"`}},
 		{name: "blank login", people: []DashPerson{{GitHub: "  "}}, want: []string{"entry 1", "no github login"}},
@@ -344,7 +345,7 @@ func TestValidatePeople(t *testing.T) {
 		{name: "url", people: []DashPerson{{GitHub: "https://github.com/alice"}}, want: []string{`github = "alice"`}},
 		{name: "spaces", people: []DashPerson{{GitHub: " alice "}}, want: []string{`github = "alice"`}},
 		{name: "unguessable", people: []DashPerson{{GitHub: "al ice"}}, want: []string{`github = "<login>"`}},
-		{name: "too long", people: []DashPerson{{GitHub: strings.Repeat("a", 40)}}, want: []string{"not a GitHub login"}},
+		{name: "too long", people: []DashPerson{{GitHub: strings.Repeat("a", 101)}}, want: []string{"not a GitHub login"}},
 		{name: "duplicate", people: []DashPerson{{GitHub: "alice"}, {GitHub: "bob"}, {GitHub: "Alice"}},
 			want: []string{"entries 1 and 3", "removing one"}},
 	} {

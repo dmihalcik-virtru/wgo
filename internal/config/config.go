@@ -79,9 +79,11 @@ type DashPerson struct {
 	Name string `mapstructure:"name"`
 }
 
-// githubLoginRe matches a GitHub login: letters, digits and hyphens, at most
-// 39 characters. It rejects the usual mistakes: "@alice", an email, a team.
-var githubLoginRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,39}$`)
+// githubLoginRe matches a GitHub login: letters, digits and hyphens, plus the
+// underscore of Enterprise Managed User logins ("mona_octo"). Its length limit
+// is generous because managed logins append a suffix to the 39-character
+// handle. It rejects the usual mistakes: "@alice", an email, a team, a URL.
+var githubLoginRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
 
 // ValidatePeople checks [[dash.people]]: every entry needs a GitHub login,
 // and no login may repeat (logins are case-insensitive). The error names the
