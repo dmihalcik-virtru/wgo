@@ -1204,8 +1204,12 @@ they appear in a PR's title or body, so `SHA-256`, `AES-256`, `P-384` or
 `UTF-8` are never read as tickets. Without it, the projects in `[jira]`
 (`project`, `default_project` and each `project_rules` entry) count. The
 prefixes of tickets in your local bookmark names always count too. A
-ticket in a PR's head branch name counts whatever its prefix, as it does
-for bookmarks. A prefix with anything but letters is an error.
+ticket in the head branch name of a PR your bookmarks lead to counts
+whatever its prefix, as it does for bookmarks; on other PRs it needs a
+known prefix too, once any is known, so GitHub's `patch-1` and
+`revert-45-…` branches are not tickets. A reference to an issue number
+that turns out to be a PR is dropped. A prefix with anything but letters is
+an error.
 
 A `terminal`, `terminal_command` or `resume` value of the right type that
 wgo does not support (an unknown terminal, `terminal = "command"` with no
@@ -1251,12 +1255,17 @@ A PR no bookmark leads to joins the graph at the first of:
 The sets are fetched in the background through GitHub's GraphQL search, 20
 PRs per page, retrying a page that fails with a server error or a timeout
 after 1, 2 and 4 seconds. A set that still fails keeps its last good data,
-marked stale, with the error shown on the `github_inventory` source. GitHub
+marked stale, with the error shown on the `github_inventory` source, and
+is retried after 1, 2, 4… minutes (at most 30), or when GitHub's
+`Retry-After` says. A PR that leaves the open set (it merged or closed)
+stays, marked stale, until the closed-recent set is refetched, which then
+happens at once. GitHub
 search returns at most 1,000 results, so a set with more is marked
 truncated, with a diagnostic. Each set is cached under
 `~/.wgo/cache/inventory/<login>/<set>.json`, and your GitHub login (looked
 up once a day) under `~/.wgo/cache/inventory/identity.json`. Without a
 `GITHUB_TOKEN` or `gh`, nothing is fetched and `github_inventory` says so.
+`wgo dash` checks this when it starts, so restart it after `gh auth login`.
 
 "Since last look" counts a PR only the inventory found as new when, at the
 last look, one of the sets it is in was already known; otherwise it is

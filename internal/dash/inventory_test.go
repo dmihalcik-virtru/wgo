@@ -19,6 +19,7 @@ import (
 
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/inventory"
+	"github.com/virtru/wgo/internal/issuecache"
 	"github.com/virtru/wgo/internal/prcache"
 	"github.com/virtru/wgo/models"
 )
@@ -141,20 +142,177 @@ func TestInventoryMergesIntoBookmarkPR(t *testing.T) {
 	}
 }
 
-// TestInventoryMergeKeepsBookmarkReviewDecision: a decision the inventory
-// lacks never erases the one the bookmark's lookup rolled up.
-func TestInventoryMergeKeepsBookmarkReviewDecision(t *testing.T) {
+// TestInventoryMergeTakesStateFromTheNewerSource: the state and the facts
+// that go with it come from one source, the newer, never a mix.
+func TestInventoryMergeTakesStateFromTheNewerSource(t *testing.T) {
+	t.Run("bookmark newer", func(t *testing.T) {
+		a := inventoryAsm(t)
+		a.ws(asmMain, "TEAM-5-a")
+		old := openPR(12, "alice", "TEAM-5-a")
+		old.ReviewRequests = []github.ReviewRequestFact{{Reviewer: "bob", Kind: ReviewerUser}}
+		old.Reviews = []github.ReviewFact{{Author: "bob", State: ReviewCommented}}
+		old.Mergeable = MergeConflicting
+		seedInventory(t, a.since(), map[string][]github.PRFacts{"bob/review-requested": {old}})
+		if err := prcache.Write(asmOrigin, asmMain, "TEAM-5-a", []models.PRRef{{Number: 12, State: "MERGED", URL: "u",
+			ReviewDecision: ReviewApproved, UpdatedAt: old.UpdatedAt.Add(time.Hour)}}); err != nil {
+			t.Fatal(err)
+		}
+		s, _ := a.build()
+		p := s.Node(prNodeID(asmSlug, 12)).PR
+		if p.State != "merged" || p.ReviewDecision != ReviewApproved {
+			t.Fatalf("state %q decision %q, want the bookmark's", p.State, p.ReviewDecision)
+		}
+		if p.ReviewRequests != nil || p.Reviews != nil || p.CheckDetails != nil || p.Mergeable != "" || !p.ReadyAt.IsZero() {
+			t.Fatalf("facts of the older open copy leaked into the merged PR: %+v", p)
+		}
+		if p.Author != "alice" || p.Additions == nil || !slices.Equal(p.TicketKeys, []string{"TEAM-5"}) {
+			t.Fatalf("stable facts missing: %+v", p)
+		}
+		if !slices.Equal(p.Involvement, []Involvement{{Person: "alice", Role: RoleAuthor}}) {
+			t.Fatalf("involvement %+v: a merged PR awaits nobody's review", p.Involvement)
+		}
+	})
+	t.Run("inventory newer", func(t *testing.T) {
+		a := inventoryAsm(t)
+		a.ws(asmMain, "feat-x")
+		if err := prcache.Write(asmOrigin, asmMain, "feat-x", []models.PRRef{{Number: 12, State: "OPEN", URL: "u",
+			ReviewDecision: ReviewApproved, RequestedReviewers: []string{"carol"}}}); err != nil {
+			t.Fatal(err)
+		}
+		pr := openPR(12, "alice", "feat-x") // the approval was dismissed since
+		pr.ReviewDecision = ""
+		pr.Reviews = []github.ReviewFact{{Author: "bob", State: ReviewDismissed}}
+		seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/open-authored": {pr}})
+		s, _ := a.build()
+		p := s.Node(prNodeID(asmSlug, 12)).PR
+		if p.ReviewDecision != "" || len(p.RequestedReviewers) != 0 || len(p.ReviewRequests) != 0 || len(p.Reviews) != 1 {
+			t.Fatalf("decision %q reviewers %v requests %v reviews %v, want the inventory's", p.ReviewDecision, p.RequestedReviewers, p.ReviewRequests, p.Reviews)
+		}
+		want := []Involvement{{Person: "alice", Role: RoleAuthor}, {Person: "bob", Role: RoleReviewed}}
+		if !slices.Equal(p.Involvement, want) {
+			t.Fatalf("involvement %+v, want %+v", p.Involvement, want)
+		}
+	})
+}
+
+// TestInventoryAuthorIsNotAReviewer: replying to a thread on your own PR is
+// no review of it.
+func TestInventoryAuthorIsNotAReviewer(t *testing.T) {
 	a := inventoryAsm(t)
-	a.ws(asmMain, "feat-x")
-	if err := prcache.Write(asmOrigin, asmMain, "feat-x", []models.PRRef{{Number: 12, State: "OPEN", URL: "u", ReviewDecision: ReviewApproved}}); err != nil {
-		t.Fatal(err)
-	}
-	pr := openPR(12, "alice", "feat-x")
-	pr.ReviewDecision = ""
+	pr := openPR(3, "alice", "x")
+	pr.Reviews = []github.ReviewFact{{Author: "alice", State: ReviewCommented}, {Author: "bob", State: ReviewApproved}}
 	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/open-authored": {pr}})
 	s, _ := a.build()
-	if p := s.Node(prNodeID(asmSlug, 12)).PR; p.ReviewDecision != ReviewApproved || p.Author != "alice" {
-		t.Fatalf("review decision %q author %q", p.ReviewDecision, p.Author)
+	want := []Involvement{{Person: "alice", Role: RoleAuthor}, {Person: "bob", Role: RoleReviewed}}
+	if got := s.Node(prNodeID(asmSlug, 3)).PR.Involvement; !slices.Equal(got, want) {
+		t.Fatalf("involvement %+v, want %+v", got, want)
+	}
+}
+
+// TestInventoryHeadRefFalsePositives: GitHub's own branch names on other
+// people's PRs are no tickets once any prefix is known, and a reference to
+// what the issue cache knows is a PR is no ticket either.
+func TestInventoryHeadRefFalsePositives(t *testing.T) {
+	a := inventoryAsm(t)
+	a.c.cfg.TicketPrefixes = []string{"TEAM"}
+	a.ws(asmMain, "WGO-5-mine")
+	if err := prcache.Write(asmOrigin, asmMain, "WGO-5-mine", []models.PRRef{{Number: 1, State: "OPEN", URL: "u"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := issuecache.Write(issuecache.Key{Owner: "acme", Repo: "widgets", Number: 45}, issuecache.Info{Number: 45, State: "closed", IsPR: true}); err != nil {
+		t.Fatal(err)
+	}
+	revert := openPR(2, "carol", "revert-45-fix")
+	revert.Body = "Reverts acme/widgets#45"
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/review-requested": {
+		openPR(1, "alice", "WGO-5-mine"), revert, openPR(3, "carol", "patch-1"), openPR(4, "carol", "sha-256-speedup"),
+		openPR(5, "carol", "TEAM-7-real"), openPR(6, "carol", "gh-9-issue"),
+	}})
+	s, _ := a.build()
+	for n, want := range map[int][]string{1: {"WGO-5"}, 2: {}, 3: {}, 4: {}, 5: {"TEAM-7"}, 6: {"gh-9"}} {
+		if got := s.Node(prNodeID(asmSlug, n)).PR.TicketKeys; !slices.Equal(got, want) {
+			t.Errorf("#%d ticket keys %v, want %v", n, got, want)
+		}
+	}
+	for _, id := range []string{jiraTicketID("REVERT-45"), jiraTicketID("PATCH-1"), jiraTicketID("SHA-256"), githubTicketID(asmSlug, 45)} {
+		if s.Node(id) != nil {
+			t.Errorf("false ticket %s", id)
+		}
+	}
+
+	// Knowing no prefix at all, branch tickets count as for bookmarks.
+	b := inventoryAsm(t)
+	seedInventory(t, b.since(), map[string][]github.PRFacts{"alice/review-requested": {openPR(3, "carol", "OPS-3-x")}})
+	s, _ = b.build()
+	if got := s.Node(prNodeID(asmSlug, 3)).PR.TicketKeys; !slices.Equal(got, []string{"OPS-3"}) {
+		t.Errorf("ticket keys %v with no known prefix", got)
+	}
+}
+
+// TestInventoryMergedNeedsClosedRecent: merged counts are omitted, not
+// zeros, while someone's closed-recent set is missing or too short.
+func TestInventoryMergedNeedsClosedRecent(t *testing.T) {
+	a := inventoryAsm(t)
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/closed-recent": {}})
+	if s, _ := a.build(); s.Counts.Merged != nil {
+		t.Fatalf("merged %v while bob's closed-recent has no data", s.Counts.Merged)
+	}
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"bob/closed-recent": {}})
+	if s, _ := a.build(); s.Counts.Merged == nil {
+		t.Fatal("merged omitted though every closed-recent set is known")
+	}
+	// bob's set covering only today does not cover the 3-day window.
+	seedInventory(t, time.Now(), map[string][]github.PRFacts{"bob/closed-recent": {}})
+	if s, _ := a.build(); s.Counts.Merged != nil {
+		t.Fatalf("merged %v from a closed-recent set shorter than the window", s.Counts.Merged)
+	}
+	// Nobody followed: nobody's merges are known.
+	a.c.cfg.People, a.c.cfg.Identity = nil, nil
+	if s, _ := a.build(); s.Counts.Merged != nil {
+		t.Fatalf("merged %v with nobody followed", s.Counts.Merged)
+	}
+}
+
+// TestInventoryPRMergedBetweenRefreshes: a PR that leaves open-authored
+// stays in the snapshot, stale, and closed-recent is due at once, until
+// closed-recent shows it merged.
+func TestInventoryPRMergedBetweenRefreshes(t *testing.T) {
+	a := inventoryAsm(t)
+	a.c.cfg.People = []Person{{Login: "alice"}}
+	since := a.since()
+	seedInventory(t, since, map[string][]github.PRFacts{
+		"alice/open-authored": {openPR(1, "alice", "a"), openPR(2, "alice", "b")},
+		"alice/closed-recent": {},
+	})
+	time.Sleep(10 * time.Millisecond) // the drop is after closed-recent's fetch
+	seedInventory(t, since, map[string][]github.PRFacts{"alice/open-authored": {openPR(1, "alice", "a")}})
+	a.ls.at = time.Now()
+	s, jobs := a.build()
+	n := s.Node(prNodeID(asmSlug, 2))
+	if n == nil || n.PR.Freshness != Stale || n.PR.State != "open" {
+		t.Fatalf("the PR that left open-authored: %+v", n)
+	}
+	part := s.Sources[SourceGitHubInventory].Parts[2]
+	if part.Name != "alice/closed-recent" || part.State != Stale {
+		t.Fatalf("closed-recent part %+v, want stale (due)", part)
+	}
+	if !slices.ContainsFunc(jobs, func(j Job) bool { return j.Kind == JobInventory && j.Inventory.Set == inventory.ClosedRecent }) {
+		t.Fatalf("closed-recent not queued: %v", jobs)
+	}
+	if s.Counts.Merged != nil {
+		t.Fatalf("merged %v while closed-recent lags", s.Counts.Merged)
+	}
+
+	merged := openPR(2, "alice", "b")
+	merged.State, merged.MergedAt, merged.ClosedAt = "merged", time.Now(), time.Now()
+	seedInventory(t, since, map[string][]github.PRFacts{"alice/closed-recent": {merged}})
+	a.ls.at = time.Now()
+	s, _ = a.build()
+	if p := s.Node(prNodeID(asmSlug, 2)).PR; p.State != "merged" || p.Freshness != Fresh {
+		t.Fatalf("after closed-recent: %+v", p)
+	}
+	if s.Counts.Merged == nil {
+		t.Fatal("merged still omitted once closed-recent caught up")
 	}
 }
 
@@ -884,6 +1042,29 @@ func TestDeltaTreatsInventoryPRs(t *testing.T) {
 	// It disappears while its sets are fresh: it is simply gone.
 	if d := computeDelta(b, snap([]SourcePart{part("alice/open-authored", Fresh), part("alice/closed-recent", Fresh)})); len(d.PRs) != 0 {
 		t.Fatalf("delta %+v, want nothing", d.PRs)
+	}
+}
+
+// TestRefresherHonoursInventoryBackoff: a set in its failure back-off is
+// not fetched in the background, but an explicit refresh still fetches it.
+func TestRefresherHonoursInventoryBackoff(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	k := inventory.Key{Login: "alice", Set: inventory.OpenAuthored}
+	if _, err := inventory.Refresh(context.Background(), &fakeInventory{err: errors.New("HTTP 502")}, k, time.Time{}); err == nil {
+		t.Fatal("want a failure")
+	}
+	f := &fakeInventory{login: "alice"}
+	r := NewRefresher(Fetchers{Inventory: f}, RefresherOptions{})
+	res := <-r.Submit([]Job{{Kind: JobInventory, Inventory: k}})
+	r.Close()
+	if f.calls.Load() != 0 || len(res.Failed) != 0 {
+		t.Fatalf("fetched during back-off: %d calls, %+v", f.calls.Load(), res)
+	}
+	r = NewRefresher(Fetchers{Inventory: f}, RefresherOptions{IgnoreLeases: true})
+	<-r.Submit([]Job{{Kind: JobInventory, Inventory: k}})
+	r.Close()
+	if f.calls.Load() == 0 {
+		t.Fatal("an explicit refresh did not fetch")
 	}
 }
 

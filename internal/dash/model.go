@@ -405,7 +405,8 @@ type Counts struct {
 	// bookmark whose lookup is unknown or failed; or a workspace jj could not
 	// read. Merged is omitted entirely unless People includes the
 	// authenticated user (Me) and every person's closed-recent inventory set
-	// is fresh and untruncated.
+	// is fresh, untruncated, covers the window and is no older than their
+	// open-authored set: otherwise their merges could belong to any effort.
 	Merged map[string][]int `json:"merged,omitzero"`
 }
 

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/inventory"
 	"github.com/virtru/wgo/internal/prcache"
 	"github.com/virtru/wgo/models"
 )
@@ -81,7 +83,8 @@ func TestPRFactsOmittedWhenUnknown(t *testing.T) {
 // TestAssembleAnalysisWiring covers what assemble does for the analysis
 // model itself: bookmark PRs say where they came from, repo: and sprint:
 // keys make group efforts, the people list joins config with the cached
-// identity, and merged counts are absent while their coverage is unknown.
+// identity, and merged counts are present once every person's closed-recent
+// set is known and absent without the authenticated user.
 func TestAssembleAnalysisWiring(t *testing.T) {
 	a := newAsm(t)
 	a.c.cfg.People = []Person{{Login: "bob", Name: "Bob"}}
@@ -93,6 +96,8 @@ func TestAssembleAnalysisWiring(t *testing.T) {
 	}
 	a.session("s-repo", "active", nil, "", "repo:acme/widgets")
 	a.session("s-sprint", "active", nil, "", "sprint:7")
+	// Merges are known only once everyone's closed-recent set is.
+	seedInventory(t, inventory.ClosedSince(a.ls.at, a.ls.days), map[string][]github.PRFacts{"alice/closed-recent": {}, "bob/closed-recent": {}})
 	s, _ := a.build()
 
 	pr := s.Node(prNodeID(asmSlug, 4))
@@ -107,11 +112,9 @@ func TestAssembleAnalysisWiring(t *testing.T) {
 		if n == nil || n.Effort.Group != want[0] || n.Label != want[1] {
 			t.Errorf("effort %s: %+v, want group %s label %q", id, n, want[0], want[1])
 		}
-	}
-	// Nothing reports the inventory's closed-recent coverage yet, so no
-	// merged count is known, and none is reported as zero.
-	if s.Counts.Merged != nil {
-		t.Errorf("merged counts without inventory coverage: %v", s.Counts.Merged)
+		if len(s.Counts.Merged[id]) != s.Days {
+			t.Errorf("effort %s has no merged series: %v", id, s.Counts.Merged)
+		}
 	}
 	want := []Person{{Login: "alice", Jira: JiraCurrentUser, Me: true}, {Login: "bob", Name: "Bob"}}
 	if !slices.Equal(s.People, want) {
@@ -124,6 +127,11 @@ func TestAssembleAnalysisWiring(t *testing.T) {
 	s, _ = a.build()
 	if want := []Person{{Login: "carol"}}; !slices.Equal(s.People, want) {
 		t.Errorf("people %+v, want %+v", s.People, want)
+	}
+	// Without me, my own merges were never searched: no merged count is
+	// known, and none is reported as zero.
+	if s.Counts.Merged != nil {
+		t.Errorf("merged counts without me: %v", s.Counts.Merged)
 	}
 }
 
