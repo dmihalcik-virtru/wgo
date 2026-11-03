@@ -110,6 +110,8 @@ func fixtureDash(t testing.TB) *Dash {
 // TestServeFixture serves the fixture for manual and headless-browser checks
 // when WGO_DASH_FIXTURE_ADDR is set (for example 127.0.0.1:8799); otherwise
 // it is skipped. It never runs in CI and needs no browser itself.
+// WGO_DASH_FIXTURE=analysis serves the analysis fixture instead, and
+// WGO_DASH_FIXTURE=scaled that fixture scaled to 2,000 nodes.
 func TestServeFixture(t *testing.T) {
 	addr := os.Getenv("WGO_DASH_FIXTURE_ADDR")
 	if addr == "" {
@@ -126,7 +128,17 @@ func TestServeFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("serving the fixture on http://%s/", addr)
-	h, err := NewHandler(HandlerOptions{Source: fixtureDash(t), Host: addr, Reviews: ix})
+	d := fixtureDash(t)
+	switch os.Getenv("WGO_DASH_FIXTURE") {
+	case "analysis":
+		err = d.Publish(loadAnalysisFixture(t))
+	case "scaled":
+		err = d.Publish(scaleAnalysisFixture(t, loadAnalysisFixture(t), 2000))
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHandler(HandlerOptions{Source: d, Host: addr, Reviews: ix})
 	if err != nil {
 		t.Fatal(err)
 	}

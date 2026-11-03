@@ -1,0 +1,1172 @@
+{
+  "schema": 1,
+  "generation": 42,
+  "generated_at": "2026-10-30T16:00:00Z",
+  "days": 14,
+  "sources": {
+    "agents": {"state": "fresh", "fresh": 1},
+    "github_inventory": {
+      "state": "stale",
+      "fresh": 5,
+      "stale": 1,
+      "oldest_fetch": "2026-10-30T14:40:00Z",
+      "parts": [
+        {"name": "alice/open-authored", "state": "fresh", "fetched_at": "2026-10-30T15:57:00Z"},
+        {"name": "alice/review-requested", "state": "fresh", "fetched_at": "2026-10-30T15:57:00Z"},
+        {"name": "alice/closed-recent", "state": "stale", "fetched_at": "2026-10-30T14:40:00Z", "error": "GitHub GraphQL search: HTTP 502 on page 2 after 3 retries"},
+        {"name": "bob/open-authored", "state": "fresh", "fetched_at": "2026-10-30T15:56:00Z"},
+        {"name": "bob/review-requested", "state": "fresh", "fetched_at": "2026-10-30T15:56:00Z"},
+        {"name": "bob/closed-recent", "state": "fresh", "fetched_at": "2026-10-30T15:30:00Z"}
+      ]
+    },
+    "github_issues": {"state": "fresh", "fresh": 1, "oldest_fetch": "2026-10-30T15:50:00Z"},
+    "github_prs": {"state": "unknown", "fresh": 3, "unknown": 1, "oldest_fetch": "2026-10-30T15:58:00Z"},
+    "jira": {"state": "fresh", "fresh": 7},
+    "jira_sprints": {
+      "state": "fresh",
+      "fresh": 1,
+      "oldest_fetch": "2026-10-30T15:52:00Z",
+      "parts": [
+        {"name": "board 42", "state": "fresh", "fetched_at": "2026-10-30T15:52:00Z"}
+      ]
+    },
+    "jj": {"state": "fresh", "fresh": 5},
+    "plan": {"state": "fresh"}
+  },
+  "nodes": [
+    {
+      "id": "effort:api-auth",
+      "kind": "effort",
+      "label": "API auth",
+      "effort": {"key": "api-auth", "group": "effort", "description": "Token refresh for the API and the web app", "source": "plan"}
+    },
+    {
+      "id": "effort:repo:acme/api",
+      "kind": "effort",
+      "label": "acme/api",
+      "effort": {"key": "repo:acme/api", "group": "repo"}
+    },
+    {
+      "id": "effort:repo:acme/infra",
+      "kind": "effort",
+      "label": "acme/infra",
+      "effort": {"key": "repo:acme/infra", "group": "repo"}
+    },
+    {
+      "id": "effort:repo:acme/web",
+      "kind": "effort",
+      "label": "acme/web",
+      "effort": {"key": "repo:acme/web", "group": "repo"}
+    },
+    {
+      "id": "effort:sprint:1234",
+      "kind": "effort",
+      "label": "Sprint 12",
+      "effort": {"key": "sprint:1234", "group": "sprint"}
+    },
+    {
+      "id": "effort:ticket-team-102",
+      "kind": "effort",
+      "label": "TEAM-102",
+      "effort": {"key": "ticket-team-102", "group": "ticket"}
+    },
+    {
+      "id": "effort:ungrouped",
+      "kind": "effort",
+      "label": "Ungrouped",
+      "effort": {"key": "ungrouped", "group": "ungrouped"}
+    },
+    {
+      "id": "ws-122ed0d0dfd64e11",
+      "kind": "workspace",
+      "label": "api/TEAM-102-rate-limits",
+      "workspace": {"slug": "TEAM-102-rate-limits", "repo": "api", "repo_slug": "acme/api", "path": "/src/worktrees/api/TEAM-102-rate-limits", "main_clone": "/src/acme/api", "bookmark": "TEAM-102-rate-limits", "change_id": "wrtyqzpo", "description": "feat(api): rate-limit token endpoints", "changes": ["wrtyqzpo", "sxnmqlro"], "last_activity": "2026-10-26T17:45:00Z", "effort_id": "effort:ticket-team-102"}
+    },
+    {
+      "id": "ws-1b66b3cb5194dae1",
+      "kind": "workspace",
+      "label": "api/TEAM-101-token-refresh",
+      "workspace": {"slug": "TEAM-101-token-refresh", "repo": "api", "repo_slug": "acme/api", "path": "/src/worktrees/api/TEAM-101-token-refresh", "main_clone": "/src/acme/api", "bookmark": "TEAM-101-token-refresh", "change_id": "kxqnzmyo", "description": "feat(auth): refresh tokens before expiry", "changes": ["kxqnzmyo", "vtlrwpus", "mqzoxkyn", "pnsrlwqt"], "last_activity": "2026-10-30T15:20:00Z", "effort_id": "effort:api-auth"}
+    },
+    {
+      "id": "ws-79f264e6d279fe14",
+      "kind": "workspace",
+      "label": "infra",
+      "workspace": {"slug": "infra", "repo": "infra", "repo_slug": "acme/infra", "path": "/src/acme/infra", "main_clone": "/src/acme/infra", "is_main": true, "change_id": "zzqrolmn", "last_activity": "2026-10-29T12:00:00Z", "effort_id": "effort:ungrouped"}
+    },
+    {
+      "id": "ws-9b20119c413d7eb9",
+      "kind": "workspace",
+      "label": "web/cache-headers",
+      "workspace": {"slug": "cache-headers", "repo": "web", "repo_slug": "acme/web", "path": "/src/worktrees/web/cache-headers", "main_clone": "/src/acme/web", "bookmark": "cache-headers", "change_id": "qmpzlrvo", "description": "Send cache headers from the CDN", "changes": ["qmpzlrvo"], "last_activity": "2026-10-27T11:40:00Z", "effort_id": "effort:ungrouped"}
+    },
+    {
+      "id": "ws-fa3d0a1f5bf5a843",
+      "kind": "workspace",
+      "label": "infra/deploy-cache",
+      "workspace": {"slug": "deploy-cache", "repo": "infra", "repo_slug": "acme/infra", "path": "/src/worktrees/infra/deploy-cache", "main_clone": "/src/acme/infra", "bookmark": "deploy-cache", "change_id": "ylmkqoxz", "description": "ci: cache deploy artifacts", "changes": ["ylmkqoxz"], "last_activity": "2026-10-30T09:50:00Z", "effort_id": "effort:ungrouped"}
+    },
+    {
+      "id": "bm-0109cf0866f6f95a",
+      "kind": "bookmark",
+      "label": "deploy-cache",
+      "bookmark": {"name": "deploy-cache", "repo": "infra", "pr_lookup": "unknown", "pr_count": 0}
+    },
+    {
+      "id": "bm-1ae07f1c828c8ef6",
+      "kind": "bookmark",
+      "label": "TEAM-102-rate-limits",
+      "bookmark": {"name": "TEAM-102-rate-limits", "repo": "api", "pr_lookup": "fresh", "pr_fetched_at": "2026-10-30T15:58:00Z", "pr_count": 0}
+    },
+    {
+      "id": "bm-693baec2f6cb2b45",
+      "kind": "bookmark",
+      "label": "cache-headers",
+      "bookmark": {"name": "cache-headers", "repo": "web", "pr_lookup": "fresh", "pr_fetched_at": "2026-10-30T15:59:00Z", "pr_count": 1}
+    },
+    {
+      "id": "bm-769f801ac676f9b6",
+      "kind": "bookmark",
+      "label": "TEAM-101-token-refresh",
+      "bookmark": {"name": "TEAM-101-token-refresh", "repo": "api", "pr_lookup": "fresh", "pr_fetched_at": "2026-10-30T15:58:00Z", "pr_count": 1}
+    },
+    {
+      "id": "pr:acme/api#101",
+      "kind": "pr",
+      "label": "acme/api#101",
+      "pr": {
+        "number": 101,
+        "repo": "acme/api",
+        "url": "https://github.com/acme/api/pull/101",
+        "title": "Refresh API tokens before expiry",
+        "state": "open",
+        "review_decision": "REVIEW_REQUIRED",
+        "checks": "failure",
+        "requested_reviewers": ["bob"],
+        "reviewers_known": true,
+        "updated_at": "2026-10-29T14:10:00Z",
+        "freshness": "fresh",
+        "bookmark_id": "bm-769f801ac676f9b6",
+        "author": "alice",
+        "created_at": "2026-10-20T09:00:00Z",
+        "ready_at": "2026-10-21T15:30:00Z",
+        "additions": 182,
+        "deletions": 40,
+        "changed_files": 7,
+        "mergeable": "mergeable",
+        "base_ref": "main",
+        "head_ref": "TEAM-101-token-refresh",
+        "review_requests": [
+          {"reviewer": "bob", "kind": "user", "requested_at": "2026-10-26T10:00:00Z"}
+        ],
+        "reviews": [],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100001"},
+          {"name": "unit-tests", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100002"},
+          {"name": "lint", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100003"},
+          {"name": "vendor-hsm-tests", "state": "failure", "url": "https://github.com/acme/api/actions/runs/7100004"}
+        ],
+        "ticket_keys": ["TEAM-101"],
+        "involvement": [
+          {"person": "alice", "role": "author"},
+          {"person": "bob", "role": "review_requested"}
+        ],
+        "sources": ["bookmark", "inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/api#102",
+      "kind": "pr",
+      "label": "acme/api#102",
+      "pr": {
+        "number": 102,
+        "repo": "acme/api",
+        "url": "https://github.com/acme/api/pull/102",
+        "title": "Rate-limit the token endpoints",
+        "state": "open",
+        "review_decision": "CHANGES_REQUESTED",
+        "checks": "failure",
+        "requested_reviewers": ["bob"],
+        "reviewers_known": true,
+        "updated_at": "2026-10-27T09:05:00Z",
+        "freshness": "fresh",
+        "author": "alice",
+        "created_at": "2026-10-22T11:00:00Z",
+        "ready_at": "2026-10-22T11:00:00Z",
+        "additions": 96,
+        "deletions": 12,
+        "changed_files": 4,
+        "mergeable": "mergeable",
+        "base_ref": "main",
+        "head_ref": "TEAM-102-rate-limits-v2",
+        "review_requests": [
+          {"reviewer": "bob", "kind": "user", "requested_at": "2026-10-27T09:00:00Z"}
+        ],
+        "reviews": [
+          {"author": "bob", "state": "CHANGES_REQUESTED", "submitted_at": "2026-10-24T16:20:00Z"}
+        ],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100005"},
+          {"name": "unit-tests", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100006"},
+          {"name": "vendor-hsm-tests", "state": "failure", "url": "https://github.com/acme/api/actions/runs/7100007"}
+        ],
+        "ticket_keys": ["TEAM-102"],
+        "involvement": [
+          {"person": "alice", "role": "author"},
+          {"person": "bob", "role": "review_requested"},
+          {"person": "bob", "role": "reviewed"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/api#103",
+      "kind": "pr",
+      "label": "acme/api#103",
+      "pr": {
+        "number": 103,
+        "repo": "acme/api",
+        "url": "https://github.com/acme/api/pull/103",
+        "title": "Load config from env files",
+        "state": "open",
+        "is_draft": true,
+        "checks": "failure",
+        "reviewers_known": true,
+        "updated_at": "2026-10-28T18:00:00Z",
+        "freshness": "fresh",
+        "author": "alice",
+        "created_at": "2026-10-28T08:00:00Z",
+        "additions": 410,
+        "deletions": 220,
+        "changed_files": 19,
+        "mergeable": "unknown",
+        "base_ref": "main",
+        "head_ref": "config-env-files",
+        "review_requests": [],
+        "reviews": [],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100008"},
+          {"name": "unit-tests", "state": "failure", "url": "https://github.com/acme/api/actions/runs/7100009"},
+          {"name": "lint", "state": "pending", "url": "https://github.com/acme/api/actions/runs/7100010"},
+          {"name": "vendor-hsm-tests", "state": "failure", "url": "https://github.com/acme/api/actions/runs/7100011"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "alice", "role": "author"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/api#104",
+      "kind": "pr",
+      "label": "acme/api#104",
+      "pr": {
+        "number": 104,
+        "repo": "acme/api",
+        "url": "https://github.com/acme/api/pull/104",
+        "title": "Paginate the orders endpoint",
+        "state": "open",
+        "review_decision": "REVIEW_REQUIRED",
+        "checks": "failure",
+        "requested_reviewers": ["team:web"],
+        "reviewers_known": true,
+        "updated_at": "2026-10-25T13:00:00Z",
+        "freshness": "fresh",
+        "author": "carol",
+        "created_at": "2026-10-24T10:00:00Z",
+        "ready_at": "2026-10-24T10:00:00Z",
+        "additions": 64,
+        "deletions": 8,
+        "changed_files": 3,
+        "mergeable": "mergeable",
+        "base_ref": "main",
+        "head_ref": "carol/orders-pagination",
+        "review_requests": [
+          {"reviewer": "team:web", "kind": "team", "requested_at": "2026-10-25T12:55:00Z"}
+        ],
+        "reviews": [],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100012"},
+          {"name": "unit-tests", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100013"},
+          {"name": "vendor-hsm-tests", "state": "failure", "url": "https://github.com/acme/api/actions/runs/7100014"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "alice", "role": "review_requested"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/api#105",
+      "kind": "pr",
+      "label": "acme/api#105",
+      "pr": {
+        "number": 105,
+        "repo": "acme/api",
+        "url": "https://github.com/acme/api/pull/105",
+        "title": "Upgrade the HTTP router",
+        "state": "open",
+        "review_decision": "REVIEW_REQUIRED",
+        "checks": "success",
+        "requested_reviewers": ["alice"],
+        "reviewers_known": true,
+        "updated_at": "2026-07-20T09:00:00Z",
+        "freshness": "fresh",
+        "author": "carol",
+        "created_at": "2026-06-02T15:00:00Z",
+        "ready_at": "2026-06-02T15:00:00Z",
+        "additions": 1250,
+        "deletions": 980,
+        "changed_files": 64,
+        "mergeable": "conflicting",
+        "base_ref": "main",
+        "head_ref": "carol/router-upgrade",
+        "review_requests": [
+          {"reviewer": "alice", "kind": "user", "requested_at": "2026-06-03T09:00:00Z"}
+        ],
+        "reviews": [
+          {"author": "bob", "state": "DISMISSED", "submitted_at": "2026-06-10T11:00:00Z"}
+        ],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100015"},
+          {"name": "unit-tests", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100016"},
+          {"name": "vendor-hsm-tests", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100017"},
+          {"name": "codecov", "state": "neutral", "url": "https://github.com/acme/api/actions/runs/7100018"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "alice", "role": "review_requested"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/api#106",
+      "kind": "pr",
+      "label": "acme/api#106",
+      "pr": {
+        "number": 106,
+        "repo": "acme/api",
+        "url": "https://github.com/acme/api/pull/106",
+        "title": "Log request IDs in access logs",
+        "state": "open",
+        "review_decision": "APPROVED",
+        "checks": "failure",
+        "reviewers_known": true,
+        "updated_at": "2026-10-28T12:00:00Z",
+        "freshness": "fresh",
+        "author": "bob",
+        "created_at": "2026-10-23T09:30:00Z",
+        "ready_at": "2026-10-23T09:30:00Z",
+        "additions": 38,
+        "deletions": 5,
+        "changed_files": 2,
+        "mergeable": "mergeable",
+        "base_ref": "main",
+        "head_ref": "bob/request-id-logs",
+        "review_requests": [],
+        "reviews": [
+          {"author": "alice", "state": "APPROVED", "submitted_at": "2026-10-28T11:45:00Z"}
+        ],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100019"},
+          {"name": "unit-tests", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100020"},
+          {"name": "vendor-hsm-tests", "state": "failure", "url": "https://github.com/acme/api/actions/runs/7100021"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "bob", "role": "author"},
+          {"person": "alice", "role": "reviewed"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/api#107",
+      "kind": "pr",
+      "label": "acme/api#107",
+      "pr": {
+        "number": 107,
+        "repo": "acme/api",
+        "url": "https://github.com/acme/api/pull/107",
+        "title": "Extract the token cache",
+        "state": "merged",
+        "review_decision": "APPROVED",
+        "checks": "success",
+        "reviewers_known": true,
+        "updated_at": "2026-10-28T13:05:00Z",
+        "freshness": "stale",
+        "author": "alice",
+        "created_at": "2026-10-21T10:00:00Z",
+        "merged_at": "2026-10-28T13:00:00Z",
+        "closed_at": "2026-10-28T13:00:00Z",
+        "ready_at": "2026-10-21T10:00:00Z",
+        "additions": 120,
+        "deletions": 60,
+        "changed_files": 5,
+        "base_ref": "main",
+        "head_ref": "TEAM-101-token-cache",
+        "review_requests": [],
+        "reviews": [
+          {"author": "bob", "state": "APPROVED", "submitted_at": "2026-10-27T17:00:00Z"}
+        ],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100022"},
+          {"name": "unit-tests", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100023"},
+          {"name": "vendor-hsm-tests", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100024"}
+        ],
+        "ticket_keys": ["TEAM-101"],
+        "involvement": [
+          {"person": "alice", "role": "author"},
+          {"person": "bob", "role": "reviewed"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/api#108",
+      "kind": "pr",
+      "label": "acme/api#108",
+      "pr": {
+        "number": 108,
+        "repo": "acme/api",
+        "url": "https://github.com/acme/api/pull/108",
+        "title": "Return 404 for unknown tenants",
+        "state": "merged",
+        "review_decision": "APPROVED",
+        "checks": "success",
+        "reviewers_known": true,
+        "updated_at": "2026-10-27T10:00:00Z",
+        "freshness": "stale",
+        "author": "alice",
+        "created_at": "2026-10-15T09:00:00Z",
+        "merged_at": "2026-10-19T15:00:00Z",
+        "closed_at": "2026-10-19T15:00:00Z",
+        "ready_at": "2026-10-16T10:00:00Z",
+        "additions": 45,
+        "deletions": 10,
+        "changed_files": 3,
+        "base_ref": "main",
+        "head_ref": "TEAM-103-tenant-404",
+        "review_requests": [],
+        "reviews": [
+          {"author": "bob", "state": "APPROVED", "submitted_at": "2026-10-19T14:00:00Z"}
+        ],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100025"},
+          {"name": "unit-tests", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100026"}
+        ],
+        "ticket_keys": ["TEAM-103"],
+        "involvement": [
+          {"person": "alice", "role": "author"},
+          {"person": "bob", "role": "reviewed"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/api#109",
+      "kind": "pr",
+      "label": "acme/api#109",
+      "pr": {
+        "number": 109,
+        "repo": "acme/api",
+        "url": "https://github.com/acme/api/pull/109",
+        "title": "Try a faster JSON encoder",
+        "state": "closed",
+        "checks": "success",
+        "reviewers_known": true,
+        "updated_at": "2026-10-21T08:00:00Z",
+        "freshness": "stale",
+        "author": "alice",
+        "created_at": "2026-10-17T10:00:00Z",
+        "closed_at": "2026-10-21T08:00:00Z",
+        "ready_at": "2026-10-17T10:00:00Z",
+        "additions": 300,
+        "deletions": 120,
+        "changed_files": 9,
+        "base_ref": "main",
+        "head_ref": "json-encoder-spike",
+        "review_requests": [],
+        "reviews": [],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100027"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "alice", "role": "author"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/infra#301",
+      "kind": "pr",
+      "label": "acme/infra#301",
+      "pr": {
+        "number": 301,
+        "repo": "acme/infra",
+        "url": "https://github.com/acme/infra/pull/301",
+        "title": "Cache deploy artifacts between stages",
+        "state": "open",
+        "review_decision": "REVIEW_REQUIRED",
+        "checks": "failure",
+        "requested_reviewers": ["bob"],
+        "reviewers_known": true,
+        "updated_at": "2026-10-30T10:00:00Z",
+        "freshness": "fresh",
+        "bookmark_id": "bm-0109cf0866f6f95a",
+        "author": "alice",
+        "created_at": "2026-10-29T15:00:00Z",
+        "ready_at": "2026-10-29T15:00:00Z",
+        "additions": 33,
+        "deletions": 7,
+        "changed_files": 2,
+        "mergeable": "mergeable",
+        "base_ref": "main",
+        "head_ref": "deploy-cache",
+        "review_requests": [
+          {"reviewer": "bob", "kind": "user", "requested_at": "2026-10-29T15:01:00Z"}
+        ],
+        "reviews": [],
+        "check_details": [
+          {"name": "terraform-plan", "state": "failure", "url": "https://github.com/acme/infra/actions/runs/7100045"},
+          {"name": "lint", "state": "success", "url": "https://github.com/acme/infra/actions/runs/7100046"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "alice", "role": "author"},
+          {"person": "bob", "role": "review_requested"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/infra#302",
+      "kind": "pr",
+      "label": "acme/infra#302",
+      "pr": {
+        "number": 302,
+        "repo": "acme/infra",
+        "url": "https://github.com/acme/infra/pull/302",
+        "title": "Remove the unused staging bucket",
+        "state": "open",
+        "is_draft": true,
+        "checks": "pending",
+        "reviewers_known": true,
+        "updated_at": "2026-10-30T09:00:00Z",
+        "freshness": "fresh",
+        "author": "bob",
+        "created_at": "2026-10-30T08:30:00Z",
+        "additions": 0,
+        "deletions": 40,
+        "changed_files": 1,
+        "mergeable": "unknown",
+        "base_ref": "main",
+        "head_ref": "bob/rm-staging-bucket",
+        "review_requests": [],
+        "reviews": [],
+        "check_details": [
+          {"name": "terraform-plan", "state": "pending", "url": "https://github.com/acme/infra/actions/runs/7100047"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "bob", "role": "author"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/infra#303",
+      "kind": "pr",
+      "label": "acme/infra#303",
+      "pr": {
+        "number": 303,
+        "repo": "acme/infra",
+        "url": "https://github.com/acme/infra/pull/303",
+        "title": "Pin the provider versions",
+        "state": "merged",
+        "review_decision": "APPROVED",
+        "checks": "success",
+        "reviewers_known": true,
+        "updated_at": "2026-10-29T17:10:00Z",
+        "freshness": "fresh",
+        "author": "bob",
+        "created_at": "2026-10-28T10:00:00Z",
+        "merged_at": "2026-10-29T17:00:00Z",
+        "closed_at": "2026-10-29T17:00:00Z",
+        "ready_at": "2026-10-28T10:00:00Z",
+        "additions": 18,
+        "deletions": 18,
+        "changed_files": 3,
+        "base_ref": "main",
+        "head_ref": "bob/pin-providers",
+        "review_requests": [],
+        "reviews": [
+          {"author": "alice", "state": "APPROVED", "submitted_at": "2026-10-29T16:00:00Z"}
+        ],
+        "check_details": [
+          {"name": "terraform-plan", "state": "success", "url": "https://github.com/acme/infra/actions/runs/7100048"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "bob", "role": "author"},
+          {"person": "alice", "role": "reviewed"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/web#201",
+      "kind": "pr",
+      "label": "acme/web#201",
+      "pr": {
+        "number": 201,
+        "repo": "acme/web",
+        "url": "https://github.com/acme/web/pull/201",
+        "title": "Show token expiry in the session panel",
+        "state": "open",
+        "review_decision": "REVIEW_REQUIRED",
+        "checks": "success",
+        "reviewers_known": true,
+        "updated_at": "2026-10-29T09:00:00Z",
+        "freshness": "fresh",
+        "author": "alice",
+        "created_at": "2026-10-27T15:00:00Z",
+        "ready_at": "2026-10-28T09:00:00Z",
+        "additions": 75,
+        "deletions": 14,
+        "changed_files": 4,
+        "mergeable": "mergeable",
+        "base_ref": "main",
+        "head_ref": "TEAM-101-expiry-ui",
+        "review_requests": [],
+        "reviews": [],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100028"},
+          {"name": "e2e", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100029"},
+          {"name": "vendor-hsm-tests", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100030"},
+          {"name": "docs-preview", "state": "skipped", "url": "https://github.com/acme/web/actions/runs/7100031"}
+        ],
+        "ticket_keys": ["TEAM-101"],
+        "involvement": [
+          {"person": "alice", "role": "author"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/web#202",
+      "kind": "pr",
+      "label": "acme/web#202",
+      "pr": {
+        "number": 202,
+        "repo": "acme/web",
+        "url": "https://github.com/acme/web/pull/202",
+        "title": "Cache static assets for a day",
+        "state": "open",
+        "review_decision": "REVIEW_REQUIRED",
+        "checks": "pending",
+        "requested_reviewers": ["alice", "team:web"],
+        "reviewers_known": true,
+        "updated_at": "2026-10-29T16:30:00Z",
+        "freshness": "fresh",
+        "author": "bob",
+        "created_at": "2026-10-26T08:00:00Z",
+        "ready_at": "2026-10-26T12:00:00Z",
+        "additions": 22,
+        "deletions": 3,
+        "changed_files": 2,
+        "mergeable": "mergeable",
+        "base_ref": "main",
+        "head_ref": "bob/asset-cache",
+        "review_requests": [
+          {"reviewer": "alice", "kind": "user", "requested_at": "2026-10-26T12:05:00Z"},
+          {"reviewer": "team:web", "kind": "team", "requested_at": "2026-10-26T12:05:00Z"}
+        ],
+        "reviews": [
+          {"author": "carol", "state": "COMMENTED", "submitted_at": "2026-10-27T10:00:00Z"}
+        ],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100032"},
+          {"name": "e2e", "state": "pending", "url": "https://github.com/acme/web/actions/runs/7100033"},
+          {"name": "lint", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100034"},
+          {"name": "vendor-hsm-tests", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100035"}
+        ],
+        "checks_truncated": true,
+        "ticket_keys": ["gh-57"],
+        "involvement": [
+          {"person": "bob", "role": "author"},
+          {"person": "alice", "role": "review_requested"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/web#203",
+      "kind": "pr",
+      "label": "acme/web#203",
+      "pr": {
+        "number": 203,
+        "repo": "acme/web",
+        "url": "https://github.com/acme/web/pull/203",
+        "title": "Translate the settings page",
+        "state": "open",
+        "review_decision": "REVIEW_REQUIRED",
+        "checks": "failure",
+        "requested_reviewers": ["bob"],
+        "reviewers_known": true,
+        "updated_at": "2026-10-29T11:00:00Z",
+        "freshness": "fresh",
+        "author": "carol",
+        "created_at": "2026-10-28T09:00:00Z",
+        "ready_at": "2026-10-28T09:00:00Z",
+        "additions": 140,
+        "deletions": 2,
+        "changed_files": 6,
+        "mergeable": "unknown",
+        "base_ref": "main",
+        "head_ref": "carol/settings-i18n",
+        "review_requests": [
+          {"reviewer": "bob", "kind": "user"}
+        ],
+        "reviews": [],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100036"},
+          {"name": "e2e", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100037"},
+          {"name": "vendor-hsm-tests", "state": "failure", "url": "https://github.com/acme/web/actions/runs/7100038"}
+        ],
+        "ticket_keys": ["TEAM-108"],
+        "involvement": [
+          {"person": "bob", "role": "review_requested"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/web#204",
+      "kind": "pr",
+      "label": "acme/web#204",
+      "pr": {
+        "number": 204,
+        "repo": "acme/web",
+        "url": "https://github.com/acme/web/pull/204",
+        "title": "Fix the logout redirect",
+        "state": "merged",
+        "review_decision": "APPROVED",
+        "checks": "success",
+        "reviewers_known": true,
+        "updated_at": "2026-10-20T11:30:00Z",
+        "freshness": "stale",
+        "author": "alice",
+        "created_at": "2026-10-19T09:00:00Z",
+        "merged_at": "2026-10-20T11:00:00Z",
+        "closed_at": "2026-10-20T11:00:00Z",
+        "ready_at": "2026-10-19T09:00:00Z",
+        "additions": 12,
+        "deletions": 4,
+        "changed_files": 1,
+        "base_ref": "main",
+        "head_ref": "logout-redirect",
+        "review_requests": [],
+        "reviews": [
+          {"author": "bob", "state": "APPROVED", "submitted_at": "2026-10-20T10:00:00Z"}
+        ],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100039"},
+          {"name": "e2e", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100040"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "alice", "role": "author"},
+          {"person": "bob", "role": "reviewed"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/web#205",
+      "kind": "pr",
+      "label": "acme/web#205",
+      "pr": {
+        "number": 205,
+        "repo": "acme/web",
+        "url": "https://github.com/acme/web/pull/205",
+        "title": "Lazy-load the charts bundle",
+        "state": "merged",
+        "review_decision": "APPROVED",
+        "checks": "success",
+        "reviewers_known": true,
+        "updated_at": "2026-10-29T08:00:00Z",
+        "freshness": "stale",
+        "author": "alice",
+        "created_at": "2026-10-20T14:00:00Z",
+        "merged_at": "2026-10-22T14:00:00Z",
+        "closed_at": "2026-10-22T14:00:00Z",
+        "ready_at": "2026-10-20T14:00:00Z",
+        "additions": 58,
+        "deletions": 31,
+        "changed_files": 5,
+        "base_ref": "main",
+        "head_ref": "lazy-charts",
+        "review_requests": [],
+        "reviews": [
+          {"author": "bob", "state": "APPROVED", "submitted_at": "2026-10-22T13:00:00Z"}
+        ],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100041"},
+          {"name": "e2e", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100042"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "alice", "role": "author"},
+          {"person": "bob", "role": "reviewed"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/web#206",
+      "kind": "pr",
+      "label": "acme/web#206",
+      "pr": {
+        "number": 206,
+        "repo": "acme/web",
+        "url": "https://github.com/acme/web/pull/206",
+        "title": "Drop the legacy theme",
+        "state": "merged",
+        "review_decision": "APPROVED",
+        "checks": "success",
+        "reviewers_known": true,
+        "updated_at": "2026-10-06T10:30:00Z",
+        "freshness": "fresh",
+        "author": "bob",
+        "created_at": "2026-10-01T09:00:00Z",
+        "merged_at": "2026-10-06T10:00:00Z",
+        "closed_at": "2026-10-06T10:00:00Z",
+        "ready_at": "2026-10-01T09:00:00Z",
+        "additions": 5,
+        "deletions": 400,
+        "changed_files": 22,
+        "base_ref": "main",
+        "head_ref": "bob/drop-legacy-theme",
+        "review_requests": [],
+        "reviews": [
+          {"author": "alice", "state": "APPROVED", "submitted_at": "2026-10-05T16:00:00Z"}
+        ],
+        "check_details": [
+          {"name": "build", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100043"},
+          {"name": "e2e", "state": "success", "url": "https://github.com/acme/web/actions/runs/7100044"}
+        ],
+        "ticket_keys": [],
+        "involvement": [
+          {"person": "bob", "role": "author"},
+          {"person": "alice", "role": "reviewed"}
+        ],
+        "sources": ["inventory"]
+      }
+    },
+    {
+      "id": "pr:acme/web#207",
+      "kind": "pr",
+      "label": "acme/web#207",
+      "pr": {"number": 207, "repo": "acme/web", "url": "https://github.com/acme/web/pull/207", "title": "Send cache headers from the CDN", "state": "open", "review_decision": "REVIEW_REQUIRED", "checks": "success", "reviewers_known": true, "updated_at": "2026-10-27T12:00:00Z", "freshness": "fresh", "bookmark_id": "bm-693baec2f6cb2b45", "sources": ["bookmark"]}
+    },
+    {
+      "id": "ticket:gh:acme/web#57",
+      "kind": "ticket",
+      "label": "acme/web#57",
+      "ticket": {"key": "gh-57", "system": "github", "status": "open", "title": "Static assets are downloaded on every visit", "url": "https://github.com/acme/web/issues/57", "freshness": "fresh", "fetched_at": "2026-10-30T15:50:00Z"}
+    },
+    {
+      "id": "ticket:jira:TEAM-101",
+      "kind": "ticket",
+      "label": "TEAM-101",
+      "ticket": {
+        "key": "TEAM-101",
+        "system": "jira",
+        "status": "In Progress",
+        "title": "Refresh API tokens before they expire",
+        "url": "https://example.atlassian.net/browse/TEAM-101",
+        "assignee": "Alice",
+        "freshness": "fresh",
+        "status_category": "in_progress",
+        "type": "Story",
+        "priority": "High",
+        "sprints": [
+          {"id": 1230, "name": "Sprint 11", "state": "closed"},
+          {"id": 1234, "name": "Sprint 12", "state": "active"}
+        ],
+        "story_points": 5,
+        "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
+        "team": "Platform",
+        "components": ["api", "web"],
+        "labels": ["backend"],
+        "created_at": "2026-10-01T09:00:00Z",
+        "updated_at": "2026-10-29T14:00:00Z",
+        "assignee_id": "acct-alice"
+      }
+    },
+    {
+      "id": "ticket:jira:TEAM-102",
+      "kind": "ticket",
+      "label": "TEAM-102",
+      "ticket": {
+        "key": "TEAM-102",
+        "system": "jira",
+        "status": "Done",
+        "title": "Rate-limit the token endpoints",
+        "url": "https://example.atlassian.net/browse/TEAM-102",
+        "assignee": "Alice",
+        "freshness": "fresh",
+        "status_category": "done",
+        "type": "Story",
+        "priority": "Medium",
+        "sprints": [
+          {"id": 1234, "name": "Sprint 12", "state": "active"}
+        ],
+        "story_points": 3,
+        "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
+        "team": "Platform",
+        "components": ["api"],
+        "labels": [],
+        "resolution": "Done",
+        "resolved_at": "2026-10-28T10:00:00Z",
+        "created_at": "2026-10-02T09:00:00Z",
+        "updated_at": "2026-10-28T10:00:00Z",
+        "assignee_id": "acct-alice"
+      }
+    },
+    {
+      "id": "ticket:jira:TEAM-103",
+      "kind": "ticket",
+      "label": "TEAM-103",
+      "ticket": {
+        "key": "TEAM-103",
+        "system": "jira",
+        "status": "In Progress",
+        "title": "Return 404 for unknown tenants",
+        "url": "https://example.atlassian.net/browse/TEAM-103",
+        "assignee": "Alice",
+        "freshness": "fresh",
+        "status_category": "in_progress",
+        "type": "Bug",
+        "priority": "High",
+        "sprints": [
+          {"id": 1234, "name": "Sprint 12", "state": "active"}
+        ],
+        "story_points": 2,
+        "team": "Platform",
+        "components": ["api"],
+        "labels": [],
+        "created_at": "2026-10-14T09:00:00Z",
+        "updated_at": "2026-10-19T16:00:00Z",
+        "assignee_id": "acct-alice"
+      }
+    },
+    {
+      "id": "ticket:jira:TEAM-104",
+      "kind": "ticket",
+      "label": "TEAM-104",
+      "ticket": {
+        "key": "TEAM-104",
+        "system": "jira",
+        "status": "To Do",
+        "title": "Document the token API",
+        "url": "https://example.atlassian.net/browse/TEAM-104",
+        "assignee": "Bob",
+        "freshness": "fresh",
+        "status_category": "todo",
+        "type": "Task",
+        "priority": "Low",
+        "sprints": [
+          {"id": 1234, "name": "Sprint 12", "state": "active"}
+        ],
+        "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
+        "team": "Platform",
+        "components": [],
+        "labels": [],
+        "created_at": "2026-10-15T09:00:00Z",
+        "updated_at": "2026-10-20T09:00:00Z",
+        "assignee_id": "acct-bob"
+      }
+    },
+    {
+      "id": "ticket:jira:TEAM-105",
+      "kind": "ticket",
+      "label": "TEAM-105",
+      "ticket": {
+        "key": "TEAM-105",
+        "system": "jira",
+        "status": "In Progress",
+        "title": "Load-test the token endpoint",
+        "url": "https://example.atlassian.net/browse/TEAM-105",
+        "assignee": "Alice",
+        "freshness": "fresh",
+        "status_category": "in_progress",
+        "type": "Story",
+        "priority": "Medium",
+        "sprints": [
+          {"id": 1234, "name": "Sprint 12", "state": "active"}
+        ],
+        "story_points": 8,
+        "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
+        "team": "Platform",
+        "components": ["api"],
+        "labels": [],
+        "created_at": "2026-10-15T09:30:00Z",
+        "updated_at": "2026-10-23T09:00:00Z",
+        "assignee_id": "acct-alice"
+      }
+    },
+    {
+      "id": "ticket:jira:TEAM-106",
+      "kind": "ticket",
+      "label": "TEAM-106",
+      "ticket": {
+        "key": "TEAM-106",
+        "system": "jira",
+        "status": "To Do",
+        "title": "Add rate-limit dashboards",
+        "url": "https://example.atlassian.net/browse/TEAM-106",
+        "freshness": "fresh",
+        "status_category": "todo",
+        "type": "Task",
+        "priority": "Medium",
+        "sprints": [
+          {"id": 1234, "name": "Sprint 12", "state": "active"}
+        ],
+        "story_points": 1,
+        "team": "Platform",
+        "components": ["api"],
+        "labels": ["observability"],
+        "created_at": "2026-10-16T09:00:00Z",
+        "updated_at": "2026-10-20T09:00:00Z"
+      }
+    },
+    {
+      "id": "ticket:jira:TEAM-108",
+      "kind": "ticket",
+      "label": "TEAM-108",
+      "ticket": {
+        "key": "TEAM-108",
+        "system": "jira",
+        "status": "To Do",
+        "title": "Translate the settings page",
+        "url": "https://example.atlassian.net/browse/TEAM-108",
+        "assignee": "Bob",
+        "freshness": "fresh",
+        "status_category": "todo",
+        "type": "Story",
+        "priority": "Low",
+        "sprints": [
+          {"id": 1235, "name": "Sprint 13", "state": "future"}
+        ],
+        "story_points": 3,
+        "team": "Platform",
+        "components": ["web"],
+        "labels": [],
+        "created_at": "2026-10-27T09:00:00Z",
+        "updated_at": "2026-10-28T09:00:00Z",
+        "assignee_id": "acct-bob"
+      }
+    },
+    {
+      "id": "agent:claude-a1b2c3d4e5f6",
+      "kind": "agent",
+      "label": "claude",
+      "agent": {"session_id": "claude-a1b2c3d4e5f6", "tool": "claude", "status": "working", "liveness": "active", "source": "hook", "branch": "TEAM-101-token-refresh", "path": "/src/worktrees/api/TEAM-101-token-refresh", "workspace_id": "ws-1b66b3cb5194dae1", "start_time": "2026-10-30T13:00:00Z", "last_activity": "2026-10-30T15:55:00Z", "effort_id": "effort:api-auth"}
+    },
+    {
+      "id": "sprint:1234",
+      "kind": "sprint",
+      "label": "Sprint 12",
+      "sprint": {"id": 1234, "name": "Sprint 12", "state": "active", "start": "2026-10-20T08:00:00Z", "end": "2026-11-03T08:00:00Z", "goal": "Ship token refresh and rate limits", "board": 42, "freshness": "fresh", "fetched_at": "2026-10-30T15:52:00Z"}
+    },
+    {
+      "id": "sprint:1235",
+      "kind": "sprint",
+      "label": "Sprint 13",
+      "sprint": {"id": 1235, "name": "Sprint 13", "state": "future", "start": "2026-11-03T08:00:00Z", "end": "2026-11-17T08:00:00Z", "board": 42, "freshness": "fresh", "fetched_at": "2026-10-30T15:52:00Z"}
+    }
+  ],
+  "edges": [
+    {"source": "agent:claude-a1b2c3d4e5f6", "target": "ws-1b66b3cb5194dae1", "kind": "works_in"},
+    {"source": "bm-0109cf0866f6f95a", "target": "pr:acme/infra#301", "kind": "pr"},
+    {"source": "bm-1ae07f1c828c8ef6", "target": "ticket:jira:TEAM-102", "kind": "ticket"},
+    {"source": "bm-693baec2f6cb2b45", "target": "pr:acme/web#207", "kind": "pr"},
+    {"source": "bm-769f801ac676f9b6", "target": "pr:acme/api#101", "kind": "pr"},
+    {"source": "effort:api-auth", "target": "agent:claude-a1b2c3d4e5f6", "kind": "runs"},
+    {"source": "effort:api-auth", "target": "pr:acme/api#107", "kind": "tracks"},
+    {"source": "effort:api-auth", "target": "pr:acme/web#201", "kind": "tracks"},
+    {"source": "effort:api-auth", "target": "ws-1b66b3cb5194dae1", "kind": "contains"},
+    {"source": "effort:repo:acme/api", "target": "pr:acme/api#103", "kind": "tracks"},
+    {"source": "effort:repo:acme/api", "target": "pr:acme/api#104", "kind": "tracks"},
+    {"source": "effort:repo:acme/api", "target": "pr:acme/api#105", "kind": "tracks"},
+    {"source": "effort:repo:acme/api", "target": "pr:acme/api#106", "kind": "tracks"},
+    {"source": "effort:repo:acme/api", "target": "pr:acme/api#108", "kind": "tracks"},
+    {"source": "effort:repo:acme/api", "target": "pr:acme/api#109", "kind": "tracks"},
+    {"source": "effort:repo:acme/infra", "target": "pr:acme/infra#302", "kind": "tracks"},
+    {"source": "effort:repo:acme/infra", "target": "pr:acme/infra#303", "kind": "tracks"},
+    {"source": "effort:repo:acme/web", "target": "pr:acme/web#202", "kind": "tracks"},
+    {"source": "effort:repo:acme/web", "target": "pr:acme/web#203", "kind": "tracks"},
+    {"source": "effort:repo:acme/web", "target": "pr:acme/web#204", "kind": "tracks"},
+    {"source": "effort:repo:acme/web", "target": "pr:acme/web#205", "kind": "tracks"},
+    {"source": "effort:repo:acme/web", "target": "pr:acme/web#206", "kind": "tracks"},
+    {"source": "effort:sprint:1234", "target": "ticket:jira:TEAM-104", "kind": "tracks"},
+    {"source": "effort:sprint:1234", "target": "ticket:jira:TEAM-105", "kind": "tracks"},
+    {"source": "effort:sprint:1234", "target": "ticket:jira:TEAM-106", "kind": "tracks"},
+    {"source": "effort:ticket-team-102", "target": "pr:acme/api#102", "kind": "tracks"},
+    {"source": "effort:ticket-team-102", "target": "ws-122ed0d0dfd64e11", "kind": "contains"},
+    {"source": "effort:ungrouped", "target": "ws-79f264e6d279fe14", "kind": "contains"},
+    {"source": "effort:ungrouped", "target": "ws-9b20119c413d7eb9", "kind": "contains"},
+    {"source": "effort:ungrouped", "target": "ws-fa3d0a1f5bf5a843", "kind": "contains"},
+    {"source": "pr:acme/api#101", "target": "ticket:jira:TEAM-101", "kind": "ticket"},
+    {"source": "pr:acme/api#102", "target": "ticket:jira:TEAM-102", "kind": "ticket"},
+    {"source": "pr:acme/api#107", "target": "ticket:jira:TEAM-101", "kind": "ticket"},
+    {"source": "pr:acme/api#108", "target": "ticket:jira:TEAM-103", "kind": "ticket"},
+    {"source": "pr:acme/web#201", "target": "ticket:jira:TEAM-101", "kind": "ticket"},
+    {"source": "pr:acme/web#202", "target": "ticket:gh:acme/web#57", "kind": "ticket"},
+    {"source": "pr:acme/web#203", "target": "ticket:jira:TEAM-108", "kind": "ticket"},
+    {"source": "ticket:jira:TEAM-101", "target": "sprint:1234", "kind": "in_sprint"},
+    {"source": "ticket:jira:TEAM-102", "target": "sprint:1234", "kind": "in_sprint"},
+    {"source": "ticket:jira:TEAM-103", "target": "sprint:1234", "kind": "in_sprint"},
+    {"source": "ticket:jira:TEAM-104", "target": "sprint:1234", "kind": "in_sprint"},
+    {"source": "ticket:jira:TEAM-105", "target": "sprint:1234", "kind": "in_sprint"},
+    {"source": "ticket:jira:TEAM-106", "target": "sprint:1234", "kind": "in_sprint"},
+    {"source": "ticket:jira:TEAM-108", "target": "sprint:1235", "kind": "in_sprint"},
+    {"source": "ws-122ed0d0dfd64e11", "target": "bm-1ae07f1c828c8ef6", "kind": "on"},
+    {"source": "ws-1b66b3cb5194dae1", "target": "bm-769f801ac676f9b6", "kind": "on"},
+    {"source": "ws-9b20119c413d7eb9", "target": "bm-693baec2f6cb2b45", "kind": "on"},
+    {"source": "ws-fa3d0a1f5bf5a843", "target": "bm-0109cf0866f6f95a", "kind": "on"}
+  ],
+  "counts": {
+    "days": ["2026-10-17", "2026-10-18", "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30"],
+    "activity": {"effort:api-auth": [0, 0, 0, 1, 2, 0, 0, 3, 1, 0, 2, 4, 1, 2], "effort:ticket-team-102": [0, 0, 0, 0, 0, 1, 2, 0, 0, 1, 0, 0, 0, 0], "effort:repo:acme/api": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "effort:repo:acme/web": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "effort:repo:acme/infra": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "effort:sprint:1234": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "effort:ungrouped": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 1]},
+    "pr_states": {
+      "effort:api-auth": {"merged": 1, "open": 2},
+      "effort:ticket-team-102": {"none": 1, "open": 1},
+      "effort:repo:acme/api": {"closed": 1, "draft": 1, "merged": 1, "open": 3},
+      "effort:repo:acme/web": {"merged": 3, "open": 2},
+      "effort:repo:acme/infra": {"draft": 1, "merged": 1},
+      "effort:sprint:1234": {},
+      "effort:ungrouped": {"open": 2}
+    },
+    "agents": {
+      "effort:api-auth": {"active": 1},
+      "effort:ticket-team-102": {},
+      "effort:repo:acme/api": {},
+      "effort:repo:acme/web": {},
+      "effort:repo:acme/infra": {},
+      "effort:sprint:1234": {},
+      "effort:ungrouped": {}
+    },
+    "merged": {"effort:api-auth": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0], "effort:ticket-team-102": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "effort:repo:acme/api": [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "effort:repo:acme/web": [0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], "effort:repo:acme/infra": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], "effort:sprint:1234": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "effort:ungrouped": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}
+  },
+  "people": [
+    {"login": "alice", "jira": "acct-alice", "name": "Alice", "me": true},
+    {"login": "bob", "jira": "acct-bob", "name": "Bob"}
+  ]
+}
