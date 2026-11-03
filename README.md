@@ -1269,6 +1269,63 @@ wgo dash --md --view sprint --sprint 1234 --query 'assignee:Alice'
 `GET /api/extract?view=sprint&sprint=<id>&q=…` serves it too. A sprint ID
 that is not an active sprint fails with the list of active ones.
 
+### PR timelines
+
+The **Timeline** view answers "where has each PR's time gone?": one row per
+PR row of the query, in the table's sort order, on one time axis with a
+"now" line. Each row is split into stretches:
+
+| Stretch | Drawn as | From | Until |
+|---------|----------|------|-------|
+| draft | hatched | opened as a draft, or converted to one | marked ready |
+| waiting | solid grey, listing everyone asked | a review request | that reviewer reviews (or someone reviews on a team's behalf), or the request is removed |
+| changes requested | outlined | a review requesting changes | that reviewer is asked again, or the PR is marked ready again |
+| approved | light | an approval | it is dismissed (the reviewer is then waited on again) |
+| unattended | dashed | ready, with nobody asked and no approval | |
+| merged / closed | a cap at the end | | |
+
+Time spent waiting on you, or on a team you are asked through, is the only
+thing in the accent colour, and is labelled "waiting on you". Reviews are
+ticks: `✓` approved, `✕` changes requested. Drag across the axis to zoom
+(`t=2026-10-20..2026-10-30` in the URL, so Back undoes it); zooming does not
+filter, but **Filter to these days** applies the range as `when:`. Hover a
+stretch, or move along a focused row with the arrow keys, for who, from,
+until and how long; each row also has a sentence for screen readers, such
+as "draft 12d, waiting on bob 30d, approved 2d". Selecting a row shows one
+lane per reviewer. A PR whose history has not been fetched yet shows one
+thin bar from its creation, labelled so.
+
+Histories are read from GitHub's GraphQL timeline (ready, draft, review
+requested and removed, reviews and their dismissals, merged, closed,
+reopened), 100 events per
+page, by the served dashboard's background refresh only (`wgo dash --json
+--refresh` does not wait for them): at most 50 PRs per refresh, open PRs
+first, then those merged or closed in the closed-recent window, one after
+another. A PR's history is fetched again only when GitHub reports a newer
+`updated_at` for it, and is cached under
+`~/.wgo/cache/inventory/timelines.d/<owner>/<repo>/<number>.json`; once a
+day, the histories of PRs the dashboard has not seen for 60 days are
+removed. A failed fetch backs off like an inventory set, three server
+errors or timeouts in a row end that refresh's batch, and a rate limit
+pauses every timeline fetch until GitHub's reset. The `github_timelines` source says how
+many of the PRs followed have a history ("120 of 195 PRs have a cached
+history") and how old the oldest is.
+
+With a history fetched for the PR's current `updated_at`, the [attention
+facts](#attention-facts) use it: `waiting` counts exactly, rather than "or earlier", from the
+earliest request still open, or from the start of the current unattended
+stretch when nobody is asked; and "changes requested, not asked again" is
+read from the events as GitHub blocks on it: until the reviewer is asked
+again and that request is still open, or they approve. Marking the PR ready
+again ends the changes-requested stretch on the timeline, but not this. `waiting_source` is
+`timeline` then, and `estimate` when the request times above decided; the
+deciding reason's evidence says which.
+
+```sh
+wgo dash --json | jq '.snapshot.sources.github_timelines,
+  [.snapshot.nodes[] | select(.kind == "pr" and .pr.timeline) | {id, segments: [.pr.timeline.segments[].state]}]'
+```
+
 ### Actions
 
 Select a workspace to get these buttons:
@@ -1613,63 +1670,6 @@ A fact whose inputs are unknown (GitHub has not computed mergeability yet,
 a PR known only through a bookmark, a ticket cached before its status
 category) is `unknown` and names the missing input under `uncertain`. It is
 never shown as false or zero.
-
-### PR timelines
-
-The **Timeline** view answers "where has each PR's time gone?": one row per
-PR row of the query, in the table's sort order, on one time axis with a
-"now" line. Each row is split into stretches:
-
-| Stretch | Drawn as | From | Until |
-|---------|----------|------|-------|
-| draft | hatched | opened as a draft, or converted to one | marked ready |
-| waiting | solid grey, listing everyone asked | a review request | that reviewer reviews (or someone reviews on a team's behalf), or the request is removed |
-| changes requested | outlined | a review requesting changes | that reviewer is asked again, or the PR is marked ready again |
-| approved | light | an approval | it is dismissed (the reviewer is then waited on again) |
-| unattended | dashed | ready, with nobody asked and no approval | |
-| merged / closed | a cap at the end | | |
-
-Time spent waiting on you, or on a team you are asked through, is the only
-thing in the accent colour, and is labelled "waiting on you". Reviews are
-ticks: `✓` approved, `✕` changes requested. Drag across the axis to zoom
-(`t=2026-10-20..2026-10-30` in the URL, so Back undoes it); zooming does not
-filter, but **Filter to these days** applies the range as `when:`. Hover a
-stretch, or move along a focused row with the arrow keys, for who, from,
-until and how long; each row also has a sentence for screen readers, such
-as "draft 12d, waiting on bob 30d, approved 2d". Selecting a row shows one
-lane per reviewer. A PR whose history has not been fetched yet shows one
-thin bar from its creation, labelled so.
-
-Histories are read from GitHub's GraphQL timeline (ready, draft, review
-requested and removed, reviews and their dismissals, merged, closed,
-reopened), 100 events per
-page, by the served dashboard's background refresh only (`wgo dash --json
---refresh` does not wait for them): at most 50 PRs per refresh, open PRs
-first, then those merged or closed in the closed-recent window, one after
-another. A PR's history is fetched again only when GitHub reports a newer
-`updated_at` for it, and is cached under
-`~/.wgo/cache/inventory/timelines.d/<owner>/<repo>/<number>.json`; once a
-day, the histories of PRs the dashboard has not seen for 60 days are
-removed. A failed fetch backs off like an inventory set, three server
-errors or timeouts in a row end that refresh's batch, and a rate limit
-pauses every timeline fetch until GitHub's reset. The `github_timelines` source says how
-many of the PRs followed have a history ("120 of 195 PRs have a cached
-history") and how old the oldest is.
-
-With a history fetched for the PR's current `updated_at`, the attention
-facts use it: `waiting` counts exactly, rather than "or earlier", from the
-earliest request still open, or from the start of the current unattended
-stretch when nobody is asked; and "changes requested, not asked again" is
-read from the events as GitHub blocks on it: until the reviewer is asked
-again and that request is still open, or they approve. Marking the PR ready
-again ends the changes-requested stretch on the timeline, but not this. `waiting_source` is
-`timeline` then, and `estimate` when the request times above decided; the
-deciding reason's evidence says which.
-
-```sh
-wgo dash --json | jq '.snapshot.sources.github_timelines,
-  [.snapshot.nodes[] | select(.kind == "pr" and .pr.timeline) | {id, segments: [.pr.timeline.segments[].state]}]'
-```
 
 ## wgo:// links with `wgo setup url-handler`
 

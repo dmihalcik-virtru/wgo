@@ -231,6 +231,18 @@
       if (s.state === "waiting" && mine) return "waiting on you";
       return s.state === "waiting" || s.state === "changes_requested" ? TL.segWords(s, op, true) : WORD[s.state] || s.state;
     };
+    // labels are where a laid-out segment's words go, in time: a wait's
+    // accent spans read "waiting on you", anchored on the accent, and the
+    // stretch before the first of them names the others waited on; any other
+    // segment has one label from its start.
+    TL.labels = function (s, mineSpans, op) {
+      var mine = (mineSpans || []).filter(function (m) { return m.a < s.b && m.b > s.a; });
+      if (s.state !== "waiting" || !mine.length) return [{ a: s.a, b: s.b, text: TL.label(s, false, op), short: TL.label({ state: s.state, reviewers: [] }, false, op), mine: false }];
+      var others = s.reviewers.filter(function (r) { return !TL.isMine(r, op); }), out = [];
+      if (mine[0].a > s.a) out.push({ a: s.a, b: mine[0].a, text: TL.segWords({ state: "waiting", reviewers: others }, op, true), short: "waiting", mine: false });
+      mine.forEach(function (m) { out.push({ a: Math.max(s.a, m.a), b: Math.min(s.b, m.b), text: "waiting on you", short: "you", mine: true }); });
+      return out;
+    };
     // fits says whether text fits in w px at the view's 11 px font.
     TL.fits = function (text, w) { return w >= text.length * 6.3 + 8; };
     // summary is a row's text for screen readers: "draft 12d, waiting on bob
@@ -246,15 +258,25 @@
     // stateText is the label right of a row: its current state, for how long
     // or since when. A wait names whoever is waited on now, not everyone
     // the segment waited on.
+    // currentWait is the PR's current state as gh-99's waiting_since reads
+    // it: for a wait, whoever is waited on now and since when — the earliest
+    // wait still open on their lanes, not the start of a segment that began
+    // with someone since answered; otherwise the last segment as it is.
+    TL.currentWait = function (pr, segs, nowMs) {
+      var s = segs[segs.length - 1], out = { state: s.state, reviewers: s.reviewers, a: s.a };
+      if (s.state !== "waiting") return out;
+      var open = TL.lanes(pr, nowMs).filter(function (l) { return l.waits.length && l.waits[l.waits.length - 1].open; });
+      if (!open.length) return out;
+      out.reviewers = open.map(function (l) { return l.who; });
+      out.a = Math.min.apply(null, open.map(function (l) { return l.waits[l.waits.length - 1].a; }));
+      return out;
+    };
     TL.stateText = function (pr, segs, op, nowMs, env) {
       if (segs) {
         var s = segs[segs.length - 1];
         if (TL.TERMINAL[s.state]) return s.state + " " + TL.dayLabel(s.a, env);
-        if (s.state === "waiting") {
-          var now = TL.lanes(pr, nowMs).filter(function (l) { return l.waits.some(function (w) { return w.open; }); }).map(function (l) { return l.who; });
-          if (now.length) s = { state: s.state, reviewers: now };
-        }
-        return TL.segWords(s, op, true) + " " + TL.dur(segs[segs.length - 1].b - segs[segs.length - 1].a);
+        var w = TL.currentWait(pr, segs, nowMs);
+        return TL.segWords(w, op, true) + " " + TL.dur(nowMs - w.a);
       }
       var st = pr && pr.state === "open" && pr.is_draft ? "draft" : (pr && pr.state) || "state unknown";
       return st + " · no history";
@@ -568,18 +590,17 @@
         if (TL.TERMINAL[st]) svg("line", { class: "s-closed", x1: gx, x2: gx + gw, y1: BAR_Y + BAR_H / 2, y2: BAR_Y + BAR_H / 2 }, s);
         else svg("rect", segAttrs(st, gx, BAR_Y, gw, BAR_H), s);
       });
-      c.mine.forEach(function (sp) {
-        var a = Math.max(0, x(m, sp.a)), b = Math.min(m.laneW, x(m, sp.b));
-        if (b > a) svg("rect", { class: "seg s-mine", x: a + 1, y: BAR_Y, width: Math.max(0.5, b - a - 2), height: BAR_H }, s);
-      });
+      c.mine.forEach(function (sp) { mineRect(s, m, sp, BAR_Y, BAR_H); });
       r.laid.forEach(function (q) {
         if (q.cap) return;
-        var mine = c.mine.some(function (sp) { return sp.a < q.s.b && sp.b > q.s.a; }), text = TL.label(q.s, mine, m.op);
-        if (!TL.fits(text, q.w - (q.cutL ? 10 : 0))) text = TL.fits(TL.label({ state: q.s.state, reviewers: [] }, mine, m.op), q.w) ? TL.label({ state: q.s.state, reviewers: [] }, mine, m.op) : "";
         if (q.cutL) { var g = svg("text", { class: "lbl cut", x: 2, y: BAR_Y + 9 }, s); g.textContent = "◂"; }
-        if (!text) return;
-        var t = svg("text", { class: "lbl l-" + q.s.state + (mine ? " l-mine" : ""), x: q.x + (q.cutL ? 12 : 5), y: BAR_Y + 9 }, s);
-        t.textContent = text;
+        TL.labels(q.s, c.mine, m.op).forEach(function (lb) {
+          var a = Math.max(0, x(m, lb.a)), b = Math.min(m.laneW, x(m, lb.b)), pad = a === 0 && q.cutL ? 12 : 5;
+          var text = TL.fits(lb.text, b - a - pad + 5) ? lb.text : TL.fits(lb.short, b - a - pad + 5) ? lb.short : "";
+          if (!text) return;
+          var t = svg("text", { class: "lbl l-" + q.s.state + (lb.mine ? " l-mine" : ""), x: a + pad, y: BAR_Y + 9 }, s);
+          t.textContent = text;
+        });
       });
       c.reviews.forEach(function (rv) { tick(s, m, rv, 0); });
     }
@@ -592,12 +613,19 @@
     var t = svg("text", { class: "tick" + (rv.ok ? " ok" : " no"), x: tx + 2, y: y0 + 8 }, s);
     t.textContent = rv.ok ? "✓" : "✕";
   }
+  // mineRect draws an accent span, its times kept for checks.
+  function mineRect(s, m, sp, y, h) {
+    var a = Math.max(0, x(m, sp.a)), b = Math.min(m.laneW, x(m, sp.b));
+    if (b > a) svg("rect", { class: "seg s-mine", x: a + 1, y: y, width: Math.max(0.5, b - a - 2), height: h, "data-a": sp.a, "data-b": sp.b }, s);
+  }
   function nowLine(s, m, h) {
     var nx = x(m, m.nowMs);
     if (nx >= 0 && nx <= m.laneW) svg("line", { class: "now", x1: nx, x2: nx, y1: 0, y2: h }, s);
   }
   // laneRow is one reviewer's lane under an expanded row: their waits, the
-  // accent where the reviewer is the operator, and their review ticks.
+  // accent where the reviewer is the operator and the PR was waiting (as on
+  // the row: not while it was, say, with changes requested), and their
+  // review ticks.
   function laneRow(box, r, l) {
     var m = V.model, el = cur.dom.el, sub = el("div", "tl-sub", null, box), mine = TL.isMine(l.who, m.op), total = 0;
     el("span", "tl-ref", "↳ " + (mine && l.who.toLowerCase() === m.op.me ? l.who + " (you)" : l.who), sub);
@@ -607,7 +635,11 @@
     l.waits.forEach(function (w) {
       total += w.b - w.a;
       var a = Math.max(0, x(m, w.a)), b = Math.min(m.laneW, x(m, w.b));
-      if (b > a) svg("rect", { class: "seg " + (mine ? "s-mine" : "s-waiting"), x: a + 1, y: 4, width: Math.max(0.5, b - a - 2), height: 9 }, s);
+      if (b > a) svg("rect", { class: "seg s-waiting", x: a + 1, y: 4, width: Math.max(0.5, b - a - 2), height: 9 }, s);
+      if (mine) r.c.mine.forEach(function (sp) {
+        var lo = Math.max(sp.a, w.a), hi = Math.min(sp.b, w.b);
+        if (hi > lo) mineRect(s, m, { a: lo, b: hi }, 4, 9);
+      });
     });
     r.c.reviews.forEach(function (rv) { if (rv.who === l.who) { var tx = x(m, rv.t); if (tx >= 0 && tx <= m.laneW) { var t = svg("text", { class: "tick" + (rv.ok ? " ok" : " no"), x: tx + 2, y: 13 }, s); t.textContent = rv.ok ? "✓" : "✕"; } } });
     nowLine(s, m, LANE_H);

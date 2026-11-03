@@ -1400,9 +1400,29 @@ async function timelineChecks(url) {
   check(rs.every((r) => r.now === 1), "every row crosses the now line");
   check((await evaluate("Array.from(document.querySelectorAll('.tl-head svg text')).some(t => t.textContent === 'now')")), "the axis labels the now line");
   check(rs.every((r) => r.sr.startsWith(r.ref + ": ") && (/ \d+[dh]\b|<1h/.test(r.sr) || r.sr.includes("history not fetched yet"))), "each row has a text summary: " + rs[0].sr);
-  // The accent: only rows that waited on alice, and only s-mine marks wear it.
-  const mineRefs = new Set(rs.filter((r) => r.mine).map((r) => r.ref));
-  check([...mineRefs].sort().join() === "acme/api#104,acme/api#105,acme/api#106", "the accent marks only waits on alice: " + [...mineRefs]);
+  // The accent: exactly the time each PR waited on alice (or team:web),
+  // every span within one of the PR's waiting segments; only s-mine marks
+  // wear the accent colour.
+  const spans = () => evaluate(`(() => {
+    const s = window.__wgoStore, out = {};
+    document.querySelectorAll('.tl-list .tl-row[data-p]').forEach((row) => {
+      const ref = row.querySelector('.tl-ref').textContent;
+      const id = Array.from(s.qi.ids).find((x, i) => s.qi.nodes[i].label === ref && !x.includes('~'));
+      const tl = s.qi.nodes[s.qi.byId.get(id)].pr.timeline, segs = (tl && tl.segments) || [];
+      const span = (r) => [+r.getAttribute('data-a'), +r.getAttribute('data-b')];
+      const inWait = ([a, b]) => segs.some((g, i) => g.state === 'waiting' && Date.parse(g.start) <= a && (i + 1 === segs.length ? Infinity : Date.parse(segs[i + 1].start)) >= b);
+      const rowSpans = Array.from(row.querySelectorAll(':scope > svg rect.s-mine')).map(span);
+      const laneSpans = Array.from(row.querySelectorAll('.tl-sub')).map((sub) => [sub.querySelector('.tl-ref').textContent, Array.from(sub.querySelectorAll('rect.s-mine')).map(span)]);
+      if (rowSpans.length || laneSpans.some((l) => l[1].length)) out[ref] = { row: rowSpans.map((x) => x.map((t) => new Date(t).toISOString().slice(0, 16)).join('/')), lanes: laneSpans.filter((l) => l[1].length).map((l) => l[0] + ' ' + l[1].map((x) => x.map((t) => new Date(t).toISOString().slice(0, 16)).join('/')).join()), outside: rowSpans.concat(...laneSpans.map((l) => l[1])).filter((x) => !inWait(x)).length };
+    });
+    return out;
+  })()`);
+  const NOW = "2026-10-30T16:00";
+  let acc = await spans();
+  check(JSON.stringify(Object.keys(acc).sort()) === JSON.stringify(["acme/api#104", "acme/api#105", "acme/api#106"]) &&
+    acc["acme/api#104"].row.join() === "2026-10-25T12:55/" + NOW && acc["acme/api#105"].row.join() === "2026-06-03T09:00/" + NOW &&
+    acc["acme/api#106"].row.join() === "2026-10-23T09:30/2026-10-28T11:45" && Object.values(acc).every((a) => a.outside === 0),
+    "the accent spans exactly the waits on alice: " + JSON.stringify(acc));
   const accentUse = await evaluate(`(() => {
     const a = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(), probe = document.createElement('i');
     probe.style.color = a; document.body.appendChild(probe); const rgb = getComputedStyle(probe).color; probe.remove();
@@ -1452,6 +1472,12 @@ async function timelineChecks(url) {
   const exp = await evaluate("(() => { const r = document.activeElement; return { sel: Array.from(window.__wgoStore.selection), expanded: r.getAttribute('aria-expanded'), lanes: Array.from(r.querySelectorAll('.tl-sub .tl-ref')).map(e => e.textContent) } })()");
   check(exp.sel.length === 1 && exp.expanded === "true" && exp.lanes.length >= 1 && exp.lanes.every((l) => l.startsWith("↳ ")), "Enter selects the row, which shows a lane per reviewer: " + JSON.stringify(exp));
   check((await evaluate("document.activeElement.classList.contains('tl-row')")), "the keyboard stays on the row after it expands");
+  // An expanded row's lanes: alice's lane wears the accent only where the
+  // row does; bob's never.
+  await evaluate("window.__wgoStore.select(['pr:acme/api#105'], false)"); await sleep(150);
+  acc = await spans();
+  check(JSON.stringify(acc["acme/api#105"].lanes) === JSON.stringify(["↳ alice (you) 2026-06-03T09:00/" + NOW]) && acc["acme/api#105"].outside === 0,
+    "the operator's lane is accented as the row is: " + JSON.stringify(acc["acme/api#105"]));
   const problems = events.slice(from).filter((e) => (e.method === "Log.entryAdded" && e.params.entry.level === "error" && !/\/favicon\.ico$/.test(e.params.entry.url || "")) || e.method === "Runtime.exceptionThrown")
     .map((e) => e.method === "Runtime.exceptionThrown" ? e.params.exceptionDetails.text + " " + ((e.params.exceptionDetails.exception || {}).description || "") : e.params.entry.text + " " + (e.params.entry.url || ""));
   check(problems.length === 0, "timeline console errors: " + problems.join(" | "));
