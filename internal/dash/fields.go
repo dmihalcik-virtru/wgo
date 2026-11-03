@@ -45,8 +45,8 @@ const (
 	DeriveEfforts = "efforts"
 	// DerivePRState is today's PR-state bucket: open, draft, merged or closed
 	// for a PR (a draft is open and is_draft); for a bookmark, unknown when its
-	// lookup has no data, none when it is known to have no PR, and no value
-	// when it has PRs, which their own nodes carry.
+	// lookup has no data and none when it is known to have no PR. It does not
+	// apply to a bookmark that has PRs: their own nodes carry the states.
 	DerivePRState = "prstate"
 )
 
@@ -181,6 +181,26 @@ func NewRegistry(fs []Field, planned map[string]string) (*Registry, error) {
 		}
 		if len(f.Kinds) == 0 {
 			return nil, fmt.Errorf("query field %s: no kinds", f.Name)
+		}
+		for _, k := range append(slices.Clone(f.Kinds), f.DeriveKinds...) {
+			if !slices.Contains(queryKinds, k) {
+				return nil, fmt.Errorf("query field %s: unknown node kind %q; kinds are %s", f.Name, k, strings.Join(kindNames(queryKinds), ", "))
+			}
+		}
+		for _, v := range f.Values {
+			if v != strings.ToLower(v) {
+				return nil, fmt.Errorf("query field %s: value %q must be lowercase, since values are matched lowercased; write %q", f.Name, v, strings.ToLower(v))
+			}
+		}
+		for k := range f.Map {
+			if k != strings.ToLower(k) {
+				return nil, fmt.Errorf("query field %s: map key %q must be lowercase, since values are looked up lowercased", f.Name, k)
+			}
+		}
+		switch f.Scale {
+		case "", "linear", "log":
+		default:
+			return nil, fmt.Errorf("query field %s: scale %q is not linear or log", f.Name, f.Scale)
 		}
 		if f.Derive != "" && !slices.Contains(derives, f.Derive) {
 			return nil, fmt.Errorf("query field %s: unknown derive %q", f.Name, f.Derive)

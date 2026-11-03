@@ -520,6 +520,13 @@
     return -1;
   }
   function quoteRune(c) { return isSpace(c) ? "space" : JSON.stringify(c); }
+  // MAX_RELATIVE_DAYS bounds relative dates (-7d, +2w) so they cannot overflow.
+  var MAX_RELATIVE_DAYS = 36500;
+  function relativeInRange(s) {
+    var digits = s.slice(1, -1);
+    if (digits.length > 6) return false;
+    return parseInt(digits, 10) * (s.charAt(s.length - 1) === "w" ? 7 : 1) <= MAX_RELATIVE_DAYS;
+  }
   function validDate(s) {
     if (!DATE_RE.test(s)) return false;
     var y = +s.slice(0, 4), m = +s.slice(5, 7), d = +s.slice(8, 10), t = new Date(0);
@@ -642,8 +649,11 @@
     }
     return v;
   }
+  // isUnknownWord: the word unknown, quoted or not, in any case, always
+  // means "the value is unknown" outside text fields.
+  function isUnknownWord(v) { return !v.macro && v.text.toLowerCase() === "unknown"; }
   function checkValue(rs, v, f) {
-    var col = v.start + 1, unknownLit = !v.quoted && v.text === "unknown", vals = f.values || [];
+    var col = v.start + 1, unknownLit = isUnknownWord(v), vals = f.values || [];
     if (v.macro) {
       if (f.type === "enum" && vals.length) return badEnumValue(rs, v, f);
       if (f.type !== "enum" && f.type !== "set" && f.type !== "text") return qerr(col, sprintf("%s does not apply to %s field %s at column %d; macros name people, for enum, set and text fields", v.text, f.type, f.name, col));
@@ -678,7 +688,10 @@
     var col = v.start + 1, ok = false;
     if (f.type === "number") ok = !v.quoted && NUMBER_RE.test(v.text);
     else if (f.type === "duration") ok = !v.quoted && DURATION_RE.test(v.text);
-    else if (f.type === "date") ok = !v.quoted && (v.text === "today" || RELATIVE_RE.test(v.text) || validDate(v.text));
+    else if (f.type === "date") {
+      if (!v.quoted && RELATIVE_RE.test(v.text) && !relativeInRange(v.text)) return qerr(col, sprintf("%q is out of range for %s at column %d; relative dates reach at most %dd (about 100 years)", v.text, f.name, col, MAX_RELATIVE_DAYS));
+      ok = !v.quoted && (v.text === "today" || RELATIVE_RE.test(v.text) || validDate(v.text));
+    }
     return ok ? null : qerr(col, sprintf("%q is not a valid %s for %s at column %d; %s", v.text, f.type, f.name, col, boundHint(f)));
   }
   function rangeAllowed(f, os, reg) {
@@ -702,13 +715,15 @@
       if (!next.length) {
         var other = null;
         for (var j = 0; j < seen.length; j++) if (!intersectKinds(seen[j].field.kinds, c.field.kinds).length) { other = seen[j]; break; }
-        var names = [], parts = [];
-        (other ? [other] : seen).concat([c]).forEach(function (d) {
+        var names = [], parts = [], list = other ? [other] : seen;
+        list.concat([c]).forEach(function (d) {
           if (names.indexOf(d.name) >= 0) return;
           names.push(d.name);
           parts.push(d.name + ": " + kindsIn(d.field.kinds).join(", "));
         });
-        return qerr(c.col, sprintf("fields %s apply to no common node kind (%s) at column %d; split them into separate queries", joinAnd(names), parts.join("; "), c.col));
+        // The fix keeps the newest clause and drops the earlier ones it conflicts with.
+        return qerr(c.col, sprintf("fields %s apply to no common node kind (%s) at column %d; split them into separate queries", joinAnd(names), parts.join("; "), c.col),
+          withoutClauses(q, function (d) { return list.indexOf(d) >= 0; }));
       }
       common = next;
       seen.push(c);
@@ -722,11 +737,17 @@
       rows = intersectKinds(rows, set);
     });
     if (!first || intersectKinds(rows, common).length) return null;
-    if (!rows.length) return qerr(first, sprintf("the kind clause at column %d leaves no rows: it allows no kind; change or remove it", first));
+    if (!rows.length) {
+      var last = q.clauses.filter(function (c) { return c.name === "kind"; }).pop();
+      return qerr(first, sprintf("the kind clause at column %d leaves no rows: it allows no kind; change or remove it", first),
+        withoutClauses(q, function (d) { return d.name === "kind" && d !== last; }));
+    }
     var nk = [];
     q.clauses.forEach(function (c) { if (c.name !== "kind" && nk.indexOf(c.name) < 0) nk.push(c.name); });
-    return qerr(first, sprintf("the kind clause at column %d leaves no rows: it allows %s, while %s can only match %s; change or remove it", first, rows.join(", "), nk.join(", "), common.join(", ")));
+    return qerr(first, sprintf("the kind clause at column %d leaves no rows: it allows %s, while %s can only match %s; change or remove it", first, rows.join(", "), nk.join(", "), common.join(", ")),
+      withoutClauses(q, function (d) { return d.name === "kind"; }));
   }
+  function withoutClauses(q, drop) { return q.clauses.filter(function (c) { return !drop(c); }).map(function (c) { return c.raw; }).join(";"); }
 
   // queryEnv is what macros and relative dates resolve against, from the
   // snapshot alone (queryEnv in query.go): @me is the person marked "me" in
@@ -737,8 +758,11 @@
     return m ? (m[1] === "-" ? -1 : 1) * (+m[2] * 60 + +m[3]) * 60000 : 0;
   }
   L.queryEnv = function (snap) {
-    var env = { me: "", people: [], nowMs: null, offsetMs: 0 }, g = snap && snap.generated_at;
-    if (typeof g === "string" && TS_RE.test(g) && isFinite(Date.parse(g))) { env.nowMs = Date.parse(g); env.offsetMs = tzOffsetMs(g); }
+    var env = { me: "", people: [], nowMs: null, offsetMs: 0, dayOf: null }, g = snap && snap.generated_at;
+    if (typeof g === "string" && TS_RE.test(g) && isFinite(Date.parse(g))) {
+      env.nowMs = Date.parse(g); env.offsetMs = tzOffsetMs(g);
+      env.dayOf = dayFormatter(snap.timezone, env.offsetMs);
+    }
     var ppl = snap && snap.people;
     if (Array.isArray(ppl)) ppl.forEach(function (p) {
       if (!isObj(p)) return;
@@ -752,12 +776,28 @@
     return env;
   };
   function dayOfMs(ms, off) { return new Date(ms + off).toISOString().slice(0, 10); }
+  // dayFormatter maps a timestamp to its local day in the snapshot's IANA
+  // timezone (snapshotLocation in query.go), or, without one this browser
+  // knows, at generated_at's fixed offset (wrong across a DST change).
+  function dayFormatter(zone, off) {
+    if (typeof zone === "string" && zone && zone !== "Local" && typeof Intl !== "undefined") {
+      try {
+        var fmt = new Intl.DateTimeFormat("en-US", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" });
+        return function (ms) {
+          var p = {};
+          fmt.formatToParts(new Date(ms)).forEach(function (x) { p[x.type] = x.value; });
+          return p.year + "-" + p.month + "-" + p.day;
+        };
+      } catch (e) { /* unknown zone: use the offset */ }
+    }
+    return function (ms) { return dayOfMs(ms, off); };
+  }
 
   // queryIndex decodes a snapshot once: every field's value on every node.
   L.queryIndex = function (snap, reg) {
     var ix = { reg: reg, env: L.queryEnv(snap), nodes: [], ids: [], kinds: [], byId: new Map(), out: [], inc: [], efforts: [], values: new Map(),
       days: (snap && snap.counts && snap.counts.days) || [], activity: (snap && snap.counts && snap.counts.activity) || {}, today: "" };
-    if (ix.env.nowMs != null) ix.today = dayOfMs(ix.env.nowMs, ix.env.offsetMs);
+    if (ix.env.nowMs != null) ix.today = ix.env.dayOf(ix.env.nowMs);
     ((snap && snap.nodes) || []).forEach(function (n) {
       var id = n && typeof n.id === "string" ? n.id : "";
       if (!id || ix.byId.has(id)) return;
@@ -815,7 +855,8 @@
       case "days_since":
         if (!ix.today) return { vals: [], known: false };
         r = pathValues(ix, f, i);
-        r.vals.forEach(function (t) { var ms = parseTimestampMs(t); if (ms != null) vals.push((ix.env.nowMs - ms) / 86400000); });
+        // Whole days, as query.go: updated_ago:1 matches what prints as 1d.
+        r.vals.forEach(function (t) { var ms = parseTimestampMs(t); if (ms != null) vals.push(Math.floor((ix.env.nowMs - ms) / 86400000)); });
         return { vals: vals, known: r.known };
       case "count":
         r = pathValues(ix, f, i);
@@ -832,8 +873,16 @@
     }
     return { vals: [], known: false };
   }
+  // prStateNA: today's PR-state bucket does not apply to a bookmark that has
+  // PRs, whose own nodes carry the states (prStateNA in query.go).
+  function prStateNA(ix, f, i) {
+    var dk = f.derive_kinds || [];
+    if (f.derive !== "prstate" || ix.kinds[i] !== "bookmark" || (dk.length && dk.indexOf("bookmark") < 0)) return false;
+    var bm = own(ix.nodes[i], "bookmark"), lk = isObj(bm) ? bm.pr_lookup : "";
+    return (lk === "fresh" || lk === "stale") && typeof bm.pr_count === "number" && bm.pr_count > 0;
+  }
   function extractField(ix, f, i) {
-    if (f.kinds.indexOf(ix.kinds[i]) < 0) return { na: true, unknown: true, disp: [], norm: [], nums: [] };
+    if (f.kinds.indexOf(ix.kinds[i]) < 0 || prStateNA(ix, f, i)) return { na: true, unknown: true, disp: [], norm: [], nums: [] };
     var r = rawValues(ix, f, i), known = r.known, fv = { na: false, unknown: false, disp: [], norm: [], nums: [] }, seen = new Set();
     if (f.type === "number" || f.type === "duration") {
       r.vals.forEach(function (v) { if (typeof v === "number") fv.nums.push(v); });
@@ -859,7 +908,7 @@
     if (validDate(v)) return v;
     if (ix.env.nowMs == null) return "";
     var ms = parseTimestampMs(v);
-    return ms == null ? "" : dayOfMs(ms, ix.env.offsetMs);
+    return ms == null ? "" : ix.env.dayOf(ms);
   }
   function resolveDay(ix, s) {
     if (validDate(s)) return s;
@@ -868,7 +917,7 @@
     if (s !== "today") { n = parseInt(s.slice(1, -1), 10) * (s.charAt(s.length - 1) === "w" ? 7 : 1); if (s.charAt(0) === "-") n = -n; }
     var t = new Date(0);
     t.setUTCFullYear(+ix.today.slice(0, 4), +ix.today.slice(5, 7) - 1, +ix.today.slice(8, 10) + n);
-    return t.toISOString().slice(0, 10);
+    return isFinite(t.getTime()) ? t.toISOString().slice(0, 10) : null; // never throw from rendering
   }
   function boundNumber(f, s) {
     if (f.type !== "duration") return parseFloat(s);
@@ -880,7 +929,7 @@
     var b = { c: c, strs: [], nums: [], days: [], hasUnknown: false, empty: false, lo: null, hi: null }, t = c.field.type;
     if (c.op === "list") {
       c.vals.forEach(function (v) {
-        if (!v.quoted && v.text === "unknown" && t !== "text") { b.hasUnknown = true; return; }
+        if (isUnknownWord(v) && t !== "text") { b.hasUnknown = true; return; }
         var texts = [];
         if (v.macro === "me") {
           if (!ix.env.me) warns.push("@me is unknown: the snapshot names no authenticated person, so " + c.name + ":@me matches nothing");
@@ -976,7 +1025,7 @@
     if (v.na) return "";
     if (v.unknown) return "unknown";
     if (f.type === "number") return v.nums.length ? v.nums.map(function (x) { return String(Math.round(x * 100) / 100); }).join(", ") : "none";
-    if (f.type === "duration") return v.nums.length ? v.nums.map(function (x) { return Math.round(x) + "d"; }).join(", ") : "none";
+    if (f.type === "duration") return v.nums.length ? v.nums.map(function (x) { return Math.floor(x) + "d"; }).join(", ") : "none";
     return v.disp.length ? v.disp.join(", ") : "none";
   };
 

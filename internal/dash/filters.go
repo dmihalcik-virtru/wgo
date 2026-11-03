@@ -52,11 +52,41 @@ func BuiltinFilter(name string) (SavedFilter, bool) {
 // the configured ones (sorted by name), each checked against reg: a filter
 // that does not parse is hidden with the reason.
 func MergeFilters(configured map[string]string, reg *Registry) []SavedFilter {
+	return mergeFilters(configured, nil, reg)
+}
+
+// MergeConfigFilters is MergeFilters for [dash.filters] as config decodes
+// it (config.DashConfig.Filters): a dotted name ("release.v2") arrives as a
+// nested table and is flattened back, and an entry that is not a string is
+// hidden with the reason rather than failing.
+func MergeConfigFilters(raw map[string]any, reg *Registry) []SavedFilter {
+	exprs, bad := map[string]string{}, map[string]string{}
+	var walk func(prefix string, m map[string]any)
+	walk = func(prefix string, m map[string]any) {
+		for k, v := range m {
+			name := prefix + k
+			switch x := v.(type) {
+			case string:
+				exprs[name] = x
+			case map[string]any:
+				walk(name+".", x)
+			default:
+				bad[name] = fmt.Sprintf("[dash.filters] %s in ~/.wgo/config.toml is %v, not a query string; write %q = \"kind:pr\"", name, v, name)
+			}
+		}
+	}
+	walk("", raw)
+	return mergeFilters(exprs, bad, reg)
+}
+
+func mergeFilters(configured, bad map[string]string, reg *Registry) []SavedFilter {
 	var out []SavedFilter
 	for _, f := range builtinFilters {
 		f.Builtin = true
 		if expr, ok := configured[f.Name]; ok {
 			f = SavedFilter{Name: f.Name, Expr: expr, Overrides: true}
+		} else if why, ok := bad[f.Name]; ok {
+			f = SavedFilter{Name: f.Name, Overrides: true, Hidden: true, Reason: why}
 		}
 		out = append(out, f)
 	}
@@ -66,12 +96,23 @@ func MergeFilters(configured map[string]string, reg *Registry) []SavedFilter {
 			names = append(names, name)
 		}
 	}
+	for name := range bad {
+		if _, builtin := BuiltinFilter(name); !builtin {
+			names = append(names, name)
+		}
+	}
 	sort.Strings(names)
 	for _, name := range names {
-		out = append(out, SavedFilter{Name: name, Expr: configured[name]})
+		if why, ok := bad[name]; ok {
+			out = append(out, SavedFilter{Name: name, Hidden: true, Reason: why})
+		} else {
+			out = append(out, SavedFilter{Name: name, Expr: configured[name]})
+		}
 	}
 	for i := range out {
-		out[i].Hidden, out[i].Reason = filterAvailability(out[i], reg)
+		if out[i].Reason == "" {
+			out[i].Hidden, out[i].Reason = filterAvailability(out[i], reg)
+		}
 	}
 	return out
 }

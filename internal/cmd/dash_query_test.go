@@ -250,6 +250,23 @@ func TestDashQueryFlagCombinations(t *testing.T) {
 	}
 }
 
+// TestDashFiltersConfigNeverBreaksCommands: a dotted filter name and a
+// non-string value in [dash.filters] decode, and only that filter is hidden.
+func TestDashFiltersConfigNeverBreaksCommands(t *testing.T) {
+	saveQueryFlags(t)
+	goldenHome(t, "[dash.filters]\n\"release.v2\" = \"kind:pr;prstate:open\"\ncount = 5\n")
+	fixture := vectorFixturePath(t)
+	dashFixture, dashMD, dashPreset = fixture, true, "release.v2"
+	md, err := runDashOut(t, noDashFlags)
+	if err != nil || !strings.HasPrefix(md, "## release.v2\n") {
+		t.Fatalf("dotted preset: %v\n%s", err, md)
+	}
+	dashPreset = "count"
+	if _, err := runDashOut(t, noDashFlags); err == nil || !strings.Contains(err.Error(), "saved filter count cannot run: [dash.filters] count in ~/.wgo/config.toml is 5, not a query string") {
+		t.Fatalf("non-string preset: %v", err)
+	}
+}
+
 // TestDashQueryAloneServesAtTheQuery: wgo dash --query EXPR serves (here a
 // fixture, read-only) and opens the browser at #q=EXPR.
 func TestDashQueryAloneServesAtTheQuery(t *testing.T) {
@@ -299,6 +316,40 @@ func TestDashQueryAloneServesAtTheQuery(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "read-only, a fixed snapshot") {
 		t.Errorf("output = %q", out.String())
+	}
+}
+
+// TestDashMDCollectsAndPrints: wgo dash --md (and --md --refresh) without
+// --fixture collects a snapshot and prints Markdown; it never serves. The
+// port is held busy, so an attempt to listen would fail the command.
+func TestDashMDCollectsAndPrints(t *testing.T) {
+	saveQueryFlags(t)
+	goldenHome(t, "[discovery]\nbase_dirs = [\""+t.TempDir()+"\"]\n")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	dashPort = ln.Addr().(*net.TCPAddr).Port
+	for _, refresh := range []bool{false, true} {
+		dashMD, dashRefresh, dashQuery = true, refresh, "kind:workspace"
+		done := make(chan struct{})
+		var out string
+		go func() {
+			defer close(done)
+			out, err = runDashOut(t, passedFlags("query", "port"))
+		}()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("--md (refresh=%v) did not return: it is serving", refresh)
+		}
+		if err != nil {
+			t.Fatalf("--md (refresh=%v): %v", refresh, err)
+		}
+		if !strings.HasPrefix(out, "## kind:workspace\n") || !strings.Contains(out, "Query: `kind:workspace`") || strings.Contains(out, "serving") {
+			t.Errorf("--md (refresh=%v) printed:\n%s", refresh, out)
+		}
 	}
 }
 

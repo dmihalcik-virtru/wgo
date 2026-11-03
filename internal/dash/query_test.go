@@ -286,6 +286,74 @@ func TestQueryIncompatibleFieldsWithoutAPairwiseConflict(t *testing.T) {
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v\nwant %s", err, want)
 	}
+	if qe := err.(*QueryError); qe.Fixed != "c:z" {
+		t.Errorf("fixed = %q, want the newest clause alone", qe.Fixed)
+	}
+}
+
+// TestNewRegistryRejectsRegistrationTraps: mistakes a data spec could make
+// when it registers a field fail loudly at start-up, not as baffling query
+// errors later.
+func TestNewRegistryRejectsRegistrationTraps(t *testing.T) {
+	for _, tc := range []struct {
+		f    Field
+		want string
+	}{
+		{Field{Name: "priority", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.priority"}, Values: []string{"High", "Low"}}, `value "High" must be lowercase`},
+		{Field{Name: "x", Type: FieldEnum, Kinds: []NodeKind{"tikcet"}, Paths: []string{"ticket.x"}}, `unknown node kind "tikcet"; kinds are effort, workspace, bookmark, pr, ticket, agent`},
+		{Field{Name: "x", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.x"}, Derive: DeriveLinkedRepos, DeriveKinds: []NodeKind{"tickets"}}, `unknown node kind "tickets"`},
+		{Field{Name: "x", Type: FieldEnum, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.x"}, Map: map[string]string{"APPROVED": "approved"}}, `map key "APPROVED" must be lowercase`},
+		{Field{Name: "x", Type: FieldNumber, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.x"}, Scale: "log10"}, `scale "log10" is not linear or log`},
+		{Field{Name: "Bad", Type: FieldText, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.x"}}, "names are lowercase"},
+		{Field{Name: "x", Type: "fuzzy", Kinds: []NodeKind{KindPR}, Paths: []string{"pr.x"}}, `unknown type "fuzzy"`},
+		{Field{Name: "x", Type: FieldText, Kinds: []NodeKind{KindPR}}, "no paths and no derive"},
+		{Field{Name: "x", Type: FieldText, Kinds: []NodeKind{KindPR}, Paths: []string{"pr[state"}}, "unclosed ["},
+	} {
+		if _, err := Fields().With(tc.f); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%+v: err = %v, want %q", tc.f, err, tc.want)
+		}
+	}
+	// Data values may have any case: they are lowercased when indexed.
+	reg, err := Fields().With(Field{Name: "priority", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.priority"}, Values: []string{"high", "low"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := ParseQuery("priority:High", reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix, err := newQueryIndex([]byte(`{"generated_at":"2026-10-20T15:00:00-04:00","nodes":[{"id":"t","kind":"ticket","ticket":{"priority":"High"}}]}`), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := ix.evaluate(q); len(res.Matches) != 1 {
+		t.Errorf("priority:High against data High: %v", res.Matches)
+	}
+}
+
+func TestMergeConfigFiltersToleratesBadEntries(t *testing.T) {
+	merged := MergeConfigFilters(map[string]any{
+		"release": map[string]any{"v2": "kind:pr;prstate:open"}, // "release.v2" = … in TOML
+		"count":   int64(5),
+		"shipped": []any{"x"},
+		"fine":    "kind:ticket",
+	}, Fields())
+	byName := map[string]SavedFilter{}
+	for _, f := range merged {
+		byName[f.Name] = f
+	}
+	if f := byName["release.v2"]; f.Hidden || f.Expr != "kind:pr;prstate:open" {
+		t.Errorf("dotted name: %+v", f)
+	}
+	if f := byName["count"]; !f.Hidden || !strings.Contains(f.Reason, "[dash.filters] count in ~/.wgo/config.toml is 5, not a query string") {
+		t.Errorf("non-string: %+v", f)
+	}
+	if f := byName["shipped"]; f.Builtin || !f.Overrides || !f.Hidden || !strings.Contains(f.Reason, "not a query string") {
+		t.Errorf("a bad entry overriding a built-in hides it: %+v", f)
+	}
+	if f := byName["fine"]; f.Hidden {
+		t.Errorf("fine: %+v", f)
+	}
 }
 
 // genSnapshot builds an invented snapshot of about n nodes: efforts with a
@@ -297,7 +365,7 @@ func genSnapshot(n int) []byte {
 	for i := 13; i >= 0; i-- {
 		days = append(days, now.AddDate(0, 0, -i).Format("2006-01-02"))
 	}
-	s := &Snapshot{Schema: SchemaVersion, GeneratedAt: now, Days: 14, Sources: map[string]SourceStatus{},
+	s := &Snapshot{Schema: SchemaVersion, GeneratedAt: now, Days: 14, Sources: map[string]SourceStatus{}, Timezone: "America/New_York",
 		Counts: Counts{Days: days, Activity: map[string][]int{}}}
 	states := []string{"open", "open", "merged", "closed"}
 	checks := []string{"success", "failure", "pending", ""}

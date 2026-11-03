@@ -3,6 +3,7 @@ package dash
 import (
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -313,6 +314,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		Days:        ls.days,
 		Sources:     map[string]SourceStatus{},
 		Diagnostics: dedupeStrings(slices.Concat(ls.diags, b.diags, b.noteDiagnostics())),
+		Timezone:    zoneName(ls.at.Location()),
 	}
 	maps.Copy(s.Sources, ls.sources)
 	var login, jira string
@@ -702,6 +704,29 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 		}
 	}
 	return c
+}
+
+// zoneName is loc's IANA name, resolving time.Local through $TZ or the
+// /etc/localtime link, or "" when no loadable name is found.
+func zoneName(loc *time.Location) string {
+	name := loc.String()
+	if loc == time.Local {
+		name = strings.TrimPrefix(os.Getenv("TZ"), ":")
+		if name == "" {
+			if target, err := os.Readlink("/etc/localtime"); err == nil {
+				if _, after, ok := strings.Cut(target, "zoneinfo/"); ok {
+					name = after
+				}
+			}
+		}
+	}
+	if name == "" || name == "Local" {
+		return ""
+	}
+	if _, err := time.LoadLocation(name); err != nil {
+		return ""
+	}
+	return name
 }
 
 func firstLine(s string) string {

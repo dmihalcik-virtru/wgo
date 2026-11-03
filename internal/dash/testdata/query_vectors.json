@@ -6,6 +6,7 @@
   "generation": 7,
   "generated_at": "2026-10-20T15:00:00-04:00",
   "days": 14,
+  "timezone": "America/New_York",
   "sources": {
    "agents": {
     "state": "fresh",
@@ -360,7 +361,7 @@
      "freshness": "stale",
      "status_category": "done",
      "story_points": 3,
-     "resolved_at": "2026-10-12T10:00:00-04:00",
+     "resolved_at": "2026-10-12T00:30:00-04:00",
      "updated_at": "2026-10-19T09:00:00-04:00"
     }
    },
@@ -989,11 +990,20 @@
    }
   },
   {
-   "name": "negation never matches unknowns",
+   "name": "negation never matches unknowns, nor bookmarks that have PRs",
    "query": "!prstate:open",
    "expect": {
-    "matches": ["bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000004", "pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9"],
-    "rows": ["bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000004", "pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9"]
+    "matches": ["bm-0000000000000002", "pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9"],
+    "rows": ["bm-0000000000000002", "pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "negated prstate keeps open PRs out of the closure",
+   "query": "kind:pr;!prstate:open",
+   "expect": {
+    "matches": ["bm-0000000000000002", "pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9"],
+    "visible": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000004", "effort:api-widgets", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9", "ticket:jira:TEAM-123", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000005"]
    }
   },
   {
@@ -1013,11 +1023,35 @@
    }
   },
   {
-   "name": "negated star holds for known empty values",
+   "name": "prstate does not apply to a bookmark that has PRs",
    "query": "!prstate:*",
    "expect": {
-    "matches": ["bm-0000000000000001", "bm-0000000000000004"],
-    "rows": ["bm-0000000000000001", "bm-0000000000000004"]
+    "matches": [],
+    "rows": []
+   }
+  },
+  {
+   "name": "quoted unknown means unknown",
+   "query": "prstate:\"unknown\"",
+   "expect": {
+    "matches": ["bm-0000000000000003"],
+    "rows": ["bm-0000000000000003"]
+   }
+  },
+  {
+   "name": "unknown in any case means unknown",
+   "query": "prstate:UNKNOWN",
+   "expect": {
+    "matches": ["bm-0000000000000003"],
+    "rows": ["bm-0000000000000003"]
+   }
+  },
+  {
+   "name": "quoted unknown in a set",
+   "query": "repo:\"unknown\"",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-99", "ws-0000000000000004"],
+    "rows": ["ticket:jira:TEAM-99", "ws-0000000000000004"]
    }
   },
   {
@@ -1477,11 +1511,19 @@
    }
   },
   {
-   "name": "duration strict upper bound",
-   "query": "updated_ago:<1.2",
+   "name": "durations are whole days",
+   "query": "updated_ago:1",
    "expect": {
-    "matches": ["pr:acme/api#41"],
-    "rows": ["pr:acme/api#41"]
+    "matches": ["pr:acme/api#38", "pr:acme/api#41"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "duration strict upper bound",
+   "query": "updated_ago:<2",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/api#41"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41"]
    }
   },
   {
@@ -1618,6 +1660,37 @@
    "expect": {
     "matches": [],
     "rows": []
+   }
+  },
+  {
+   "name": "a timestamp across DST lands on its local day in the snapshot's zone",
+   "query": "resolved:2026-10-12",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-7"],
+    "rows": ["ticket:jira:TEAM-7"]
+   },
+   "env": {
+    "generated_at": "2026-11-10T12:00:00-05:00"
+   }
+  },
+  {
+   "name": "without a timezone, days use generated_at's offset",
+   "query": "resolved:2026-10-11",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-7"],
+    "rows": ["ticket:jira:TEAM-7"]
+   },
+   "env": {
+    "generated_at": "2026-11-10T12:00:00-05:00",
+    "timezone": null
+   }
+  },
+  {
+   "name": "the largest relative date parses",
+   "query": "activity:-5214w..",
+   "expect": {
+    "matches": ["agent:claude-1", "bm-0000000000000001", "bm-0000000000000003", "effort:api-widgets", "effort:ticket-team-7", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001", "ws-0000000000000003"],
+    "rows": ["agent:claude-1", "bm-0000000000000001", "bm-0000000000000003", "effort:api-widgets", "effort:ticket-team-7", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001", "ws-0000000000000003"]
    }
   },
   {
@@ -1777,31 +1850,54 @@
    "name": "incompatible fields are named",
    "query": "prstate:open;status_category:done",
    "error": "fields prstate and status_category apply to no common node kind (prstate: bookmark, pr; status_category: ticket) at column 14; split them into separate queries",
-   "pos": 14
+   "pos": 14,
+   "fixed": "status_category:done"
   },
   {
    "name": "incompatible fields that exist today",
    "query": "checks:success;liveness:active",
    "error": "fields checks and liveness apply to no common node kind (checks: pr; liveness: agent) at column 16;",
-   "pos": 16
+   "pos": 16,
+   "fixed": "liveness:active"
   },
   {
    "name": "the disjoint earlier field is named",
    "query": "repo:acme/api;prstate:open;ticket_status:Done",
    "error": "fields prstate and ticket_status apply to no common node kind (prstate: bookmark, pr; ticket_status: ticket) at column 28;",
-   "pos": 28
+   "pos": 28,
+   "fixed": "repo:acme/api;ticket_status:Done"
   },
   {
    "name": "kind rows that no clause can match",
    "query": "kind:agent;prstate:open",
    "error": "the kind clause at column 1 leaves no rows: it allows agent, while prstate can only match bookmark, pr; change or remove it",
-   "pos": 1
+   "pos": 1,
+   "fixed": "prstate:open"
   },
   {
    "name": "kind clauses that allow no kind",
    "query": "kind:pr;kind:ticket",
    "error": "the kind clause at column 1 leaves no rows: it allows no kind; change or remove it",
-   "pos": 1
+   "pos": 1,
+   "fixed": "kind:ticket"
+  },
+  {
+   "name": "an overflowing relative date",
+   "query": "activity:-99999999999999999999d..",
+   "error": "\"-99999999999999999999d\" is out of range for activity at column 10; relative dates reach at most 36500d (about 100 years)",
+   "pos": 10
+  },
+  {
+   "name": "a relative date past 100 years",
+   "query": "activity:-200000000d..",
+   "error": "\"-200000000d\" is out of range for activity at column 10;",
+   "pos": 10
+  },
+  {
+   "name": "weeks count toward the relative cap",
+   "query": "activity:+5215w",
+   "error": "\"+5215w\" is out of range for activity at column 10;",
+   "pos": 10
   },
   {
    "name": "a planned field is not available yet",

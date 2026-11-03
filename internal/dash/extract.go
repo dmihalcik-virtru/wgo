@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -96,7 +97,11 @@ func CheckExtractArgs(reg *Registry, args ExtractArgs) error {
 		return extractArgsError("a sprint only applies to the sprint view")
 	}
 	switch args.Group {
-	case "", "effort", "repo", "none":
+	case "", "effort", "none":
+	case "repo":
+		if _, ok := reg.Field("repo"); !ok {
+			return extractArgsError("group repo needs the repo field, which this registry lacks; use effort or none")
+		}
 	default:
 		return extractArgsError("unknown group %q; use effort, repo or none", args.Group)
 	}
@@ -307,7 +312,7 @@ func (x *extractInput) valueText(name string, i int) string {
 		var parts []string
 		for _, n := range v.nums {
 			if f.Type == FieldDuration {
-				parts = append(parts, fmt.Sprintf("%.0fd", n))
+				parts = append(parts, fmt.Sprintf("%.0fd", math.Floor(n))) // whole days, as the query compares them
 			} else {
 				parts = append(parts, strings.TrimSuffix(strings.TrimRight(fmt.Sprintf("%.2f", n), "0"), "."))
 			}

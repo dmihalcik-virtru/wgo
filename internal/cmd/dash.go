@@ -203,7 +203,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	if err := applyDashConfig(cfg.Dash, flagChanged); err != nil {
 		return err
 	}
-	filters := dash.MergeFilters(cfg.Dash.Filters, dash.Fields())
+	filters := dash.MergeConfigFilters(cfg.Dash.Filters, dash.Fields())
 	for _, f := range filters {
 		if f.Hidden && !f.Builtin {
 			fmt.Fprintf(os.Stderr, "wgo dash: saved filter %s is unavailable: %s\n", f.Name, f.Reason)
@@ -291,7 +291,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		JiraBoard: cfg.Jira.Board,
 	})
 	opts := dash.Options{Dir: filepath.Join(st.BaseDir(), "cache", "dash"), Collector: collector}
-	if !dashJSON {
+	if serving {
 		// Bind first: a busy port fails before any collection starts.
 		ln, err := listenDash(dashPort)
 		if err != nil {

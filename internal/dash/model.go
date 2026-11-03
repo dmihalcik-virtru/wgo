@@ -91,6 +91,10 @@ type Snapshot struct {
 	// ResolvePeople; the query macros @me and @people read them. Omitted
 	// when nobody is known.
 	People []Person `json:"people,omitempty"`
+	// Timezone is the IANA name of the zone local days were counted in
+	// (Counts.Days), when known; queries count days in it too, so a
+	// timestamp across a DST change lands on its own local day.
+	Timezone string `json:"timezone,omitempty"`
 }
 
 // SourceStatus is the freshness of one data source. For remote sources the
