@@ -102,9 +102,11 @@ func TestParseFactsSearchResults(t *testing.T) {
 }
 
 // TestParseFactsAbsentCustomFields: configured custom fields that the
-// document lacks stay unknown, and a note names each field and its key.
+// document lacks stay unknown, without a note: issue types outside a
+// field's context (story points on a bug) routinely lack it, so a note
+// would stand forever even with the right ID.
 func TestParseFactsAbsentCustomFields(t *testing.T) {
-	raw := `{"key":"TEAM-7","fields":{"summary":"x","labels":[]}}`
+	raw := `{"key":"TEAM-7","fields":{"summary":"x","issuetype":{"name":"Bug"},"labels":[]}}`
 	f, notes, err := ParseFacts([]byte(raw), siteIDs)
 	require.NoError(t, err)
 	assert.Nil(t, f.StoryPoints)
@@ -112,13 +114,22 @@ func TestParseFactsAbsentCustomFields(t *testing.T) {
 	assert.Nil(t, f.Sprints)
 	assert.Empty(t, f.Team)
 	assert.Nil(t, f.Parent)
-	require.Len(t, notes, 4)
-	for _, key := range []string{"[jira.fields] story_points", "[jira.fields] sprint", "[jira.fields] team", "[jira.fields] epic_link"} {
-		assert.True(t, strings.Contains(strings.Join(notes, "\n"), key), "no note names %s: %v", key, notes)
+	assert.Empty(t, notes)
+}
+
+// TestParseFactsNotesNameTheCause: a note names the field and its key but
+// not the ticket, so the same cause on many tickets is one diagnostic.
+func TestParseFactsNotesNameTheCause(t *testing.T) {
+	doc := func(key string) []byte {
+		return []byte(`{"key":"` + key + `","fields":{"customfield_10016":{"value":3}}}`)
 	}
-	// The note is the same for every ticket, so it is reported once.
-	_, again, _ := ParseFacts([]byte(strings.Replace(raw, "TEAM-7", "TEAM-8", 1)), siteIDs)
-	assert.Equal(t, notes, again)
+	_, a, err := ParseFacts(doc("TEAM-7"), FieldIDs{StoryPoints: "customfield_10016"})
+	require.NoError(t, err)
+	_, b, err := ParseFacts(doc("TEAM-8"), FieldIDs{StoryPoints: "customfield_10016"})
+	require.NoError(t, err)
+	require.Len(t, a, 1)
+	assert.Equal(t, a, b)
+	assert.NotContains(t, a[0], "TEAM-7")
 }
 
 // TestParseFactsCustomFieldShapes covers the shapes custom fields take
@@ -216,7 +227,7 @@ func TestParseFactsCustomFieldShapes(t *testing.T) {
 				assert.Empty(t, notes)
 			} else {
 				require.Len(t, notes, 1)
-				assert.Contains(t, notes[0], "TEAM-5")
+				assert.NotContains(t, notes[0], "TEAM-5", "notes name the cause, not the ticket")
 				assert.Contains(t, notes[0], "[jira.fields] "+tc.odd)
 				assert.Contains(t, notes[0], tc.field)
 				assert.Contains(t, notes[0], "unknown")
@@ -289,6 +300,15 @@ func TestSprintTicketsJQL(t *testing.T) {
 	assert.Equal(t, `sprint = 1234 AND assignee in (currentUser(),'acct-bob','o\'brien@example.com') ORDER BY updated DESC`, got)
 }
 
+// TestQuoteJQLEscapesBackslash: a configured identity ending in a
+// backslash must not escape the closing quote and break out of the string.
+func TestQuoteJQLEscapesBackslash(t *testing.T) {
+	assert.Equal(t, `'acct\\'`, quoteJQL(`acct\`))
+	assert.Equal(t, `'a\\\' OR assignee is EMPTY OR \'b'`, quoteJQL(`a\' OR assignee is EMPTY OR 'b`))
+	got := SprintTicketsJQL(1, []string{`x\`, "currentUser()"})
+	assert.Equal(t, `sprint = 1 AND assignee in ('x\\',currentUser()) ORDER BY updated DESC`, got)
+}
+
 // fakeACLI puts an acli on PATH that records its arguments, one per line,
 // and prints out.
 func fakeACLI(t *testing.T, out string) (argsFile string) {
@@ -325,6 +345,18 @@ func TestSearchIssuesJSONBoundsTheSearch(t *testing.T) {
 	list, err := SearchIssuesJSON("sprint = 1234", SearchFactFields, 201)
 	require.NoError(t, err)
 	assert.Len(t, list, 2)
-	assert.Equal(t, []string{"jira", "workitem", "search", "--jql", "sprint = 1234", "--json", "--limit", "201",
+	assert.Equal(t, []string{"jira", "workitem", "search", "--jql", "sprint = 1234", "--json", "--paginate", "--limit", "201",
 		"--fields", "key,summary,status,issuetype,priority,assignee,labels"}, readArgs(t, args))
+}
+
+// TestSearchIssuesJSONReadsEveryPage: with --paginate acli may print one
+// array per page; every page is read.
+func TestSearchIssuesJSONReadsEveryPage(t *testing.T) {
+	fakeACLI(t, `[{"key":"TEAM-1"},{"key":"TEAM-2"}]
+[{"key":"TEAM-3"}]
+`)
+	list, err := SearchIssuesJSON("sprint = 1234", SearchFactFields, 201)
+	require.NoError(t, err)
+	require.Len(t, list, 3)
+	assert.JSONEq(t, `{"key":"TEAM-3"}`, string(list[2]))
 }

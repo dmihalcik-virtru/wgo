@@ -143,7 +143,9 @@ type rawIssue struct {
 // name the custom fields to read. Custom field values vary in shape across
 // sites; one ParseFacts cannot read stays unknown, and a note says which
 // field and [jira.fields] key it was. A configured field the document lacks
-// is noted too. A document that is not a work item is an error.
+// is unknown without a note: issue types outside a field's context lack it.
+// Notes never name the ticket, so callers can count them by cause. A
+// document that is not a work item is an error.
 func ParseFacts(raw []byte, ids FieldIDs) (Facts, []string, error) {
 	var is rawIssue
 	if err := json.Unmarshal(raw, &is); err != nil {
@@ -220,22 +222,23 @@ func ParseFacts(raw []byte, ids FieldIDs) (Facts, []string, error) {
 	f.UpdatedAt = at("updated")
 
 	var notes []string
+	// odd notes a value of a shape ParseFacts cannot read. The note names
+	// the cause, not the ticket, so the same cause on many tickets can be
+	// reported once with a count.
 	odd := func(name, id string, raw json.RawMessage) {
-		notes = append(notes, fmt.Sprintf("Jira %s: %s field %s ([jira.fields] %s) holds an unrecognised %s value, so its %s are unknown",
-			is.Key, fieldLabel[name], id, name, jsonKind(raw), fieldLabel[name]))
+		notes = append(notes, fmt.Sprintf("Jira's %s field %s ([jira.fields] %s) holds an unrecognised %s value, so those tickets' %s are unknown",
+			fieldLabel[name], id, name, jsonKind(raw), fieldLabel[name]))
 	}
-	// read returns a configured custom field's value, noting a field the
-	// document does not carry. ok is false when there is nothing to parse.
+	// read returns a configured custom field's value. ok is false when there
+	// is nothing to parse: no ID, or a document without the field. A field
+	// is routinely missing from issue types outside its context (story
+	// points on a bug), so that is unknown without a note.
 	read := func(name string) (id string, raw json.RawMessage, ok bool) {
 		id = ids.Get(name)
 		if id == "" {
 			return "", nil, false
 		}
 		raw, ok = fields[id]
-		if !ok && len(fields) > 0 {
-			notes = append(notes, fmt.Sprintf("Jira field %s ([jira.fields] %s) is missing from some tickets, so their %s are unknown; check the field ID",
-				id, name, fieldLabel[name]))
-		}
 		return id, raw, ok
 	}
 

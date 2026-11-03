@@ -87,6 +87,10 @@ type Info struct {
 	// Notes say which facts could not be read and why, naming the
 	// [jira.fields] key to fix; wgo dash shows them as diagnostics.
 	Notes []string `json:"notes,omitempty"`
+	// Partial marks an entry whose fetch could not read every field (acli
+	// refused them), so its custom field facts are unknown. It is served
+	// under the shorter negativeTTL, so a full read is retried soon.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // SprintRef names a sprint a ticket is or was in.
@@ -148,10 +152,10 @@ func ReadFailed(ticket string, ttl time.Duration) (Info, State, bool) {
 		logf("jira cache: corrupt entry %s: %v", path, err)
 		return Info{}, Miss, false
 	}
-	// A negative entry expires under the shorter negativeTTL; a normal entry
-	// under the caller's ttl.
+	// A negative or partial entry expires under the shorter negativeTTL; a
+	// normal entry under the caller's ttl.
 	effTTL := ttl
-	if e.Failed && negativeTTL < ttl {
+	if (e.Failed || e.Info.Partial) && negativeTTL < ttl {
 		effTTL = negativeTTL
 	}
 	if time.Since(e.FetchedAt) >= effTTL {

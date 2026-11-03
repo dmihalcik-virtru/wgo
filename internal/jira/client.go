@@ -164,8 +164,11 @@ func inFlightClause(assignee string, statuses []string) string {
 }
 
 // quoteJQL wraps a value in single quotes, escaping any embedded single quotes.
+// A backslash is escaped first, so a value ending in one cannot escape the
+// closing quote.
 func quoteJQL(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "\\'") + "'"
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	return "'" + strings.ReplaceAll(s, "'", `\'`) + "'"
 }
 
 // GetIssue fetches summary, description, status, priority, and assignee for the given ticket.
@@ -193,11 +196,14 @@ func GetIssueJSON(ticket, fields string) ([]byte, error) {
 	return []byte(out), nil
 }
 
-// SearchIssuesJSON runs a JQL search for at most limit work items and
+// SearchIssuesJSON runs a JQL search for up to limit work items and
 // returns each one's JSON, for ParseFacts. fields is limited to what acli
-// allows, as for SearchIssues.
+// allows, as for SearchIssues. It asks acli to paginate, since Jira serves
+// at most a page of issues per request; acli may then print one JSON array
+// per page, and every page is read. acli may return more than limit, so a
+// caller that bounds its results cuts them itself.
 func SearchIssuesJSON(jql string, fields []string, limit int) ([]json.RawMessage, error) {
-	args := []string{"workitem", "search", "--jql", jql, "--json", "--limit", fmt.Sprintf("%d", limit)}
+	args := []string{"workitem", "search", "--jql", jql, "--json", "--paginate", "--limit", fmt.Sprintf("%d", limit)}
 	if len(fields) > 0 {
 		args = append(args, "--fields", strings.Join(fields, ","))
 	}
@@ -205,9 +211,19 @@ func SearchIssuesJSON(jql string, fields []string, limit int) ([]json.RawMessage
 	if err != nil {
 		return nil, fmt.Errorf("search issues: %w\n%s", err, out)
 	}
+	return parseIssuePages(out)
+}
+
+// parseIssuePages decodes one or more concatenated JSON arrays of issues.
+func parseIssuePages(raw string) ([]json.RawMessage, error) {
+	dec := json.NewDecoder(strings.NewReader(raw))
 	var issues []json.RawMessage
-	if err := json.Unmarshal([]byte(out), &issues); err != nil {
-		return nil, fmt.Errorf("parse search results: %w", err)
+	for dec.More() {
+		var page []json.RawMessage
+		if err := dec.Decode(&page); err != nil {
+			return nil, fmt.Errorf("parse search results: %w", err)
+		}
+		issues = append(issues, page...)
 	}
 	return issues, nil
 }
