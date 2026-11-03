@@ -1246,7 +1246,10 @@ The board's sprints are cached for 15 minutes in
 `~/.wgo/cache/jira/sprints/board-<id>.json`. Each active sprint's search
 is bounded to 200 tickets assigned to the people `[[dash.people]]` names
 (their `jira` values, plus `currentUser()`); a sprint with more is marked
-truncated. Without `acli`, or with its login expired, the `jira` and
+truncated. A Jira identity that Jira rejects is reported with the config
+key it came from, and the others' tickets are still shown. A sprint whose
+search failed keeps its last known tickets, marked stale, and is retried
+after 2 minutes. Without `acli`, or with its login expired, the `jira` and
 `jira_sprints` sources are unknown or failed and say why, and the rest of
 the dashboard is unaffected. `wgo statusline` still reads only the ticket's
 cache entry.
