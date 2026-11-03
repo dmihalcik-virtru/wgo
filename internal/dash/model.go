@@ -71,6 +71,8 @@ const (
 	SourceGitHubInventory = "github_inventory"
 	// SourceJiraSprints is the board's sprints and their tickets (gh-98).
 	SourceJiraSprints = "jira_sprints"
+	// SourceGitHubTimelines is the followed PRs' review histories (gh-104).
+	SourceGitHubTimelines = "github_timelines"
 )
 
 // Snapshot is one immutable view of ongoing work. Once published by a Dash
@@ -311,6 +313,9 @@ type PRInfo struct {
 	// Facts are the derived attention facts (gh-99): whose move it is and
 	// why, CI, size and staleness. Set at the end of collection.
 	Facts *PRFacts `json:"facts,omitempty"`
+	// Timeline is the PR's review history as segments (gh-104), omitted
+	// while it has not been fetched.
+	Timeline *PRTimeline `json:"timeline,omitempty"`
 }
 
 // TicketInfo describes a Jira or GitHub issue ticket.

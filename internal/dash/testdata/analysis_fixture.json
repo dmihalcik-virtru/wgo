@@ -177,7 +177,7 @@
         "facts": {
           "move": "reviewer",
           "reasons": [
-            {"code": "awaiting_review", "evidence": "ready since Oct 21; review requested from bob Oct 26"},
+            {"code": "awaiting_review", "evidence": "ready since Oct 21; review requested from bob Oct 26; waiting since Oct 26 by its timeline"},
             {"code": "ci_systemic_only", "evidence": "only vendor-hsm-tests fails; it fails on 5 of 6 open PRs by the configured people in acme/api"}
           ],
           "move_people": ["bob"],
@@ -186,7 +186,33 @@
           "ci": "systemic_only",
           "size": 222,
           "size_bucket": "m",
-          "stale": false
+          "stale": false,
+          "waiting_source": "timeline"
+        },
+        "timeline": {
+          "freshness": "fresh",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-10-29T14:10:00Z",
+          "segments": [
+            {"state": "draft", "start": "2026-10-20T09:00:00Z"},
+            {"state": "waiting", "start": "2026-10-21T15:30:00Z", "reviewers": ["carol"]},
+            {"state": "unattended", "start": "2026-10-23T11:00:00Z"},
+            {"state": "waiting", "start": "2026-10-26T10:00:00Z", "reviewers": ["bob"]}
+          ],
+          "lanes": [
+            {
+              "reviewer": "carol",
+              "waits": [
+                {"start": "2026-10-21T15:30:00Z", "end": "2026-10-23T11:00:00Z"}
+              ]
+            },
+            {
+              "reviewer": "bob",
+              "waits": [
+                {"start": "2026-10-26T10:00:00Z"}
+              ]
+            }
+          ]
         }
       }
     },
@@ -237,7 +263,7 @@
         "facts": {
           "move": "reviewer",
           "reasons": [
-            {"code": "awaiting_review", "evidence": "ready since Oct 22; review requested from bob Oct 27"},
+            {"code": "awaiting_review", "evidence": "ready since Oct 22; review requested from bob Oct 27; waiting since Oct 27 by its timeline"},
             {"code": "ci_systemic_only", "evidence": "only vendor-hsm-tests fails; it fails on 5 of 6 open PRs by the configured people in acme/api"}
           ],
           "move_people": ["bob"],
@@ -246,7 +272,30 @@
           "ci": "systemic_only",
           "size": 108,
           "size_bucket": "m",
-          "stale": false
+          "stale": false,
+          "waiting_source": "timeline"
+        },
+        "timeline": {
+          "freshness": "fresh",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-10-27T09:05:00Z",
+          "segments": [
+            {"state": "waiting", "start": "2026-10-22T11:00:00Z", "reviewers": ["bob"]},
+            {"state": "changes_requested", "start": "2026-10-24T16:20:00Z", "reviewers": ["bob"]},
+            {"state": "waiting", "start": "2026-10-27T09:00:00Z", "reviewers": ["bob"]}
+          ],
+          "lanes": [
+            {
+              "reviewer": "bob",
+              "waits": [
+                {"start": "2026-10-22T11:00:00Z", "end": "2026-10-24T16:20:00Z"},
+                {"start": "2026-10-27T09:00:00Z"}
+              ]
+            }
+          ],
+          "reviews": [
+            {"reviewer": "bob", "state": "CHANGES_REQUESTED", "at": "2026-10-24T16:20:00Z"}
+          ]
         }
       }
     },
@@ -349,7 +398,7 @@
         "facts": {
           "move": "reviewer",
           "reasons": [
-            {"code": "awaiting_review", "evidence": "ready since Oct 24; review requested from team:web Oct 25 only; alice through a team"},
+            {"code": "awaiting_review", "evidence": "ready since Oct 24; review requested from team:web Oct 25 only; alice through a team; waiting since Oct 25 by its timeline"},
             {"code": "ci_systemic_only", "evidence": "only vendor-hsm-tests fails; it fails on 5 of 6 open PRs by the configured people in acme/api"},
             {"code": "no_ticket", "evidence": "no ticket key in the branch, title or body"},
             {"code": "team_only", "evidence": "every outstanding request is a team: team:web"}
@@ -360,7 +409,25 @@
           "ci": "systemic_only",
           "size": 72,
           "size_bucket": "s",
-          "stale": false
+          "stale": false,
+          "waiting_source": "timeline"
+        },
+        "timeline": {
+          "freshness": "fresh",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-10-25T13:00:00Z",
+          "segments": [
+            {"state": "unattended", "start": "2026-10-24T10:00:00Z"},
+            {"state": "waiting", "start": "2026-10-25T12:55:00Z", "reviewers": ["team:web"]}
+          ],
+          "lanes": [
+            {
+              "reviewer": "team:web",
+              "waits": [
+                {"start": "2026-10-25T12:55:00Z"}
+              ]
+            }
+          ]
         }
       }
     },
@@ -419,6 +486,28 @@
           "size": 2230,
           "size_bucket": "xl",
           "stale": true
+        },
+        "timeline": {
+          "freshness": "fresh",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-07-20T09:00:00Z",
+          "segments": [
+            {"state": "waiting", "start": "2026-06-02T15:00:00Z", "reviewers": ["bob", "alice"]}
+          ],
+          "lanes": [
+            {
+              "reviewer": "bob",
+              "waits": [
+                {"start": "2026-06-02T15:00:00Z", "end": "2026-06-10T11:00:00Z"}
+              ]
+            },
+            {
+              "reviewer": "alice",
+              "waits": [
+                {"start": "2026-06-03T09:00:00Z"}
+              ]
+            }
+          ]
         }
       }
     },
@@ -475,6 +564,26 @@
           "size": 43,
           "size_bucket": "s",
           "stale": false
+        },
+        "timeline": {
+          "freshness": "fresh",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-10-28T12:00:00Z",
+          "segments": [
+            {"state": "waiting", "start": "2026-10-23T09:30:00Z", "reviewers": ["alice"]},
+            {"state": "approved", "start": "2026-10-28T11:45:00Z", "reviewers": ["alice"]}
+          ],
+          "lanes": [
+            {
+              "reviewer": "alice",
+              "waits": [
+                {"start": "2026-10-23T09:30:00Z", "end": "2026-10-28T11:45:00Z"}
+              ]
+            }
+          ],
+          "reviews": [
+            {"reviewer": "alice", "state": "APPROVED", "at": "2026-10-28T11:45:00Z"}
+          ]
         }
       }
     },
@@ -530,6 +639,33 @@
           "size": 180,
           "size_bucket": "m",
           "stale": false
+        },
+        "timeline": {
+          "freshness": "fresh",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-10-28T13:05:00Z",
+          "segments": [
+            {"state": "waiting", "start": "2026-10-21T10:00:00Z", "reviewers": ["bob", "carol"]},
+            {"state": "approved", "start": "2026-10-27T17:00:00Z", "reviewers": ["bob"]},
+            {"state": "merged", "start": "2026-10-28T13:00:00Z"}
+          ],
+          "lanes": [
+            {
+              "reviewer": "bob",
+              "waits": [
+                {"start": "2026-10-21T10:00:00Z", "end": "2026-10-27T17:00:00Z"}
+              ]
+            },
+            {
+              "reviewer": "carol",
+              "waits": [
+                {"start": "2026-10-22T09:00:00Z", "end": "2026-10-23T15:00:00Z"}
+              ]
+            }
+          ],
+          "reviews": [
+            {"reviewer": "bob", "state": "APPROVED", "at": "2026-10-27T17:00:00Z"}
+          ]
         }
       }
     },
@@ -584,6 +720,29 @@
           "size": 55,
           "size_bucket": "s",
           "stale": false
+        },
+        "timeline": {
+          "freshness": "fresh",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-10-27T10:00:00Z",
+          "segments": [
+            {"state": "unattended", "start": "2026-10-15T09:00:00Z"},
+            {"state": "draft", "start": "2026-10-15T14:00:00Z"},
+            {"state": "waiting", "start": "2026-10-16T10:00:00Z", "reviewers": ["bob"]},
+            {"state": "approved", "start": "2026-10-19T14:00:00Z", "reviewers": ["bob"]},
+            {"state": "merged", "start": "2026-10-19T15:00:00Z"}
+          ],
+          "lanes": [
+            {
+              "reviewer": "bob",
+              "waits": [
+                {"start": "2026-10-16T10:00:00Z", "end": "2026-10-19T14:00:00Z"}
+              ]
+            }
+          ],
+          "reviews": [
+            {"reviewer": "bob", "state": "APPROVED", "at": "2026-10-19T14:00:00Z"}
+          ]
         }
       }
     },
@@ -633,6 +792,17 @@
           "size": 420,
           "size_bucket": "m",
           "stale": false
+        },
+        "timeline": {
+          "freshness": "fresh",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-10-21T08:00:00Z",
+          "segments": [
+            {"state": "unattended", "start": "2026-10-17T10:00:00Z"},
+            {"state": "closed", "start": "2026-10-18T12:00:00Z"},
+            {"state": "unattended", "start": "2026-10-19T09:00:00Z"},
+            {"state": "closed", "start": "2026-10-21T08:00:00Z"}
+          ]
         }
       }
     },
@@ -840,14 +1010,24 @@
         "facts": {
           "move": "nobody",
           "reasons": [
-            {"code": "no_reviewer", "evidence": "ready since Oct 28; no review requested and no approval"}
+            {"code": "no_reviewer", "evidence": "ready since Oct 28; no review requested and no approval; waiting since Oct 28 by its timeline"}
           ],
           "move_people": [],
           "waiting_since": "2026-10-28T09:00:00Z",
           "ci": "green",
           "size": 89,
           "size_bucket": "s",
-          "stale": false
+          "stale": false,
+          "waiting_source": "timeline"
+        },
+        "timeline": {
+          "freshness": "fresh",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-10-29T09:00:00Z",
+          "segments": [
+            {"state": "draft", "start": "2026-10-27T15:00:00Z"},
+            {"state": "unattended", "start": "2026-10-28T09:00:00Z"}
+          ]
         }
       }
     },
@@ -900,7 +1080,7 @@
         "facts": {
           "move": "reviewer",
           "reasons": [
-            {"code": "awaiting_review", "evidence": "ready since Oct 26; review requested from alice Oct 26 and team:web"},
+            {"code": "awaiting_review", "evidence": "ready since Oct 26; review requested from alice Oct 26 and team:web; wait estimated: the PR's timeline predates its last update"},
             {"code": "ci_pending", "evidence": "e2e is pending"}
           ],
           "move_people": ["alice", "team:web"],
@@ -911,7 +1091,31 @@
           "size": 25,
           "size_bucket": "s",
           "stale": false,
-          "uncertain": ["requested_at:team:web"]
+          "uncertain": ["requested_at:team:web"],
+          "waiting_source": "estimate"
+        },
+        "timeline": {
+          "freshness": "stale",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-10-28T10:00:00Z",
+          "segments": [
+            {"state": "draft", "start": "2026-10-26T08:00:00Z"},
+            {"state": "waiting", "start": "2026-10-26T12:00:00Z", "reviewers": ["team:web", "alice"]}
+          ],
+          "lanes": [
+            {
+              "reviewer": "team:web",
+              "waits": [
+                {"start": "2026-10-26T12:00:00Z"}
+              ]
+            },
+            {
+              "reviewer": "alice",
+              "waits": [
+                {"start": "2026-10-26T12:05:00Z"}
+              ]
+            }
+          ]
         }
       }
     },
@@ -1077,6 +1281,27 @@
           "size": 89,
           "size_bucket": "s",
           "stale": false
+        },
+        "timeline": {
+          "freshness": "fresh",
+          "fetched_at": "2026-10-30T15:00:00Z",
+          "updated_at": "2026-10-29T08:00:00Z",
+          "segments": [
+            {"state": "waiting", "start": "2026-10-20T14:00:00Z", "reviewers": ["bob"]},
+            {"state": "approved", "start": "2026-10-22T13:00:00Z", "reviewers": ["bob"]},
+            {"state": "merged", "start": "2026-10-22T14:00:00Z"}
+          ],
+          "lanes": [
+            {
+              "reviewer": "bob",
+              "waits": [
+                {"start": "2026-10-20T14:00:00Z", "end": "2026-10-22T13:00:00Z"}
+              ]
+            }
+          ],
+          "reviews": [
+            {"reviewer": "bob", "state": "APPROVED", "at": "2026-10-22T13:00:00Z"}
+          ]
         }
       }
     },
@@ -1157,12 +1382,13 @@
         "facts": {
           "move": "nobody",
           "reasons": [
-            {"code": "no_reviewer", "evidence": "no review requested and no approval"}
+            {"code": "no_reviewer", "evidence": "no review requested and no approval; wait estimated: no PR timeline yet"}
           ],
           "move_people": [],
           "ci": "green",
           "stale": false,
-          "uncertain": ["additions", "deletions", "ticket_keys", "mergeable", "ready_at"]
+          "uncertain": ["additions", "deletions", "ticket_keys", "mergeable", "ready_at"],
+          "waiting_source": "estimate"
         }
       }
     },

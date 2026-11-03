@@ -238,6 +238,7 @@ func (v *validator) checkPR(id string, p *PRInfo) {
 	for _, src := range p.Sources {
 		v.enum(id, "source", src, PRSourceBookmark, PRSourceInventory)
 	}
+	v.checkTimeline(id, p.Timeline)
 }
 
 // checkTicket checks the closed vocabularies of a ticket's Jira facts.

@@ -393,7 +393,7 @@ func TestPRWithOnlyABookmarkLookup(t *testing.T) {
 	p := &PRInfo{Number: 7, Repo: "acme/web", State: "open", ReviewDecision: reviewRequired, Checks: "success", ReviewersKnown: true, UpdatedAt: day(27, 12)}
 	f := prFacts(p, true, nil, factPeople, DefaultFactThresholds(), factsNow)
 	b, _ := json.Marshal(f)
-	want := `{"move":"nobody","reasons":[{"code":"no_reviewer","evidence":"no review requested and no approval"}],"move_people":[],"ci":"green","stale":false,"uncertain":["additions","deletions","mergeable","ready_at"]}`
+	want := `{"move":"nobody","reasons":[{"code":"no_reviewer","evidence":"no review requested and no approval; wait estimated: no PR timeline yet"}],"move_people":[],"ci":"green","stale":false,"uncertain":["additions","deletions","mergeable","ready_at"],"waiting_source":"estimate"}`
 	if string(b) != want {
 		t.Errorf("facts\n got %s\nwant %s", b, want)
 	}
