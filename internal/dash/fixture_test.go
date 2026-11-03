@@ -59,7 +59,7 @@ func liveFixture(now time.Time) *Snapshot {
 			{ID: bm3, Kind: KindBookmark, Label: "WGO-12-fix", Bookmark: &BookmarkInfo{Name: "WGO-12-fix", Repo: "opentdf/sdk", PRLookup: Stale, PRFetchedAt: ago(3 * time.Hour), PRCount: 1}},
 			{ID: bm5, Kind: KindBookmark, Label: "spike", Bookmark: &BookmarkInfo{Name: "spike", Repo: "", PRLookup: Unknown}},
 			{ID: pr1, Kind: KindPR, Label: "virtru/wgo#76", PR: &PRInfo{Number: 76, Repo: "virtru/wgo", URL: "https://github.com/virtru/wgo/pull/76", Title: "feat(dash): live explorer", State: "open", IsDraft: true,
-				Checks: "PENDING", ReviewersKnown: true, UpdatedAt: ago(30 * time.Minute), Freshness: Fresh, BookmarkID: bm1}},
+				Checks: "PENDING", RequestedReviewers: []string{}, ReviewersKnown: true, UpdatedAt: ago(30 * time.Minute), Freshness: Fresh, BookmarkID: bm1}},
 			{ID: pr2, Kind: KindPR, Label: "virtru/wgo#75", PR: &PRInfo{Number: 75, Repo: "virtru/wgo", URL: "https://github.com/virtru/wgo/pull/75", Title: "feat(dash): snapshot API", State: "open",
 				ReviewDecision: "REVIEW_REQUIRED", Checks: "SUCCESS", RequestedReviewers: []string{"octocat"}, ReviewersKnown: true, UpdatedAt: ago(2 * time.Hour), Freshness: Fresh, BookmarkID: bm2}},
 			{ID: pr3, Kind: KindPR, Label: "opentdf/sdk#12", PR: &PRInfo{Number: 12, Repo: "opentdf/sdk", URL: "https://github.com/opentdf/sdk/pull/12", Title: "fix: retry manifests", State: "merged",

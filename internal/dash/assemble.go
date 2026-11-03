@@ -206,6 +206,10 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 				if repoSlug != "" {
 					label = repoSlug + label
 				}
+				var reviewers []string
+				if res.ReviewersKnown {
+					reviewers = append([]string{}, pr.RequestedReviewers...)
+				}
 				b.node(Node{ID: id, Kind: KindPR, Label: label, PR: &PRInfo{
 					Number:             pr.Number,
 					Repo:               repoKey,
@@ -215,7 +219,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 					IsDraft:            pr.IsDraft,
 					ReviewDecision:     pr.ReviewDecision,
 					Checks:             pr.Checks.State,
-					RequestedReviewers: append([]string(nil), pr.RequestedReviewers...),
+					RequestedReviewers: reviewers,
 					ReviewersKnown:     res.ReviewersKnown,
 					UpdatedAt:          pr.UpdatedAt,
 					Freshness:          bi.PRLookup,
