@@ -244,8 +244,9 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 }
 
 // dashQueue bounds a refresh's pending lookups. The PR inventory can bring a
-// few hundred PRs, each naming a ticket to look up, which the default bound
-// would drop and report as not run.
+// few hundred PRs, each naming a ticket to look up, and two full sprints'
+// tickets alone are 400 lookups, which the default bound would drop and
+// report as not run.
 const dashQueue = 4096
 
 // githubUnavailable is github.ErrNoAuth's message when there is no

@@ -32,6 +32,10 @@ type BoardSprints struct {
 	Assignees []string `json:"assignees,omitempty"`
 	// Site is the Jira host, for browse links, when acli reported one.
 	Site string `json:"site,omitempty"`
+	// Notes are problems with the searches that did not fail them, such as
+	// a configured Jira identity that Jira rejected; wgo dash shows them as
+	// diagnostics.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // SprintEntry is one sprint of a board.
@@ -45,10 +49,14 @@ type SprintEntry struct {
 	End   time.Time `json:"end,omitzero"`
 	// Tickets are an active sprint's tickets, at most MaxSprintTickets,
 	// with the facts the search reported. It is nil when not searched (a
-	// future sprint) or when the search failed (Error).
+	// future sprint), or when the search failed (Error) and no earlier
+	// search of the sprint is cached.
 	Tickets   []SprintTicket `json:"tickets,omitzero"`
 	Truncated bool           `json:"truncated,omitempty"`
 	Error     string         `json:"error,omitempty"`
+	// TicketsFetchedAt is set when the search failed and Tickets are kept
+	// from an earlier one: when that search ran.
+	TicketsFetchedAt time.Time `json:"tickets_fetched_at,omitzero"`
 }
 
 // SprintTicket is a ticket a sprint search found.
@@ -85,8 +93,8 @@ type SprintsResult struct {
 }
 
 // ReadSprints returns a board's cached sprints and their freshness. It never
-// makes a network call. A negative entry expires under the shorter
-// negativeTTL, like a ticket's.
+// makes a network call. A negative entry, or one in which a sprint's search
+// failed, expires under the shorter negativeTTL, so it is retried soon.
 func ReadSprints(board int, ttl time.Duration) SprintsResult {
 	path, err := sprintsPath(board)
 	if err != nil {
@@ -106,13 +114,23 @@ func ReadSprints(board int, ttl time.Duration) SprintsResult {
 	}
 	r := SprintsResult{Data: e.Data, FetchedAt: e.FetchedAt, Failed: e.Failed, Err: e.Error, State: Fresh}
 	effTTL := ttl
-	if e.Failed && negativeTTL < ttl {
+	if (e.Failed || e.Data.searchFailed()) && negativeTTL < ttl {
 		effTTL = negativeTTL
 	}
 	if time.Since(e.FetchedAt) >= effTTL {
 		r.State = Stale
 	}
 	return r
+}
+
+// searchFailed reports whether any sprint's ticket search failed.
+func (b BoardSprints) searchFailed() bool {
+	for _, s := range b.Sprints {
+		if s.Error != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // RefreshSprints fetches a board's sprints and writes them through the
@@ -136,6 +154,7 @@ func RefreshSprints(f SprintFetcher, board int, assignees []string) error {
 	}
 	data.Board = board
 	data.Assignees = SortedAssignees(assignees)
+	keepTickets(&data, ReadSprints(board, 0))
 	if err := writeSprints(board, sprintsEntry{Data: data, FetchedAt: time.Now()}); err != nil {
 		return fmt.Errorf("jira cache write: %w", err)
 	}
@@ -146,6 +165,30 @@ func RefreshSprints(f SprintFetcher, board int, assignees []string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// keepTickets gives each sprint whose search failed the tickets of the
+// previous entry's search of it, if any, stamped with when that search ran:
+// one failed search must not empty a sprint until the next refresh.
+func keepTickets(data *BoardSprints, prev SprintsResult) {
+	if prev.State == Miss || prev.Failed {
+		return
+	}
+	for i := range data.Sprints {
+		s := &data.Sprints[i]
+		if s.Error == "" || s.Tickets != nil {
+			continue
+		}
+		for _, p := range prev.Data.Sprints {
+			if p.ID == s.ID && p.Tickets != nil {
+				s.Tickets, s.Truncated = p.Tickets, p.Truncated
+				s.TicketsFetchedAt = p.TicketsFetchedAt
+				if s.TicketsFetchedAt.IsZero() {
+					s.TicketsFetchedAt = prev.FetchedAt
+				}
+			}
+		}
+	}
 }
 
 // SortedAssignees returns assignees sorted and deduplicated: the form
