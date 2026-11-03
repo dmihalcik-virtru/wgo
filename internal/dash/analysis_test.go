@@ -127,7 +127,10 @@ func TestAssembleAnalysisWiring(t *testing.T) {
 // TestComputeCountsTrackedAndMerged covers the counts gh-97 adds: a PR
 // attached by a tracks edge counts under that effort, an inventory PR on a
 // bookmark whose lookup is unknown counts as a PR rather than unknown, and
-// merged PRs are counted per day of merge inside the window only.
+// merged PRs are counted per day of merge inside the window only. An effort
+// whose merged series is unknown has none rather than zeros: it holds a
+// bookmark of unknown state, or a merged PR of unknown merge time that may
+// have merged in the window.
 func TestComputeCountsTrackedAndMerged(t *testing.T) {
 	at := time.Date(2026, 10, 10, 12, 0, 0, 0, asmZone)
 	mergedAt := func(days int) time.Time { return at.AddDate(0, 0, -days) }
@@ -142,8 +145,15 @@ func TestComputeCountsTrackedAndMerged(t *testing.T) {
 			{ID: "pr:2", Kind: KindPR, PR: &PRInfo{State: "merged", MergedAt: mergedAt(0)}},
 			{ID: "pr:3", Kind: KindPR, PR: &PRInfo{State: "merged", MergedAt: mergedAt(2)}},
 			{ID: "pr:4", Kind: KindPR, PR: &PRInfo{State: "merged", MergedAt: mergedAt(3)}}, // before the window
-			{ID: "pr:5", Kind: KindPR, PR: &PRInfo{State: "merged"}},                        // merge time unknown
+			// Merge time unknown, but updated (so merged) before the window.
+			{ID: "pr:5", Kind: KindPR, PR: &PRInfo{State: "merged", UpdatedAt: mergedAt(4)}},
 			{ID: "pr:6", Kind: KindPR, PR: &PRInfo{State: "open", IsDraft: true}},
+			{ID: "effort:f", Kind: KindEffort, Effort: &EffortInfo{Key: "f", Group: GroupEffort}},
+			{ID: "effort:g", Kind: KindEffort, Effort: &EffortInfo{Key: "g", Group: GroupEffort}},
+			// Merge time unknown and updated in the window: it may have merged in it.
+			{ID: "pr:7", Kind: KindPR, PR: &PRInfo{State: "merged", UpdatedAt: mergedAt(1)}},
+			// Merge time and update time unknown.
+			{ID: "pr:8", Kind: KindPR, PR: &PRInfo{State: "merged"}},
 		},
 		Edges: []Edge{
 			{"bm-1", "pr:1", EdgePR},
@@ -153,6 +163,9 @@ func TestComputeCountsTrackedAndMerged(t *testing.T) {
 			{"effort:repo:acme/api", "pr:4", EdgeTracks},
 			{"effort:repo:acme/api", "pr:5", EdgeTracks},
 			{"effort:repo:acme/api", "pr:6", EdgeTracks},
+			{"effort:f", "pr:3", EdgeTracks},
+			{"effort:f", "pr:7", EdgeTracks},
+			{"effort:g", "pr:8", EdgeTracks},
 		},
 	}
 	ls := &localState{at: at, days: 3}
@@ -160,11 +173,15 @@ func TestComputeCountsTrackedAndMerged(t *testing.T) {
 	wantStates := map[string]map[string]int{
 		"effort:e":             {"open": 1, "unknown": 1, "merged": 1},
 		"effort:repo:acme/api": {"merged": 4, "draft": 1},
+		"effort:f":             {"merged": 2},
+		"effort:g":             {"merged": 1},
 	}
 	if !reflect.DeepEqual(c.PRStates, wantStates) {
 		t.Errorf("pr_states %v, want %v", c.PRStates, wantStates)
 	}
-	wantMerged := map[string][]int{"effort:e": {0, 0, 1}, "effort:repo:acme/api": {1, 0, 1}}
+	// effort:e has a bookmark of unknown state; f and g a merged PR that
+	// may have merged in the window at an unknown time.
+	wantMerged := map[string][]int{"effort:repo:acme/api": {1, 0, 1}}
 	if !reflect.DeepEqual(c.Merged, wantMerged) {
 		t.Errorf("merged %v, want %v", c.Merged, wantMerged)
 	}

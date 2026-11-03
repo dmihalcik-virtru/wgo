@@ -212,6 +212,9 @@ func (v *validator) checkPR(id string, p *PRInfo) {
 			v.addf("pr facts: %q has a review request with no reviewer", id)
 		}
 		v.enum(id, "review request kind", r.Kind, ReviewerUser, ReviewerTeam)
+		if r.Kind != "" && (r.Kind == ReviewerTeam) != strings.HasPrefix(r.Reviewer, teamPrefix) {
+			v.addf("pr facts: %q has review request %q of kind %s; a team is %q and only a team is", id, r.Reviewer, r.Kind, teamPrefix+"<slug>")
+		}
 	}
 	for _, r := range p.Reviews {
 		v.enum(id, "review state", r.State, ReviewApproved, ReviewChangesRequested, ReviewCommented, ReviewDismissed)

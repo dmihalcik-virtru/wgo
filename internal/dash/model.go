@@ -235,7 +235,10 @@ type PRInfo struct {
 	RequestedReviewers []string  `json:"requested_reviewers,omitempty"`
 	ReviewersKnown     bool      `json:"reviewers_known"`
 	UpdatedAt          time.Time `json:"updated_at,omitzero"`
-	Freshness          Freshness `json:"freshness"`
+	// Freshness is the worse of the freshness of the sources that found
+	// the PR: the bookmark's PR lookup, and the inventory set its facts
+	// were read from. FetchedAt is the older of their fetch times.
+	Freshness Freshness `json:"freshness"`
 	// BookmarkID is the node ID of the bookmark the PR was found for. It is
 	// empty for a PR that only the inventory found and that is attached to
 	// an effort by a tracks edge instead (gh-97).
@@ -281,6 +284,9 @@ type PRInfo struct {
 	// Sources says how the PR was found: PRSourceBookmark, PRSourceInventory
 	// or both, sorted.
 	Sources []string `json:"sources,omitempty"`
+	// FetchedAt is when the PR's data was fetched: the older fetch of its
+	// sources, as Freshness is the worse of theirs.
+	FetchedAt time.Time `json:"fetched_at,omitzero"`
 }
 
 // TicketInfo describes a Jira or GitHub issue ticket.
@@ -391,8 +397,11 @@ type Counts struct {
 	// Agents counts agent sessions by liveness.
 	Agents map[string]map[string]int `json:"agents"`
 	// Merged is the number of PRs merged per day of the window, by
-	// merged_at, keyed like PRStates. A merged PR whose merge time is
-	// unknown (one known only through a bookmark) is not counted.
+	// merged_at, keyed like PRStates. An effort whose series is unknown is
+	// omitted rather than shown as zeros: one holding a merged PR whose
+	// merge time is unknown (known only through a bookmark) and may fall in
+	// the window, because its updated_at is unknown or not before the
+	// window, or one with PRs counted unknown in PRStates.
 	Merged map[string][]int `json:"merged,omitempty"`
 }
 

@@ -52,6 +52,17 @@ type Config struct {
 	// collection, so it must never make a network call or start a process.
 	// Nil means unknown.
 	Identity func() (login, jira string)
+	// InventoryTTL is the freshness window of the open PR inventory sets,
+	// InventoryClosedTTL that of closed-recent (gh-97).
+	InventoryTTL, InventoryClosedTTL time.Duration
+	// TicketPrefixes are the Jira project prefixes whose keys count when
+	// found in PR titles and bodies: [dash] ticket_prefixes, else [jira]'s
+	// projects. The prefixes of local bookmarks' tickets always count too.
+	TicketPrefixes []string
+	// GitHubUnavailable says why GitHub cannot be asked at all, such as
+	// github.ErrNoAuth's message; empty when it can. The inventory then
+	// queues no lookups and reports it as github_inventory's detail.
+	GitHubUnavailable string
 }
 
 // Collector builds snapshots. It runs outside HTTP request handling.
@@ -92,6 +103,12 @@ func NewCollector(cfg Config) *Collector {
 	}
 	if cfg.IssueTTL <= 0 {
 		cfg.IssueTTL = 10 * time.Minute
+	}
+	if cfg.InventoryTTL <= 0 {
+		cfg.InventoryTTL = DefaultInventoryTTL
+	}
+	if cfg.InventoryClosedTTL <= 0 {
+		cfg.InventoryClosedTTL = ClosedInventoryTTL(cfg.InventoryTTL)
 	}
 	c := &Collector{cfg: cfg}
 	if cfg.JJ != nil {

@@ -1,15 +1,18 @@
 package dash
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
 	"github.com/virtru/wgo/internal/atomicfile"
+	"github.com/virtru/wgo/internal/inventory"
 )
 
 // BaselineSchema is the last-seen.json layout version.
@@ -27,6 +30,11 @@ type Baseline struct {
 	Workspaces   map[string]BaselineWorkspace `json:"workspaces"`
 	Bookmarks    map[string]BaselineBookmark  `json:"bookmarks"`
 	PRs          map[string]BaselinePR        `json:"prs"`
+	// InventoryParts names the github_inventory parts ("alice/open-authored")
+	// that had data, fresh or stale, when acknowledged. A PR only the
+	// inventory found is new if one of the sets it is in was known then.
+	// Absent in older baselines, so such PRs compare as unknown.
+	InventoryParts []string `json:"inventory_parts,omitempty"`
 }
 
 // BaselineWorkspace records a workspace's visible changes.
@@ -53,6 +61,9 @@ type BaselinePR struct {
 	ReviewDecision     string   `json:"review_decision,omitempty"`
 	RequestedReviewers []string `json:"requested_reviewers,omitempty"`
 	ReviewersKnown     bool     `json:"reviewers_known"`
+	// InventoryParts, for a PR only the inventory found, names the
+	// inventory sets it was in (see inventoryParts).
+	InventoryParts []string `json:"inventory_parts,omitempty"`
 }
 
 // baselineFrom records what snapshot s shows.
@@ -91,9 +102,84 @@ func baselineFrom(s *Snapshot, at time.Time) *Baseline {
 				RequestedReviewers: sortedCopy(n.PR.RequestedReviewers),
 				ReviewersKnown:     n.PR.ReviewersKnown,
 			}
+			if !slices.Contains(n.PR.Sources, PRSourceBookmark) {
+				bp := b.PRs[n.ID]
+				bp.InventoryParts = inventoryParts(n.PR)
+				b.PRs[n.ID] = bp
+			}
 		}
 	}
+	for _, p := range s.Sources[SourceGitHubInventory].Parts {
+		if p.State.hasData() {
+			b.InventoryParts = append(b.InventoryParts, p.Name)
+		}
+	}
+	sort.Strings(b.InventoryParts)
 	return b
+}
+
+// inventoryParts names the github_inventory parts holding PR p, by its
+// state and involvement: an author's open PR is in their open-authored set
+// and a merged or closed one in closed-recent; an open PR asking for a
+// person's review is in their review-requested set.
+func inventoryParts(p *PRInfo) []string {
+	var out []string
+	for _, in := range p.Involvement {
+		var set inventory.Set
+		switch {
+		case in.Role == RoleAuthor && p.State == "open":
+			set = inventory.OpenAuthored
+		case in.Role == RoleAuthor:
+			set = inventory.ClosedRecent
+		case in.Role == RoleReviewRequested && p.State == "open":
+			set = inventory.ReviewRequested
+		default:
+			continue
+		}
+		out = append(out, inventory.Key{Login: in.Person, Set: set}.String())
+	}
+	return out
+}
+
+// inventoryKnew reports whether baseline b had data for one of the
+// inventory sets PR p is in now, so that p's absence from b means it is new.
+// A PR that closed before b was acknowledged is never new: had its set held
+// it then, b would too, so its absence says the window grew, not that the
+// PR appeared.
+func inventoryKnew(b *Baseline, p *PRInfo) bool {
+	if len(b.InventoryParts) == 0 || !slices.Contains(p.Sources, PRSourceInventory) {
+		return false
+	}
+	if closed := cmp.Or(p.ClosedAt, p.MergedAt); p.State != "open" && (closed.IsZero() || closed.Before(b.AcknowledgedAt)) {
+		return false
+	}
+	for _, part := range inventoryParts(p) {
+		if slices.Contains(b.InventoryParts, part) {
+			return true
+		}
+	}
+	return false
+}
+
+// inventoryLacks reports whether s has no data for one of parts, or, with no
+// parts named, for any inventory set at all: a PR from those sets may still
+// be there.
+func inventoryLacks(s *Snapshot, parts []string) bool {
+	has := map[string]bool{}
+	some := false
+	for _, p := range s.Sources[SourceGitHubInventory].Parts {
+		has[p.Name] = p.State.hasData()
+		some = some || has[p.Name]
+	}
+	if len(parts) == 0 {
+		return !some
+	}
+	for _, p := range parts {
+		if !has[p] {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedCopy(in []string) []string {
@@ -277,8 +363,9 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 			} else {
 				rd.Status = ItemUnknown
 			}
-		case b.Bookmarks[p.BookmarkID].PRsKnown:
-			// The bookmark's PR list was known then and lacked this PR.
+		case b.Bookmarks[p.BookmarkID].PRsKnown || inventoryKnew(b, p):
+			// The bookmark's PR list, or an inventory set holding the PR,
+			// was known then and lacked it.
 			pd.Status = ItemNew
 			if p.ReviewersKnown {
 				rd.Added = sortedCopy(p.RequestedReviewers)
@@ -308,7 +395,8 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 			d.ReviewRequests = append(d.ReviewRequests, rd)
 		}
 	}
-	// A previously seen PR whose bookmark lookup is now unknown.
+	// A previously seen PR whose bookmark lookup is now unknown, or that
+	// only the inventory found while one of its sets now has no data.
 	ids := make([]string, 0, len(b.PRs))
 	for id := range b.PRs {
 		ids = append(ids, id)
@@ -319,8 +407,9 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 			continue
 		}
 		base := b.PRs[id]
-		if bm := s.Node(base.BookmarkID); bm != nil && bm.Bookmark != nil &&
-			(bm.Bookmark.PRLookup == Unknown || bm.Bookmark.PRLookup == Error) {
+		bm := s.Node(base.BookmarkID)
+		if (bm != nil && bm.Bookmark != nil && (bm.Bookmark.PRLookup == Unknown || bm.Bookmark.PRLookup == Error)) ||
+			((base.BookmarkID == "" || len(base.InventoryParts) > 0) && inventoryLacks(s, base.InventoryParts)) {
 			d.PRs = append(d.PRs, PRDelta{ID: id, Label: id, Status: ItemUnknown, FromState: base.State, FromReview: base.ReviewDecision})
 			d.Summary.Unknown++
 		}
