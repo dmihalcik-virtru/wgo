@@ -386,6 +386,27 @@
       st.his.forEach(function (b) { var d = L.resolveDay(ix, b.text); if (d) { if (!b.incl) d = F.addDays(d, -1); if (hi == null || d < hi) hi = d; } });
       return lo == null && hi == null ? null : { lo: lo, hi: hi };
     };
+    // localDays describes, for a field whose values on efforts and
+    // workspaces are local activity days (when; activity, all of whose
+    // values are), where that local activity is recorded: from, the first
+    // day of the snapshot's activity window (counts.days; null without
+    // one), all when every kind's values are local, and changes, each
+    // recorded day's jj change count. Before from, local activity is
+    // unknown, not none. null for any other field.
+    F.localDays = function (ix, f) {
+      if (!f || f.derive !== "activity_days") return null;
+      var totals = L.dayTotals({ days: ix.days, activity: ix.activity }, null), changes = {};
+      ix.days.forEach(function (d, k) { changes[d] = totals[k] || 0; });
+      return { from: ix.days[0] || null, all: !(f.derive_kinds || []).length, changes: changes };
+    };
+    // localText is what a day's mark says of local activity: its change
+    // count, or that it was not recorded; "" for fields without any.
+    F.localText = function (ld, d) {
+      if (!ld) return "";
+      if (!ld.from || d == null || d < ld.from) return "local activity not recorded";
+      var n = ld.changes[d] || 0;
+      return n + (n === 1 ? " local change" : " local changes");
+    };
     // dayTexts are the clauses for days lo..hi (null: open).
     F.dayTexts = function (name, lo, hi) { return lo == null && hi == null ? [] : [name + ":" + (lo || "") + ".." + (hi || "")]; };
     // dayStates marks each day of a date facet chosen (in the positive list
@@ -408,11 +429,12 @@
 
     // ---------- time (requirements 8 and 9) ----------
     // timeTarget is the field the when chart shows and brushes: merged while
-    // the query has a merged range and no when clause (the shipped filter),
-    // so a brush replaces merged:-7d.. with merged:a..b; otherwise when.
+    // the query has a positive merged clause and no when clause (shipped,
+    // or a merge day chosen from it), so a brush replaces merged:-7d.. with
+    // merged:a..b and a day click keeps the chart on merges; otherwise when.
     F.timeTarget = function (q) {
       if (q.clauses.some(function (c) { return c.name === "when"; })) return "when";
-      return q.clauses.some(function (c) { return c.name === "merged" && !c.neg && c.op === "range"; }) ? "merged" : "when";
+      return q.clauses.some(function (c) { return c.name === "merged" && !c.neg; }) ? "merged" : "when";
     };
     // coverDay is the first local day the PR inventory knows every followed
     // person's merges from (github_inventory's covered_since), or "".
@@ -593,9 +615,10 @@
   // ---------- page ----------
   var L = window.WGOLive, F = logic(L);
   // S is the addon's own state: a drag in progress (drag), a keyboard range
-  // (kb), the type-ahead text per facet (find), the element to focus after
-  // the next render (wantFocus), and each panel's latest ctx.
-  var S = { drag: null, press: null, kb: null, skipClick: false, find: {}, wantFocus: null, ctx: {} };
+  // (kb) or handle move (slide), the type-ahead text per facet (find), the
+  // element to focus after the next render (wantFocus), and each panel's
+  // latest ctx.
+  var S = { drag: null, press: null, kb: null, slide: null, skipClick: false, find: {}, wantFocus: null, ctx: {} };
 
   // M is what every panel draws from, once per snapshot, query and selection.
   var M = null;
@@ -668,8 +691,9 @@
   // ---------- pointer drags ----------
   // A press on a brushable chart or a handle becomes a drag once it moves:
   // window listeners follow it (so re-rendering never loses it), each
-  // change applies live, and the release commits. A press that never moved
-  // is left to the click handler, which a drag's own click skips.
+  // change applies live, and the release commits. A press that never moved,
+  // or whose drag changed nothing (end() returns false), is left to the
+  // click handler, which a drag's own click skips.
   function press(ev, spec) {
     if (ev.button !== 0) return;
     S.press = { x: ev.clientX, spec: spec, moved: false };
@@ -690,9 +714,8 @@
     window.removeEventListener("pointercancel", onUp);
     var p = S.press; S.press = null;
     if (!p || !p.moved) return;
-    S.skipClick = true; setTimeout(function () { S.skipClick = false; }, 0);
     var spec = S.drag; S.drag = null;
-    spec.end();
+    if (spec.end()) { S.skipClick = true; setTimeout(function () { S.skipClick = false; }, 0); }
   }
 
   // ---------- bars: enum, set and bool facets ----------
@@ -855,13 +878,16 @@
         place();
         return true;
       }
+      // A press, drag or key that moves no handle changes nothing: the
+      // query keeps its own text (size:5, size:50..99), and no history entry.
       h.addEventListener("pointerdown", function (ev) {
         ev.preventDefault(); h.focus();
+        var changed = false;
         press(ev, {
           panel: "facets", facet: name, section: box,
           start: function () {},
-          move: function (e) { var r = sl.getBoundingClientRect(); if (set(Math.round((e.clientX - r.left) / r.width * B))) ctx.setQuery(exprFor(), {}); },
-          end: function () { want(h.getAttribute("data-fk")); apply(ctx, exprFor()); rerender("facets"); }
+          move: function (e) { var r = sl.getBoundingClientRect(); if (set(Math.round((e.clientX - r.left) / r.width * B))) { changed = true; ctx.setQuery(exprFor(), {}); } },
+          end: function () { if (changed) { want(h.getAttribute("data-fk")); apply(ctx, exprFor()); rerender("facets"); } return changed; }
         });
       });
       h.addEventListener("keydown", function (ev) {
@@ -869,10 +895,20 @@
         if (ev.key === "Home") e = 0; else if (ev.key === "End") e = B; else if (d) e = (j ? cur.b : cur.a) + d * (ev.shiftKey ? 5 : 1);
         if (e == null) return;
         ev.preventDefault();
-        if (set(e)) { want(h.getAttribute("data-fk")); ctx.setQuery(exprFor(), {}); }
+        if (!set(e)) return;
+        // The re-render makes a new handle; S.slide carries the change to
+        // the key's release there.
+        S.slide = { fk: h.getAttribute("data-fk"), expr: exprFor() };
+        want(S.slide.fk);
+        ctx.setQuery(S.slide.expr, {});
       });
-      // Each key press is one history entry: its release commits it.
-      h.addEventListener("keyup", function (ev) { if (/^(Arrow|Page|Home|End)/.test(ev.key)) ctx.setQuery(exprFor(), { commit: true }); });
+      // Each key press that moved the handle is one history entry: its
+      // release commits it.
+      h.addEventListener("keyup", function (ev) {
+        if (!S.slide || S.slide.fk !== h.getAttribute("data-fk") || !/^(Arrow|Page|Home|End)/.test(ev.key)) return;
+        var expr = S.slide.expr; S.slide = null;
+        ctx.setQuery(expr, { commit: true });
+      });
       return h;
     });
     place();
@@ -937,6 +973,18 @@
     var slot = W / Math.max(slots.length, 1), bw = Math.max(2, Math.min(28, slot - 2));
     var max = slots.reduce(function (a, s) { return Math.max(a, s.c.ghost); }, 0) || 1;
     var svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, width: W, height: H, role: "group", "class": "fx-days", "aria-label": opts.aria }, box);
+    // Days before the local activity window are hatched and say so: there
+    // efforts' and workspaces' activity is unknown, never zero.
+    var ld = F.localDays(m.ix, fi.f), dark = 0;
+    if (ld) slots.forEach(function (s) { if (s.kind === "earlier" || (s.kind === "day" && (!ld.from || s.day < ld.from))) { s.noLocal = true; dark++; } });
+    if (dark) {
+      var hid = "fx-hatch-" + field + "-" + opts.panel, pat = svgEl("pattern", { id: hid, width: 5, height: 5, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, svgEl("defs", {}, svg));
+      svgEl("line", { x1: 0, y1: 0, x2: 0, y2: 5, "class": "fx-hatch-line" }, pat);
+      var hatch = svgEl("rect", { "class": "fx-hatch", x: 0, y: 0, width: dark * slot, height: base, fill: "url(#" + hid + ")" }, svg);
+      var why = "local activity not recorded" + (ld.from ? " before " + ld.from : " (no activity window)");
+      svgEl("title", {}, hatch).textContent = why + ": efforts' and workspaces' days there are unknown, not zero";
+      if (dark * slot >= 150) svgEl("text", { x: 3, y: 9, "class": "fx-hatch-text" }, svg).textContent = ld.from ? "local activity not recorded before " + ld.from.slice(5) : "local activity not recorded";
+    }
     var band = svgEl("rect", { "class": "fx-band", y: 0, height: base, rx: 2 }, svg);
     function showBand(a, b) {
       // a and b are day indexes; -1 is the earlier bin, nd the later one.
@@ -956,10 +1004,15 @@
     slots.forEach(function (s, i) {
       var c = s.c, x = i * slot + (slot - bw) / 2, d = s.day;
       var name = s.kind === "day" ? d : s.kind === "earlier" ? "before " + days[0] : "after " + days[nd - 1];
-      var g = svgEl("g", { "class": "mbar fx-d" + (s.sel ? " on sel" : "") + (s.exc ? " exc" : ""), tabindex: -1, role: "button", "aria-pressed": String(!!s.sel),
+      // A field all of whose values are local activity has no count where
+      // it was not recorded: unknown, so no bar and no number.
+      var unrec = s.noLocal && ld.all, local = ld && s.kind !== "later" ? "; " + F.localText(ld, s.kind === "day" ? d : null) : "";
+      var counted = unrec ? "not recorded" : c.coupled + " under the other filters, " + c.ghost + " in the snapshot" + (c.part ? ", " + c.part + " selected" : "");
+      var g = svgEl("g", { "class": "mbar fx-d" + (s.sel ? " on sel" : "") + (s.exc ? " exc" : "") + (s.noLocal ? " nolocal" : ""), tabindex: -1, role: "button", "aria-pressed": String(!!s.sel),
         "data-fk": field + "\u0001d" + (s.kind === "day" ? s.k : s.kind), "data-group": field + "\u0001days",
-        "aria-label": name + ": " + c.coupled + " under the other filters, " + c.ghost + " in the snapshot" + (c.part ? ", " + c.part + " selected" : "") + (s.sel ? "; chosen" : s.exc ? "; excluded" : "") }, svg);
-      svgEl("title", {}, g).textContent = name + ": " + c.coupled + " of " + c.ghost + "\n" + HELP + " · drag across days for a range";
+        "aria-label": name + ": " + counted + (unrec ? "" : local) + (s.sel ? "; chosen" : s.exc ? "; excluded" : "") }, svg);
+      svgEl("title", {}, g).textContent = name + ": " + (unrec ? "local activity not recorded" : c.coupled + " of " + c.ghost + local.replace("; ", ", ")) + "\n" + HELP + " · drag across days for a range";
+      if (unrec) c = { ghost: 0, coupled: 0, part: 0 };
       svgEl("rect", { "class": "hit", x: i * slot, y: 0, width: slot, height: H }, g);
       var gh = (base - top) * c.ghost / max, sh = (base - top) * c.coupled / max, ph = (base - top) * c.part / max;
       if (c.ghost) svgEl("rect", { "class": "fx-ghost", x: x, y: base - gh, width: bw, height: gh, rx: Math.min(2, bw / 4) }, g);
@@ -1020,9 +1073,11 @@
           ctx.setQuery(F.setClauses(m.expr, m.ix.reg, field, F.dayTexts(field, lo < 0 ? null : days[lo], hi >= nd ? null : days[hi])), {});
         },
         end: function () {
+          if (b === a) { showBand(rA, rB); return false; } // it never left its day: a click
           var lo = Math.min(a, b), hi = Math.max(a, b);
           apply(ctx, F.setClauses(m.expr, m.ix.reg, field, F.dayTexts(field, lo < 0 ? null : days[lo], hi >= nd ? null : days[hi])));
           rerender(opts.panel);
+          return true;
         }
       });
     });
@@ -1045,13 +1100,7 @@
     if (name === "reviewer") h.title = "Review load: how the reviewers' PRs spread under the current filter";
     // Log-spaced bins are labelled so; bar lengths stay linear from zero.
     if (fi.type === "hist" && fi.f.scale === "log") el("span", "fx-scale", "log scale", head);
-    if (st.active) {
-      ctx.dom.button(head, "Clear", "fx-clear", function () {
-        var q = L.parseQuery(m.expr, m.ix.reg);
-        want("\u0001more");
-        apply(ctx, q.error ? "" : q.clauses.filter(function (c) { return c.name !== name; }).map(function (c) { return c.raw; }).join(";"));
-      }, "Clear the " + fi.f.label + " filter");
-    }
+    if (st.active) clearButton(ctx, head, m, name, fi.f.label, "\u0001more");
     if (extra) {
       ctx.dom.button(head, "✕", "fx-x", function () {
         var ex = extraFacets(ctx).filter(function (x) { return x !== name; });
@@ -1153,6 +1202,16 @@
   function chartHead(ctx, box, title, sub) {
     var h = ctx.dom.el("h2", null, title, box);
     if (sub) ctx.dom.el("span", "sub", " " + sub, h);
+    return h;
+  }
+  // clearButton removes every clause on field name, as a facet's Clear
+  // does, then focuses then (the button itself goes).
+  function clearButton(ctx, parent, m, name, label, then) {
+    return ctx.dom.button(parent, "Clear", "fx-clear", function () {
+      var q = L.parseQuery(m.expr, m.ix.reg);
+      want(then);
+      apply(ctx, q.error ? "" : q.clauses.filter(function (c) { return c.name !== name; }).map(function (c) { return c.raw; }).join(";"));
+    }, "Clear the " + label + " filter");
   }
   // renderWhen is the brushable when chart (requirements 4 and 8): items
   // per day by when, or by merge day while the query is shipped-like.
@@ -1167,7 +1226,8 @@
     var field = m.target, fi = F.fieldIndex(m.ix, field), merged = field === "merged";
     var st = F.fieldState(m.q, field), r = F.dayRange(m.ix, st);
     var sub = merged ? "PRs by merge day" : "activity, merges, updates";
-    chartHead(ctx, box, merged ? "Merged per day" : "When", "(" + sub + (r ? " · " + (r.lo || "…") + " to " + (r.hi || m.ix.today) : " · drag for a range") + ")");
+    var h = chartHead(ctx, box, merged ? "Merged per day" : "When", "(" + sub + (r ? " · " + (r.lo || "…") + " to " + (r.hi || m.ix.today) : " · drag for a range") + ")");
+    if (st.active) { h.appendChild(document.createTextNode(" ")); clearButton(ctx, h, m, field, field, "when\u0001d0"); }
     box.title = merged ? "Merged PRs per day of merge. Drag across days to set merged:a..b." :
       "Items per day: efforts and workspaces by local activity; PRs by merge, close or else update; tickets by resolution or else update. Drag across days to set when:a..b.";
     if (!fi.days.length) { ctx.dom.el("p", "empty", "No days: the snapshot has no generation time.", box); return; }
