@@ -2,20 +2,38 @@
 // built-in WebSocket; no dependencies). Run by TestLivePageInBrowser when
 // WGO_BROWSER_TESTS is set:
 //
-//	node live_browser.js <chrome> <page URL> [--perf=<URL>] [--perf-table=<URL>] [--facets=<URL>] [--shots=<dir>] [--set=query|table|facets|facets-cvd] [--no-checks]
+//	node live_browser.js <chrome> <page URL> [--perf=<URL>] [--perf-table=<URL>] [--<suite flag>=<URL>…] [--shots=<dir>] [--set=<shot set>] [--no-checks]
 //
 // The page must serve the shared query vectors' snapshot with the probe
 // addon (see page_browser_test.go). Prints "ok <checks> ..." or exits
 // non-zero naming the failure. --perf times filter changes on a page that
 // serves a 2,000-node snapshot; --perf-table times the analysis table on a
-// page that serves the analysis fixture scaled to 2,000 nodes; --shots saves light and dark screenshots,
-// of the query views or (--set=table, on the analysis fixture) of the
-// analysis table's PR and ticket defaults; --no-checks skips the checks (for
-// wgo dash --fixture, which has no probe). --facets checks the linked
-// filters (gh-102) on a page that serves the analysis fixture as it is, and
-// times facet changes on the --perf-table page; --set=facets and
-// facets-cvd shoot them on the analysis fixture, the latter under each
-// colour-vision-deficiency simulation.
+// page that serves the analysis fixture scaled to 2,000 nodes; --shots saves
+// light and dark screenshots of a SHOT_SETS entry (--set: query, the default,
+// table, or an addon's); --no-checks skips the checks (for wgo dash
+// --fixture, which has no probe).
+//
+// Suites. Every check runs as a suite in SUITES, in order. An addon adds
+// its own in a block of its own at the end of this file, its names inside
+// the block's { } so sibling blocks cannot collide:
+//
+//	SUITES.push({ name, flag, checks, perf, deadlineMs })
+//
+//   - name labels the suite's failures and timeouts.
+//   - flag is the option, without "--", whose value is the URL of the page
+//     the suite drives; page_browser_test.go serves that page from the
+//     addon's browserSuites entry and passes --<flag>=<URL>. A suite whose
+//     flag is absent is skipped. The core suites' flag "" is the page URL.
+//   - checks(url) and perf(url), both async and optional: checks call
+//     check(); perf returns a summary for the "ok" line, or "". Every
+//     suite's checks run before any suite's perf; --no-checks skips checks.
+//   - deadlineMs (60000 by default) bounds checks and perf each, instead of
+//     one watchdog for the whole run.
+//
+// Screenshots are SHOT_SETS entries: [file, scheme, hash, extra] rows,
+// where extra "columns" opens the table's chooser and "cvd:<type>" shoots
+// under a colour-vision-deficiency simulation; an entry may carry
+// .viewport = { width, height }.
 "use strict";
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
@@ -24,7 +42,14 @@ const path = require("node:path");
 
 const [chrome, pageURL] = process.argv.slice(2);
 const flag = (name) => { const a = process.argv.slice(4).find((x) => x === name || x.startsWith(name + "=")); return a == null ? null : a.includes("=") ? a.slice(a.indexOf("=") + 1) : true; };
-const shotDir = flag("--shots"), perfURL = flag("--perf"), noChecks = flag("--no-checks"), shotSet = flag("--set") || "query", tableURL = flag("--perf-table"), facetsURL = flag("--facets");
+const shotDir = flag("--shots"), noChecks = flag("--no-checks"), shotSet = flag("--set") || "query";
+const SUITES = [];
+// within runs fn, failing with label if it takes longer than ms.
+function within(label, ms, fn) {
+  let timer;
+  const late = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(label + " timed out after " + ms / 1000 + " s")), ms); });
+  return Promise.race([Promise.resolve().then(fn), late]).finally(() => clearTimeout(timer));
+}
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "wgo-chrome-"));
 const proc = spawn(chrome, ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + profile, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", "--window-size=1400,900", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
@@ -34,7 +59,6 @@ function finish(code, msg) {
   try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { /* best effort */ }
   process.exit(code);
 }
-setTimeout(() => finish(1, "FAIL timed out"), 180000);
 
 const wsURL = new Promise((resolve) => {
   let buf = "";
@@ -73,7 +97,7 @@ async function key(k, shift) {
 }
 
 (async () => {
-  ws = new WebSocket(await wsURL);
+  ws = new WebSocket(await within("starting Chrome", 30000, () => wsURL));
   await new Promise((r) => ws.addEventListener("open", r));
   ws.addEventListener("message", (ev) => {
     const m = JSON.parse(ev.data);
@@ -90,12 +114,25 @@ async function key(k, shift) {
   const origin = new URL(pageURL).origin;
   await send("Browser.grantPermissions", { origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] }, null);
 
-  if (!noChecks) await runChecks();
-  if (!noChecks && facetsURL) await facetChecks();
-  const perf = [perfURL ? await timeRenders() : "", tableURL ? await timeTable() : "", tableURL && facetsURL ? await timeFacets() : ""].filter(Boolean).join("; ");
-  if (shotDir) await screenshots();
-  finish(0, "ok " + checks + (perf ? " " + perf : ""));
+  const urlOf = (s) => s.flag ? flag("--" + s.flag) : pageURL;
+  for (const s of SUITES) {
+    const url = urlOf(s);
+    if (url && s.checks && !noChecks) await within(s.name + " checks", s.deadlineMs || 60000, () => s.checks(url));
+  }
+  const perf = [];
+  for (const s of SUITES) {
+    const url = urlOf(s);
+    if (url && s.perf) perf.push(await within(s.name + " timing", s.deadlineMs || 60000, () => s.perf(url)));
+  }
+  if (shotDir) await within("screenshots", 300000, screenshots);
+  finish(0, "ok " + checks + (perf.filter(Boolean).length ? " " + perf.filter(Boolean).join("; ") : ""));
 })().catch((e) => finish(1, "FAIL " + e.message));
+
+// The core suites: the query language, URL state and the analysis table on
+// the page URL (gh-100, gh-101), and their latency.
+SUITES.push({ name: "query and table", flag: "", checks: runChecks, deadlineMs: 90000 });
+SUITES.push({ name: "filter latency", flag: "perf", perf: timeRenders });
+SUITES.push({ name: "table latency", flag: "perf-table", perf: timeTable });
 
 async function runChecks() {
   // 1. A URL restores view, query and selection; the addon view is a tab.
@@ -104,7 +141,11 @@ async function runChecks() {
   const st = await evaluate("(() => { const s = window.__wgoStore; return { view: s.view, q: s.query, sel: Array.from(s.selection), rows: s.qres && s.qres.rows } })()");
   check(st.view === "table" && st.q === "prstate:open" && st.sel.join() === "pr:acme/api#41", "hash not restored: " + JSON.stringify(st));
   const tabs = await evaluate("Array.from(document.querySelectorAll('.view-tabs button')).map(b => b.textContent + ':' + b.getAttribute('aria-pressed'))");
-  check(tabs.join() === "Graph:false,Table:true,Probe:false", "tabs: " + tabs);
+  // Graph and Table lead, the probe (inlined last) ends, and every view an
+  // addon registered has its tab, whatever their order.
+  const viewLabels = await evaluate("WGOLive.views.map(v => v.label || v.id)");
+  check(tabs[0] === "Graph:false" && tabs[1] === "Table:true" && tabs[tabs.length - 1] === "Probe:false" && tabs.length === viewLabels.length &&
+    viewLabels.every((l) => tabs.includes(l + (l === "Table" ? ":true" : ":false"))), "tabs: " + tabs + " for views " + viewLabels);
   check((await evaluate("Array.from(document.querySelectorAll('.mult')).map(m => m.textContent).includes('probe panel')")), "the addon panel renders");
   const table = await evaluate("({ rows: document.querySelectorAll('table.live tbody tr').length, ctx: document.querySelectorAll('table.live tbody tr.ctx').length, sel: document.querySelectorAll('table.live tbody tr.sel').length })");
   check(table.rows > 2 && table.ctx > 0 && table.sel === 1, "table: " + JSON.stringify(table));
@@ -381,7 +422,7 @@ async function runChecks() {
 
 // timeRenders times filter changes on the 2,000-node page: the synchronous
 // re-render, and to the next frame (style, layout, paint), median of 7.
-async function timeRenders() {
+async function timeRenders(perfURL) {
   await send("Page.navigate", { url: "about:blank" });
   await send("Page.navigate", { url: perfURL });
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the 2,000-node snapshot");
@@ -430,7 +471,10 @@ const SHOT_SETS = {
 // 2,000 nodes (median of 7, synchronous and to the next frame): switching
 // to it, re-sorting every row, and a kind:pr query; and checks that only
 // the rows in view are in the DOM, following the scroll.
-async function timeTable() {
+// The table's PR columns need a wider window than the graph.
+SHOT_SETS.table.viewport = { width: 2200, height: 1000 };
+
+async function timeTable(tableURL) {
   await send("Page.navigate", { url: "about:blank" });
   await send("Page.navigate", { url: tableURL + "#view=graph" });
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the scaled analysis fixture");
@@ -511,9 +555,7 @@ async function screenshots() {
   const shots = SHOT_SETS[shotSet];
   const shotURL = flag("--shots-data") || pageURL;
   if (!shots) throw new Error("unknown --set " + shotSet + "; use " + Object.keys(SHOT_SETS).join(" or "));
-  // The table's PR columns need a wider window than the graph.
-  if (shotSet === "table") await send("Emulation.setDeviceMetricsOverride", { width: 2200, height: 1000, deviceScaleFactor: 1, mobile: false });
-  if (shotSet.startsWith("facets")) await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1500, deviceScaleFactor: 1, mobile: false }); // every facet in view
+  if (shots.viewport) await send("Emulation.setDeviceMetricsOverride", Object.assign({ deviceScaleFactor: 1, mobile: false }, shots.viewport));
   for (const [file, scheme, hash, open] of shots) {
     await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
     await send("Page.navigate", { url: "about:blank" }); // a fresh document, not a same-page hash change
@@ -531,7 +573,11 @@ async function screenshots() {
 // ---------- gh-102: linked filters ----------
 // The facet panel, the attention summary, the brushable when chart and the
 // saved filter chips on the analysis fixture (--facets), by pointer and by
-// keyboard, with the history model; then their latency at 2,000 nodes.
+// keyboard, with the history model; then their latency at 2,000 nodes on
+// the --perf-table page. --set=facets and facets-cvd shoot them on the
+// analysis fixture, the latter under each colour-vision-deficiency
+// simulation.
+{
 const FACET_SHOTS = "#q=kind:pr;!repo:acme/infra;ci:green,systemic_only,pending;when:2026-10-20..2026-10-30&sel=pr:acme/api%23101";
 SHOT_SETS.facets = [
   ["facets-light.png", "light", FACET_SHOTS],
@@ -545,9 +591,11 @@ SHOT_SETS["facets-cvd"] = [];
 for (const type of ["protanopia", "deuteranopia", "tritanopia", "achromatopsia"]) {
   for (const scheme of ["light", "dark"]) SHOT_SETS["facets-cvd"].push(["cvd-" + type + "-" + scheme + ".png", scheme, FACET_SHOTS, "cvd:" + type]);
 }
+SHOT_SETS.facets.viewport = SHOT_SETS["facets-cvd"].viewport = { width: 1600, height: 1500 }; // every facet in view
+SUITES.push({ name: "linked filters", flag: "facets", checks: facetChecks, perf: () => flag("--perf-table") ? timeFacets(flag("--perf-table")) : "", deadlineMs: 90000 });
 
 // keyMod presses k with modifiers (Alt 1, Ctrl 2, Meta 4, Shift 8).
-const MOD_KEYS = Object.assign({ ArrowLeft: [37, "ArrowLeft", ""], ArrowRight: [39, "ArrowRight", ""], Shift: [16, "ShiftLeft", ""] }, KEYS);
+const MOD_KEYS = Object.assign({ ArrowLeft: [37, "ArrowLeft", ""], ArrowRight: [39, "ArrowRight", ""], Shift: [16, "ShiftLeft", ""], Home: [36, "Home", ""] }, KEYS);
 async function keyMod(k, modifiers, type) {
   const [vk, code, text] = MOD_KEYS[k];
   if (type !== "up") await send("Input.dispatchKeyEvent", Object.assign({ type: text && !(modifiers & 1) ? "keyDown" : "rawKeyDown", key: k, code, windowsVirtualKeyCode: vk, modifiers: modifiers || 0 }, text ? { text } : {}));
@@ -581,7 +629,7 @@ const Q = () => evaluate("window.__wgoStore.query");
 const row = (facet, key) => "document.querySelector('.lv-left section[data-facet=" + facet + "] [data-fk=\"" + facet + "\\u0001" + key + "\"]')";
 const dayBar = (field, k) => "document.querySelector('.mult.fx-chart [data-fk=\"" + field + "\\u0001d" + k + "\"]')";
 
-async function facetChecks() {
+async function facetChecks(facetsURL) {
   await send("Browser.grantPermissions", { origin: new URL(facetsURL).origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] }, null);
   await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
   await send("Page.navigate", { url: "about:blank" });
@@ -662,6 +710,22 @@ async function facetChecks() {
   check((await Q()) === "kind:pr;size:50..99", "exact bounds: " + (await Q()));
   await clickAt("document.querySelector('.lv-left section[data-facet=size] .fx-clear')");
   check((await Q()) === "kind:pr", "a facet's Clear: " + (await Q()));
+  // A press, key or drag that moves no handle changes nothing: no rewrite,
+  // no history entry.
+  await evaluate("window.__wgoStore.setQuery('kind:pr;size:5', { commit: true })"); await sleep(100);
+  await evaluate("document.querySelector('.lv-left section[data-facet=size] .fx-handle-lo').focus()");
+  await keyMod("Home", 0);
+  check((await Q()) === "kind:pr;size:5", "Home on a handle already there keeps size:5: " + (await Q()));
+  await evaluate("history.back()"); await sleep(250);
+  check((await Q()) === "kind:pr", "and pushes no history entry: " + (await Q()));
+  await evaluate("window.__wgoStore.setQuery('kind:pr;size:50..99', { commit: true })"); await sleep(100);
+  await evaluate("document.querySelector('.lv-left section[data-facet=size] .fx-handle-lo').focus()");
+  await keyMod("ArrowRight", 0);
+  check((await Q()) === "kind:pr;size:50..99", "a clamped handle keeps exact bounds: " + (await Q()));
+  const [hx, hy] = await center("document.querySelector('.lv-left section[data-facet=size] .fx-handle-hi')");
+  await mouse("mouseMoved", hx, hy, 0, 0); await mouse("mousePressed", hx, hy);
+  await mouse("mouseMoved", hx + 6, hy, 0, 1); await sleep(30); await mouse("mouseReleased", hx + 6, hy); await sleep(150);
+  check((await Q()) === "kind:pr;size:50..99", "a drag under half a bin changes nothing: " + (await Q()));
 
   // 6. Time: brushing a past week from shipped replaces merged:-7d.. and
   // lists exactly that week's merges, one updated later; the previous
@@ -693,6 +757,22 @@ async function facetChecks() {
   check((await Q()) === "kind:pr;when:2026-10-23..2026-10-30", "a when brush: " + (await Q()));
   await clickAt(dayBar("when", 17));
   check((await Q()) === "kind:pr;when:2026-10-20", "a day click: " + (await Q()));
+  // The When chart's own Clear; local activity is hatched where it was not
+  // recorded, and each recorded day names its jj changes.
+  await clickAt("document.querySelector('.mult.fx-chart .fx-clear')");
+  check((await Q()) === "kind:pr", "the When chart's Clear: " + (await Q()));
+  check((await evaluate("document.querySelector('.mult.fx-chart .fx-hatch-text').textContent")) === "local activity not recorded before 10-17", "the unrecorded days say so");
+  check((await evaluate("!!document.querySelector('.mult.fx-chart rect.fx-hatch')")) && /local activity not recorded/.test(await evaluate(dayBar("when", 0) + ".getAttribute('aria-label')")), "and are hatched, not zero");
+  check(/; \d+ local changes?/.test(await evaluate(dayBar("when", 26) + ".getAttribute('aria-label')")), "a recorded day names its changes: " + (await evaluate(dayBar("when", 26) + ".getAttribute('aria-label')")));
+  // From shipped, a merge day click keeps the chart on merges; a second
+  // click replaces it.
+  await evaluate("window.__wgoStore.setQuery('kind:pr;prstate:merged;merged:-7d..', { commit: true })"); await sleep(100);
+  await clickAt(dayBar("merged", 25));
+  check((await Q()) === "kind:pr;prstate:merged;merged:2026-10-28", "a merge day click: " + (await Q()));
+  check((await evaluate("document.querySelector('.mult.fx-chart h2').firstChild.textContent")) === "Merged per day" && (await evaluate("document.activeElement.getAttribute('data-fk')")) === "merged\u0001d25", "the chart and the focus stay on merges");
+  check((await evaluate("document.querySelector('.att-period').textContent")) === "1 merged · previous 0", "the previous period stays: " + (await evaluate("document.querySelector('.att-period') && document.querySelector('.att-period').textContent")));
+  await clickAt(dayBar("merged", 26));
+  check((await Q()) === "kind:pr;prstate:merged;merged:2026-10-29" && (await evaluate("window.__wgoStore.qres.rows.join()")) === "pr:acme/infra#303", "a second day click replaces the first: " + (await Q()));
 
   // 7. The attention summary: each count is its saved filter's row count,
   // and its link applies the filter; only "your move" takes the accent.
@@ -727,7 +807,7 @@ async function facetChecks() {
 // nodes (median of 7, synchronous and to the next frame): a committed
 // facet click and a live drag step, re-rendering the facets, the overview
 // and the active view (graph, then table).
-async function timeFacets() {
+async function timeFacets(tableURL) {
   await send("Page.navigate", { url: "about:blank" });
   await send("Page.navigate", { url: tableURL + "#view=graph" });
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('.lv-left section.fx')", "the scaled analysis fixture");
@@ -751,5 +831,6 @@ async function timeFacets() {
     if (view === "graph") out.unshift("facets on the scaled analysis fixture (" + r.n + " nodes, " + r.facets + " facets)");
   }
   return out.join("; ");
+}
 }
 // ---------- end gh-102 ----------
