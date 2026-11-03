@@ -1218,6 +1218,50 @@ check's state and link in the detail panel (the address keeps it as
 `check=<PR>|<check>`; selecting anything else forgets it). The arrow keys
 move through a grid; Enter acts as a click.
 
+### Sprint view
+
+The **Sprint** view answers "does Jira agree with the code for this sprint,
+and how far along is it against its goal?" It needs `[jira] board` (see
+[Jira sprints and ticket facts](#jira-sprints-and-ticket-facts)); without
+it, or while the board's sprints are unknown or failed to load, the view
+says which and how to fix it.
+
+- **Which sprint.** One active sprint at a time. With several, buttons
+  choose one (`sprint=<id>` in the address); the default is the one with
+  the most tickets assigned to the people the dashboard follows.
+- **Header.** Name, dates, the goal as written (or "no sprint goal"), and a
+  thin bar of elapsed time with "day 6 of 21". Days are calendar days in
+  the snapshot's timezone, counted from the start day, so a Jira sprint of
+  whole weeks is 7, 14, 21 or 28 days long.
+- **Points.** One bar of story points by status category — Done, In
+  Progress, To Do, in that order so the done share lines up with the time
+  bar above it — with each part labelled with its points and tickets.
+  Unestimated tickets are counted apart ("1 unestimated"), and so are
+  tickets whose points were never read ("1 with points unknown"); neither
+  counts as zero.
+- **Tickets.** Grouped by status category, then assignee: key and summary,
+  assignee, points, status, linked PRs (`◇` draft, `○` open and awaiting
+  review, `✓` approved, `●` merged, `✕` closed; hover for whose move it
+  is), and [mismatches](#attention-facts) marked `!`.
+- **Filtering.** Clicking a points label or bar part applies
+  `status_category:<c>`; clicking a mismatch applies `mismatch:<code>`.
+  Tickets outside the query are dimmed, so the sprint stays whole;
+  **Hide … outside the query** hides them instead (`outside=hide`). Rows
+  select like the table's: arrow keys move, Enter selects, Shift+Enter adds.
+
+**Copy as Markdown** on this view copies a sprint summary: dates, goal,
+points by status (with the share the query shows), the mismatches on the
+tickets the query shows with links to each ticket and PR, and the sprint
+ID, query and source freshness. The CLI prints the same bytes:
+
+```
+wgo dash --md --view sprint                          # the default sprint
+wgo dash --md --view sprint --sprint 1234 --query 'assignee:Alice'
+```
+
+`GET /api/extract?view=sprint&sprint=<id>&q=…` serves it too. A sprint ID
+that is not an active sprint fails with the list of active ones.
+
 ### Actions
 
 Select a workspace to get these buttons:

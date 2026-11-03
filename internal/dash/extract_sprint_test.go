@@ -14,7 +14,7 @@ import (
 
 // sprintView loads the analysis fixture, lets mutate change it, and returns
 // it as a View, as wgo dash --fixture would serve it.
-func sprintView(t *testing.T, mutate func(*Snapshot)) *View {
+func sprintView(t testing.TB, mutate func(*Snapshot)) *View {
 	t.Helper()
 	s := loadAnalysisFixture(t)
 	if mutate != nil {
