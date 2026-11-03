@@ -1140,6 +1140,21 @@
     var q = L.parseQuery(expr, ix.reg);
     return q.error ? { error: q.error } : { q: q, res: L.evaluate(q, ix) };
   };
+  // clauseMasks evaluates each clause of q on its own over ix, for the
+  // facets' coupled counts (gh-102): [{c, kind, bits}] in clause order,
+  // bits a Uint32Array with bit i set when the clause holds for node i —
+  // applies and holds, as evaluate tests it, for kind: clauses too.
+  L.clauseMasks = function (q, ix) {
+    var warns = [], words = (ix.nodes.length + 31) >>> 5;
+    return q.clauses.map(function (c) {
+      var b = bindClause(ix, c, warns), vals = ix.values.get(c.name), bits = new Uint32Array(words);
+      for (var i = 0; i < ix.nodes.length; i++) if (testClause(b, vals[i]) === TRI_TRUE) bits[i >>> 5] |= 1 << (i & 31);
+      return { c: c, kind: c.name === "kind", bits: bits };
+    });
+  };
+  // resolveDay is a date bound (YYYY-MM-DD, today, -7d, +2w) as the day it
+  // means in ix's snapshot, or null.
+  L.resolveDay = function (ix, s) { return resolveDay(ix, s); };
   // valueText is a field's value on a node as text: "unknown" when unknown,
   // "none" when known and empty, never blank (extract.go formats the same way).
   L.valueText = function (ix, name, id) {
@@ -1259,6 +1274,13 @@
     });
     return base + (qs.length ? "?" + qs.join("&") : "");
   };
+  // filterConfigLine is the [dash.filters] entry Copy as config copies for
+  // expr (gh-102): name = "expr", a TOML basic string with backslashes,
+  // quotes and control characters escaped.
+  L.filterConfigLine = function (expr, name) {
+    var v = String(expr).replace(/[\\"]/g, "\\$&").replace(/[\u0000-\u001f\u007f]/g, function (c) { return "\\u" + ("000" + c.charCodeAt(0).toString(16)).slice(-4); });
+    return (name || "my-filter") + " = \"" + v + "\"";
+  };
 
   // ---------- extension seams (requirement 26) ----------
   // Views and overview panels register here; addon scripts inlined after
@@ -1271,7 +1293,9 @@
   function registerIn(list, what, spec) {
     if (!spec || typeof spec.id !== "string" || !spec.id || typeof spec.render !== "function") throw new Error("wgo dash: a " + what + " needs a string id and a render(ctx) function");
     var i = list.findIndex(function (x) { return x.id === spec.id; });
-    if (i >= 0) list[i] = spec; else list.push(spec);
+    // A new spec naming before: "<id>" goes ahead of that one.
+    var b = i < 0 && typeof spec.before === "string" ? list.findIndex(function (x) { return x.id === spec.before; }) : -1;
+    if (i >= 0) list[i] = spec; else if (b >= 0) list.splice(b, 0, spec); else list.push(spec);
     if (L.onRegister) L.onRegister(what, spec);
     return spec;
   }
@@ -1282,7 +1306,10 @@
   // /api/extract parameters for Copy as Markdown (default view=rows), and
   // note, a sentence the status line adds (what the copy could not keep).
   L.registerView = function (spec) { return registerIn(L.views, "view", spec); };
-  // registerPanel adds an overview panel {id, label, render(ctx), destroy(ctx)}.
+  // registerPanel adds an overview panel {id, label, render(ctx), destroy(ctx),
+  // before, slot}. before: "<id>" places a new panel ahead of that one;
+  // slot: "left" puts it in a column left of the views (gh-102's facet
+  // panel) rather than in the overview row.
   L.registerPanel = function (spec) { return registerIn(L.panels, "panel", spec); };
   // viewTabs lists the tab buttons for the registered views.
   L.viewTabs = function (views, active) {
@@ -1447,7 +1474,6 @@
   qinput.placeholder = "Filter, e.g. kind:pr;prstate:open,draft (Enter applies, Esc reverts)";
   qinput.setAttribute("aria-label", "Query: clauses joined by ; such as kind:pr;prstate:open. Enter applies, Escape reverts.");
   var qclear = button(qbox, "✕", "qclear", function () { applyQueryText("", true); }, "Clear the query");
-  var presetSel = el("select", "presets", null, bar); presetSel.setAttribute("aria-label", "Saved filters");
   var copyBtn = button(bar, "Copy as Markdown", null, function () { copyMarkdown(); });
   copyBtn.title = "Copy the current rows as Markdown, with links, the query and data freshness";
   var fitBtn = button(bar, "Fit to view", null, function () { robustFit(); });
@@ -1457,6 +1483,8 @@
   var qerrEl = el("div", "qerrbox", null, qmsg); qerrEl.setAttribute("role", "alert");
   var qinfoEl = el("div", "qinfobox", null, qmsg); qinfoEl.setAttribute("role", "status");
   var copyOut = el("div", "copyout", null, bar); copyOut.hidden = true;
+  // Saved filter chips (gh-102), a row of their own under the bar's controls.
+  var fchips = el("div", "fchips", null, bar); fchips.setAttribute("role", "group"); fchips.setAttribute("aria-label", "Saved filters"); fchips.hidden = true;
 
   var mults = el("div", "multiples", null, root);
 
@@ -1496,7 +1524,12 @@
     return {
       store: store, L: L, registry: REG, boot: ADDON_BOOT, reason: reason, container: container || viewBox(spec),
       snapshot: store.snap, index: store.idx, queryIndex: store.qi, query: store.qres, selection: store.selection,
-      setQuery: function (expr, opts) { return store.setQuery(expr, opts); },
+      // setQuery with {show: true} reports a query that does not parse in
+      // the query bar with its fix, as a chart click does (gh-102 facets).
+      setQuery: function (expr, opts) {
+        if (opts && opts.show) return applyQueryText(expr, !!opts.commit) ? null : store.queryError.error;
+        return store.setQuery(expr, opts);
+      },
       setState: function (obj, opts) { return store.setState(obj, opts); },
       getState: function (key) { return store.getState(key); },
       select: function (ids, add, how) { store.select(ids, add, how); },
@@ -1780,6 +1813,9 @@
   // ---------- overview panels ----------
   // The three small multiples register as panels; an addon can add more or
   // replace one by id. Chart clicks set query clauses (requirement 10).
+  // live-facets.js (gh-102) replaces all three with linked charts: counts
+  // under the other filters over the whole snapshot's, its gestures, and a
+  // brushable when chart in place of local activity.
   var panelBoxes = new Map();
   function effortKeyOf(id) { var n = store.idx.byId.get(id); return (n && n.effort && n.effort.key) || id.replace(/^effort:/, ""); }
   var panelSpecs = new Map(); // id -> the spec last rendered in its box
@@ -1790,16 +1826,32 @@
     releaseSubs("panel:" + id);
     panelSpecs.delete(id);
   }
+  // leftColumn is the column left of the views that slot: "left" panels
+  // draw in (gh-102's facet panel), made when the first one registers.
+  var leftCol = null;
+  function leftColumn() {
+    if (!leftCol) {
+      leftCol = el("div", "lv-left", null, null); leftCol.setAttribute("aria-label", "Filters");
+      main.insertBefore(leftCol, effortsEl); main.classList.add("has-left");
+    }
+    return leftCol;
+  }
   function renderMultiples(reason) {
     var active = document.activeElement, activeLabel = active && active.closest && active.closest(".mult") ? active.getAttribute("aria-label") : null;
     var ids = L.panels.map(function (p) { return p.id; });
     panelBoxes.forEach(function (b, id) { if (ids.indexOf(id) < 0) { destroyPanel(id); b.remove(); panelBoxes.delete(id); } });
+    var placed = new Map(); // parent -> the last box put in it
     L.panels.forEach(function (p) {
-      var box = panelBoxes.get(p.id);
-      if (!box) { box = el("div", "mult", null, mults); panelBoxes.set(p.id, box); }
+      var left = p.slot === "left", box = panelBoxes.get(p.id);
+      if (box && box.classList.contains("lv-panel") !== left) { destroyPanel(p.id); box.remove(); panelBoxes.delete(p.id); box = null; }
+      if (!box) { box = el("div", left ? "lv-panel" : "mult", null, null); panelBoxes.set(p.id, box); }
       if (panelSpecs.has(p.id) && panelSpecs.get(p.id) !== p) { destroyPanel(p.id); box.textContent = ""; }
       panelSpecs.set(p.id, p);
-      mults.appendChild(box); // keeps registry order
+      // Registry order, without moving a box already in place: a move would
+      // take the keyboard focus out of it.
+      var parent = left ? leftColumn() : mults, prev = placed.get(parent), at = prev ? prev.nextSibling : parent.firstChild;
+      if (at !== box) parent.insertBefore(box, at);
+      placed.set(parent, box);
       try { p.render(panelCtx(p, box, reason)); } catch (e) { viewFailed(p, e); }
     });
     if (activeLabel) {
@@ -2346,14 +2398,37 @@
       warns.forEach(function (w) { el("span", "qwarn", w, qinfoEl); });
       qmsg.hidden = !err && !info;
     }
-    presetSel.hidden = !FILTERS.length;
-    if (FILTERS.length) {
-      presetSel.textContent = "";
-      var cur = presetFor(store.query);
-      var first = el("option", null, cur ? "Saved filter" : "Saved filters…", presetSel); first.value = "";
-      FILTERS.forEach(function (f) { var o = el("option", null, f.name, presetSel); o.value = f.name; o.title = f.expr; });
-      presetSel.value = cur ? cur.name : "";
-    }
+    renderFilterChips();
+  }
+  // renderFilterChips shows the saved filters as chips (gh-102,
+  // requirement 12), the one whose expression is the query pressed (✓);
+  // choosing one replaces the query, one history entry. Copy as config
+  // copies a [dash.filters] line for the query (requirement 13): the page
+  // never writes config.
+  var chipsKey = null;
+  function renderFilterChips() {
+    var cur = presetFor(store.query), key = (cur ? cur.name : "") + "\n" + !!store.query;
+    if (key === chipsKey) return;
+    chipsKey = key;
+    fchips.textContent = "";
+    fchips.hidden = !FILTERS.length;
+    if (!FILTERS.length) return;
+    el("span", "fchips-h", "Saved filters:", fchips);
+    FILTERS.forEach(function (f) {
+      var b = button(fchips, f.name, "fchip", function () { applyQueryText(f.expr, true); });
+      b.setAttribute("aria-pressed", String(cur === f));
+      b.title = f.expr + (f.builtin ? "" : " (from [dash.filters])");
+    });
+    var cp = button(fchips, "Copy as config", "fchip-copy", function () { copyConfig(); });
+    cp.disabled = !store.query;
+    cp.title = store.query ? "Copy a [dash.filters] line for this query, to paste into ~/.wgo/config.toml under a name of your choosing" : "Apply a query first";
+  }
+  function copyConfig() {
+    var line = L.filterConfigLine(store.query, "my-filter"), cb = navigator.clipboard;
+    copyOut.hidden = true;
+    (cb && cb.writeText ? cb.writeText(line) : Promise.reject(new Error("no clipboard access"))).then(function () {
+      statusEl.textContent = "Copied a line for [dash.filters] in ~/.wgo/config.toml; rename my-filter.";
+    }, function () { showCopyFallback(line, "the [dash.filters] line"); });
   }
   // applyQueryText applies text as the query, or shows why it cannot be.
   function applyQueryText(text, commit) {
@@ -2374,10 +2449,6 @@
     qDirty = true;
     if (store.queryError) { store.queryError = null; renderQueryBar(); }
     qclear.hidden = !store.query && !qinput.value;
-  });
-  presetSel.addEventListener("change", function () {
-    var f = FILTERS.filter(function (x) { return x.name === presetSel.value; })[0];
-    if (f) applyQueryText(f.expr, true);
   });
 
   // ---------- copy as Markdown (requirement 25) ----------
@@ -2417,15 +2488,18 @@
       text.then(function (t) { showCopyFallback(t); statusEl.textContent += note; }, function (e) { statusEl.textContent = "Copy as Markdown failed: " + L.actionError(e); });
     });
   }
-  function showCopyFallback(t) {
+  // showCopyFallback shows t selected in a text area to copy by hand; what
+  // names it (the Markdown by default).
+  function showCopyFallback(t, what) {
+    what = what || "the Markdown";
     copyOut.textContent = "";
     copyOut.hidden = false;
-    el("div", "meta", "The clipboard is not available here: the Markdown is selected below; press ⌘C (Ctrl+C) to copy it.", copyOut);
+    el("div", "meta", "The clipboard is not available here: " + what + " is selected below; press ⌘C (Ctrl+C) to copy it.", copyOut);
     var ta = el("textarea", null, null, copyOut);
-    ta.readOnly = true; ta.value = t; ta.rows = Math.min(14, t.split("\n").length + 1); ta.setAttribute("aria-label", "Markdown extract");
+    ta.readOnly = true; ta.value = t; ta.rows = Math.min(14, t.split("\n").length + 1); ta.setAttribute("aria-label", what === "the Markdown" ? "Markdown extract" : what);
     button(copyOut, "Close", null, function () { copyOut.hidden = true; });
     ta.focus(); ta.select();
-    statusEl.textContent = "Select-and-copy: the Markdown is in the box below the bar.";
+    statusEl.textContent = "Select-and-copy: " + what + " is in the box below the bar.";
   }
 
   // ---------- URL state (requirements 12 and 13) ----------
