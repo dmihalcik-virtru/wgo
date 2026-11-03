@@ -1163,9 +1163,11 @@ is one step for Back.
 The overview starts with **Attention**: how many PRs are your move, wait
 on reviewers, or are nobody's move. Each count links to its saved filter
 and equals that filter's row count. Beside it, the **When** chart counts
-items per day. Drag across it to set `when:a..b`. Under `shipped` it counts
-merges per day, and a drag replaces `merged:-7d..`, so any week answers
-"what shipped then". With a time range set, Attention and **PRs by state**
+items per day. Drag across it to set `when:a..b`; **Clear** removes it.
+Days before the local activity window (`[dash] days`) are hatched, since
+local work there is not recorded, and each other day's tooltip gives its
+local change count. Under `shipped` the chart counts merges per day, and a
+drag replaces `merged:-7d..`, so any week answers "what shipped then". With a time range set, Attention and **PRs by state**
 compare it with the period of equal length before it ("3 merged · previous
 0"). When the PR inventory does not cover that period, they say so instead
 of showing a partial count. The agent sessions chart shows only when there

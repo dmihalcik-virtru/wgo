@@ -773,6 +773,8 @@ test("12 clauses over 2,000 nodes (timing logged)", () => {
 
 // ---------- gh-102: linked filters (web/live-facets.js) ----------
 // The addon and the analysis fixture sit beside live.js and fields.json.
+// The block's own braces keep its names from sibling addons' blocks.
+{
 const path = require("node:path");
 const FX = require(path.join(path.dirname(process.argv[2]), "live-facets.js"))(L);
 const AFIX = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[3]), "analysis_fixture.json"), "utf8"));
@@ -968,6 +970,33 @@ test("facets: coupled counts for 12 facets at 2,000 nodes (timing logged)", () =
   assert.ok(bars > 0);
   perfLine += "; facets: " + bix.nodes.length + " nodes, 12 facet indexes " + indexMs.toFixed(1) + " ms once, coupled counts for 12 facets " + (total / runs).toFixed(2) + " ms per query change";
 });
+
+test("facets: a merge day chosen from shipped keeps the chart on merges", () => {
+  const shipped = "kind:pr;prstate:merged;merged:-7d..";
+  const one = FX.gesture(shipped, AREG, "merged", "2026-10-28", "only");
+  assert.equal(one, "kind:pr;prstate:merged;merged:2026-10-28", "a day click replaces merged:-7d..");
+  assert.equal(FX.timeTarget(L.parseQuery(one, AREG)), "merged", "any positive merged clause keeps the target");
+  const two = FX.gesture(one, AREG, "merged", "2026-10-29", "only");
+  assert.equal(two, "kind:pr;prstate:merged;merged:2026-10-29", "a second click replaces the first, never ANDs a conflicting day");
+  assert.deepEqual(L.runQuery(two, aix).res.rows, ["pr:acme/infra#303"]);
+  assert.equal(FX.periodText(FX.period(aix, one, AFIX)), "1 merged · previous 0", "the previous period survives the click");
+  assert.equal(FX.timeTarget(L.parseQuery("kind:pr;prstate:merged;!merged:2026-10-28", AREG)), "when", "an exclusion alone is not the chart's");
+});
+
+test("facets: days before the local activity window are unknown, not zero", () => {
+  const when = FX.localDays(aix, AREG.field("when")), act = FX.localDays(aix, AREG.field("activity"));
+  assert.equal(when.from, "2026-10-17", "counts.days starts the local window");
+  assert.deepEqual([when.all, act.all], [false, true], "when is local only for efforts and workspaces; activity for every kind");
+  assert.equal(FX.localDays(aix, AREG.field("merged")), null, "a PR date has no local part");
+  assert.equal(FX.localText(when, "2026-10-10"), "local activity not recorded");
+  const totals = L.dayTotals({ days: aix.days, activity: aix.activity }, null);
+  const busiest = aix.days[totals.indexOf(Math.max.apply(null, totals))];
+  assert.equal(FX.localText(when, busiest), Math.max.apply(null, totals) + " local changes", "each recorded day carries its jj change count");
+  const none = FX.localDays(L.queryIndex(Object.assign({}, AFIX, { counts: { days: [], activity: {} } }), AREG), AREG.field("when"));
+  assert.equal(none.from, null);
+  assert.equal(FX.localText(none, "2026-10-29"), "local activity not recorded", "no window: nothing recorded");
+});
+}
 // ---------- end gh-102 ----------
 
 console.log("ok " + n + " (" + vectorCases + " shared query vectors) " + perfLine);

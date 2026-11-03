@@ -81,3 +81,7 @@ section.fx { margin: 8px 0 0; padding-top: 6px; border-top: 1px solid var(--grid
 .att-link.mine .att-n, .att-link.mine .att-l { color: var(--accent); }
 .att-link.on { border: 2px solid var(--ink); padding: 0 3px; }
 .att-period, .fx-period { margin: 4px 0 0; font-size: 12px; color: var(--ink); }
+.mult.fx-chart h2 .fx-clear { font-size: 11px; padding: 0 6px; font-weight: 400; }
+/* Days before the local activity window: hatched, and said in words. */
+.fx-panel svg .fx-hatch-line, .fx-chart svg .fx-hatch-line { stroke: var(--grid); stroke-width: 1.5; }
+.fx-panel svg .fx-hatch-text, .fx-chart svg .fx-hatch-text { fill: var(--ink2); font-size: 9.5px; font-style: italic; }
