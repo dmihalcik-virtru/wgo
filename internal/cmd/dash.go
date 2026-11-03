@@ -82,6 +82,10 @@ workspace, and reads PR, PR inventory, Jira and GitHub issue data from wgo's cac
 anything not cached is reported as unknown. Add --refresh to also try to
 fetch the missing or stale remote data before printing; lookups that fail
 are listed in the output's diagnostics and make the command exit non-zero.
+Once acli turns out to be logged out, the remaining Jira lookups are
+skipped instead: one diagnostic says so, the jira source is in error with
+the reason, and the exit status is unaffected. The served dashboard then
+pauses Jira lookups for 5 minutes, doubling up to 30, until one succeeds.
 
 The page's buttons open a workspace in a new Ghostty tab (or the terminal
 configured in [dash]), resume an agent there, open it in an editor or
@@ -514,6 +518,7 @@ func dashFetchers() dash.Fetchers {
 	if _, err := exec.LookPath("acli"); err == nil {
 		f.Jira = jiraFetcherFn()
 		f.Sprints = sprintFetcherFn()
+		f.JiraLogin = jiraLoginFn
 	} else {
 		f.Missing[dash.JobJira] = "acli not on PATH"
 		f.Missing[dash.JobSprints] = "acli not on PATH"

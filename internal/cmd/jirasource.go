@@ -96,6 +96,10 @@ func jiraTTL() time.Duration {
 // getIssueJSON is the acli seam of the ticket fetcher; tests replace it.
 var getIssueJSON = jira.GetIssueJSON
 
+// jiraLoginFn is the acli seam wgo dash asks whether acli is logged in when
+// Jira lookups fail; tests replace it.
+var jiraLoginFn = jira.LoginStatus
+
 // fetchTicketFacts reads a ticket with every field, so the site's custom
 // fields come along under their IDs, and parses its facts with the field
 // IDs jiraFieldIDs resolves. Should acli refuse every field, it falls back

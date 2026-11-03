@@ -109,6 +109,12 @@ type Fetchers struct {
 	// Missing optionally says why a kind has no fetcher ("acli not on
 	// PATH"), so a skipped batch can explain itself.
 	Missing map[JobKind]string
+	// JiraLogin optionally says whether acli is logged in: nil when it is,
+	// an error wrapping jira.ErrNotLoggedIn when it is not, any other
+	// error when it cannot tell. It confirms that Jira lookups failing
+	// without saying why (acli's `workitem view` does not) failed for a
+	// lapsed login, so the rest are paused (see jiraPause).
+	JiraLogin func() error
 }
 
 // describe names j for a failure message.
@@ -164,6 +170,9 @@ type Refresher struct {
 	queue chan *inflight
 	wg    sync.WaitGroup
 
+	// jira pauses Jira lookups while acli is logged out.
+	jira *jiraPause
+
 	mu      sync.Mutex
 	pending map[string]*inflight
 	closed  bool
@@ -184,7 +193,14 @@ type batch struct {
 }
 
 func (b *batch) finish(j Job, err error) {
-	if err != nil {
+	var paused *pausedError
+	switch {
+	case errors.As(err, &paused):
+		b.mu.Lock()
+		b.res.JiraSkipped++
+		b.res.JiraSkipReason = paused.reason
+		b.mu.Unlock()
+	case err != nil:
 		b.mu.Lock()
 		b.res.Failed = append(b.res.Failed, j.describe()+": "+err.Error())
 		b.mu.Unlock()
@@ -205,6 +221,12 @@ type BatchResult struct {
 	// Dropped counts jobs that never ran: beyond the queue bound, or
 	// submitted after Close.
 	Dropped int
+	// JiraSkipped counts the Jira ticket and sprint lookups the Jira pause
+	// accounted for: not run while acli was logged out, or run into the
+	// lapsed login that paused the rest. Not failures: the jira source
+	// carries JiraSkipReason, the pause's reason.
+	JiraSkipped    int
+	JiraSkipReason string
 }
 
 // add folds another batch's result into r.
@@ -212,6 +234,10 @@ func (r *BatchResult) add(o BatchResult) {
 	r.Jobs += o.Jobs
 	r.Dropped += o.Dropped
 	r.Failed = append(r.Failed, o.Failed...)
+	r.JiraSkipped += o.JiraSkipped
+	if o.JiraSkipReason != "" {
+		r.JiraSkipReason = o.JiraSkipReason
+	}
 	for k, n := range o.Skipped {
 		if r.Skipped == nil {
 			r.Skipped = map[JobKind]int{}
@@ -260,7 +286,7 @@ func NewRefresher(f Fetchers, opts RefresherOptions) *Refresher {
 	if opts.Backoff <= 0 {
 		opts.Backoff = 30 * time.Second
 	}
-	r := &Refresher{f: f, opts: opts, queue: make(chan *inflight, opts.Queue), pending: map[string]*inflight{}}
+	r := &Refresher{f: f, opts: opts, queue: make(chan *inflight, opts.Queue), pending: map[string]*inflight{}, jira: newJiraPause(f.JiraLogin)}
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	for i := 0; i < opts.Workers; i++ {
 		r.wg.Add(1)
@@ -391,10 +417,10 @@ func (r *Refresher) run(j Job) error {
 			return errors.Join(res.Err, res.WriteErr)
 		}
 	case JobJira:
-		if r.opts.IgnoreLeases || jiracache.LockRefresh(j.Ticket, r.opts.Backoff) {
+		return r.jiraLookup(func() bool { return jiracache.LockRefresh(j.Ticket, r.opts.Backoff) }, func() error {
 			_, _, err := jiracache.Resolve(r.f.Jira, j.Ticket, jiracache.Opts{Synchronous: true})
 			return err
-		}
+		})
 	case JobIssue:
 		if r.opts.IgnoreLeases || issuecache.LockRefresh(j.Issue, r.opts.Backoff) {
 			return issuecache.Refresh(r.f.Issue, j.Issue).Err
@@ -425,9 +451,9 @@ func (r *Refresher) run(j Job) error {
 			return err
 		}
 	case JobSprints:
-		if r.opts.IgnoreLeases || jiracache.LockSprintsRefresh(j.Board, r.opts.Backoff) {
+		return r.jiraLookup(func() bool { return jiracache.LockSprintsRefresh(j.Board, r.opts.Backoff) }, func() error {
 			return jiracache.RefreshSprints(r.f.Sprints, j.Board, j.Assignees)
-		}
+		})
 	case JobTimelines:
 		return r.runTimelines(j.Timelines)
 	case JobTimelinePrune:
@@ -444,6 +470,21 @@ func (r *Refresher) run(j Job) error {
 		}
 	}
 	return nil
+}
+
+// jiraLookup runs a Jira ticket or sprint lookup through the Jira pause:
+// skipped while lookups are paused, behind its lease (taken by lease) unless
+// IgnoreLeases is set.
+func (r *Refresher) jiraLookup(lease func() bool, lookup func() error) error {
+	ok, probe := r.jira.admit()
+	if !ok {
+		return &pausedError{reason: r.jira.paused()}
+	}
+	if !r.opts.IgnoreLeases && !lease() {
+		r.jira.release(probe)
+		return nil
+	}
+	return r.jira.done(lookup(), probe)
 }
 
 // timelinePruneEvery is how often cached PR timelines are pruned.
@@ -556,6 +597,9 @@ func (r *Refresher) skipSummary(res BatchResult) string {
 			p += ": " + why
 		}
 		parts = append(parts, p)
+	}
+	if n := res.JiraSkipped; n > 0 {
+		parts = append(parts, fmt.Sprintf("%s; %d Jira %s skipped", res.JiraSkipReason, n, plural(n, "lookup", "lookups")))
 	}
 	return strings.Join(parts, "; ")
 }

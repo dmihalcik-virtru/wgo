@@ -551,7 +551,7 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 	}
 	d.latest = ls
 	d.recordSkipped("")
-	s, jobs := c.assemble(ls)
+	s, jobs := d.assemble(ls)
 	// A failed write leaves the snapshot published in memory, so the remote
 	// refresh still goes ahead; the write error is returned at the end.
 	persistErr := d.Publish(s)
@@ -597,7 +597,7 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		// assemble only reads caches and reports misses as unknown, so it
 		// has no error to return. A failed write is already shown as
 		// "snapshot not saved"; only an encoding failure needs recording.
-		s, _ := c.assemble(ls)
+		s, _ := d.assemble(ls)
 		err := res.Err()
 		d.recordSkipped(d.opts.Refresher.skipSummary(res))
 		if perr := d.Publish(s); perr != nil && !errors.Is(perr, ErrPersist) {
@@ -606,6 +606,16 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		d.recordRefreshError(err)
 	}()
 	return persistErr
+}
+
+// assemble builds a snapshot of ls and the caches, showing any pause of
+// the Refresher's on the sources it holds up.
+func (d *Dash) assemble(ls *localState) (*Snapshot, []Job) {
+	s, jobs := d.opts.Collector.assemble(ls)
+	if r := d.opts.Refresher; r != nil {
+		r.markPaused(s)
+	}
+	return s, jobs
 }
 
 // waitedJobs leaves out of jobs those a waited-for refresh neither runs nor
@@ -644,7 +654,7 @@ func (d *Dash) awaitRounds(ctx context.Context, ls *localState, jobs []Job, done
 		case <-ctx.Done():
 			return nil, total, ctx.Err()
 		}
-		s, next := d.opts.Collector.assemble(ls)
+		s, next := d.assemble(ls)
 		var more []Job
 		for _, j := range waitedJobs(next) {
 			if !tried[j.key()] {

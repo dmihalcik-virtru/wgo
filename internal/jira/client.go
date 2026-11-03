@@ -5,6 +5,7 @@ package jira
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -75,6 +76,35 @@ func CheckAuth() error {
 		return fmt.Errorf("acli jira not authenticated — run: acli jira auth login\n%s", out)
 	}
 	return nil
+}
+
+// ErrNotLoggedIn says acli is not logged in to Jira, or its login expired.
+var ErrNotLoggedIn = errors.New("acli is not authenticated: run `acli jira auth login`")
+
+// IsAuthError reports whether acli's output, or an error carrying it, says
+// acli is not logged in or its login expired. acli 1.3 prints "unauthorized:
+// use 'acli jira auth login' to authenticate" (or "acli [product] auth
+// login") for auth status, searches and sprint lists. `workitem view` says
+// only "failed to fetch work item details", which a missing ticket may say
+// too; LoginStatus tells those apart.
+func IsAuthError(msg string) bool {
+	s := strings.ToLower(msg)
+	return strings.Contains(s, "unauthorized") || strings.Contains(s, "auth login") ||
+		strings.Contains(s, "not authenticated") || strings.Contains(s, "unauthenticated")
+}
+
+// LoginStatus runs `acli jira auth status`. It returns nil when acli is
+// logged in, an error wrapping ErrNotLoggedIn when acli says it is not, and
+// another error when acli failed without saying (no network, say).
+func LoginStatus() error {
+	out, err := run("auth", "status")
+	if err == nil {
+		return nil
+	}
+	if IsAuthError(out) {
+		return ErrNotLoggedIn
+	}
+	return fmt.Errorf("acli jira auth status: %w: %s", err, strings.Join(strings.Fields(out), " "))
 }
 
 // SiteHost returns the Jira site host (e.g. "virtru.atlassian.net") parsed from
