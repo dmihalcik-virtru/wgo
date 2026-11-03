@@ -224,16 +224,24 @@ func TestBuiltinFiltersHiddenUntilTheirFieldsLand(t *testing.T) {
 	if len(merged) != len(builtinFilters) {
 		t.Fatalf("got %d filters", len(merged))
 	}
+	// gh-97 and gh-98 have registered their fields; gh-99's are still
+	// planned.
+	visible := []string{"review-inbox", "shipped", "close-candidates", "sprint"}
 	for _, f := range merged {
-		if !f.Hidden || !strings.Contains(f.Reason, "not registered yet") || !strings.Contains(f.Reason, "arrives with gh-9") {
+		switch {
+		case slices.Contains(visible, f.Name):
+			if f.Hidden {
+				t.Errorf("%s hidden: %s", f.Name, f.Reason)
+			}
+		case !f.Hidden || !strings.Contains(f.Reason, "not registered yet") || !strings.Contains(f.Reason, "arrives with gh-99"):
 			t.Errorf("%s: hidden=%v reason=%q", f.Name, f.Hidden, f.Reason)
 		}
 	}
 	if f, _ := LookupFilter(merged, "push-reviewers"); f.Reason != "needs fields not registered yet: move, ci (arrives with gh-99)" {
 		t.Errorf("push-reviewers reason = %q", f.Reason)
 	}
-	if f, _ := LookupFilter(merged, "shipped"); f.Reason != "needs fields not registered yet: merged (arrives with gh-97)" {
-		t.Errorf("shipped reason = %q", f.Reason)
+	if f, _ := LookupFilter(merged, "jira-out-of-sync"); f.Reason != "needs fields not registered yet: mismatch (arrives with gh-99)" {
+		t.Errorf("jira-out-of-sync reason = %q", f.Reason)
 	}
 	_, full := loadVectors(t)
 	for _, f := range MergeFilters(nil, full) {
@@ -357,8 +365,10 @@ func TestMergeConfigFiltersToleratesBadEntries(t *testing.T) {
 }
 
 // genSnapshot builds an invented snapshot of about n nodes: efforts with a
-// workspace, bookmark, two PRs, a ticket and an agent each. It stands in for
-// gh-97's fixture generator until that lands.
+// workspace, bookmark, two PRs, a ticket and an agent each, and two more PRs
+// per effort found only by the inventory, which their repository's group
+// effort tracks (about 22 per repository), so the timings cover the efforts
+// list's tracked PRs too.
 func genSnapshot(n int) []byte {
 	now := time.Date(2026, 10, 20, 15, 0, 0, 0, time.FixedZone("", -4*3600))
 	var days []string
@@ -369,6 +379,10 @@ func genSnapshot(n int) []byte {
 		Counts: Counts{Days: days, Activity: map[string][]int{}}}
 	states := []string{"open", "open", "merged", "closed"}
 	checks := []string{"success", "failure", "pending", ""}
+	for r := range 20 {
+		key := repoEffortKey(fmt.Sprintf("acme/repo-%d", r))
+		s.Nodes = append(s.Nodes, Node{ID: effortNodeID(key), Kind: KindEffort, Label: fmt.Sprintf("acme/repo-%d", r), Effort: &EffortInfo{Key: key, Group: GroupRepo}})
+	}
 	for e := 0; len(s.Nodes) < n; e++ {
 		eid := effortNodeID(fmt.Sprintf("effort-%d", e))
 		ws := fmt.Sprintf("ws-%016x", e)
@@ -389,6 +403,14 @@ func genSnapshot(n int) []byte {
 				Title: fmt.Sprintf("Change %d", e*2+p), State: states[(e+p)%4], IsDraft: (e+p)%5 == 0, Checks: checks[(e*3+p)%4], ReviewersKnown: true,
 				UpdatedAt: now.Add(-time.Duration(e*7+p) * time.Hour), Freshness: Fresh, BookmarkID: bm}})
 			s.Edges = append(s.Edges, Edge{bm, id, EdgePR}, Edge{id, tk, EdgeTicket})
+		}
+		for p := 0; p < 2; p++ {
+			num := 100000 + e*2 + p
+			id := prNodeID(repo, num)
+			s.Nodes = append(s.Nodes, Node{ID: id, Kind: KindPR, Label: fmt.Sprintf("%s#%d", repo, num), PR: &PRInfo{Number: num, Repo: repo,
+				Title: fmt.Sprintf("Change %d", num), State: states[(e+p+1)%4], Checks: checks[(e+p)%4], ReviewersKnown: true,
+				UpdatedAt: now.Add(-time.Duration(e*5+p) * time.Hour), Freshness: Fresh, Sources: []string{PRSourceInventory}}})
+			s.Edges = append(s.Edges, Edge{effortNodeID(repoEffortKey(repo)), id, EdgeTracks}, Edge{id, tk, EdgeTicket})
 		}
 		act := make([]int, 14)
 		act[e%14] = 1 + e%3
@@ -431,3 +453,63 @@ func TestQueryPerformance(t *testing.T) {
 // perfQuery is the 12-clause query both evaluators time; live_logic.js has
 // the same string.
 const perfQuery = "kind:pr;prstate:open,draft,merged;!checks:pending;freshness:fresh,stale;repo:*;effort:*;activity:*;!text:zzz;review:none,approved;!prstate:closed;text:change;!repo:acme/repo-19"
+
+// TestBuiltinFiltersOnTheAnalysisFixture runs the built-ins that gh-97 and
+// gh-98's fields make visible over the sanitized analysis fixture, as
+// wgo dash --fixture would (alice is me; generated 2026-10-30 16:00 UTC).
+func TestBuiltinFiltersOnTheAnalysisFixture(t *testing.T) {
+	v, err := LoadFixture(analysisFixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, expr string }{
+		// A team-only request (#104, team:web) reaches alice through her
+		// review_requested involvement, beside the direct requests.
+		{"review-inbox", "pr:acme/api#104 pr:acme/api#105 pr:acme/web#202"},
+		{"shipped", "pr:acme/api#107 pr:acme/infra#303"},
+		{"close-candidates", "pr:acme/api#105"},
+		// TEAM-108 is in the future Sprint 13 only.
+		{"sprint", "ticket:jira:TEAM-101 ticket:jira:TEAM-102 ticket:jira:TEAM-103 ticket:jira:TEAM-104 ticket:jira:TEAM-105 ticket:jira:TEAM-106"},
+	} {
+		f, _ := BuiltinFilter(tc.name)
+		res, err := v.Query(f.Expr)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := strings.Join(slices.Sorted(slices.Values(res.Rows)), " "); got != tc.expr {
+			t.Errorf("%s rows = %s\nwant %s", tc.name, got, tc.expr)
+		}
+	}
+	// A merged PR counts in the week it merged, not the week it was last
+	// updated: #108 merged on 2026-10-19 and #205 on 2026-10-22, and both
+	// were updated the week after.
+	for _, tc := range []struct {
+		expr string
+		in   bool
+	}{
+		{"kind:pr;when:2026-10-19..2026-10-25", true},
+		{"kind:pr;when:2026-10-26..2026-11-01", false},
+	} {
+		res, err := v.Query(tc.expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"pr:acme/api#108", "pr:acme/web#205"} {
+			if slices.Contains(res.Rows, id) != tc.in {
+				t.Errorf("%s: %s in rows = %v, want %v", tc.expr, id, !tc.in, tc.in)
+			}
+		}
+	}
+	// A ticket's repository comes from the PRs and bookmarks that lead to
+	// it; a ticket field and a PR field together are an error.
+	res, err := v.Query("repo:acme/api;status_category:done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(res.Rows, " "); got != "ticket:jira:TEAM-102" {
+		t.Errorf("done tickets in acme/api = %s", got)
+	}
+	if _, err := v.Query("prstate:open;status_category:done"); err == nil || !strings.Contains(err.Error(), "apply to no common node kind") {
+		t.Errorf("prstate with status_category: %v", err)
+	}
+}

@@ -1,0 +1,48 @@
+{
+  "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+  "id": "10123",
+  "self": "https://acme.example/rest/api/3/issue/10123",
+  "key": "TEAM-123",
+  "fields": {
+    "summary": "Refresh API tokens before they expire",
+    "status": {
+      "self": "https://acme.example/rest/api/3/status/10001",
+      "name": "In Review",
+      "id": "10001",
+      "statusCategory": {"id": 4, "key": "indeterminate", "colorName": "yellow", "name": "In Progress"}
+    },
+    "issuetype": {"id": "10002", "name": "Story", "subtask": false, "hierarchyLevel": 0},
+    "priority": {"id": "2", "name": "High"},
+    "assignee": {"accountId": "acct-alice", "displayName": "Alice", "active": true, "timeZone": "UTC"},
+    "reporter": {"accountId": "acct-bob", "displayName": "Bob", "active": true},
+    "labels": ["backend", "tokens"],
+    "components": [{"id": "10200", "name": "api"}, {"id": "10201", "name": "web"}],
+    "parent": {
+      "id": "10100",
+      "key": "TEAM-100",
+      "fields": {
+        "summary": "Token lifecycle",
+        "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+        "priority": {"name": "Medium"},
+        "issuetype": {"id": "10000", "name": "Epic", "subtask": false, "hierarchyLevel": 1}
+      }
+    },
+    "resolution": null,
+    "resolutiondate": null,
+    "created": "2026-10-01T09:00:00.000+0000",
+    "updated": "2026-10-29T14:00:00.000+0000",
+    "description": {"version": 1, "type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Tokens expire mid-request."}]}]},
+    "comment": {"comments": [], "maxResults": 0, "total": 0, "startAt": 0},
+    "customfield_10001": {"id": "0a1b2c3d-0000-4000-8000-000000000001", "name": "Platform", "title": "Platform", "isVisible": true, "isVerified": false, "isShared": true},
+    "customfield_10014": null,
+    "customfield_10016": 5.0,
+    "customfield_10020": [
+      {"id": 1230, "name": "Sprint 11", "state": "closed", "boardId": 42, "goal": "", "startDate": "2026-10-06T08:00:00.000Z", "endDate": "2026-10-20T08:00:00.000Z", "completeDate": "2026-10-20T09:00:00.000Z"},
+      {"id": 1234, "name": "Sprint 12", "state": "active", "boardId": 42, "goal": "Ship token refresh", "startDate": "2026-10-20T08:00:00.000Z", "endDate": "2026-11-03T08:00:00.000Z"}
+    ],
+    "customfield_10500": 42,
+    "customfield_10600": {"self": "https://acme.example/rest/api/3/customFieldOption/10300", "value": "Customer", "id": "10300"},
+    "customfield_10700": [{"value": "Linux", "id": "10400"}, {"value": "macOS", "id": "10401"}],
+    "customfield_10800": null
+  }
+}

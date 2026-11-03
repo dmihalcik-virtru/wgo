@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 )
 
 // maxValidateErrors caps how many problems Validate reports individually.
@@ -18,6 +19,8 @@ var edgeEndpoints = map[EdgeKind]struct{ src, dst []NodeKind }{
 	EdgeTicket:   {[]NodeKind{KindPR, KindBookmark}, []NodeKind{KindTicket}},
 	EdgeRuns:     {[]NodeKind{KindEffort}, []NodeKind{KindAgent}},
 	EdgeWorksIn:  {[]NodeKind{KindAgent}, []NodeKind{KindWorkspace}},
+	EdgeTracks:   {[]NodeKind{KindEffort}, []NodeKind{KindPR, KindTicket}},
+	EdgeInSprint: {[]NodeKind{KindTicket}, []NodeKind{KindSprint}},
 }
 
 // Validate checks the snapshot's structural invariants: schema version,
@@ -54,7 +57,13 @@ func (s *Snapshot) Validate() error {
 		return ok && slices.Contains(ks, k)
 	}
 
+	// incoming records, per node ID, the kinds of edges reaching it.
+	incoming := map[string]map[EdgeKind][]string{}
 	for _, e := range s.Edges {
+		if incoming[e.Target] == nil {
+			incoming[e.Target] = map[EdgeKind][]string{}
+		}
+		incoming[e.Target][e.Kind] = append(incoming[e.Target][e.Kind], e.Source)
 		srcKind, srcOK := kinds[e.Source]
 		dstKind, dstOK := kinds[e.Target]
 		if !srcOK {
@@ -95,6 +104,15 @@ func (s *Snapshot) Validate() error {
 			v.addf("counts key: agents key %q is not an effort node", id)
 		}
 	}
+	for _, id := range sortedKeys(s.Counts.Merged) {
+		if got := len(s.Counts.Merged[id]); got != len(s.Counts.Days) {
+			v.addf("counts merged: %q has %d entries, want %d", id, got, len(s.Counts.Days))
+		}
+		if !isKind(id, KindEffort) {
+			v.addf("counts key: merged key %q is not an effort node", id)
+		}
+	}
+	v.checkPeople(s.People)
 
 	// Cross-references.
 	for _, n := range s.Nodes {
@@ -104,8 +122,21 @@ func (s *Snapshot) Validate() error {
 				v.addf("reference: workspace %q effort_id %q is not an effort node", n.ID, n.Workspace.EffortID)
 			}
 		case n.PR != nil:
-			if !isKind(n.PR.BookmarkID, KindBookmark) {
-				v.addf("reference: pr %q bookmark_id %q is not a bookmark node", n.ID, n.PR.BookmarkID)
+			// A PR hangs off the bookmark it was found for, or, found only
+			// by the inventory, off an effort that tracks it.
+			switch bm := n.PR.BookmarkID; {
+			case bm == "" && len(incoming[n.ID][EdgeTracks]) == 0:
+				v.addf("reference: pr %q has neither a bookmark_id nor an incoming tracks edge", n.ID)
+			case bm != "" && !isKind(bm, KindBookmark):
+				v.addf("reference: pr %q bookmark_id %q is not a bookmark node", n.ID, bm)
+			case bm != "" && !slices.Contains(incoming[n.ID][EdgePR], bm):
+				v.addf("reference: pr %q bookmark_id %q has no pr edge to it", n.ID, bm)
+			}
+		case n.Ticket != nil:
+			// A ticket is reached from a PR or bookmark, or, found only in a
+			// sprint, tracked by an effort.
+			if len(incoming[n.ID][EdgeTicket]) == 0 && len(incoming[n.ID][EdgeTracks]) == 0 {
+				v.addf("reference: ticket %q has neither an incoming ticket edge nor a tracks edge", n.ID)
 			}
 		case n.Agent != nil:
 			if !isKind(n.Agent.EffortID, KindEffort) {
@@ -136,13 +167,14 @@ func (v *validator) checkNodeKind(n Node) {
 		KindPR:        n.PR != nil,
 		KindTicket:    n.Ticket != nil,
 		KindAgent:     n.Agent != nil,
+		KindSprint:    n.Sprint != nil,
 	}
 	if _, known := set[n.Kind]; !known {
 		v.addf("node kind: %q has unknown kind %q", n.ID, n.Kind)
 		return
 	}
 	var present []NodeKind
-	for _, k := range []NodeKind{KindEffort, KindWorkspace, KindBookmark, KindPR, KindTicket, KindAgent} {
+	for _, k := range []NodeKind{KindEffort, KindWorkspace, KindBookmark, KindPR, KindTicket, KindAgent, KindSprint} {
 		if set[k] {
 			present = append(present, k)
 		}
@@ -157,6 +189,97 @@ func (v *validator) checkNodeKind(n Node) {
 		default:
 			v.addf("node kind: agent %q has unknown liveness %q", n.ID, n.Agent.Liveness)
 		}
+	}
+	switch {
+	case n.PR != nil:
+		v.checkPR(n.ID, n.PR)
+	case n.Ticket != nil:
+		v.checkTicket(n.ID, n.Ticket)
+	case n.Sprint != nil:
+		if n.Sprint.ID <= 0 {
+			v.addf("sprint: %q has no sprint id", n.ID)
+		}
+		v.enum(n.ID, "state", n.Sprint.State, SprintActive, SprintFuture, SprintClosed)
+	}
+}
+
+// checkPR checks the closed vocabularies of a PR's inventory facts. An empty
+// value is unknown and always allowed.
+func (v *validator) checkPR(id string, p *PRInfo) {
+	v.enum(id, "mergeable", p.Mergeable, MergeMergeable, MergeConflicting, MergeUnknown)
+	for _, r := range p.ReviewRequests {
+		if r.Reviewer == "" {
+			v.addf("pr facts: %q has a review request with no reviewer", id)
+		}
+		v.enum(id, "review request kind", r.Kind, ReviewerUser, ReviewerTeam)
+		if r.Kind != "" && (r.Kind == ReviewerTeam) != strings.HasPrefix(r.Reviewer, teamPrefix) {
+			v.addf("pr facts: %q has review request %q of kind %s; a team is %q and only a team is", id, r.Reviewer, r.Kind, teamPrefix+"<slug>")
+		}
+	}
+	for _, r := range p.Reviews {
+		v.enum(id, "review state", r.State, ReviewApproved, ReviewChangesRequested, ReviewCommented, ReviewDismissed)
+	}
+	for _, c := range p.CheckDetails {
+		if c.Name == "" {
+			v.addf("pr facts: %q has a check with no name", id)
+		}
+		v.enum(id, "check state", c.State, CheckSuccess, CheckFailure, CheckPending, CheckSkipped, CheckNeutral)
+	}
+	if len(p.CheckDetails) > MaxCheckDetails {
+		v.addf("pr facts: %q has %d check details, more than %d", id, len(p.CheckDetails), MaxCheckDetails)
+	}
+	for _, in := range p.Involvement {
+		if in.Person == "" {
+			v.addf("pr facts: %q has an involvement with no person", id)
+		}
+		v.enum(id, "involvement role", in.Role, RoleAuthor, RoleReviewRequested, RoleReviewed)
+	}
+	for _, src := range p.Sources {
+		v.enum(id, "source", src, PRSourceBookmark, PRSourceInventory)
+	}
+}
+
+// checkTicket checks the closed vocabularies of a ticket's Jira facts.
+func (v *validator) checkTicket(id string, t *TicketInfo) {
+	v.enum(id, "status_category", t.StatusCategory, StatusToDo, StatusInProgress, StatusDone)
+	for _, sp := range t.Sprints {
+		if sp.ID <= 0 {
+			v.addf("ticket facts: %q lists a sprint with no id", id)
+		}
+		v.enum(id, "sprint state", sp.State, SprintActive, SprintFuture, SprintClosed)
+	}
+	if t.StoryPoints != nil && !t.StoryPointsKnown {
+		v.addf("ticket facts: %q has story_points without story_points_known", id)
+	}
+}
+
+// enum reports a non-empty value outside allowed.
+func (v *validator) enum(id, field, value string, allowed ...string) {
+	if value != "" && !slices.Contains(allowed, value) {
+		v.addf("facts: %q has %s %q, want one of %v", id, field, value, allowed)
+	}
+}
+
+// checkPeople checks that each person has a distinct login and at most one
+// is the authenticated user.
+func (v *validator) checkPeople(people []Person) {
+	seen := map[string]bool{}
+	me := 0
+	for i, p := range people {
+		key := strings.ToLower(p.Login)
+		switch {
+		case key == "":
+			v.addf("people: entry %d has no login", i)
+		case seen[key]:
+			v.addf("people: duplicate login %q", p.Login)
+		}
+		seen[key] = true
+		if p.Me {
+			me++
+		}
+	}
+	if me > 1 {
+		v.addf("people: %d entries are marked me, want at most one", me)
 	}
 }
 

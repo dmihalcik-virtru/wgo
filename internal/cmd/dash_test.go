@@ -20,6 +20,7 @@ import (
 
 	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/dash"
+	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/launch"
 )
 
@@ -322,13 +323,16 @@ func TestDashFetchersAbsentIntegrations(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 	f := dashFetchers()
-	if f.PR != nil || f.Issue != nil || f.Jira != nil {
+	if f.PR != nil || f.Issue != nil || f.Jira != nil || f.Inventory != nil || f.Sprints != nil {
 		t.Fatalf("fetchers without any integration: %+v", f)
 	}
 	want := map[dash.JobKind]string{
-		dash.JobPR:    "no GitHub token or gh",
-		dash.JobIssue: "no GitHub token or gh",
-		dash.JobJira:  "acli not on PATH",
+		dash.JobPR:        "no GitHub token or gh",
+		dash.JobIssue:     "no GitHub token or gh",
+		dash.JobInventory: "no GitHub token or gh",
+		dash.JobIdentity:  "no GitHub token or gh",
+		dash.JobJira:      "acli not on PATH",
+		dash.JobSprints:   "acli not on PATH",
 	}
 	for k, why := range want {
 		if f.Missing[k] != why {
@@ -376,6 +380,16 @@ func TestApplyDashConfig(t *testing.T) {
 		// --json never serves, so it ignores port and refresh_seconds.
 		{name: "json ignores port and refresh", dc: config.DashConfig{Port: 70000, RefreshSeconds: 1, Days: 30}, json: true, flags: noDashFlags, wantPort: 1111, wantDays: 30},
 		{name: "json still checks days", dc: config.DashConfig{Days: 999}, json: true, flags: noDashFlags, wantErr: "[dash] days"},
+		{name: "people", dc: config.DashConfig{People: []config.DashPerson{{GitHub: "alice"}, {GitHub: "bob", Jira: "acct-bob"}}}, flags: noDashFlags, wantPort: 1111, wantDays: 2},
+		{name: "person without login", dc: config.DashConfig{People: []config.DashPerson{{Name: "Alice"}}}, flags: noDashFlags, wantErr: "[[dash.people]] entry 1"},
+		{name: "json checks people", dc: config.DashConfig{People: []config.DashPerson{{GitHub: "@alice"}}}, json: true, flags: noDashFlags, wantErr: "[[dash.people]] entry 1"},
+		{name: "inventory ttl", dc: config.DashConfig{InventoryTTLSeconds: 60, TicketPrefixes: []string{"TEAM", "ops"}}, flags: noDashFlags, wantPort: 1111, wantDays: 2},
+		{name: "inventory ttl max", dc: config.DashConfig{InventoryTTLSeconds: 86400}, json: true, flags: noDashFlags, wantPort: 1111, wantDays: 2},
+		{name: "inventory ttl too small", dc: config.DashConfig{InventoryTTLSeconds: 59}, json: true, flags: noDashFlags, wantErr: "[dash] inventory_ttl_seconds"},
+		{name: "inventory ttl too big", dc: config.DashConfig{InventoryTTLSeconds: 86401}, flags: noDashFlags, wantErr: "[dash] inventory_ttl_seconds"},
+		{name: "inventory ttl negative", dc: config.DashConfig{InventoryTTLSeconds: -1}, flags: noDashFlags, wantErr: "[dash] inventory_ttl_seconds"},
+		{name: "ticket prefix with digits", dc: config.DashConfig{TicketPrefixes: []string{"TEAM", "AB2"}}, flags: noDashFlags, wantErr: "[dash] ticket_prefixes"},
+		{name: "ticket prefix with a dash", dc: config.DashConfig{TicketPrefixes: []string{"TEAM-123"}}, json: true, flags: noDashFlags, wantErr: "[dash] ticket_prefixes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			saveDashFlags(t)
@@ -394,6 +408,53 @@ func TestApplyDashConfig(t *testing.T) {
 				t.Fatalf("port %d days %d, want %d and %d", dashPort, dashDays, tc.wantPort, tc.wantDays)
 			}
 		})
+	}
+}
+
+func TestDashPeople(t *testing.T) {
+	got := dashPeople([]config.DashPerson{{GitHub: "alice", Jira: "acct-alice", Name: "Alice"}, {GitHub: "bob"}})
+	want := []dash.Person{{Login: "alice", Jira: "acct-alice", Name: "Alice"}, {Login: "bob"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	if dashPeople(nil) != nil {
+		t.Fatal("no entries means no configured people")
+	}
+}
+
+func TestDashInventoryTTL(t *testing.T) {
+	if got := dashInventoryTTL(config.DashConfig{}); got != dash.DefaultInventoryTTL || dash.ClosedInventoryTTL(got) != 30*time.Minute {
+		t.Fatalf("default inventory TTL %v (closed %v), want 5m and 30m", got, dash.ClosedInventoryTTL(got))
+	}
+	if got := dashInventoryTTL(config.DashConfig{InventoryTTLSeconds: 120}); got != 2*time.Minute || dash.ClosedInventoryTTL(got) != 12*time.Minute {
+		t.Fatalf("inventory TTL %v", got)
+	}
+}
+
+func TestDashTicketPrefixes(t *testing.T) {
+	cfg := &config.Config{Jira: config.JiraConfig{Project: "team", DefaultProject: "OPS",
+		ProjectRules: []config.JiraProjectRule{{Repo: "acme/*", Project: "WEB"}, {Path: "x", Project: "TEAM"}, {Project: "AB2"}}}}
+	if got, want := dashTicketPrefixes(cfg), []string{"TEAM", "OPS", "WEB"}; !slices.Equal(got, want) {
+		t.Fatalf("[jira] prefixes %v, want %v", got, want)
+	}
+	cfg.Dash.TicketPrefixes = []string{"Core"}
+	if got, want := dashTicketPrefixes(cfg), []string{"CORE"}; !slices.Equal(got, want) {
+		t.Fatalf("[dash] ticket_prefixes %v, want %v (they replace [jira]'s)", got, want)
+	}
+	if got := dashTicketPrefixes(&config.Config{}); got != nil {
+		t.Fatalf("no prefixes configured: %v", got)
+	}
+}
+
+func TestGitHubUnavailable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("GITHUB_TOKEN", "")
+	if got := githubUnavailable(); got != github.ErrNoAuth.Error() {
+		t.Fatalf("no token and no gh: %q", got)
+	}
+	t.Setenv("GITHUB_TOKEN", "t")
+	if got := githubUnavailable(); got != "" {
+		t.Fatalf("with a token: %q", got)
 	}
 }
 

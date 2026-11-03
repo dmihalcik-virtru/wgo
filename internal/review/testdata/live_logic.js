@@ -120,6 +120,52 @@ test("a workspace is on its bookmark, behind bookmarks that moved on, or has non
   assert.equal(ws({ error: "jj exploded" }), "unavailable: jj exploded");
 });
 
+test("ticket facts: category and points only when known", () => {
+  assert.deepEqual(L.ticketFacts({ status_category: "in_progress", story_points: 5, story_points_known: true }), { category: "in progress", points: "5 points" });
+  assert.deepEqual(L.ticketFacts({ status_category: "todo", story_points: 1, story_points_known: true }), { category: "to do", points: "1 point" });
+  assert.deepEqual(L.ticketFacts({ status_category: "done", story_points_known: true }), { category: "done", points: "unestimated" });
+  assert.deepEqual(L.ticketFacts({ status: "Open" }), { category: "", points: "" }, "unread points are unknown, never unestimated");
+  assert.deepEqual(L.ticketFacts(null), { category: "", points: "" });
+});
+
+test("sprints: state and dates, and their group's state text", () => {
+  assert.equal(L.sprintText({ state: "active", start: "2026-10-20T08:00:00Z", end: "2026-11-03T08:00:00Z" }), "active sprint · 2026-10-20 to 2026-11-03");
+  assert.equal(L.sprintText({ state: "future", start: "2026-11-03T08:00:00Z" }), "future sprint · 2026-11-03 to ?");
+  assert.equal(L.sprintText({}), "sprint state unknown");
+  assert.equal(L.stateText({ kind: "sprint", sprint: { state: "closed" } }), "closed sprint");
+  assert.equal(L.dataText({ kind: "sprint", sprint: { freshness: "stale" } }), "stale");
+  const sp = { state: "active", start: "2026-10-20T08:00:00Z", end: "2026-11-03T08:00:00Z", goal: "Ship token refresh" };
+  assert.equal(L.sprintGroupText({ group: "sprint", description: "Ship token refresh" }, sp), "active sprint · 2026-10-20 to 2026-11-03", "the description already shows the goal");
+  assert.equal(L.sprintGroupText({ group: "sprint" }, sp), "active sprint · 2026-10-20 to 2026-11-03 · goal: Ship token refresh");
+  assert.equal(L.stateText({ kind: "effort", effort: { group: "sprint" } }), "sprint group");
+  assert.equal(L.stateText({ kind: "effort", effort: { group: "repo" } }), "repository group");
+});
+
+test("tracked lists an effort's PRs and tickets in natural order", () => {
+  const s = {
+    nodes: [
+      { id: "effort:repo:acme/api", kind: "effort", label: "acme/api" },
+      { id: "pr:acme/api#10", kind: "pr", label: "acme/api#10" }, { id: "pr:acme/api#9", kind: "pr", label: "acme/api#9" },
+      { id: "ticket:jira:TEAM-12", kind: "ticket", label: "TEAM-12" }, { id: "ticket:jira:TEAM-3", kind: "ticket", label: "TEAM-3" },
+      { id: "ticket:jira:TEAM-7", kind: "ticket", label: "TEAM-7" }, { id: "ws1", kind: "workspace", label: "api" },
+    ],
+    edges: [
+      { source: "effort:repo:acme/api", target: "pr:acme/api#10", kind: "tracks" }, { source: "effort:repo:acme/api", target: "pr:acme/api#9", kind: "tracks" },
+      { source: "effort:repo:acme/api", target: "ticket:jira:TEAM-12", kind: "tracks" }, { source: "effort:repo:acme/api", target: "ws1", kind: "contains" },
+      { source: "pr:acme/api#10", target: "ticket:jira:TEAM-3", kind: "ticket" }, { source: "pr:acme/api#9", target: "ticket:jira:TEAM-3", kind: "ticket" },
+      { source: "pr:acme/api#9", target: "ticket:jira:TEAM-7", kind: "ticket" },
+    ],
+  };
+  const idx = L.index(s), ids = (l) => l.map((n) => n.id);
+  const all = L.tracked(idx, "effort:repo:acme/api");
+  assert.deepEqual(ids(all.prs), ["pr:acme/api#9", "pr:acme/api#10"]);
+  assert.deepEqual(ids(all.tickets), ["ticket:jira:TEAM-3", "ticket:jira:TEAM-7", "ticket:jira:TEAM-12"], "tracked and PR tickets, once each");
+  const some = L.tracked(idx, "effort:repo:acme/api", (id) => id !== "pr:acme/api#9" && id !== "ticket:jira:TEAM-12");
+  assert.deepEqual(ids(some.prs), ["pr:acme/api#10"]);
+  assert.deepEqual(ids(some.tickets), ["ticket:jira:TEAM-3"], "only the visible PRs' tickets");
+  assert.deepEqual(L.tracked(idx, "ws1"), { prs: [], tickets: [] });
+});
+
 test("sortRows sorts both directions with stable tie-breaks", () => {
   const rows = [
     { id: "c", label: "same", kind: "pr", activity: "2026-10-01" },
@@ -225,6 +271,13 @@ test("localURL accepts only same-origin paths", () => {
   }
 });
 
+test("effortOrder puts repo and sprint groups after themes and before Ungrouped", () => {
+  const e = (id, group, label) => ({ id, kind: "effort", label: label || id, effort: { group } });
+  const list = [e("u", "ungrouped"), e("s", "sprint"), e("r2", "repo", "acme/web"), e("r1", "repo", "acme/api"),
+    e("th", "theme"), e("t", "ticket"), e("n", "effort"), e("x", "mystery")];
+  assert.deepEqual(list.sort(L.effortOrder).map((n) => n.id), ["n", "t", "th", "x", "r1", "r2", "s", "u"]);
+});
+
 test("Resume is labelled with the configured tool", () => {
   const r = L.actionButtons({ token: "t", action_api: "/api/action", resume: "codex" }).find((a) => a.kind === "resume");
   assert.equal(r.label, "Resume codex");
@@ -234,6 +287,9 @@ test("Resume is labelled with the configured tool", () => {
 // ---------- query language: the vectors shared with internal/dash ----------
 const BASE = L.registry(FIELDS);
 const VREG = L.registry(FIELDS, VECTORS.fields);
+test("the evaluator knows every node kind the registry does", () => {
+  assert.deepEqual(L.QUERY_KINDS, BASE.field("kind").values);
+});
 let vectorCases = 0;
 VECTORS.cases.forEach((c) => {
   test("vector: " + c.name, () => {
@@ -356,7 +412,10 @@ test("registered views become tabs; re-registering replaces in place", () => {
 test("valueText never prints blank for unknown or empty", () => {
   const ix = L.queryIndex(VECTORS.snapshot, VREG);
   assert.equal(L.valueText(ix, "checks", "pr:acme/web#9"), "unknown");
-  assert.equal(L.valueText(ix, "effort", "ticket:jira:TEAM-99"), "none");
+  assert.equal(L.valueText(ix, "effort", "ticket:jira:TEAM-99"), "sprint:1234");
+  assert.equal(L.valueText(ix, "effort", "sprint:1235"), "none");
+  assert.equal(L.valueText(ix, "points", "ticket:jira:TEAM-99"), "none", "unestimated");
+  assert.equal(L.valueText(ix, "points", "ticket:gh:acme/web#5"), "unknown");
   assert.equal(L.valueText(ix, "ticket_status", "ticket:jira:TEAM-123"), "In Progress");
   assert.equal(L.valueText(ix, "updated_ago", "pr:acme/api#41"), "1d");
   assert.equal(L.valueText(ix, "checks", "ws-0000000000000001"), "", "a field that does not apply is blank, not unknown");
@@ -368,6 +427,7 @@ function genSnapshot(n) {
   const nodes = [], edges = [], activity = {}, days = [];
   for (let i = 13; i >= 0; i--) days.push(new Date(Date.UTC(2026, 9, 20 - i)).toISOString().slice(0, 10));
   const states = ["open", "open", "merged", "closed"], checks = ["success", "failure", "pending", ""];
+  for (let r = 0; r < 20; r++) nodes.push({ id: "effort:repo:acme/repo-" + r, kind: "effort", label: "acme/repo-" + r, effort: { key: "repo:acme/repo-" + r, group: "repo" } });
   for (let e = 0; nodes.length < n; e++) {
     const eid = "effort:effort-" + e, ws = "ws-" + e, bm = "bm-" + e, tk = "ticket:jira:TEAM-" + e, ag = "agent:a-" + e, repo = "acme/repo-" + (e % 20);
     nodes.push({ id: eid, kind: "effort", label: "Effort " + e, effort: { key: "effort-" + e, group: "effort" } },
@@ -384,6 +444,14 @@ function genSnapshot(n) {
       if (checks[(e * 3 + p) % 4]) pr.checks = checks[(e * 3 + p) % 4];
       nodes.push({ id: id, kind: "pr", label: repo + "#" + num, pr: pr });
       edges.push({ source: bm, target: id, kind: "pr" }, { source: id, target: tk, kind: "ticket" });
+    }
+    for (let p = 0; p < 2; p++) {
+      const num = 100000 + e * 2 + p, id = "pr:" + repo + "#" + num;
+      const pr = { number: num, repo: repo, title: "Change " + num, state: states[(e + p + 1) % 4], reviewers_known: true, freshness: "fresh", sources: ["inventory"],
+        updated_at: new Date(Date.UTC(2026, 9, 20, 19) - (e * 5 + p) * 3600000).toISOString() };
+      if (checks[(e + p) % 4]) pr.checks = checks[(e + p) % 4];
+      nodes.push({ id: id, kind: "pr", label: repo + "#" + num, pr: pr });
+      edges.push({ source: "effort:repo:" + repo, target: id, kind: "tracks" }, { source: id, target: tk, kind: "ticket" });
     }
     const act = new Array(14).fill(0);
     act[e % 14] = 1 + (e % 3);

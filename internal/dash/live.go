@@ -566,16 +566,16 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 	}
 	done := d.opts.Refresher.Submit(jobs)
 	if opts.Wait {
-		var res BatchResult
-		select {
-		case res = <-done:
-		case <-ctx.Done():
-			return ctx.Err()
+		s, res, err := d.awaitRounds(ctx, ls, jobs, done)
+		if err != nil {
+			return err
 		}
-		remoteErr := res.Err()
-		d.recordRefreshError(remoteErr)
+		// Every problem is shown; only failed lookups fail the command. Jobs
+		// beyond the queue bound were not run, so their data stays stale or
+		// unknown, which the snapshot already says.
+		d.recordRefreshError(res.Err())
 		d.recordSkipped(d.opts.Refresher.skipSummary(res))
-		s, _ := c.assemble(ls)
+		remoteErr := res.failedErr()
 		if err := d.Publish(s); err != nil {
 			return errors.Join(err, remoteErr)
 		}
@@ -602,6 +602,49 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		d.recordRefreshError(err)
 	}()
 	return persistErr
+}
+
+// maxFollowUps bounds the extra rounds of lookups a waited-for refresh runs
+// for jobs that only fetched data reveals: once the authenticated login is
+// known, that person's inventory (gh-97) and a sprint search for their own
+// Jira identity (gh-98); once the inventory or a sprint search is in, the
+// tickets they name. Those chains need two follow-ups; the third is a
+// margin, and the bound keeps a chain that never settles from looping. A
+// background refresh leaves them to its next collection.
+const maxFollowUps = 3
+
+// awaitRounds waits for the batch done of jobs, then assembles ls again. Jobs
+// the new data revealed that no earlier round submitted are submitted and
+// waited for in turn, until a round reveals none or after maxFollowUps
+// rounds. It returns the last snapshot and every round's results together:
+// a job dropped by a full queue in any round counts as dropped, not failed,
+// and is not submitted again.
+func (d *Dash) awaitRounds(ctx context.Context, ls *localState, jobs []Job, done <-chan BatchResult) (*Snapshot, BatchResult, error) {
+	tried := map[string]bool{}
+	for _, j := range jobs {
+		tried[j.key()] = true
+	}
+	var total BatchResult
+	for round := 0; ; round++ {
+		select {
+		case res := <-done:
+			total.add(res)
+		case <-ctx.Done():
+			return nil, total, ctx.Err()
+		}
+		s, next := d.opts.Collector.assemble(ls)
+		var more []Job
+		for _, j := range next {
+			if !tried[j.key()] {
+				tried[j.key()] = true
+				more = append(more, j)
+			}
+		}
+		if len(more) == 0 || round == maxFollowUps {
+			return s, total, nil
+		}
+		done = d.opts.Refresher.Submit(more)
+	}
 }
 
 // Acknowledge records the snapshot with generation gen as seen: it becomes

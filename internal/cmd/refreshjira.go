@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
+	"github.com/virtru/wgo/internal/config"
 	"github.com/virtru/wgo/internal/jiracache"
 )
 
@@ -25,12 +26,15 @@ func init() {
 }
 
 // runRefreshJira does a synchronous cache-writing fetch for ticket. The
-// synchronous path bypasses the TTL cache read, so no config is consulted here
-// (jiraTTL/config only govern the read-through hot path in jirasource.go).
+// synchronous path bypasses the TTL cache read, but the fetch needs config:
+// [jira.fields] names the site's custom fields, and an entry written without
+// them would lose its story points and team (and wgo dash reads the same
+// entry). A config that cannot be loaded leaves the defaults, as elsewhere.
 func runRefreshJira(ticket string) error {
 	if ticket == "" {
 		return nil
 	}
+	_ = config.Init()
 	_, _, err := jiracache.Resolve(jiraFetcherFn(), ticket, jiracache.Opts{Synchronous: true})
 	return err
 }

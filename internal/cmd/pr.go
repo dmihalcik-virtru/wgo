@@ -85,9 +85,12 @@ func runPRCmd() error {
 }
 
 func runPROnce(gh *github.CLIClient) error {
-	mine, involved, myLogin, err := fetchAllPRData(gh)
+	mine, involved, myLogin, warn, err := fetchAllPRData(gh)
 	if err != nil {
 		return err
+	}
+	if warn != "" {
+		defer fmt.Fprintf(os.Stderr, "wgo pr: %s\n", warn)
 	}
 
 	cfg := config.Get()
@@ -119,13 +122,16 @@ func runPRWatch(gh *github.CLIClient) error {
 
 	cfg := config.Get()
 	refresh := func() {
-		mine, involved, myLogin, err := fetchAllPRData(gh)
+		mine, involved, myLogin, warn, err := fetchAllPRData(gh)
 		fmt.Print("\033[2J\033[H") // clear screen
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return
 		}
 		renderPRTable(mine, involved, myLogin, cfg)
+		if warn != "" {
+			fmt.Fprintf(os.Stderr, "\n  wgo pr: %s\n", warn)
+		}
 		fmt.Printf("\n  Refreshed %s — Ctrl+C to exit\n", time.Now().Format("15:04:05"))
 	}
 
@@ -140,12 +146,14 @@ func runPRWatch(gh *github.CLIClient) error {
 	}
 }
 
-// fetchAllPRData collects all PR data: my PRs, involved PRs, checks, and last-activity.
-func fetchAllPRData(gh *github.CLIClient) (mine, involved []github.ExtendedPRInfo, myLogin string, err error) {
+// fetchAllPRData collects all PR data: my PRs, involved PRs, checks, and
+// last-activity. warn says when GitHub's rate limit left some checks or
+// activity out, which would otherwise look like PRs without any.
+func fetchAllPRData(gh *github.CLIClient) (mine, involved []github.ExtendedPRInfo, myLogin, warn string, err error) {
 	// Resolve the current GitHub user first
 	myLogin, err = gh.CurrentUser()
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("could not determine GitHub user: %w", err)
+		return nil, nil, "", "", fmt.Errorf("could not determine GitHub user: %w", err)
 	}
 
 	// Parse --since filter
@@ -153,14 +161,14 @@ func fetchAllPRData(gh *github.CLIClient) (mine, involved []github.ExtendedPRInf
 	if prSince != "" {
 		sinceTime, err = parsePRSince(prSince)
 		if err != nil {
-			return nil, nil, "", fmt.Errorf("invalid --since value: %w", err)
+			return nil, nil, "", "", fmt.Errorf("invalid --since value: %w", err)
 		}
 	}
 
 	showMine := !prReview // show MY PULL REQUESTS unless --review only
 	showReview := !prMine // show NEEDS ATTENTION unless --mine only
 
-	var fetchErr error
+	var fetchErr, checksErr, activityErr error
 	var wg sync.WaitGroup
 
 	if showMine {
@@ -178,7 +186,7 @@ func fetchAllPRData(gh *github.CLIClient) (mine, involved []github.ExtendedPRInf
 				mine = filterPRsSince(mine, sinceTime)
 			}
 			// Enrich with CI check status in parallel
-			gh.EnrichWithChecks(mine)
+			checksErr = gh.EnrichWithChecks(mine)
 		}()
 	}
 
@@ -193,8 +201,8 @@ func fetchAllPRData(gh *github.CLIClient) (mine, involved []github.ExtendedPRInf
 				return
 			}
 			// Apply --since filter; if no --since, we still need all PRs to compute HasNewActivity
-			// Enrich with last-activity via GraphQL
-			gh.EnrichWithActivity(involved, myLogin)
+			// Enrich with last-activity
+			activityErr = gh.EnrichWithActivity(involved, myLogin)
 			// After enrichment, filter: if --since is set show updated since that time,
 			// otherwise show only PRs with new activity since my last comment
 			if !sinceTime.IsZero() {
@@ -207,9 +215,15 @@ func fetchAllPRData(gh *github.CLIClient) (mine, involved []github.ExtendedPRInf
 
 	wg.Wait()
 	if fetchErr != nil {
-		return nil, nil, "", fetchErr
+		return nil, nil, "", "", fetchErr
 	}
-	return mine, involved, myLogin, nil
+	switch {
+	case checksErr != nil:
+		warn = "some CI checks are not shown: " + checksErr.Error()
+	case activityErr != nil:
+		warn = "some PRs' activity is not shown: " + activityErr.Error()
+	}
+	return mine, involved, myLogin, warn, nil
 }
 
 func filterPRsSince(prs []github.ExtendedPRInfo, since time.Time) []github.ExtendedPRInfo {

@@ -179,7 +179,7 @@ func TestDashJSONQueryAddsMatchesAndLimitsTheSnapshot(t *testing.T) {
 	if got.Query.Expr != dashQuery || len(got.Query.Matches) != 9 || len(got.Query.Rows) != 2 {
 		t.Fatalf("query = %+v", got.Query)
 	}
-	if n := len(got.Snapshot.Nodes); n == 0 || n >= 23 {
+	if n := len(got.Snapshot.Nodes); n == 0 || n >= 26 {
 		t.Errorf("snapshot has %d nodes; it should keep only the visible set", n)
 	}
 	if len(got.Query.Filters) == 0 || !got.Query.Filters[0].Hidden || got.Query.Filters[0].Reason == "" {
@@ -226,7 +226,7 @@ func TestDashQueryFlagCombinations(t *testing.T) {
 		{"json and md", func() { dashJSON, dashMD = true, true }, nil, "--json and --md are alternatives"},
 		{"sprint view", func() { dashMD, dashView = true, "sprint" }, []string{"view"}, "the sprint view is not available yet: it arrives with gh-105"},
 		{"sprint id", func() { dashMD, dashSprint = true, "42" }, []string{"sprint"}, "not available yet"},
-		{"unknown preset", func() { dashMD, dashPreset = true, "nope" }, nil, `no saved filter named "nope" (available: web)`},
+		{"unknown preset", func() { dashMD, dashPreset = true, "nope" }, nil, `no saved filter named "nope" (available: review-inbox, shipped, close-candidates, sprint, web)`},
 		{"hidden built-in", func() { dashMD, dashPreset = true, "my-move" }, nil, "saved filter my-move cannot run: needs fields not registered yet: move_people (arrives with gh-99)"},
 		{"broken config filter", func() { dashMD, dashPreset = true, "broken" }, nil, "[dash.filters] broken in ~/.wgo/config.toml does not parse"},
 		{"bad fixture", func() { dashJSON, dashFixture = true, filepath.Join(t.TempDir(), "none.json") }, nil, "wgo dash --fixture:"},
@@ -307,7 +307,7 @@ func TestDashQueryAloneServesAtTheQuery(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != 200 || !strings.Contains(string(body), "5 of 23 nodes") {
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "5 of 26 nodes") {
 		t.Errorf("extract from the served fixture: %d %s", resp.StatusCode, body)
 	}
 	cancel()
@@ -325,6 +325,11 @@ func TestDashQueryAloneServesAtTheQuery(t *testing.T) {
 func TestDashMDCollectsAndPrints(t *testing.T) {
 	saveQueryFlags(t)
 	goldenHome(t, "[discovery]\nbase_dirs = [\""+t.TempDir()+"\"]\n")
+	// No GitHub token, gh or acli: --refresh has no lookup that could fail
+	// (otherwise it would look up the GitHub identity, gh-97).
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

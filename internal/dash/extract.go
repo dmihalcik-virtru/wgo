@@ -223,9 +223,6 @@ type section struct {
 	rows  []int
 }
 
-// effortGroupRank orders efforts as live.js's L.effortOrder does.
-var effortGroupRank = map[string]int{GroupEffort: 0, GroupTicket: 1, GroupTheme: 2, GroupUngrouped: 3}
-
 // sections splits rows by effort (a row in several efforts is listed under
 // each), by repository, or not at all.
 func (x *extractInput) sections(rows []int) []section {
@@ -271,12 +268,14 @@ func (x *extractInput) sections(rows []int) []section {
 		}
 	}
 	efforts := slices.Collect(maps.Keys(byEffort))
+	// Groups in CompareEfforts' order (groupRank), as L.effortOrder lists
+	// them; an unknown group sorts with themes.
 	rank := func(e int) int {
 		g := x.str(e, "effort.group")
-		if r, ok := effortGroupRank[g]; ok {
+		if r, ok := groupRank[g]; ok {
 			return r
 		}
-		return 2
+		return groupRank[GroupTheme]
 	}
 	sort.Slice(efforts, func(a, z int) bool {
 		i, j := efforts[a], efforts[z]
