@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -127,6 +128,17 @@ type entry struct {
 	// LastError is the last attempt's failure, or the errors that came
 	// with the last successful fetch's partial data.
 	LastError string `json:"last_error,omitempty"`
+	// Failures counts the attempts that failed since the last success;
+	// RetryAt is when GitHub asked a rate-limited caller to come back.
+	Failures int       `json:"failures,omitempty"`
+	RetryAt  time.Time `json:"retry_at,omitzero"`
+	// Dropped, in an OpenAuthored entry, are PRs a refresh no longer found
+	// open that the person's ClosedRecent set has not been fetched since
+	// DroppedAt to account for: most merged or closed in between. They are
+	// as last fetched, at DroppedFetchedAt.
+	Dropped          []PR      `json:"dropped,omitempty"`
+	DroppedAt        time.Time `json:"dropped_at,omitzero"`
+	DroppedFetchedAt time.Time `json:"dropped_fetched_at,omitzero"`
 }
 
 // Result is what a lookup served plus its provenance.
@@ -146,6 +158,41 @@ type Result struct {
 	// can sit beside last-known-good PRs, or the partial-data errors of the
 	// last successful fetch.
 	Err error
+	// Since is the start of the window a ClosedRecent result covers.
+	Since time.Time
+	// Failures and RetryAt drive NotBefore.
+	Failures int
+	RetryAt  time.Time
+	// Dropped, DroppedAt and DroppedFetchedAt are the entry's (OpenAuthored
+	// only): PRs no longer open whose fate ClosedRecent has yet to show.
+	Dropped          []PR
+	DroppedAt        time.Time
+	DroppedFetchedAt time.Time
+}
+
+// Failure back-off: after n consecutive failures a set waits
+// min(failureBackoff << (n-1), maxFailureBackoff) from its last attempt.
+const (
+	failureBackoff    = time.Minute
+	maxFailureBackoff = 30 * time.Minute
+)
+
+// NotBefore is when the set should next be fetched in the background: zero
+// after a success, else its last attempt plus an exponential back-off, or
+// the time a rate limit named, whichever is later. A set failing on its
+// tenth page would otherwise refetch the first nine every lease window.
+func (r Result) NotBefore() time.Time {
+	if r.Failures == 0 || r.LastAttemptAt.IsZero() {
+		return r.RetryAt
+	}
+	wait := maxFailureBackoff
+	if r.Failures <= 6 {
+		wait = min(failureBackoff<<(r.Failures-1), maxFailureBackoff)
+	}
+	if t := r.LastAttemptAt.Add(wait); t.After(r.RetryAt) {
+		return t
+	}
+	return r.RetryAt
 }
 
 // Read returns the cached set k and its freshness at now. ttl is the set's
@@ -157,11 +204,17 @@ func Read(k Key, ttl time.Duration, since, now time.Time) Result {
 		return Result{State: Miss}
 	}
 	r := Result{
-		PRs:           e.PRs,
-		FetchedAt:     e.FetchedAt,
-		LastAttemptAt: e.LastAttemptAt,
-		IssueCount:    e.IssueCount,
-		Truncated:     e.Truncated,
+		PRs:              e.PRs,
+		FetchedAt:        e.FetchedAt,
+		LastAttemptAt:    e.LastAttemptAt,
+		IssueCount:       e.IssueCount,
+		Truncated:        e.Truncated,
+		Since:            e.Since,
+		Failures:         e.Failures,
+		RetryAt:          e.RetryAt,
+		Dropped:          e.Dropped,
+		DroppedAt:        e.DroppedAt,
+		DroppedFetchedAt: e.DroppedFetchedAt,
 	}
 	if e.LastError != "" {
 		r.Err = errors.New(e.LastError)
@@ -229,6 +282,12 @@ func writeFailure(k Key, at time.Time, cause error) error {
 	}
 	e.LastAttemptAt = at
 	e.LastError = cause.Error()
+	e.Failures++
+	e.RetryAt = time.Time{}
+	var rl *github.RateLimitError
+	if errors.As(cause, &rl) && rl.ResetAt.After(at) {
+		e.RetryAt = rl.ResetAt
+	}
 	return writeEntry(k, e)
 }
 
@@ -295,10 +354,17 @@ func Refresh(ctx context.Context, f Fetcher, k Key, since time.Time) (Result, er
 	if err != nil {
 		e.LastError = err.Error()
 	}
-	out := Result{PRs: prs, State: Fresh, FetchedAt: now, LastAttemptAt: now, IssueCount: res.IssueCount, Truncated: res.Truncated, Err: err}
 	writeMu.Lock()
+	if k.Set == OpenAuthored {
+		if prior, ok := readEntry(k); ok {
+			closed, _ := readEntry(Key{Login: k.Login, Set: ClosedRecent})
+			carryDropped(&e, prior, closed.FetchedAt)
+		}
+	}
 	werr := writeEntry(k, e)
 	writeMu.Unlock()
+	out := Result{PRs: prs, State: Fresh, FetchedAt: now, LastAttemptAt: now, IssueCount: res.IssueCount, Truncated: res.Truncated,
+		Err: err, Since: e.Since, Dropped: e.Dropped, DroppedAt: e.DroppedAt, DroppedFetchedAt: e.DroppedFetchedAt}
 	if werr != nil {
 		// The fetched data is still returned; the error says it was not kept.
 		logf("inventory cache: write %s: %v", k, werr)
@@ -306,6 +372,52 @@ func Refresh(ctx context.Context, f Fetcher, k Key, since time.Time) (Result, er
 	}
 	return out, nil
 }
+
+// carryDropped sets e's Dropped: the PRs prior listed open that e no longer
+// does, plus those prior already carried that closedFetched (the person's
+// last ClosedRecent fetch) has not caught up with. A merged PR thus stays
+// visible, as last seen, until ClosedRecent shows it merged, instead of
+// vanishing for up to ClosedRecent's TTL.
+func carryDropped(e *entry, prior entry, closedFetched time.Time) {
+	open := map[string]bool{}
+	for _, p := range e.PRs {
+		open[prKey(p)] = true
+	}
+	seen := map[string]bool{}
+	newly := false
+	for _, p := range prior.PRs {
+		if !open[prKey(p)] && !seen[prKey(p)] {
+			seen[prKey(p)] = true
+			e.Dropped = append(e.Dropped, p)
+			newly = true
+		}
+	}
+	carried := false
+	if closedFetched.Before(prior.DroppedAt) {
+		for _, p := range prior.Dropped {
+			if !open[prKey(p)] && !seen[prKey(p)] {
+				seen[prKey(p)] = true
+				e.Dropped = append(e.Dropped, p)
+				carried = true
+			}
+		}
+	}
+	switch {
+	case !newly && !carried:
+		e.Dropped = nil
+	case !newly:
+		e.DroppedAt, e.DroppedFetchedAt = prior.DroppedAt, prior.DroppedFetchedAt
+	default:
+		// ClosedRecent must be fetched after this refresh to account for
+		// the newly dropped PRs; the oldest data carried sets the time.
+		e.DroppedAt, e.DroppedFetchedAt = e.FetchedAt, prior.FetchedAt
+		if carried && prior.DroppedFetchedAt.Before(prior.FetchedAt) {
+			e.DroppedFetchedAt = prior.DroppedFetchedAt
+		}
+	}
+}
+
+func prKey(p PR) string { return strings.ToLower(p.Repo) + "#" + strconv.Itoa(p.Number) }
 
 // LockRefresh takes the refresh lease for k, returning false while another
 // caller holds one younger than window. The lease file is left in place as a
@@ -319,6 +431,38 @@ func LockRefresh(k Key, window time.Duration) bool {
 		return false
 	}
 	return acquireLease(strings.TrimSuffix(path, ".json")+".lock", window, k.String())
+}
+
+// KeepLease renews k's lease every interval until the returned stop is
+// called, so a fetch of many pages outlives a short lease window without
+// another process reclaiming the lease and fetching the set again.
+func KeepLease(k Key, interval time.Duration) (stop func()) {
+	path, err := entryPath(k)
+	if err != nil || interval <= 0 {
+		return func() {}
+	}
+	lock := strings.TrimSuffix(path, ".json") + ".lock"
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case now := <-t.C:
+				if err := os.Chtimes(lock, now, now); err != nil {
+					logf("inventory cache: renew lease for %s: %v", k, err)
+				}
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
 }
 
 // acquireLease atomically creates lock, or reclaims it once older than
