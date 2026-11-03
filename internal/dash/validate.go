@@ -319,6 +319,9 @@ func (v *validator) checkTicket(id string, t *TicketInfo) {
 		}
 		v.enum(id, "sprint state", sp.State, SprintActive, SprintFuture, SprintClosed)
 	}
+	if t.StoryPoints != nil && !t.StoryPointsKnown {
+		v.addf("ticket facts: %q has story_points without story_points_known", id)
+	}
 }
 
 // enum reports a non-empty value outside allowed. An empty value is

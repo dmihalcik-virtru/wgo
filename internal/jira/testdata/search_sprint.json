@@ -1,0 +1,28 @@
+[
+  {
+    "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+    "id": "10124",
+    "self": "https://acme.example/rest/api/3/issue/10124",
+    "key": "TEAM-124",
+    "fields": {
+      "summary": "Document the token API",
+      "status": {"name": "To Do", "id": "10000", "statusCategory": {"id": 2, "key": "new", "name": "To Do"}},
+      "issuetype": {"id": "10003", "name": "Task", "subtask": false},
+      "priority": {"id": "4", "name": "Low"},
+      "assignee": {"accountId": "acct-bob", "displayName": "Bob", "active": true},
+      "labels": []
+    }
+  },
+  {
+    "id": "10125",
+    "key": "TEAM-125",
+    "fields": {
+      "summary": "Rate-limit the token endpoints",
+      "status": {"name": "Done", "id": "10002", "statusCategory": {"id": 3, "key": "done", "name": "Done"}},
+      "issuetype": {"id": "10002", "name": "Story", "subtask": false},
+      "priority": null,
+      "assignee": null,
+      "labels": ["backend"]
+    }
+  }
+]

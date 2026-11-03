@@ -22,6 +22,9 @@ import (
 type builder struct {
 	nodes map[string]*Node
 	edges map[Edge]bool
+	// diags are notes found while building, such as Jira facts that could
+	// not be read; they join the snapshot's diagnostics.
+	diags []string
 }
 
 func (b *builder) node(n Node) *Node {
@@ -302,7 +305,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		GeneratedAt: ls.at,
 		Days:        ls.days,
 		Sources:     map[string]SourceStatus{},
-		Diagnostics: dedupeStrings(ls.diags),
+		Diagnostics: dedupeStrings(slices.Concat(ls.diags, b.diags)),
 	}
 	maps.Copy(s.Sources, ls.sources)
 	var login, jira string
@@ -451,6 +454,13 @@ func (c *Collector) ticketNodeFor(b *builder, ticket, repoName, repoSlug, noGitH
 		b.node(Node{ID: id, Kind: KindTicket, Label: repoSlug + "#" + n, Ticket: ti})
 		return id
 	}
+	return c.jiraTicketNode(b, ticket, jira, addJob)
+}
+
+// jiraTicketNode adds the Jira ticket with the given key, with its cached
+// status and facts, and returns its ID. A ticket whose cache entry is not
+// fresh is queued for refresh.
+func (c *Collector) jiraTicketNode(b *builder, ticket string, jira *remoteTally, addJob func(Job)) string {
 	id := jiraTicketID(ticket)
 	if _, done := b.nodes[id]; done {
 		return id
@@ -471,7 +481,8 @@ func (c *Collector) ticketNodeFor(b *builder, ticket, repoName, repoSlug, noGitH
 		ti.Freshness = Stale
 	}
 	if ti.Freshness.hasData() {
-		ti.Status, ti.Assignee = info.Status, info.Assignee
+		applyJiraFacts(ti, info)
+		b.diags = append(b.diags, info.Notes...)
 	}
 	site := c.cfg.JiraSite
 	if site == "" {

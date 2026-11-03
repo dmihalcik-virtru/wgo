@@ -507,8 +507,11 @@ func TestAnalysisFixtureScenarios(t *testing.T) {
 				t.Errorf("no ticket in the active sprint is %s", what)
 			}
 		}
-		want("unestimated", func(x tk) bool { return x.t.StoryPoints == nil })
-		want("estimated", func(x tk) bool { return x.t.StoryPoints != nil })
+		// gh-105 counts unestimated tickets apart from those whose
+		// estimate is unknown.
+		want("unestimated", func(x tk) bool { return x.t.StoryPointsKnown && x.t.StoryPoints == nil })
+		want("estimated", func(x tk) bool { return x.t.StoryPointsKnown && x.t.StoryPoints != nil })
+		want("of unknown estimate", func(x tk) bool { return !x.t.StoryPointsKnown && x.t.StoryPoints == nil })
 		want("without a PR, tracked by the sprint group", func(x tk) bool {
 			return len(linked(x.id)) == 0 && slices.ContainsFunc(into(x.id, EdgeTracks), func(e string) bool { return group(e) == GroupSprint })
 		})

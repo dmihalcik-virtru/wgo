@@ -182,6 +182,52 @@ func GetIssue(ticket string) (*Issue, error) {
 	return &issue, nil
 }
 
+// GetIssueJSON returns acli's JSON for one work item, with fields (a
+// comma-separated --fields value, such as FactFields) requested. Parse it
+// with ParseFacts.
+func GetIssueJSON(ticket, fields string) ([]byte, error) {
+	out, err := run("workitem", "view", ticket, "--json", "--fields", fields)
+	if err != nil {
+		return nil, fmt.Errorf("get issue %s: %w\n%s", ticket, err, out)
+	}
+	return []byte(out), nil
+}
+
+// SearchIssuesJSON runs a JQL search for at most limit work items and
+// returns each one's JSON, for ParseFacts. fields is limited to what acli
+// allows, as for SearchIssues.
+func SearchIssuesJSON(jql string, fields []string, limit int) ([]json.RawMessage, error) {
+	args := []string{"workitem", "search", "--jql", jql, "--json", "--limit", fmt.Sprintf("%d", limit)}
+	if len(fields) > 0 {
+		args = append(args, "--fields", strings.Join(fields, ","))
+	}
+	out, err := run(args...)
+	if err != nil {
+		return nil, fmt.Errorf("search issues: %w\n%s", err, out)
+	}
+	var issues []json.RawMessage
+	if err := json.Unmarshal([]byte(out), &issues); err != nil {
+		return nil, fmt.Errorf("parse search results: %w", err)
+	}
+	return issues, nil
+}
+
+// SprintTicketsJQL builds a JQL query for a sprint's tickets assigned to
+// any of assignees: account IDs, emails, or currentUser(), which is passed
+// unquoted. The most recently updated come first, so a bounded search keeps
+// the liveliest tickets.
+func SprintTicketsJQL(sprintID int, assignees []string) string {
+	who := make([]string, len(assignees))
+	for i, a := range assignees {
+		if a == "currentUser()" {
+			who[i] = a
+		} else {
+			who[i] = quoteJQL(a)
+		}
+	}
+	return fmt.Sprintf("sprint = %d AND assignee in (%s) ORDER BY updated DESC", sprintID, strings.Join(who, ","))
+}
+
 // GetComments fetches up to limit comments for the given ticket, newest last.
 func GetComments(ticket string, limit int) ([]Comment, error) {
 	out, err := run("workitem", "comment", "list",
