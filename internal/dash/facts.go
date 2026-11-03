@@ -158,7 +158,19 @@ type PRFacts struct {
 	// Uncertain names the unknown inputs some fact could not be decided
 	// without, such as "mergeable" or "requested_at:bob".
 	Uncertain []string `json:"uncertain,omitempty"`
+	// WaitingSource says what decided WaitingSince for the reviewer and
+	// nobody moves and an author move by changes_requested (gh-104):
+	// WaitingFromTimeline, the PR's review history, or WaitingEstimated,
+	// gh-99's approximation from ready, request and review times. Omitted
+	// for the other moves.
+	WaitingSource string `json:"waiting_source,omitempty"`
 }
+
+// Sources of PRFacts.WaitingSince (PRFacts.WaitingSource).
+const (
+	WaitingFromTimeline = "timeline"
+	WaitingEstimated    = "estimate"
+)
 
 // Reason is a rule that holds, with the evidence it was decided from.
 type Reason struct {
@@ -650,7 +662,10 @@ func prFacts(p *PRInfo, ticketEdge bool, stats map[string]CheckStat, people []Pe
 		}
 	}
 
-	blocking, r3 := changesRequested(p, users, outKnown, &unc)
+	// gh-104: a fresh, complete review history decides rule 3 and when the
+	// wait began; without one, gh-99's approximation stands.
+	ws := timelineWait(p)
+	blocking, r3 := changesRequested(p, ws.tl, users, outKnown, &unc)
 
 	r4 := triFalse
 	switch p.Mergeable {
@@ -730,16 +745,27 @@ func prFacts(p *PRInfo, ticketEdge bool, stats map[string]CheckStat, people []Pe
 				f.MovePeople = append(f.MovePeople, login)
 			}
 		}
-		f.WaitingSince, f.WaitingLowerBound = reviewerWait(p, out, &unc)
+		if f.WaitingSource = WaitingEstimated; ws.ok {
+			f.WaitingSince, f.WaitingSource = ws.start, WaitingFromTimeline
+		} else {
+			f.WaitingSince, f.WaitingLowerBound = reviewerWait(p, out, &unc)
+		}
 	case MoveNobody:
 		f.MovePeople = []string{}
-		if p.ReadyAt.IsZero() {
+		switch f.WaitingSource = WaitingEstimated; {
+		case ws.ok:
+			f.WaitingSince, f.WaitingSource = ws.start, WaitingFromTimeline
+		case p.ReadyAt.IsZero():
 			unc.add("ready_at")
-		} else {
+		default:
 			f.WaitingSince = p.ReadyAt
 		}
 	}
 	if f.Move == MoveAuthor && decided == ReasonChangesRequested {
+		f.WaitingSource = WaitingEstimated
+		if ws.tl != nil {
+			f.WaitingSource = WaitingFromTimeline
+		}
 		for _, r := range blocking {
 			switch {
 			case r.SubmittedAt.IsZero():
@@ -747,6 +773,14 @@ func prFacts(p *PRInfo, ticketEdge bool, stats map[string]CheckStat, people []Pe
 			case f.WaitingSince.IsZero() || r.SubmittedAt.Before(f.WaitingSince):
 				f.WaitingSince = r.SubmittedAt
 			}
+		}
+	}
+	// The deciding reason says what its wait was read from (gh-104).
+	if f.WaitingSource != "" {
+		if decided == ReasonChangesRequested {
+			f.Reasons[0].Evidence += ws.rule3Note()
+		} else {
+			f.Reasons[0].Evidence += ws.waitNote(now)
 		}
 	}
 
@@ -770,12 +804,21 @@ func prFacts(p *PRInfo, ticketEdge bool, stats map[string]CheckStat, people []Pe
 }
 
 // changesRequested decides rule 3: some reviewer's latest review requests
-// changes and they have not been re-requested since. GitHub drops a request
-// once its reviewer reviews, so an outstanding direct request means a
-// re-request, unless its time says it came before the review. Without the
-// reviews, a review decision other than CHANGES_REQUESTED still rules it
-// out: GitHub keeps that decision while any such review stands.
-func changesRequested(p *PRInfo, users []ReviewRequest, outKnown bool, unc *names) ([]Review, tri) {
+// changes and they have not been re-requested since. A usable review
+// history (tl, gh-104) decides it from its events: its standing change
+// requests. Otherwise GitHub drops a request once its reviewer reviews, so
+// an outstanding direct request means a re-request, unless its time says it
+// came before the review. Without the reviews, a review decision other than
+// CHANGES_REQUESTED still rules it out: GitHub keeps that decision while any
+// such review stands.
+func changesRequested(p *PRInfo, tl *PRTimeline, users []ReviewRequest, outKnown bool, unc *names) ([]Review, tri) {
+	if tl != nil {
+		var blocking []Review
+		for _, b := range tl.Blocking {
+			blocking = append(blocking, Review{Author: b.Reviewer, State: ReviewChangesRequested, SubmittedAt: b.At})
+		}
+		return blocking, triOf(len(blocking) > 0)
+	}
 	if p.Reviews == nil {
 		if p.ReviewDecision == ReviewApproved || p.ReviewDecision == reviewRequired {
 			return nil, triFalse
@@ -806,6 +849,55 @@ func changesRequested(p *PRInfo, users []ReviewRequest, outKnown bool, unc *name
 		return nil, triUnknown
 	}
 	return nil, triFalse
+}
+
+// waitSource is what a PR's review history (gh-104) says about its wait.
+type waitSource struct {
+	// tl is the PR's timeline when the facts may use it: fresh (fetched for
+	// the PR's current updated_at) and complete. why says why not.
+	tl  *PRTimeline
+	why string
+	// ok is set when the current segment is waiting or unattended, which
+	// began at start: waiting_since.
+	ok    bool
+	start time.Time
+}
+
+func timelineWait(p *PRInfo) waitSource {
+	t := p.Timeline
+	switch {
+	case t == nil:
+		return waitSource{why: "no PR timeline yet"}
+	case t.Freshness != Fresh && p.UpdatedAt.IsZero():
+		return waitSource{why: "the PR's last update is unknown, so its timeline may be out of date"}
+	case t.Freshness != Fresh:
+		return waitSource{why: "the PR's timeline predates its last update"}
+	case t.Truncated || len(t.Segments) == 0:
+		return waitSource{why: "the PR's timeline is incomplete"}
+	}
+	w := waitSource{tl: t}
+	if last := t.last(); last.State == SegmentWaiting || last.State == SegmentUnattended {
+		w.ok, w.start = true, last.Start
+	} else {
+		w.why = "the PR's timeline shows it " + strings.ReplaceAll(last.State, "_", " ") + " now"
+	}
+	return w
+}
+
+// waitNote is the evidence clause saying where the wait's start came from.
+func (w waitSource) waitNote(now time.Time) string {
+	if w.ok {
+		return "; waiting since " + evidenceDay(w.start, now) + " by its timeline"
+	}
+	return "; wait estimated: " + w.why
+}
+
+// rule3Note is the evidence clause saying what decided rule 3.
+func (w waitSource) rule3Note() string {
+	if w.tl != nil {
+		return ", by its timeline"
+	}
+	return ", by its latest reviews: " + w.why
 }
 
 // reviewerWait is the earliest active wait among the outstanding requests,
@@ -1089,6 +1181,7 @@ func (v *validator) checkFacts(s *Snapshot, isKind func(string, ...NodeKind) boo
 			v.enum(n.ID, "move", f.Move, moveValues...)
 			v.enum(n.ID, "ci", f.CI, ciValues...)
 			v.enum(n.ID, "size_bucket", f.SizeBucket, sizeBuckets...)
+			v.enum(n.ID, "waiting_source", f.WaitingSource, WaitingFromTimeline, WaitingEstimated)
 			reasons(n.ID, "reason", f.Reasons, reasonCodes)
 		}
 		if n.Ticket != nil && n.Ticket.Facts != nil {

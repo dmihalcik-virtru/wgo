@@ -288,6 +288,7 @@ func (v *validator) checkPR(id string, p *PRInfo) {
 	case !slices.Contains(p.Sources, PRSourceInventory) && p.BookmarkID == "":
 		v.addf("pr facts: %q has no bookmark_id and was not found by the inventory", id)
 	}
+	v.checkTimeline(id, p.Timeline)
 }
 
 // checkSources checks each source's state and, when it has parts, that

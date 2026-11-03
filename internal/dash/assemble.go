@@ -308,6 +308,10 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	// every other source of ticket nodes: it attaches a sprint ticket to the
 	// sprint's group effort only when nothing else leads to it.
 	sprintStatus := c.addSprints(b, effortNode, &jiraTally, addJob)
+
+	// PR review histories (gh-104), once every PR node is in.
+	timelineStatus := c.addTimelines(b, ls, addJob)
+
 	s := &Snapshot{
 		Schema:      SchemaVersion,
 		GeneratedAt: ls.at,
@@ -328,6 +332,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	s.Sources[SourceGitHubInventory] = invStatus
 	s.Diagnostics = dedupeStrings(append(s.Diagnostics, invDiags...))
 	s.Sources[SourceJiraSprints] = sprintStatus
+	s.Sources[SourceGitHubTimelines] = timelineStatus
 
 	for _, n := range b.nodes {
 		s.Nodes = append(s.Nodes, *n)
