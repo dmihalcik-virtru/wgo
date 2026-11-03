@@ -73,7 +73,8 @@
     "label": "Sprint 12",
     "effort": {
      "key": "sprint:1234",
-     "group": "sprint"
+     "group": "sprint",
+     "description": "Ship the widget API"
     }
    },
    {
@@ -1319,6 +1320,49 @@
    "expect": {
     "matches": ["effort:sprint:1234", "sprint:1234", "ticket:jira:TEAM-99"],
     "rows": ["sprint:1234"]
+   }
+  },
+  {
+   "name": "a closed set rejects a value outside it, with a fix",
+   "query": "source:bookmrk",
+   "error": "\"bookmrk\" is not a value of source at column 8; did you mean bookmark? Allowed: bookmark, inventory, unknown",
+   "pos": 8,
+   "fixed": "source:bookmark"
+  },
+  {
+   "name": "a closed set lists its values when nothing is close",
+   "query": "sprint_state:open",
+   "error": "\"open\" is not a value of sprint_state at column 14; allowed: active, future, closed, unknown",
+   "pos": 14
+  },
+  {
+   "name": "a macro does not apply to a closed set",
+   "query": "sprint_state:@me",
+   "error": "\"@me\" is not a value of sprint_state at column 14; allowed: active, future, closed, unknown",
+   "pos": 14
+  },
+  {
+   "name": "a closed set accepts unknown",
+   "query": "sprint_state:active,unknown",
+   "expect": {
+    "matches": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-99"],
+    "rows": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-99"]
+   }
+  },
+  {
+   "name": "reviewers unknown (#42): requested_from:* does not match",
+   "query": "kind:pr;requested_from:*",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "reviewers unknown (#42): !requested_from:* does not match either",
+   "query": "kind:pr;!requested_from:*",
+   "expect": {
+    "matches": ["pr:acme/api#38"],
+    "rows": ["pr:acme/api#38"]
    }
   },
   {

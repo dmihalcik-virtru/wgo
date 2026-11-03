@@ -134,6 +134,9 @@ test("sprints: state and dates, and their group's state text", () => {
   assert.equal(L.sprintText({}), "sprint state unknown");
   assert.equal(L.stateText({ kind: "sprint", sprint: { state: "closed" } }), "closed sprint");
   assert.equal(L.dataText({ kind: "sprint", sprint: { freshness: "stale" } }), "stale");
+  const sp = { state: "active", start: "2026-10-20T08:00:00Z", end: "2026-11-03T08:00:00Z", goal: "Ship token refresh" };
+  assert.equal(L.sprintGroupText({ group: "sprint", description: "Ship token refresh" }, sp), "active sprint · 2026-10-20 to 2026-11-03", "the description already shows the goal");
+  assert.equal(L.sprintGroupText({ group: "sprint" }, sp), "active sprint · 2026-10-20 to 2026-11-03 · goal: Ship token refresh");
   assert.equal(L.stateText({ kind: "effort", effort: { group: "sprint" } }), "sprint group");
   assert.equal(L.stateText({ kind: "effort", effort: { group: "repo" } }), "repository group");
 });
@@ -424,6 +427,7 @@ function genSnapshot(n) {
   const nodes = [], edges = [], activity = {}, days = [];
   for (let i = 13; i >= 0; i--) days.push(new Date(Date.UTC(2026, 9, 20 - i)).toISOString().slice(0, 10));
   const states = ["open", "open", "merged", "closed"], checks = ["success", "failure", "pending", ""];
+  for (let r = 0; r < 20; r++) nodes.push({ id: "effort:repo:acme/repo-" + r, kind: "effort", label: "acme/repo-" + r, effort: { key: "repo:acme/repo-" + r, group: "repo" } });
   for (let e = 0; nodes.length < n; e++) {
     const eid = "effort:effort-" + e, ws = "ws-" + e, bm = "bm-" + e, tk = "ticket:jira:TEAM-" + e, ag = "agent:a-" + e, repo = "acme/repo-" + (e % 20);
     nodes.push({ id: eid, kind: "effort", label: "Effort " + e, effort: { key: "effort-" + e, group: "effort" } },
@@ -440,6 +444,14 @@ function genSnapshot(n) {
       if (checks[(e * 3 + p) % 4]) pr.checks = checks[(e * 3 + p) % 4];
       nodes.push({ id: id, kind: "pr", label: repo + "#" + num, pr: pr });
       edges.push({ source: bm, target: id, kind: "pr" }, { source: id, target: tk, kind: "ticket" });
+    }
+    for (let p = 0; p < 2; p++) {
+      const num = 100000 + e * 2 + p, id = "pr:" + repo + "#" + num;
+      const pr = { number: num, repo: repo, title: "Change " + num, state: states[(e + p + 1) % 4], reviewers_known: true, freshness: "fresh", sources: ["inventory"],
+        updated_at: new Date(Date.UTC(2026, 9, 20, 19) - (e * 5 + p) * 3600000).toISOString() };
+      if (checks[(e + p) % 4]) pr.checks = checks[(e + p) % 4];
+      nodes.push({ id: id, kind: "pr", label: repo + "#" + num, pr: pr });
+      edges.push({ source: "effort:repo:" + repo, target: id, kind: "tracks" }, { source: id, target: tk, kind: "ticket" });
     }
     const act = new Array(14).fill(0);
     act[e % 14] = 1 + (e % 3);

@@ -208,6 +208,7 @@ async function runChecks() {
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the snapshot");
   const card = await evaluate("(() => { const s = Array.from(document.querySelectorAll('.efforts section.effort')).find(s => s.querySelector('header button.name').textContent === 'Sprint 12'); return s ? s.textContent : '' })()");
   check(card.includes("active sprint · 2026-10-12 to 2026-10-26") && card.includes("TEAM-99") && card.includes("unestimated") && !card.includes("No workspaces discovered"), "sprint group card: " + card);
+  check(card.split("Ship the widget API").length === 2, "the sprint's goal, also its group's description, shows once: " + card);
   const legend = await evaluate("Array.from(document.querySelectorAll('.legend li')).map(li => li.textContent)");
   check(legend.includes("Sprint (a time box) (2)"), "sprint legend entry: " + legend.join(" | "));
 

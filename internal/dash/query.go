@@ -376,13 +376,15 @@ func quoteRune(r rune) string {
 	return strconv.Quote(string(r))
 }
 
-// checkValue validates a list value against its field's type.
+// checkValue validates a list value against its field's type. An enum or a
+// set with Values is closed: only those values and unknown are allowed.
 func checkValue(rs []rune, v qValue, f Field, reg *Registry) error {
 	col := v.start + 1
 	unknownLit := isUnknownWord(v)
+	closed := (f.Type == FieldEnum || f.Type == FieldSet) && len(f.Values) > 0
 	if v.macro != "" {
 		switch {
-		case f.Type == FieldEnum && len(f.Values) > 0:
+		case closed:
 			return badEnumValue(rs, v, f)
 		case f.Type != FieldEnum && f.Type != FieldSet && f.Type != FieldText:
 			return qerr(col, "%s does not apply to %s field %s at column %d; macros name people, for enum, set and text fields", v.text, f.Type, f.Name, col)
@@ -390,10 +392,10 @@ func checkValue(rs []rune, v qValue, f Field, reg *Registry) error {
 		return nil
 	}
 	switch f.Type {
-	case FieldText, FieldSet:
+	case FieldText:
 		return nil
-	case FieldEnum:
-		if len(f.Values) == 0 || unknownLit {
+	case FieldEnum, FieldSet:
+		if !closed || unknownLit {
 			return nil
 		}
 		if !slices.Contains(f.Values, strings.ToLower(v.text)) {

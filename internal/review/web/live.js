@@ -201,7 +201,17 @@
     if (s || e) out += " · " + (s || "?") + " to " + (e || "?");
     return out;
   };
-  function naturalOrder(a, b) { return String(a.label).localeCompare(String(b.label), "en", { numeric: true }) || cmp(a.id, b.id); }
+  // sprintGroupText is the line a sprint group's card adds for its sprint:
+  // its state and dates, and its goal unless the effort's description (which
+  // assemble copies from the goal) already shows it.
+  L.sprintGroupText = function (effort, sp) {
+    var goal = sp && sp.goal && sp.goal !== (effort && effort.description) ? " · goal: " + sp.goal : "";
+    return L.sprintText(sp) + goal;
+  };
+  // One collator for every comparison: localeCompare with options builds
+  // one per call, which costs milliseconds over a long list.
+  var NATURAL = new Intl.Collator("en", { numeric: true });
+  function naturalOrder(a, b) { return NATURAL.compare(String(a.label), String(b.label)) || cmp(a.id, b.id); }
   // tracked lists what effort id tracks (gh-97, gh-98): its PRs, and its
   // tickets, tracked directly or named by those PRs, each in natural order
   // (acme/api#9 before acme/api#10). keep, when given, filters both.
@@ -678,17 +688,20 @@
   // isUnknownWord: the word unknown, quoted or not, in any case, always
   // means "the value is unknown" outside text fields.
   function isUnknownWord(v) { return !v.macro && v.text.toLowerCase() === "unknown"; }
+  // checkValue: an enum or a set with values is closed, allowing only those
+  // values and unknown (checkValue in query.go).
   function checkValue(rs, v, f) {
     var col = v.start + 1, unknownLit = isUnknownWord(v), vals = f.values || [];
+    var closed = (f.type === "enum" || f.type === "set") && vals.length > 0;
     if (v.macro) {
-      if (f.type === "enum" && vals.length) return badEnumValue(rs, v, f);
+      if (closed) return badEnumValue(rs, v, f);
       if (f.type !== "enum" && f.type !== "set" && f.type !== "text") return qerr(col, sprintf("%s does not apply to %s field %s at column %d; macros name people, for enum, set and text fields", v.text, f.type, f.name, col));
       return null;
     }
     switch (f.type) {
-      case "text": case "set": return null;
-      case "enum":
-        if (!vals.length || unknownLit) return null;
+      case "text": return null;
+      case "enum": case "set":
+        if (!closed || unknownLit) return null;
         return vals.indexOf(v.text.toLowerCase()) < 0 ? badEnumValue(rs, v, f) : null;
       case "bool":
         var t = v.text.toLowerCase();
@@ -1819,7 +1832,7 @@
       if (info.description) el("div", "desc", info.description, sec);
       // A sprint group's effort key is its sprint's node ID.
       var spn = info.group === "sprint" ? idx.byId.get(info.key) : null;
-      if (spn && spn.sprint) el("div", "desc", L.sprintText(spn.sprint) + (spn.sprint.goal ? " · goal: " + spn.sprint.goal : ""), sec);
+      if (spn && spn.sprint) el("div", "desc", L.sprintGroupText(info, spn.sprint), sec);
       (info.conflicts || []).forEach(function (c) {
         var w = idx.byId.get(c.workspace_id);
         el("div", "conflict", "Attribution conflict: " + (w ? w.label : c.workspace_id || "a workspace") + " is claimed by " + (c.claimed_by || []).join(", "), sec);
