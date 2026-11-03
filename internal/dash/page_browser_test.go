@@ -56,7 +56,8 @@ func (noAck) Acknowledge(uint64) error { return nil }
 // Markdown under the page's CSP, with no console errors; then it times
 // filter changes on a 2,000-node snapshot, and the table on the analysis
 // fixture scaled to 2,000 nodes; then every addon's suite in browserSuites
-// (gh-102's linked filters on the analysis fixture). It needs node and Chrome,
+// (gh-102's linked filters and gh-103's scatterplot and CI grid on the
+// analysis fixture). It needs node and Chrome,
 // so it runs only when WGO_BROWSER_TESTS is set; WGO_CHROME names the
 // browser and WGO_SHOTS a directory for light and dark screenshots.
 // WGO_SHOT_SET selects a view's screenshot set; WGO_SHOTS_ONLY skips the
