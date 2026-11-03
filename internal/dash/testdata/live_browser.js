@@ -1358,3 +1358,135 @@ async function timeSprint(tableURL) {
 }
 }
 // ---------- end gh-105 ----------
+
+// ---------- gh-104: PR timelines (web/live-timeline.js) ----------
+// The timeline view on the analysis fixture (--timeline), its acme/api PRs:
+// rows in the table's sort,
+// direct labels, the now line, the accent only on time waiting on alice
+// (@me, also through team:web), text summaries, the fallback bar, brushing
+// the axis to zoom (t=, one Back), the when: filter, hover and keyboard
+// details, and an expanded row's reviewer lanes.
+// Then its timings on the --perf-table page. --set=timeline shoots the view
+// light and dark, zoomed, and under each colour-vision-deficiency simulation.
+{
+SHOT_SETS.timeline = [
+  ["timeline-light.png", "light", "#view=timeline&q=kind:pr&sort=-waiting&sel=pr:acme/api%23105"],
+  ["timeline-dark.png", "dark", "#view=timeline&q=kind:pr&sort=-waiting&sel=pr:acme/api%23105"],
+  ["timeline-zoom-light.png", "light", "#view=timeline&q=kind:pr;prstate:open,draft,merged&t=2026-10-20..2026-10-30&sel=pr:acme/api%23107"],
+  ["timeline-zoom-dark.png", "dark", "#view=timeline&q=kind:pr;prstate:open,draft,merged&t=2026-10-20..2026-10-30&sel=pr:acme/api%23107"],
+];
+for (const type of ["protanopia", "deuteranopia", "tritanopia", "achromatopsia"]) {
+  for (const scheme of ["light", "dark"]) SHOT_SETS.timeline.push(["timeline-cvd-" + type + "-" + scheme + ".png", scheme, "#view=timeline&q=kind:pr;prstate:open,draft,merged&t=2026-10-20..2026-10-30&sel=pr:acme/api%23107", "cvd:" + type]);
+}
+SHOT_SETS.timeline.viewport = { width: 1600, height: 1000 };
+SUITES.push({ name: "PR timelines", flag: "timeline", checks: timelineChecks, perf: () => flag("--perf-table") ? timeTimeline(flag("--perf-table")) : "", deadlineMs: 90000 });
+
+async function timelineChecks(url) {
+  const from = events.length;
+  await send("Page.navigate", { url: "about:blank" });
+  const Q = "kind:pr;repo:acme/api";
+  await send("Page.navigate", { url: url + "#view=timeline&q=" + encodeURIComponent(Q) + "&sort=-waiting" });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('.tl-row[data-p]')", "the timeline");
+  // Earlier suites fill Chrome's 50-entry session history, beyond which
+  // Back can leave the page; start this one's afresh.
+  await send("Page.resetNavigationHistory");
+  const rows = () => evaluate("Array.from(document.querySelectorAll('.tl-list .tl-row[data-p]')).map(r => ({ ref: r.querySelector('.tl-ref').textContent, state: r.querySelector('.tl-state').textContent, sr: r.querySelector(':scope > .sr').textContent, mine: r.querySelectorAll(':scope > svg rect.s-mine').length, now: r.querySelectorAll(':scope > svg line.now').length, none: r.querySelectorAll(':scope > svg line.none').length }))");
+  let rs = await rows();
+  const total = await evaluate("window.__wgoStore.qres.rowIdx.filter(i => window.__wgoStore.qi.kinds[i] === 'pr').length");
+  const prsInRepo = await evaluate("window.__wgoStore.snap.nodes.filter(n => n.kind === 'pr' && n.pr.repo === 'acme/api').length");
+  check(rs.length === total && total === prsInRepo && total > 3, "one row per PR row of the query: " + rs.length + " of " + total + " (" + prsInRepo + " acme/api PRs)");
+  check(rs[0].ref === "acme/api#104" && rs[0].state.startsWith("waiting on team:web (you)"), "rows follow the table's sort (-waiting): " + JSON.stringify(rs[0]));
+  check(rs.every((r) => /^acme\/api#\d+$/.test(r.ref) && r.state.length > 3), "every row has its ref on the left and its state on the right");
+  check(rs.every((r) => r.now === 1), "every row crosses the now line");
+  check((await evaluate("Array.from(document.querySelectorAll('.tl-head svg text')).some(t => t.textContent === 'now')")), "the axis labels the now line");
+  check(rs.every((r) => r.sr.startsWith(r.ref + ": ") && (/ \d+[dh]\b|<1h/.test(r.sr) || r.sr.includes("history not fetched yet"))), "each row has a text summary: " + rs[0].sr);
+  // The accent: only rows that waited on alice, and only s-mine marks wear it.
+  const mineRefs = new Set(rs.filter((r) => r.mine).map((r) => r.ref));
+  check([...mineRefs].sort().join() === "acme/api#104,acme/api#105,acme/api#106", "the accent marks only waits on alice: " + [...mineRefs]);
+  const accentUse = await evaluate(`(() => {
+    const a = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(), probe = document.createElement('i');
+    probe.style.color = a; document.body.appendChild(probe); const rgb = getComputedStyle(probe).color; probe.remove();
+    const bad = [];
+    document.querySelectorAll('.tl-host svg *').forEach((e) => { const cs = getComputedStyle(e); if ((cs.fill === rgb || cs.stroke === rgb) && !e.classList.contains('s-mine')) bad.push(e.tagName + '.' + e.getAttribute('class')); });
+    return { rgb, bad, mine: document.querySelectorAll('.tl-list rect.s-mine').length };
+  })()`);
+  check(accentUse.mine > 0 && accentUse.bad.length === 0, "nothing but time waiting on alice uses the accent: " + JSON.stringify(accentUse));
+  const r103 = rs.find((r) => r.ref === "acme/api#103");
+  check(r103 && r103.none === 1 && r103.state === "draft · no history" && r103.sr.includes("history not fetched yet"), "a PR without a history shows one bar, labelled so: " + JSON.stringify(r103));
+  check((await evaluate("Array.from(document.querySelectorAll('.tl-list svg text.tick')).map(t => t.textContent).filter((v, i, a) => a.indexOf(v) === i).sort().join()")) === "✓,✕", "review ticks are ✓ and ✕");
+  check((await evaluate("getComputedStyle(document.querySelector('.tl-scroll')).overflowY")) === "auto", "the addon's own stylesheet (live-timeline.css) applies under the CSP");
+
+  // Brushing the axis zooms: t= in the URL, the rows stay, one Back undoes it.
+  const box = await evaluate("(() => { const b = document.querySelector('.tl-head svg.tl-axis').getBoundingClientRect(); return { x: b.left, y: b.top + b.height / 2, w: b.width } })()");
+  const mouse = (type, x) => send("Input.dispatchMouseEvent", { type, x, y: box.y, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount: 1 });
+  await mouse("mousePressed", box.x + box.w * 0.55); await mouse("mouseMoved", box.x + box.w * 0.7); await mouse("mouseMoved", box.x + box.w * 0.85); await mouse("mouseReleased", box.x + box.w * 0.85);
+  await sleep(200);
+  const z = await evaluate("({ t: window.__wgoStore.getState('t'), q: window.__wgoStore.query, hash: location.hash, n: window.__wgoStore.qres.rowIdx.length, reset: document.querySelector('.tl-bar').textContent })");
+  check(/^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$/.test(z.t) && z.hash.includes("t=" + z.t) && z.q === Q, "brushing the axis zooms: " + JSON.stringify(z));
+  check(z.n === (await evaluate("window.__wgoStore.qres.rowIdx.length")) && (await evaluate("document.querySelector('.tl-sum').textContent")).includes("zoomed"), "zooming does not filter");
+  await evaluate("history.back()"); await sleep(300);
+  check((await evaluate("window.__wgoStore.getState('t')")) === "", "one Back undoes the zoom");
+  await evaluate("history.forward()"); await sleep(300);
+  // The zoom becomes a filter only on request.
+  await evaluate("Array.from(document.querySelectorAll('.tl-bar button')).find(b => b.textContent === 'Filter to these days').click()");
+  const wq = await evaluate("window.__wgoStore.query");
+  check(wq === Q + ";when:" + z.t, "the button applies the range as when: " + wq);
+  await evaluate("history.back()"); await sleep(300);
+  check((await evaluate("window.__wgoStore.query")) === Q, "Back removes the when: filter");
+  await evaluate("window.__wgoStore.setState({ t: '' }, { commit: true })");
+
+  // Hover shows a segment's details; the keyboard reaches them too.
+  const seg = await evaluate("(() => { const r = Array.from(document.querySelectorAll('.tl-list .tl-row[data-p]')).find(r => r.querySelector('.tl-ref').textContent === 'acme/api#102'); const s = r.querySelector(':scope > svg rect.s-changes_requested').getBoundingClientRect(); return { x: s.left + s.width / 2, y: s.top + s.height / 2 } })()");
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: seg.x, y: seg.y });
+  await sleep(150);
+  const tip = await evaluate("(() => { const t = document.querySelector('.tl-tip'); return t.hidden ? '' : t.textContent })()");
+  check(tip.startsWith("acme/api#102: changes requested by bob") && /Oct 24 \d\d:\d\d – Oct 27 \d\d:\d\d · 3d/.test(tip), "hover shows who, from, to and how long: " + tip);
+  await evaluate("document.querySelector('.tl-list .tl-row[data-p]').focus()");
+  await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 });
+  await sleep(100);
+  const kb = await evaluate("({ tip: document.querySelector('.tl-tip').hidden ? '' : document.querySelector('.tl-tip').textContent, live: document.querySelector('.tl-host [aria-live]').textContent })");
+  check(kb.tip.startsWith("acme/api#104: unattended") && kb.live.startsWith("unattended"), "→ shows and announces the first segment: " + JSON.stringify(kb));
+  await key("ArrowDown");
+  check((await evaluate("document.activeElement.querySelector('.tl-ref').textContent")) !== "acme/api#104", "↓ moves to the next row");
+  await key("Enter");
+  const exp = await evaluate("(() => { const r = document.activeElement; return { sel: Array.from(window.__wgoStore.selection), expanded: r.getAttribute('aria-expanded'), lanes: Array.from(r.querySelectorAll('.tl-sub .tl-ref')).map(e => e.textContent) } })()");
+  check(exp.sel.length === 1 && exp.expanded === "true" && exp.lanes.length >= 1 && exp.lanes.every((l) => l.startsWith("↳ ")), "Enter selects the row, which shows a lane per reviewer: " + JSON.stringify(exp));
+  check((await evaluate("document.activeElement.classList.contains('tl-row')")), "the keyboard stays on the row after it expands");
+  const problems = events.slice(from).filter((e) => (e.method === "Log.entryAdded" && e.params.entry.level === "error" && !/\/favicon\.ico$/.test(e.params.entry.url || "")) || e.method === "Runtime.exceptionThrown")
+    .map((e) => e.method === "Runtime.exceptionThrown" ? e.params.exceptionDetails.text + " " + ((e.params.exceptionDetails.exception || {}).description || "") : e.params.entry.text + " " + (e.params.entry.url || ""));
+  check(problems.length === 0, "timeline console errors: " + problems.join(" | "));
+}
+
+// timeTimeline times the timeline on the analysis fixture scaled to 2,000
+// nodes (--perf-table; median of 7, synchronous and to the next frame):
+// showing it, a query, a re-sort and a zoom.
+async function timeTimeline(tableURL) {
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: tableURL + "#view=graph" });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the scaled analysis fixture");
+  await sleep(1500);
+  const r = await evaluate(`(async () => {
+    const s = window.__wgoStore, frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    const med = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1], out = {};
+    const time = async (name, a, b) => {
+      const sync = [], to = [];
+      for (let i = 0; i < 7; i++) {
+        const t0 = performance.now(); a(); const t1 = performance.now(); await frame(); sync.push(t1 - t0); to.push(performance.now() - t0);
+        b(); await frame();
+      }
+      out[name] = med(sync).toFixed(1) + " ms (" + med(to).toFixed(1) + " to frame)";
+    };
+    await time("show", () => s.setState({ view: "timeline" }, { commit: true }), () => s.setState({ view: "graph" }, { commit: true }));
+    s.setState({ view: "timeline" }, { commit: true }); await frame();
+    out.rows = s.qi.kinds.filter((k) => k === "pr").length;
+    out.dom = document.querySelectorAll(".tl-list .tl-row[data-p]").length;
+    await time("query", () => s.setQuery("kind:pr;prstate:open,draft", { commit: true }), () => s.setQuery("", { commit: true }));
+    await time("sort", () => s.setState({ sort: "-waiting,repo" }, { commit: true }), () => s.setState({ sort: "" }, { commit: true }));
+    await time("zoom", () => s.setState({ t: "2026-10-20..2026-10-30" }, { commit: true }), () => s.setState({ t: "" }, { commit: true }));
+    return out;
+  })()`);
+  check(r.rows > 120 && r.dom < 120 && r.dom < r.rows, "the timeline draws only the rows in view: " + r.dom + " of " + r.rows);
+  return "timeline on the scaled analysis fixture (" + r.rows + " PR rows, " + r.dom + " in the DOM): show " + r.show + ", query " + r.query + ", re-sort " + r.sort + ", zoom " + r.zoom;
+}
+}
+// ---------- end gh-104 ----------
