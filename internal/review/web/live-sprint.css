@@ -1,0 +1,95 @@
+/* wgo dash sprint view (live-sprint.js, spec/gh-105.md). Inlined after
+ * style.css and live.css as the addon's own stylesheet, reusing their tokens.
+ * The time and points bars share one width so the done share reads against
+ * the time elapsed. Status categories are one neutral lightness ramp (done
+ * darkest in light mode, lightest in dark), separated by 2px surface gaps and
+ * named by direct labels with a matching swatch, so no colour carries meaning
+ * alone; the accent marks only the active filter, selection and a mismatch's
+ * "!" (Jira and the code disagree: the operator's to resolve). */
+.viewwrap.sv-host { padding: 10px 14px; }
+.sv { max-width: 1100px; font-size: 13px; }
+.sv h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.sv-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-bottom: 10px; }
+.sv-pick .sv-lab { margin-right: 4px; }
+.sv-pick button { font-size: 12px; padding: 2px 9px; }
+.sv-pick button[aria-pressed=true] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 600; }
+.sv-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.sv-meta { color: var(--ink2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.sv-goal { margin: 4px 0 2px; white-space: pre-wrap; max-width: 75ch; }
+.sv-goal.none { color: var(--ink2); font-style: italic; }
+.sv-note { margin: 2px 0; color: var(--ink2); font-size: 12px; }
+.sv-gap { max-width: 75ch; }
+.sv-gap h2 { margin-bottom: 6px; }
+.sv-gap p { margin: 4px 0; }
+.sv-gap pre { margin: 6px 0; padding: 6px 10px; background: var(--plane); border: 1px solid var(--grid); border-radius: 6px; }
+.sv button.linkish { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
+
+/* The bars: a label column, a shared track width, a value column. */
+.sv-bars { margin: 10px 0 6px; max-width: 760px; }
+.sv-row { display: grid; grid-template-columns: 52px minmax(160px, 1fr) 96px; align-items: center; column-gap: 10px; }
+.sv-lab { color: var(--ink2); font-size: 12px; }
+.sv-val { color: var(--ink2); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sv-time { position: relative; height: 4px; background: var(--grid); border-radius: 2px; margin: 8px 0; }
+.sv-time .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ink2); border-radius: 2px; }
+.sv-pts { display: flex; gap: 2px; height: 14px; }
+.sv-pts .seg { display: block; height: 100%; min-width: 0; cursor: pointer; }
+.sv-pts .seg:first-child { border-radius: 4px 0 0 4px; }
+.sv-pts .seg:last-child { border-radius: 0 4px 4px 0; }
+.sv-pts .seg:only-child { border-radius: 4px; }
+.sv-pts .seg.on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+.sv-pts .empty { color: var(--ink2); font-size: 12px; font-style: italic; line-height: 14px; }
+.sv .done { --sv-fill: var(--ink2); }
+.sv .in_progress { --sv-fill: var(--muted); }
+.sv .todo { --sv-fill: var(--axis); }
+.sv-pts .seg, .sv .sw { background: var(--sv-fill); }
+.sv-plabels { position: relative; display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; }
+.sv-plabels.placed { display: block; height: 38px; }
+.sv-plabels.placed .plab { position: absolute; top: 0; }
+/* Two short lines (category; points and tickets) keep labels narrow enough
+   to sit under their own segments. */
+.sv .plab { font-size: 12px; line-height: 16px; padding: 1px 5px; white-space: nowrap; text-align: left; border-color: transparent; background: none; font-variant-numeric: tabular-nums; }
+.sv .plab:hover { background: var(--grid); }
+.sv .plab .nm, .sv .plab .v { display: block; }
+.sv .plab .v { color: var(--ink2); }
+.sv .plab b { font-weight: 600; }
+.sv .plab[aria-pressed=true] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.sv .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.sv-apart { color: var(--ink2); font-size: 12px; margin-top: 2px; }
+.sv-apart span[title] { text-decoration: underline dotted; text-underline-offset: 2px; }
+
+/* The ticket table. */
+.sv-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 10px 0 4px; font-size: 12px; color: var(--ink2); }
+.sv-bar .sv-sum { margin-right: auto; }
+.sv-bar button { font-size: 12px; padding: 1px 8px; }
+.sv-msg { margin: 4px 0; font-size: 12px; color: var(--ink); }
+.sv-msg button.linkish { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.sv-scroll { overflow-x: auto; }
+table.sv-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+table.sv-table th, table.sv-table td { padding: 3px 8px; line-height: 18px; border-bottom: 1px solid var(--grid); text-align: left; vertical-align: top; }
+table.sv-table thead th { color: var(--ink2); font-weight: 600; border-bottom-color: var(--axis); white-space: nowrap; }
+table.sv-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.sv-table tr.grp th { padding-top: 12px; font-size: 13px; font-weight: 600; color: var(--ink); border-bottom-color: var(--axis); }
+table.sv-table tr.grp .sub { font-weight: 400; color: var(--ink2); font-size: 12px; }
+table.sv-table tr.first td { border-top: 1px solid var(--axis); }
+table.sv-table tr.grp + tr.first td { border-top: 0; }
+table.sv-table td.nm { min-width: 14em; }
+table.sv-table td.st { white-space: nowrap; }
+table.sv-table td.nm .ttl { margin-left: 6px; color: var(--ink2); }
+table.sv-table td.unk { color: var(--ink2); font-style: italic; }
+table.sv-table .muted { color: var(--muted); }
+table.sv-table tbody tr[data-id] { cursor: pointer; }
+table.sv-table tbody tr[data-id]:hover td { background: color-mix(in srgb, var(--ink) 4%, var(--surface)); }
+table.sv-table tr.out td { opacity: .45; }
+table.sv-table tr.sel td, table.sv-table tr.sel:hover td { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); opacity: 1; }
+table.sv-table tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+table.sv-table tbody tr:focus { outline: none; }
+table.sv-table tbody tr:focus td { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }
+table.sv-table tbody tr:focus td:first-child { box-shadow: inset 3px 0 0 var(--accent), inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }
+table.sv-table .pr { display: inline-block; margin-right: 8px; white-space: nowrap; }
+table.sv-table .pr .gl { display: inline-block; min-width: 1em; margin-right: 2px; text-align: center; color: var(--ink2); }
+table.sv-table .pr.merged .gl { color: var(--ink); }
+table.sv-table .more { color: var(--ink2); }
+table.sv-table td.mm { min-width: 10em; }
+table.sv-table .mmb { display: inline-block; margin: 0 6px 2px 0; padding: 0 6px; font-size: 12px; line-height: 18px; text-align: left; background: none; border-color: var(--grid); }
+table.sv-table .mmb .gl { color: var(--accent); font-weight: 700; margin-right: 4px; }
+table.sv-table .mmb[aria-pressed=true] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
