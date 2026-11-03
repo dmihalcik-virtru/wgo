@@ -1057,6 +1057,26 @@ test("scatter: gridlines at 1, 10, 100, 1,000 lines and 1, 7, 30, 90 days; the a
   assert.deepEqual(SC.ticks(pts, lin).map((t) => t.v), [0, 5, 10, 15]);
   assert.deepEqual(SC.ticks(pts, SC.niceDomain(pts, [2, 9])).map((t) => t.v), [2, 4, 6, 8, 10]);
   assert.deepEqual(SC.zoomDomain([0, 10], 5, 0.5), [2.5, 7.5]);
+  assert.equal(SC.tickText(waiting, 0.1 + 0.2), "0.3d", "no floating-point noise in a narrow zoom's labels");
+  assert.equal(SC.tickText(size, 0.1 + 0.2), "0.3");
+  assert.equal(SC.tickText(size, 12000), "12,000");
+});
+
+test("scatter: zooming stays inside the marks' range: in at one edge, then out at the other", () => {
+  const base = [0, 4];
+  let r = SC.zoomWithin(base, base, 0, 0.5);
+  assert.deepEqual(r, [0, 2], "zoom in at the low edge");
+  r = SC.zoomWithin(base, r, 4, 1.5);
+  assert.deepEqual(r, [0, 3], "zooming out at the far edge would start at -2: it slides back to 0");
+  assert.deepEqual(SC.zoomWithin(base, [3, 4], 4, 1.5), [2.5, 4]);
+  const past = SC.zoomWithin(base, [2, 4.5], 4.4, 1.2);
+  assert.ok(near(past[0], 1) && past[1] === 4, "a range past the high end slides back below it: " + past);
+  assert.deepEqual(SC.zoomWithin(base, [0, 3], 1, 2), [0, 4], "never wider than every mark");
+  const size = F("size"), dom = SC.niceDomain(size, [16, 2230]);
+  let z = SC.zoomWithin(dom, dom, dom[0], 0.5);
+  z = SC.zoomWithin(dom, z, dom[1], 1.8);
+  assert.ok(z[0] >= dom[0] && z[1] <= dom[1], "inside 10 to 10,000 lines");
+  assert.ok(SC.ticks(size, z).every((t) => t.v >= 10), "no gridline below the axis's first: " + SC.ticks(size, z).map((t) => t.label));
 });
 
 test("scatter: a mark with an unknown value sits in that axis's strip, never at zero", () => {
@@ -1215,6 +1235,13 @@ test("detail panel: check= names a check of the selected PR", () => {
   assert.match(L.checkDetail(pr("pr:acme/web#202"), "docs-preview").text, /^unknown: not among the checks read/);
   assert.match(L.checkDetail(pr("pr:acme/web#207"), "build").text, /^unknown: this PR's checks were not read/);
   assert.equal(L.checkDetail({ check_details: [{ name: "x", state: "failure", url: "javascript:alert(1)" }] }, "x").url, "", "only http(s) links");
+  const raw = L.checkValue("pr:acme/api#101", "lint|strict");
+  assert.deepEqual(L.parseCheck(raw), { pr: "pr:acme/api#101", name: "lint|strict" }, "the PR ID, then the name, which may hold |");
+  for (const bad of ["", "vendor-hsm-tests", "|x", "pr:a#1|"]) assert.equal(L.parseCheck(bad), null, JSON.stringify(bad));
+  assert.equal(L.checkShown(raw, "pr:acme/api#101", "ci"), "lint|strict");
+  assert.equal(L.checkShown(raw, "pr:acme/web#208", "ci"), "", "never for another PR");
+  assert.equal(L.checkShown(raw, "pr:acme/api#101", "scatter"), "", "only in the CI grid");
+  assert.equal(L.checkShown("vendor-hsm-tests", "pr:acme/api#101", "ci"), "", "a bare name (an old link) names no PR");
 });
 
 {

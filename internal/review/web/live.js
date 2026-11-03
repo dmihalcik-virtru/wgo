@@ -241,9 +241,20 @@
     if (f.uncertain && f.uncertain.length) rows.push(["Not known", f.uncertain.join(", ")]);
     return rows;
   };
-  // checkDetail is what the detail panel says of the check named by the
-  // URL's check= (gh-103: a CI grid cell click sets it): the check's state
-  // on the PR's head and its link, {text, url}; null with no name.
+  // check= (gh-103) is "<PR id>|<check name>": the check a CI grid cell
+  // click chose on that PR, set together with sel. Any selection the grid
+  // does not set clears it. parseCheck splits it, or returns null.
+  L.parseCheck = function (raw) {
+    raw = String(raw || "");
+    var i = raw.indexOf("|");
+    return i > 0 && i < raw.length - 1 ? { pr: raw.slice(0, i), name: raw.slice(i + 1) } : null;
+  };
+  L.checkValue = function (prId, name) { return prId + "|" + name; };
+  // checkShown is the check the detail panel shows for node id: only in the
+  // CI grid, and only for the PR it was chosen on; "" otherwise.
+  L.checkShown = function (raw, id, view) { var c = L.parseCheck(raw); return c && view === "ci" && c.pr === id ? c.name : ""; };
+  // checkDetail is what the detail panel says of check name on a PR: its
+  // state on the PR's head and its link, {text, url}; null with no name.
   L.checkDetail = function (pr, name) {
     if (!name) return null;
     var d = pr && Array.isArray(pr.check_details) ? pr.check_details.filter(function (c) { return c && c.name === name; })[0] : null;
@@ -1402,8 +1413,8 @@
     notify: function (reason) { var subs = this.subs.slice(); for (var i = 0; i < subs.length; i++) subs[i](reason); },
     // select changes the selection; how is "push" (a click: committed, the
     // default) or "replace" (keyboard walking, search: live).
-    select: function (ids, add, how) { this.selection = L.select(this.selection, ids, add); writeHash(how === "replace" ? "live" : "commit"); this.notify("selection"); },
-    clear: function () { if (this.selection.size) { this.selection = new Set(); writeHash("commit"); this.notify("selection"); } },
+    select: function (ids, add, how) { this.selection = L.select(this.selection, ids, add); dropCheck(this); writeHash(how === "replace" ? "live" : "commit"); this.notify("selection"); },
+    clear: function () { if (this.selection.size) { this.selection = new Set(); dropCheck(this); writeHash("commit"); this.notify("selection"); } },
     // setQuery applies expr and returns null, or returns the parse error and
     // changes nothing. {commit: true} is a committed change; otherwise it is
     // live (typing, dragging) — see L.historyStep.
@@ -1429,6 +1440,7 @@
       if (hasOwn.call(obj, "sel")) {
         var ids = Array.isArray(obj.sel) ? obj.sel : String(obj.sel || "").split(",").filter(Boolean);
         this.selection = this.snap ? L.prune(new Set(ids), this.idx.byId) : new Set(ids); changed.selection = true;
+        if (!hasOwn.call(obj, "check")) dropCheck(this);
       }
       keys.forEach(function (k) {
         if (k === "q" || k === "view" || k === "sel") return;
@@ -1462,6 +1474,9 @@
     isVisible: function (id) { return !this.vis || this.vis.has(id); },
     isRow: function (id) { return !this.qres || this.qres.rowSet.has(id); }
   };
+  // dropCheck forgets check= (L.parseCheck) when a selection arrives that
+  // the CI grid did not set with it.
+  function dropCheck(s) { if (s.hashVals.check) s.hashVals.check = ""; }
   // recomputeQuery evaluates the applied query over the current snapshot.
   function recomputeQuery() {
     store.qres = null; store.vis = null; store.qHasKind = false;
@@ -2087,8 +2102,8 @@
         kv(detailBox, "Requested reviewers", p.reviewers_known ? ((p.requested_reviewers || []).join(", ") || "none requested") : "unknown");
         kv(detailBox, "Data", L.fresh(p.freshness).label); kv(detailBox, "Updated", p.updated_at ? fmtTime(p.updated_at) : "");
         L.prFactsRows(p, store.qi && store.qi.env.me, fmtTime, store.snap && store.snap.check_stats).forEach(function (r) { kv(detailBox, r[0], r[1]); });
-        var ckd = L.checkDetail(p, store.hashVals.check);
-        if (ckd) { var ckRow = el("div", "kv ckd", "Check " + store.hashVals.check + ": " + ckd.text + (ckd.url ? " · " : ""), detailBox); if (ckd.url) link(ckRow, "details", ckd.url); }
+        var ckName = L.checkShown(store.hashVals.check, id, store.view), ckd = L.checkDetail(p, ckName);
+        if (ckd) { var ckRow = el("div", "kv ckd", "Check " + ckName + ": " + ckd.text + (ckd.url ? " · " : ""), detailBox); if (ckd.url) link(ckRow, "details", ckd.url); }
       } else if (n.ticket) {
         var t = n.ticket;
         kv(detailBox, "System", t.system); kv(detailBox, "Status", t.status || "unknown"); kv(detailBox, "Title", t.title); kv(detailBox, "Assignee", t.assignee);
@@ -2576,7 +2591,7 @@
     else if (reason === "history") { renderAll(true, "history"); }
     else if (reason === "selection") { renderMultiples("selection"); renderEfforts(); renderDetail(); showView("selection"); dirty = true; }
     else if (reason === "state") { renderMultiples("state"); showView("state"); }
-    else if (reason === "view") { showView("view"); dirty = true; }
+    else if (reason === "view") { showView("view"); renderDetail(); dirty = true; }
     else if (reason === "status") { renderHeader(); renderBanner(); }
   });
   if (window.matchMedia) {
