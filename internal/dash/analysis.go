@@ -147,6 +147,11 @@ type SprintInfo struct {
 	// Truncated is set when the sprint's ticket search hit its bound, so
 	// some of its tickets are missing.
 	Truncated bool `json:"truncated,omitempty"`
+	// Searched is set for an active sprint whose ticket search has data
+	// (gh-105): every ticket it found lists the sprint in
+	// TicketInfo.SprintSearch, so, unless Truncated, a ticket of the sprint
+	// that does not was not assigned to a followed person when it ran.
+	Searched bool `json:"searched,omitempty"`
 }
 
 // SourcePart is the freshness of one unit a source fetches separately.

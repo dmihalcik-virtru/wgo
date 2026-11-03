@@ -3,6 +3,7 @@ package dash
 import (
 	"cmp"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,8 +31,9 @@ type sprintSlice struct {
 	// tickets have an in_sprint edge to a sprint node with this ID, in
 	// snapshot order, each once.
 	tickets []*Node
-	// people counts the tickets a configured person is assigned.
-	people int
+	// people counts the tickets assigned to a followed person, and
+	// unknownPeople those of which that cannot be told (forPeople).
+	people, unknownPeople int
 }
 
 func (a *sprintSlice) id() int { return a.node.Sprint.ID }
@@ -77,8 +79,11 @@ func activeSprints(s *Snapshot) []*sprintSlice {
 		for _, a := range out {
 			if members[a.id()][n.ID] {
 				a.tickets = append(a.tickets, n)
-				if assignedToPeople(n.Ticket, s.People) {
+				switch forPeople(n.Ticket, a.node.Sprint, s.People) {
+				case triTrue:
 					a.people++
+				case triUnknown:
+					a.unknownPeople++
 				}
 			}
 		}
@@ -89,27 +94,64 @@ func activeSprints(s *Snapshot) []*sprintSlice {
 	return out
 }
 
-// assignedToPeople reports whether t's assignee is a configured person: by
-// Jira account ID, or else by display name or login.
-func assignedToPeople(t *TicketInfo, people []Person) bool {
+// forPeople tells whether ticket t of active sprint sp is assigned to a
+// followed person: its assignee's account ID is a followed person's Jira
+// account ID, or sp's ticket search, which asks for the followed people's
+// tickets, found it. It is not when the ticket is unassigned, when its
+// assignee's account ID was compared with every followed person's, or when
+// sp's complete search, covering everyone followed, did not find it.
+// Otherwise it is unknown: a Jira identity such as currentUser() or an
+// email cannot be compared with an account ID, and display names are not
+// trusted to match. live-sprint.js's S.forPeople is the same.
+func forPeople(t *TicketInfo, sp *SprintInfo, people []Person) tri {
+	compared, covered := len(people) > 0, len(people) > 0
 	for _, p := range people {
-		if t.AssigneeID != "" && strings.EqualFold(t.AssigneeID, p.Jira) {
-			return true
+		if isAccountID(p.Jira) {
+			if t.AssigneeID != "" && strings.EqualFold(t.AssigneeID, p.Jira) {
+				return triTrue
+			}
+		} else {
+			compared = false
 		}
-		if t.Assignee != "" && (strings.EqualFold(t.Assignee, p.Name) || strings.EqualFold(t.Assignee, p.Login)) {
-			return true
-		}
+		covered = covered && p.Jira != ""
 	}
-	return false
+	if slices.Contains(t.SprintSearch, sp.ID) {
+		return triTrue
+	}
+	switch {
+	case t.Assignee == "" && t.AssigneeID == "" && t.Freshness.hasData():
+		return triFalse
+	case t.AssigneeID != "" && compared:
+		return triFalse
+	case sp.Searched && !sp.Truncated && covered:
+		return triFalse
+	}
+	return triUnknown
 }
 
+// isAccountID reports whether a person's Jira identity can be an account
+// ID: not empty, an email or a JQL function such as currentUser().
+func isAccountID(j string) bool { return j != "" && !strings.ContainsAny(j, "@(") }
+
 // defaultSprint is the sprint the view shows when none is chosen: the one
-// with the most tickets for the configured people, then the most tickets,
-// then the first by start and ID.
+// with the most tickets for the followed people, then the most tickets,
+// then the first by start and ID. When whose tickets they are is unknown
+// for some sprint's tickets, it is the one with the most tickets.
 func defaultSprint(active []*sprintSlice) *sprintSlice {
+	known := true
+	for _, a := range active {
+		known = known && a.unknownPeople == 0
+	}
 	var best *sprintSlice
 	for _, a := range active {
-		if best == nil || a.people > best.people || (a.people == best.people && len(a.tickets) > len(best.tickets)) {
+		switch {
+		case best == nil:
+			best = a
+		case known && a.people != best.people:
+			if a.people > best.people {
+				best = a
+			}
+		case len(a.tickets) > len(best.tickets):
 			best = a
 		}
 	}
@@ -329,12 +371,14 @@ func countSprint(tickets []*Node) sprintProgress {
 	return p
 }
 
-// pointsText is "3 points", "1 point" or "2.5 points".
+// pointsText is "3 points", "1 point" or "2.5 points": rounded to two
+// decimals, as the page's S.num rounds, so sums print no float noise.
 func pointsText(f float64) string {
+	f = math.Round(f*100) / 100
 	if f == 1 {
 		return "1 point"
 	}
-	return strconv.FormatFloat(f, 'f', -1, 64) + " points"
+	return jsNumber(f) + " points"
 }
 
 func ticketsText(n int) string { return strconv.Itoa(n) + plural(n, " ticket", " tickets") }
@@ -511,12 +555,15 @@ func (x *extractInput) writeSprintMismatches(b *strings.Builder, tickets []*Node
 			evidence[n][m.Code] = m.Evidence
 		}
 	}
-	codes := slices.Clone(mismatchCodes)
+	// Known codes in their order, then any others by name.
+	var other []string
 	for c := range byCode {
-		if !slices.Contains(codes, c) {
-			codes = append(codes, c)
+		if !slices.Contains(mismatchCodes, c) {
+			other = append(other, c)
 		}
 	}
+	slices.Sort(other)
+	codes := append(slices.Clone(mismatchCodes), other...)
 	any := false
 	for _, c := range codes {
 		list := byCode[c]

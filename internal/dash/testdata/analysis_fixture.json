@@ -1269,7 +1269,8 @@
             {"id": "pr:acme/api#107", "ref": "acme/api#107", "state": "merged"},
             {"id": "pr:acme/web#201", "ref": "acme/web#201", "state": "open"}
           ]
-        }
+        },
+        "sprint_search": [1234]
       }
     },
     {
@@ -1308,7 +1309,8 @@
           "linked_prs": [
             {"id": "pr:acme/api#102", "ref": "acme/api#102", "state": "open"}
           ]
-        }
+        },
+        "sprint_search": [1234]
       }
     },
     {
@@ -1344,7 +1346,8 @@
           "linked_prs": [
             {"id": "pr:acme/api#108", "ref": "acme/api#108", "state": "merged"}
           ]
-        }
+        },
+        "sprint_search": [1234]
       }
     },
     {
@@ -1373,7 +1376,8 @@
         "created_at": "2026-10-15T09:00:00Z",
         "updated_at": "2026-10-20T09:00:00Z",
         "assignee_id": "acct-bob",
-        "facts": {"mismatches": [], "linked_prs": []}
+        "facts": {"mismatches": [], "linked_prs": []},
+        "sprint_search": [1234]
       }
     },
     {
@@ -1408,7 +1412,8 @@
             {"code": "in_progress_no_code", "evidence": "ticket In Progress in Sprint 12; no linked PR or workspace in the snapshot"}
           ],
           "linked_prs": []
-        }
+        },
+        "sprint_search": [1234]
       }
     },
     {
@@ -1520,7 +1525,7 @@
       "id": "sprint:1234",
       "kind": "sprint",
       "label": "Sprint 12",
-      "sprint": {"id": 1234, "name": "Sprint 12", "state": "active", "start": "2026-10-20T08:00:00Z", "end": "2026-11-03T08:00:00Z", "goal": "Ship token refresh and rate limits", "board": 42, "freshness": "fresh", "fetched_at": "2026-10-30T15:52:00Z"}
+      "sprint": {"id": 1234, "name": "Sprint 12", "state": "active", "start": "2026-10-20T08:00:00Z", "end": "2026-11-03T08:00:00Z", "goal": "Ship token refresh and rate limits", "board": 42, "freshness": "fresh", "fetched_at": "2026-10-30T15:52:00Z", "searched": true}
     },
     {
       "id": "sprint:1235",
@@ -1532,7 +1537,7 @@
       "id": "sprint:1240",
       "kind": "sprint",
       "label": "Web Sprint 4",
-      "sprint": {"id": 1240, "name": "Web Sprint 4", "state": "active", "start": "2026-10-27T08:00:00Z", "end": "2026-11-10T08:00:00Z", "board": 42, "freshness": "fresh", "fetched_at": "2026-10-30T15:52:00Z"}
+      "sprint": {"id": 1240, "name": "Web Sprint 4", "state": "active", "start": "2026-10-27T08:00:00Z", "end": "2026-11-10T08:00:00Z", "board": 42, "freshness": "fresh", "fetched_at": "2026-10-30T15:52:00Z", "searched": true}
     }
   ],
   "edges": [
