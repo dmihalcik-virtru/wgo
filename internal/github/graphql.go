@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // GraphQLError is one entry of a GraphQL response's errors array.
@@ -70,7 +72,7 @@ func (c *CLIClient) GraphQL(ctx context.Context, query string, variables map[str
 		return fmt.Errorf("github graphql: reading body: %w", err)
 	}
 	if resp.StatusCode >= 300 {
-		return apiErrorFromResp(http.MethodPost, "/graphql", resp.StatusCode, raw)
+		return graphQLHTTPError(resp, raw)
 	}
 	var env struct {
 		Data   json.RawMessage `json:"data"`
@@ -88,6 +90,27 @@ func (c *CLIClient) GraphQL(ctx context.Context, query string, variables map[str
 		return &GraphQLErrors{Errors: env.Errors}
 	}
 	return nil
+}
+
+// graphQLHTTPError is the typed error of a non-2xx GraphQL response. A rate
+// limit (any 429, or a 403 saying so, as secondary limits do) is a
+// *RateLimitError whose ResetAt comes from Retry-After, else from
+// X-RateLimit-Reset, so callers can wait as long as GitHub asks.
+func graphQLHTTPError(resp *http.Response, body []byte) error {
+	err := apiErrorFromResp(http.MethodPost, "/graphql", resp.StatusCode, body)
+	rl, ok := err.(*RateLimitError)
+	if !ok && resp.StatusCode == http.StatusTooManyRequests {
+		rl, ok = &RateLimitError{Message: string(body)}, true
+	}
+	if !ok {
+		return err
+	}
+	if secs, perr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); perr == nil && secs >= 0 {
+		rl.ResetAt = time.Now().Add(time.Duration(secs) * time.Second)
+	} else if reset, perr := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); perr == nil {
+		rl.ResetAt = time.Unix(reset, 0)
+	}
+	return rl
 }
 
 // graphqlURL is the GraphQL endpoint beside the REST base URL: /graphql on
