@@ -72,7 +72,6 @@ body.live #app { min-height: 560px; }
 .view-tabs button:first-child { border-radius: 6px 0 0 6px; }
 .view-tabs button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
 .view-tabs button[aria-pressed=true] { background: var(--accent); color: #fff; border-color: var(--accent); }
-.filterchip[hidden] { display: none; }
 table.live tbody tr { cursor: pointer; }
 table.live tbody tr:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 .banner { margin: 6px 0 0; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--s-serious); background: var(--plane); font-size: 12px; }
@@ -85,4 +84,25 @@ table.live tbody tr:focus { outline: 2px solid var(--accent); outline-offset: -2
 .act-result .meta { color: var(--ink2); }
 .copyrow { display: flex; gap: 6px; align-items: center; margin-top: 3px; }
 .copyrow code { flex: 1; min-width: 0; padding: 1px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); white-space: pre-wrap; word-break: break-all; user-select: all; }
+/* gh-100: the query bar and its message line, context rows, addon views and
+ * the copy fallback. An invalid query is dotted and carries a ⚠ message;
+ * context rows are muted and italic, never told apart by colour alone. */
+.qbar { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 320px; min-width: 220px; }
+.qbar input.query { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid var(--axis); border-radius: 6px; background: var(--plane); color: var(--ink); font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.qbar input.query[aria-invalid=true] { border-color: var(--s-critical); border-style: dotted; }
+.qbar .qclear { padding: 2px 7px; }
+.qbar .qclear[hidden], .presets[hidden] { display: none; }
+.presets { font: inherit; padding: 3px 6px; border: 1px solid var(--axis); border-radius: 6px; background: var(--plane); color: var(--ink); }
+.qmsg { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--ink2); }
+.qmsg[hidden], .copyout[hidden] { display: none; }
+.qmsg .qerr { color: var(--ink); }
+.qmsg .qerr::before { content: "⚠ "; color: var(--s-critical); }
+.qmsg .qwarn::before { content: "⚠ "; color: var(--s-serious); }
+.qmsg button.linkish { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+table.live tbody tr.ctx td { color: var(--ink2); font-style: italic; }
+.viewwrap { position: absolute; inset: 0; overflow: auto; background: var(--surface); padding: 8px 12px; }
+.copyout { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.copyout .meta { color: var(--ink2); }
+.copyout textarea { width: 100%; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--plane); color: var(--ink); border: 1px solid var(--axis); border-radius: 6px; padding: 4px 6px; resize: vertical; }
+.copyout button { align-self: flex-start; }
 @media (max-width: 1000px) { .lv-main { flex-direction: column; } .efforts { width: auto; max-height: 35%; border-right: 0; border-bottom: 1px solid var(--border); } }
