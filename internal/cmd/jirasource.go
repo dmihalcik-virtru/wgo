@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/virtru/wgo/internal/config"
@@ -32,23 +35,19 @@ func newJiraFetcher() jiracache.Fetcher {
 var jiraFetcherFn = newJiraFetcher
 
 // FetchJira implements jiracache.Fetcher. The acli shell-out lands here (off the
-// statusline hot path), never on reads.
+// statusline hot path), never on reads. Besides the status and assignee the
+// statusline shows, it reads the ticket facts wgo dash shows (gh-98); see
+// fetchTicketFacts.
 func (jiraFetcher) FetchJira(ticket string) (jiracache.Info, error) {
-	issue, err := jira.GetIssue(ticket)
+	info, err := fetchTicketFacts(ticket)
 	if err != nil {
 		return jiracache.Info{}, err
-	}
-	info := jiracache.Info{Status: issue.Fields.Status.Name}
-	if issue.Fields.Assignee != nil {
-		info.Assignee = issue.Fields.Assignee.DisplayName
 	}
 	// Best-effort: also cache the acli-detected site host so ticketURL can build
 	// a Jira browse link when jira.site isn't configured. A failure here (no
 	// acli, not authenticated) just leaves Site empty — it doesn't fail the
 	// status fetch.
-	if site, err := jira.SiteHost(); err == nil {
-		info.Site = site
-	}
+	info.Site = acliSiteHost()
 	return info, nil
 }
 
@@ -92,4 +91,220 @@ func jiraTTL() time.Duration {
 		return time.Duration(cfg.Cache.JiraTTL) * time.Second
 	}
 	return 600 * time.Second
+}
+
+// getIssueJSON is the acli seam of the ticket fetcher; tests replace it.
+var getIssueJSON = jira.GetIssueJSON
+
+// fetchTicketFacts reads a ticket with every field, so the site's custom
+// fields come along under their IDs, and parses its facts with the field
+// IDs jiraFieldIDs resolves. Should acli refuse every field, it falls back
+// to the system fields by name, leaving the custom fields unknown with a
+// note saying so.
+func fetchTicketFacts(ticket string) (jiracache.Info, error) {
+	raw, err := getIssueJSON(ticket, jira.FactFields)
+	partial := false
+	var ids jira.FieldIDs
+	var notes []string
+	switch {
+	case err != nil && fieldsRefused(err):
+		// Only a refused field list is worth a second call; any other
+		// failure (an expired login, a missing ticket) would fail it too.
+		debugf("jira %s: acli refused %s: %v", ticket, jira.FactFields, err)
+		var ferr error
+		if raw, ferr = getIssueJSON(ticket, jira.FactFieldList); ferr != nil {
+			return jiracache.Info{}, err
+		}
+		partial = true
+		notes = append(notes, "acli refused to return every Jira field ('*all'), so story points, sprints and team are unknown; wgo retries soon")
+	case err != nil:
+		return jiracache.Info{}, err
+	default:
+		ids, notes = jiraFieldIDs(raw)
+	}
+	facts, factNotes, err := jira.ParseFacts(raw, ids)
+	if err != nil {
+		return jiracache.Info{}, fmt.Errorf("jira %s: %w", ticket, err)
+	}
+	info := infoFromFacts(facts)
+	info.Notes = append(notes, factNotes...)
+	info.Partial = partial
+	return info, nil
+}
+
+// fieldsRefused reports whether acli rejected the --fields value, as it
+// does with "field '…' is not allowed" for fields its search refuses.
+func fieldsRefused(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not allowed") || (strings.Contains(s, "field") && strings.Contains(s, "invalid"))
+}
+
+// siteHostTTL bounds how long a process reuses the acli-detected site host.
+const siteHostTTL = 15 * time.Minute
+
+// siteHostFn is the acli seam of acliSiteHost; tests replace it.
+var siteHostFn = jira.SiteHost
+
+var siteHostMemo struct {
+	sync.Mutex
+	site string
+	at   time.Time
+}
+
+// acliSiteHost returns the Jira host acli is logged in to, or "" when
+// jira.site is configured (it is then never used) or acli cannot say. acli
+// is asked at most once per siteHostTTL in a process, so a refresh of many
+// tickets costs one extra acli call, not one per ticket.
+func acliSiteHost() string {
+	if cfg := config.Get(); cfg != nil && cfg.Jira.Site != "" {
+		return ""
+	}
+	siteHostMemo.Lock()
+	defer siteHostMemo.Unlock()
+	if !siteHostMemo.at.IsZero() && time.Since(siteHostMemo.at) < siteHostTTL {
+		return siteHostMemo.site
+	}
+	site, err := siteHostFn()
+	if err != nil {
+		site = ""
+	}
+	siteHostMemo.site, siteHostMemo.at = site, time.Now()
+	return site
+}
+
+// fieldIDRe matches a custom field ID.
+var fieldIDRe = regexp.MustCompile(`^customfield_[0-9]+$`)
+
+// noField is the [jira.fields] value for a field the site does not have.
+const noField = "none"
+
+// jiraFieldIDs resolves the site's custom field IDs: [jira.fields] first,
+// then IDs discovered earlier (cached for jiracache.FieldsTTL in
+// ~/.wgo/cache/jira/fields.json), then discovery in raw, a ticket's full
+// JSON, whose finds are cached. notes name each field that stays unknown
+// and the [jira.fields] key that would fix it.
+func jiraFieldIDs(raw []byte) (jira.FieldIDs, []string) {
+	cfg := config.Get()
+	if cfg == nil {
+		// A command that never loaded config would write the entry without
+		// [jira.fields]; every command that fetches loads it first, so this
+		// only guards a future one.
+		_ = config.Init()
+		cfg = config.Get()
+	}
+	var conf config.JiraFieldsConfig
+	if cfg != nil {
+		conf = cfg.Jira.Fields
+	}
+	configured := map[string]string{
+		jira.FieldStoryPoints: conf.StoryPoints,
+		jira.FieldSprint:      conf.Sprint,
+		jira.FieldTeam:        conf.Team,
+		jira.FieldEpicLink:    conf.EpicLink,
+	}
+	var ids jira.FieldIDs
+	var notes []string
+	unset := map[string]bool{}
+	for _, name := range jira.FieldNames {
+		switch v := strings.TrimSpace(configured[name]); {
+		case strings.EqualFold(v, noField):
+		case fieldIDRe.MatchString(v):
+			ids.Set(name, v)
+		default:
+			if v != "" {
+				notes = append(notes, fmt.Sprintf("ignoring [jira.fields] %s = %q in ~/.wgo/config.toml: not a field ID such as customfield_10016, or \"none\"", name, v))
+			}
+			unset[name] = true
+		}
+	}
+	if len(unset) == 0 {
+		return ids, notes
+	}
+	cached, _ := jiracache.ReadFields(jiracache.FieldsTTL)
+	known := jira.FieldIDs{StoryPoints: cached.StoryPoints, Sprint: cached.Sprint, Team: cached.Team, EpicLink: cached.EpicLink}
+	if found, err := jira.DiscoverFieldIDs(raw); err == nil {
+		grew := false
+		for _, name := range jira.FieldNames {
+			if known.Get(name) == "" && found.Get(name) != "" {
+				known.Set(name, found.Get(name))
+				grew = true
+			}
+		}
+		if grew {
+			err := jiracache.WriteFields(jiracache.Fields{StoryPoints: known.StoryPoints, Sprint: known.Sprint, Team: known.Team, EpicLink: known.EpicLink})
+			if err != nil {
+				debugf("jira cache: write discovered fields: %v", err)
+			}
+		}
+	}
+	for _, name := range jira.FieldNames {
+		if !unset[name] {
+			continue
+		}
+		if id := known.Get(name); id != "" {
+			ids.Set(name, id)
+			continue
+		}
+		// Jira Cloud reports epics as parent, so a missing epic link is
+		// not worth a diagnostic.
+		if name == jira.FieldEpicLink {
+			continue
+		}
+		hint := "acli cannot list a site's fields to discover it"
+		if name == jira.FieldSprint {
+			hint = "it is discovered from a ticket that is in a sprint"
+		}
+		notes = append(notes, fmt.Sprintf("Jira %s are unknown: set %s in [jira.fields] of ~/.wgo/config.toml to this site's field ID (such as customfield_10016), or to \"none\"; %s",
+			jira.FieldLabel(name), name, hint))
+	}
+	return ids, notes
+}
+
+// infoFromFacts projects parsed facts onto the cached Info.
+func infoFromFacts(f jira.Facts) jiracache.Info {
+	info := jiracache.Info{
+		Status:           f.Status,
+		Assignee:         f.Assignee,
+		Summary:          f.Summary,
+		StatusCategory:   f.StatusCategory,
+		Type:             f.Type,
+		Priority:         f.Priority,
+		StoryPoints:      f.StoryPoints,
+		StoryPointsKnown: f.StoryPointsKnown,
+		Team:             f.Team,
+		Components:       f.Components,
+		Labels:           f.Labels,
+		Resolution:       f.Resolution,
+		ResolvedAt:       f.ResolvedAt,
+		CreatedAt:        f.CreatedAt,
+		UpdatedAt:        f.UpdatedAt,
+		AssigneeID:       f.AssigneeID,
+	}
+	if f.Sprints != nil {
+		info.Sprints = make([]jiracache.SprintRef, 0, len(f.Sprints))
+		for _, s := range f.Sprints {
+			info.Sprints = append(info.Sprints, jiracache.SprintRef{ID: s.ID, Name: s.Name, State: s.State})
+		}
+	}
+	if f.Parent != nil {
+		info.Parent = &jiracache.Parent{Key: f.Parent.Key, Summary: f.Parent.Summary, Type: f.Parent.Type}
+	}
+	return info
+}
+
+// acliErrorLine folds an acli error onto one line: its message comes after a
+// first line that only says the command failed. It is capped at 300
+// characters, for a diagnostic.
+func acliErrorLine(s string) string {
+	var parts []string
+	for line := range strings.SplitSeq(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, line)
+		}
+	}
+	out := strings.Join(parts, ": ")
+	if r := []rune(out); len(r) > 300 {
+		out = string(r[:299]) + "…"
+	}
+	return out
 }

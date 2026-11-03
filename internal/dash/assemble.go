@@ -3,6 +3,7 @@ package dash
 import (
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -22,6 +23,12 @@ import (
 type builder struct {
 	nodes map[string]*Node
 	edges map[Edge]bool
+	// diags are problems found while building; they join the snapshot's
+	// diagnostics. notes are per-ticket notes, such as Jira facts that
+	// could not be read, keyed by cause: each becomes one diagnostic with
+	// the tickets it affects.
+	diags []string
+	notes map[string][]string
 }
 
 func (b *builder) node(n Node) *Node {
@@ -176,7 +183,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		}
 		origin := ls.origins[w.mainClone]
 		res := prcache.Read(origin, w.mainClone, w.bookmark, c.cfg.PRTTL)
-		bi := &BookmarkInfo{Name: w.bookmark, Repo: cl.Name, PRFetchedAt: res.FetchedAt, PRCount: len(res.PRs)}
+		bi := &BookmarkInfo{Name: w.bookmark, Repo: cl.Name, PRFetchedAt: res.FetchedAt, PRCount: len(res.PRs), RepoSlug: repoSlug}
 		bi.PRLookup = prFreshness(res)
 		if res.Err != nil {
 			bi.PRError = res.Err.Error()
@@ -297,12 +304,19 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	// into their PRs and attach to them.
 	invStatus, invDiags, mergedKnown := c.addInventory(b, ls, wsEffort, effortNode, &issueTally, &jiraTally, addJob)
 
+	// Sprints of [jira] board and their tickets (gh-98). Keep this after
+	// every other source of ticket nodes, the PR inventory's included: it
+	// attaches a sprint ticket to the sprint's group effort only when
+	// nothing else leads to it.
+	sprintStatus := c.addSprints(b, effortNode, &jiraTally, addJob)
+
 	s := &Snapshot{
 		Schema:      SchemaVersion,
 		GeneratedAt: ls.at,
 		Days:        ls.days,
 		Sources:     map[string]SourceStatus{},
-		Diagnostics: dedupeStrings(ls.diags),
+		Diagnostics: dedupeStrings(slices.Concat(ls.diags, b.diags, b.noteDiagnostics())),
+		Timezone:    zoneName(ls.at.Location()),
 	}
 	maps.Copy(s.Sources, ls.sources)
 	var login, jira string
@@ -315,6 +329,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	s.Sources[SourceJira] = jiraTally.status()
 	s.Sources[SourceGitHubInventory] = invStatus
 	s.Diagnostics = dedupeStrings(append(s.Diagnostics, invDiags...))
+	s.Sources[SourceJiraSprints] = sprintStatus
 
 	for _, n := range b.nodes {
 		s.Nodes = append(s.Nodes, *n)
@@ -451,6 +466,13 @@ func (c *Collector) ticketNodeFor(b *builder, ticket, repoName, repoSlug, noGitH
 		b.node(Node{ID: id, Kind: KindTicket, Label: repoSlug + "#" + n, Ticket: ti})
 		return id
 	}
+	return c.jiraTicketNode(b, ticket, jira, addJob)
+}
+
+// jiraTicketNode adds the Jira ticket with the given key, with its cached
+// status and facts, and returns its ID. A ticket whose cache entry is not
+// fresh is queued for refresh.
+func (c *Collector) jiraTicketNode(b *builder, ticket string, jira *remoteTally, addJob func(Job)) string {
 	id := jiraTicketID(ticket)
 	if _, done := b.nodes[id]; done {
 		return id
@@ -471,7 +493,10 @@ func (c *Collector) ticketNodeFor(b *builder, ticket, repoName, repoSlug, noGitH
 		ti.Freshness = Stale
 	}
 	if ti.Freshness.hasData() {
-		ti.Status, ti.Assignee = info.Status, info.Assignee
+		applyJiraFacts(ti, info)
+		for _, n := range info.Notes {
+			b.note(n, ticket)
+		}
 	}
 	site := c.cfg.JiraSite
 	if site == "" {
@@ -669,6 +694,29 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 		}
 	}
 	return c
+}
+
+// zoneName is loc's IANA name, resolving time.Local through $TZ or the
+// /etc/localtime link, or "" when no loadable name is found.
+func zoneName(loc *time.Location) string {
+	name := loc.String()
+	if loc == time.Local {
+		name = strings.TrimPrefix(os.Getenv("TZ"), ":")
+		if name == "" {
+			if target, err := os.Readlink("/etc/localtime"); err == nil {
+				if _, after, ok := strings.Cut(target, "zoneinfo/"); ok {
+					name = after
+				}
+			}
+		}
+	}
+	if name == "" || name == "Local" {
+		return ""
+	}
+	if _, err := time.LoadLocation(name); err != nil {
+		return ""
+	}
+	return name
 }
 
 func firstLine(s string) string {

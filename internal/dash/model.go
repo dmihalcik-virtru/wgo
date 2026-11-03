@@ -91,6 +91,10 @@ type Snapshot struct {
 	// ResolvePeople; the query macros @me and @people read them. Omitted
 	// when nobody is known.
 	People []Person `json:"people,omitempty"`
+	// Timezone is the IANA name of the zone local days were counted in
+	// (Counts.Days), when known; queries count days in it too, so a
+	// timestamp across a DST change lands on its own local day.
+	Timezone string `json:"timezone,omitempty"`
 }
 
 // SourceStatus is the freshness of one data source. For remote sources the
@@ -219,6 +223,9 @@ type BookmarkInfo struct {
 	PRFetchedAt time.Time `json:"pr_fetched_at,omitzero"`
 	PRError     string    `json:"pr_error,omitempty"`
 	PRCount     int       `json:"pr_count"`
+	// RepoSlug is the repository's owner/repo when known, for the query
+	// field repo (gh-100).
+	RepoSlug string `json:"repo_slug,omitempty"`
 }
 
 // PRInfo describes a cached pull request.
@@ -313,10 +320,16 @@ type TicketInfo struct {
 	Type           string      `json:"type,omitempty"`
 	Priority       string      `json:"priority,omitempty"`
 	Sprints        []SprintRef `json:"sprints,omitzero"`
-	// StoryPoints is nil when unestimated or unknown; a diagnostic says
-	// when the site's story points field could not be read at all.
-	StoryPoints *float64      `json:"story_points,omitempty"`
-	Parent      *TicketParent `json:"parent,omitempty"`
+	// StoryPoints is nil when unestimated or unknown; StoryPointsKnown
+	// tells them apart. A diagnostic says when the site's story points
+	// field could not be read at all.
+	StoryPoints *float64 `json:"story_points,omitempty"`
+	// StoryPointsKnown is set when Jira's story points field was read, so a
+	// nil StoryPoints means unestimated. Unset means unknown, as for a
+	// ticket known only from a sprint search, a cache entry older than the
+	// field, or a site whose story points field is not mapped.
+	StoryPointsKnown bool          `json:"story_points_known,omitempty"`
+	Parent           *TicketParent `json:"parent,omitempty"`
 	// Team is the team field's display value.
 	Team       string    `json:"team,omitempty"`
 	Components []string  `json:"components,omitzero"`

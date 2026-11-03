@@ -60,6 +60,10 @@ func showContext() (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// Best-effort, as for the statusline: config supplies the Jira site and
+	// the [jira.fields] a cold-miss or --refresh Jira fetch writes with. On a
+	// failure Init leaves the built-in defaults.
+	_ = config.Init()
 
 	opts := defaultContextOptions()
 	opts.Refresh = dotRefresh

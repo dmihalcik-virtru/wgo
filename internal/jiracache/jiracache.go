@@ -60,6 +60,52 @@ type Info struct {
 	// when jira.site is not configured. Cached alongside the status so the
 	// browse-link build never shells out to acli on the statusline hot path.
 	Site string `json:"site,omitempty"`
+
+	// The fields below are ticket facts for wgo dash (gh-98). An entry
+	// written before they existed has none of them, so they are unknown
+	// until its next refresh. Lists use omitzero: nil is unknown, [] none.
+
+	Summary string `json:"summary,omitempty"`
+	// StatusCategory is "todo", "in_progress" or "done".
+	StatusCategory string      `json:"status_category,omitempty"`
+	Type           string      `json:"type,omitempty"`
+	Priority       string      `json:"priority,omitempty"`
+	Sprints        []SprintRef `json:"sprints,omitzero"`
+	StoryPoints    *float64    `json:"story_points,omitempty"`
+	// StoryPointsKnown is set when the story points field was read, so a
+	// nil StoryPoints means unestimated rather than unknown.
+	StoryPointsKnown bool      `json:"story_points_known,omitempty"`
+	Parent           *Parent   `json:"parent,omitempty"`
+	Team             string    `json:"team,omitempty"`
+	Components       []string  `json:"components,omitzero"`
+	Labels           []string  `json:"labels,omitzero"`
+	Resolution       string    `json:"resolution,omitempty"`
+	ResolvedAt       time.Time `json:"resolved_at,omitzero"`
+	CreatedAt        time.Time `json:"created_at,omitzero"`
+	UpdatedAt        time.Time `json:"updated_at,omitzero"`
+	AssigneeID       string    `json:"assignee_id,omitempty"`
+	// Notes say which facts could not be read and why, naming the
+	// [jira.fields] key to fix; wgo dash shows them as diagnostics.
+	Notes []string `json:"notes,omitempty"`
+	// Partial marks an entry whose fetch could not read every field (acli
+	// refused them), so its custom field facts are unknown. It is served
+	// under the shorter negativeTTL, so a full read is retried soon.
+	Partial bool `json:"partial,omitempty"`
+}
+
+// SprintRef names a sprint a ticket is or was in.
+type SprintRef struct {
+	ID   int    `json:"id"`
+	Name string `json:"name,omitempty"`
+	// State is "active", "future" or "closed".
+	State string `json:"state,omitempty"`
+}
+
+// Parent is a ticket's epic or parent issue.
+type Parent struct {
+	Key     string `json:"key"`
+	Summary string `json:"summary,omitempty"`
+	Type    string `json:"type,omitempty"`
 }
 
 // entry is the on-disk representation of a cached Jira lookup. Failed marks a
@@ -106,10 +152,10 @@ func ReadFailed(ticket string, ttl time.Duration) (Info, State, bool) {
 		logf("jira cache: corrupt entry %s: %v", path, err)
 		return Info{}, Miss, false
 	}
-	// A negative entry expires under the shorter negativeTTL; a normal entry
-	// under the caller's ttl.
+	// A negative or partial entry expires under the shorter negativeTTL; a
+	// normal entry under the caller's ttl.
 	effTTL := ttl
-	if e.Failed && negativeTTL < ttl {
+	if (e.Failed || e.Info.Partial) && negativeTTL < ttl {
 		effTTL = negativeTTL
 	}
 	if time.Since(e.FetchedAt) >= effTTL {

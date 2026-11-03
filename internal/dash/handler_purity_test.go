@@ -22,10 +22,10 @@ func (f *failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("network access from a read path")
 }
 
-// TestHandlerReadPathIsPure: GET / and GET /api/snapshot serve the in-memory
-// view and never run discovery, spawn a process or touch the network, both
-// before and after a snapshot is published. No t.Parallel: it swaps global
-// state.
+// TestHandlerReadPathIsPure: GET /, GET /api/snapshot and GET /api/extract
+// serve the in-memory view and never run discovery, spawn a process or touch
+// the network, both before and after a snapshot is published. No
+// t.Parallel: it swaps global state.
 func TestHandlerReadPathIsPure(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	var discovered atomic.Int32
@@ -64,13 +64,33 @@ func TestHandlerReadPathIsPure(t *testing.T) {
 			}
 		}
 	}
+	extract := func(wantStatus int) {
+		for _, q := range []string{"", "?q=kind:pr;prstate:open&cols=repo,checks", "?q=repo:acme/repo&group=repo&layout=table", "?q=prstat:x", "?view=sprint"} {
+			resp, err := srv.Client().Get(srv.URL + ExtractPath + q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if want := wantStatus; want == 200 && (strings.Contains(q, "prstat:") || strings.Contains(q, "sprint")) {
+				want = 400
+				if resp.StatusCode != want {
+					t.Fatalf("%s: %d, want %d", q, resp.StatusCode, want)
+				}
+			} else if resp.StatusCode != want {
+				t.Fatalf("%s: %d, want %d", q, resp.StatusCode, want)
+			}
+		}
+	}
 	hit("loading")
+	extract(503)
 	published := largeDash(t).Current().Snapshot
 	cp := *published
 	if err := d.Publish(&cp); err != nil {
 		t.Fatal(err)
 	}
 	hit("ready")
+	extract(200)
 	if n := discovered.Load(); n != 0 {
 		t.Fatalf("discovery ran %d times", n)
 	}

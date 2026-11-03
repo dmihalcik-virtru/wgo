@@ -63,6 +63,9 @@ type Config struct {
 	// github.ErrNoAuth's message; empty when it can. The inventory then
 	// queues no lookups and reports it as github_inventory's detail.
 	GitHubUnavailable string
+	// JiraBoard is [jira] board, whose sprints the dash shows (gh-98);
+	// zero means none is configured.
+	JiraBoard int
 }
 
 // Collector builds snapshots. It runs outside HTTP request handling.
