@@ -182,7 +182,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		}
 		origin := ls.origins[w.mainClone]
 		res := prcache.Read(origin, w.mainClone, w.bookmark, c.cfg.PRTTL)
-		bi := &BookmarkInfo{Name: w.bookmark, Repo: cl.Name, PRFetchedAt: res.FetchedAt, PRCount: len(res.PRs)}
+		bi := &BookmarkInfo{Name: w.bookmark, Repo: cl.Name, PRFetchedAt: res.FetchedAt, PRCount: len(res.PRs), RepoSlug: repoSlug}
 		bi.PRLookup = prFreshness(res)
 		if res.Err != nil {
 			bi.PRError = res.Err.Error()

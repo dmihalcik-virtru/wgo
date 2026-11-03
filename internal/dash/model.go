@@ -219,6 +219,9 @@ type BookmarkInfo struct {
 	PRFetchedAt time.Time `json:"pr_fetched_at,omitzero"`
 	PRError     string    `json:"pr_error,omitempty"`
 	PRCount     int       `json:"pr_count"`
+	// RepoSlug is the repository's owner/repo when known, for the query
+	// field repo (gh-100).
+	RepoSlug string `json:"repo_slug,omitempty"`
 }
 
 // PRInfo describes a cached pull request.

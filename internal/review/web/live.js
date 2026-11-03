@@ -394,6 +394,693 @@
     return "Marked generation " + ((res && res.generation) || "?") + " seen; changes are now counted from here (in every open tab).";
   };
 
+  // ---------- query language (spec/gh-100.md) ----------
+  // The JS half of the dash query language; internal/dash/query.go is the Go
+  // half. Both run internal/dash/testdata/query_vectors.json and produce the
+  // same messages, so the page and `wgo dash --query` cannot drift. Clauses
+  // are joined by ";" (AND); a clause is [!]name:operand, the operand "*", a
+  // range (a..b, >=a, <b) or a list (a,b: OR). Positions are 1-based columns
+  // in code points.
+  var QUERY_KINDS = ["effort", "workspace", "bookmark", "pr", "ticket", "agent"];
+  L.QUERY_KINDS = QUERY_KINDS;
+  var TOKEN_CHAR = /^[A-Za-z0-9\-_.\/@#+:]$/, NUMBER_RE = /^-?[0-9]+(\.[0-9]+)?$/, DURATION_RE = /^[0-9]+(\.[0-9]+)?[dw]?$/;
+  var DATE_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, RELATIVE_RE = /^[+-][0-9]+[dw]$/;
+  var TS_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/;
+  var hasOwn = Object.prototype.hasOwnProperty;
+  function own(o, k) { return o && typeof o === "object" && !Array.isArray(o) && hasOwn.call(o, k) ? o[k] : undefined; }
+  function isObj(v) { return v !== null && typeof v === "object" && !Array.isArray(v); }
+  // sprintf mirrors the Go format strings in query.go: %s, %d and %q.
+  function sprintf(f) {
+    var a = arguments, i = 1;
+    return f.replace(/%[sdq]/g, function (m) { var v = a[i++]; return m === "%q" ? JSON.stringify(String(v)) : String(v); });
+  }
+  function qerr(pos, msg, fixed) { return { pos: pos, error: msg, fixed: fixed || "" }; }
+
+  // paths: dotted JSON paths with [k=v], [k!=v], [k] and [!k] filters.
+  function splitPath(p) {
+    var out = [], depth = 0, start = 0;
+    for (var i = 0; i < p.length; i++) {
+      var c = p.charAt(i);
+      if (c === "[") depth++; else if (c === "]") depth--; else if (c === "." && depth === 0) { out.push(p.slice(start, i)); start = i + 1; }
+    }
+    out.push(p.slice(start));
+    return out;
+  }
+  function parsePath(p) {
+    return splitPath(p).map(function (part) {
+      var b = part.indexOf("["), seg = { key: b < 0 ? part : part.slice(0, b), filters: [] }, rest = b < 0 ? "" : part.slice(b);
+      while (rest) {
+        var end = rest.indexOf("]"), body = rest.slice(1, end), i;
+        rest = rest.slice(end + 1);
+        if ((i = body.indexOf("!=")) >= 0) seg.filters.push({ key: body.slice(0, i), val: body.slice(i + 2), not: true });
+        else if ((i = body.indexOf("=")) >= 0) seg.filters.push({ key: body.slice(0, i), val: body.slice(i + 1), not: false });
+        else if (body.charAt(0) === "!") seg.filters.push({ key: body.slice(1), exists: true, not: true });
+        else seg.filters.push({ key: body, exists: true, not: false });
+      }
+      return seg;
+    });
+  }
+  function truthy(v) {
+    if (v == null || v === false || v === "") return false;
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === "object") return Object.keys(v).length > 0;
+    return true;
+  }
+  function scalarString(v) { return typeof v === "string" ? v : typeof v === "boolean" || typeof v === "number" ? String(v) : null; }
+  function keepFilter(f, v) {
+    if (!isObj(v)) return false;
+    var val = own(v, f.key);
+    if (f.exists) return truthy(val) !== f.not;
+    var s = scalarString(val);
+    return (s !== null && s === f.val) !== f.not;
+  }
+  // walkPath returns the scalars at segs under root and whether the path is
+  // known (see walkPath in fields.go: a present empty list, or a list none of
+  // whose elements passes the filters, is known and empty).
+  function walkPath(root, segs) {
+    var cur = [root];
+    for (var s = 0; s < segs.length; s++) {
+      var seg = segs[s], next = [], fromList = false;
+      for (var j = 0; j < cur.length; j++) {
+        var child = own(cur[j], seg.key);
+        if (child == null) continue;
+        if (Array.isArray(child)) { fromList = true; for (var k = 0; k < child.length; k++) next.push(child[k]); } else next.push(child);
+      }
+      if (seg.filters.length) next = next.filter(function (v) { return seg.filters.every(function (f) { return keepFilter(f, v); }); });
+      if (!next.length) return { vals: [], known: fromList };
+      cur = next;
+    }
+    return { vals: cur.filter(function (v) { return typeof v === "string" || typeof v === "boolean" || typeof v === "number"; }), known: true };
+  }
+
+  // registry builds the field lookup from the bootstrap's {fields, planned};
+  // extra fields replace any of the same name (the shared vectors use this).
+  L.registry = function (json, extra) {
+    var r = { fields: [], byName: new Map(), planned: new Map() };
+    function add(f) {
+      var g = Object.assign({}, f, { segs: (f.paths || []).map(parsePath) });
+      if (r.byName.has(f.name)) r.fields[r.byName.get(f.name)] = g;
+      else { r.byName.set(f.name, r.fields.length); r.fields.push(g); }
+    }
+    ((json && json.fields) || []).forEach(add);
+    (extra || []).forEach(add);
+    var planned = (json && json.planned) || {};
+    Object.keys(planned).forEach(function (k) { if (!r.byName.has(k)) r.planned.set(k, planned[k]); });
+    r.names = r.fields.map(function (f) { return f.name; });
+    r.field = function (name) { return r.byName.has(name) ? r.fields[r.byName.get(name)] : null; };
+    return r;
+  };
+  function ordered(t) { return t === "number" || t === "duration" || t === "date"; }
+
+  function isSpace(c) { return c === " " || c === "\t" || c === "\n" || c === "\r"; }
+  function trimSpan(rs, s, e) { while (s < e && isSpace(rs[s])) s++; while (e > s && isSpace(rs[e - 1])) e--; return [s, e]; }
+  function splitOutsideQuotes(rs, s, e, sep) {
+    var out = [], start = s, inQ = false;
+    for (var i = s; i < e; i++) {
+      var c = rs[i];
+      if (inQ) { if (c === "\\" && i + 1 < e) i++; else if (c === "\"") inQ = false; continue; }
+      if (c === "\"") inQ = true; else if (c === sep) { out.push([start, i]); start = i + 1; }
+    }
+    out.push([start, e]);
+    return out;
+  }
+  function indexDots(rs, s, e) {
+    var inQ = false;
+    for (var i = s; i < e; i++) {
+      var c = rs[i];
+      if (inQ) { if (c === "\\" && i + 1 < e) i++; else if (c === "\"") inQ = false; continue; }
+      if (c === "\"") inQ = true; else if (c === "." && i + 1 < e && rs[i + 1] === ".") return i;
+    }
+    return -1;
+  }
+  function quoteRune(c) { return isSpace(c) ? "space" : JSON.stringify(c); }
+  function validDate(s) {
+    if (!DATE_RE.test(s)) return false;
+    var y = +s.slice(0, 4), m = +s.slice(5, 7), d = +s.slice(8, 10), t = new Date(0);
+    t.setUTCFullYear(y, m - 1, d);
+    return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+  }
+  function boundHint(f) {
+    return f.type === "number" ? "use a number such as 10" : f.type === "duration" ? "use days such as 30, 30d or 2w" :
+      f.type === "date" ? "use YYYY-MM-DD, today, -7d or +2w" : "this field takes no range";
+  }
+  function editDistance(a, b) {
+    var prev = [], cur = [], i, j;
+    for (j = 0; j <= b.length; j++) prev[j] = j;
+    for (i = 1; i <= a.length; i++) {
+      cur = [i];
+      for (j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+  function closest(s, cands) {
+    var best = "", bd = Infinity, sr = Array.from(s);
+    cands.forEach(function (c) { var d = editDistance(sr, Array.from(c)); if (d < bd) { best = c; bd = d; } });
+    return bd <= Math.max(2, Math.floor(sr.length / 3)) ? best : "";
+  }
+  function kindsIn(ks) { return QUERY_KINDS.filter(function (k) { return ks.indexOf(k) >= 0; }); }
+  function intersectKinds(a, b) { return QUERY_KINDS.filter(function (k) { return a.indexOf(k) >= 0 && b.indexOf(k) >= 0; }); }
+  function joinAnd(names) { return names.length <= 1 ? names.join("") : names.slice(0, -1).join(", ") + " and " + names[names.length - 1]; }
+
+  // parseQuery parses expr against reg into {expr, clauses} or {error:
+  // {pos, error, fixed}}. An empty expression has no clauses.
+  L.parseQuery = function (expr, reg) {
+    expr = expr == null ? "" : String(expr);
+    var rs = Array.from(expr), q = { expr: expr, clauses: [] };
+    var spans = splitOutsideQuotes(rs, 0, rs.length, ";");
+    for (var k = 0; k < spans.length; k++) {
+      var t = trimSpan(rs, spans[k][0], spans[k][1]);
+      if (t[0] === t[1]) {
+        if (spans.length === 1 || (k === spans.length - 1 && k > 0)) continue;
+        return { error: qerr(spans[k][0] + 1, sprintf("empty clause at column %d; remove the extra \";\"", spans[k][0] + 1)) };
+      }
+      var c = parseClause(rs, t[0], t[1], reg);
+      if (c.error) return c;
+      q.clauses.push(c);
+    }
+    var e = checkKinds(q);
+    return e ? { error: e } : q;
+  };
+  function parseClause(rs, s, e, reg) {
+    var c = { neg: false, name: "", field: null, op: "list", vals: [], lo: null, hi: null, loIncl: false, hiIncl: false, col: s + 1, raw: rs.slice(s, e).join("") };
+    if (rs[s] === "!") { c.neg = true; s++; }
+    var colon = -1, i;
+    for (i = s; i < e; i++) { if (rs[i] === ":") { colon = i; break; } if (rs[i] === "\"") break; }
+    if (colon < 0) return { error: qerr(s + 1, sprintf("expected name:value at column %d; for example prstate:open", s + 1)) };
+    var nt = trimSpan(rs, s, colon);
+    if (nt[0] === nt[1]) return { error: qerr(s + 1, sprintf("missing field name before \":\" at column %d; for example prstate:open", s + 1)) };
+    c.name = rs.slice(nt[0], nt[1]).join("");
+    var f = reg.field(c.name);
+    if (!f) return { error: unknownFieldError(rs, nt[0], nt[1], c.name, reg) };
+    c.field = f;
+    var ot = trimSpan(rs, colon + 1, e), os = ot[0], oe = ot[1];
+    if (os === oe) return { error: qerr(colon + 2, sprintf("missing value after \"%s:\" at column %d; use %s:* for any known value", c.name, colon + 2, c.name)) };
+    var op = rs.slice(os, oe).join(""), err, b;
+    if (op === "*") { c.op = "any"; return c; }
+    if (rs[os] === ">" || rs[os] === "<") {
+      if ((err = rangeAllowed(f, os, reg))) return { error: err };
+      var n = os + 1 < oe && rs[os + 1] === "=" ? 2 : 1, cmp = rs.slice(os, os + n).join(""), bt = trimSpan(rs, os + n, oe);
+      if (bt[0] === bt[1]) return { error: qerr(os + n + 1, sprintf("missing bound after \"%s\" at column %d; %s", cmp, os + n + 1, boundHint(f))) };
+      b = parseBound(rs, bt[0], bt[1], f);
+      if (b.error) return b;
+      c.op = "range";
+      if (cmp === ">") c.lo = b; else if (cmp === ">=") { c.lo = b; c.loIncl = true; } else if (cmp === "<") c.hi = b; else { c.hi = b; c.hiIncl = true; }
+      return c;
+    }
+    var dd = indexDots(rs, os, oe);
+    if (dd >= 0) {
+      if ((err = rangeAllowed(f, os, reg))) return { error: err };
+      var lt = trimSpan(rs, os, dd), ht = trimSpan(rs, dd + 2, oe);
+      if (lt[0] === lt[1] && ht[0] === ht[1]) return { error: qerr(os + 1, sprintf("a range needs at least one bound at column %d; %s", os + 1, boundHint(f))) };
+      for (i = os; i < oe; i++) if (rs[i] === ",") return { error: qerr(i + 1, sprintf("a range cannot be combined with other values at column %d; write a separate clause for each", i + 1)) };
+      c.op = "range"; c.loIncl = c.hiIncl = true;
+      if (lt[0] < lt[1]) { b = parseBound(rs, lt[0], lt[1], f); if (b.error) return b; c.lo = b; }
+      if (ht[0] < ht[1]) { b = parseBound(rs, ht[0], ht[1], f); if (b.error) return b; c.hi = b; }
+      return c;
+    }
+    var parts = splitOutsideQuotes(rs, os, oe, ",");
+    for (var p = 0; p < parts.length; p++) {
+      var vt = trimSpan(rs, parts[p][0], parts[p][1]);
+      if (vt[0] === vt[1]) return { error: qerr(parts[p][0] + 1, sprintf("empty value at column %d; remove the extra \",\"", parts[p][0] + 1)) };
+      if (vt[1] === vt[0] + 1 && rs[vt[0]] === "*") return { error: qerr(vt[0] + 1, sprintf("* cannot be combined with other values at column %d; use %s:* alone", vt[0] + 1, c.name)) };
+      var v = parseValue(rs, vt[0], vt[1]);
+      if (v.error) return v;
+      if ((err = checkValue(rs, v, f))) return { error: err };
+      c.vals.push(v);
+    }
+    return c;
+  }
+  function parseValue(rs, s, e) {
+    var v = { text: "", quoted: false, macro: "", start: s, end: e }, i;
+    if (rs[s] === "\"") {
+      var out = "", closed = false;
+      for (i = s + 1; i < e; i++) {
+        if (rs[i] === "\\" && i + 1 < e) { i++; out += rs[i]; continue; }
+        if (rs[i] === "\"") { closed = true; break; }
+        out += rs[i];
+      }
+      if (!closed) return { error: qerr(s + 1, sprintf("unterminated quoted value at column %d; close it with \"", s + 1)) };
+      if (i + 1 < e) return { error: qerr(i + 2, sprintf("unexpected %s after a quoted value at column %d; separate values with \",\"", quoteRune(rs[i + 1]), i + 2)) };
+      v.text = out; v.quoted = true;
+      return v;
+    }
+    for (i = s; i < e; i++) {
+      if (!TOKEN_CHAR.test(rs[i])) return { error: qerr(i + 1, sprintf("unexpected %s at column %d; put a value with spaces or punctuation in double quotes", quoteRune(rs[i]), i + 1)) };
+    }
+    v.text = rs.slice(s, e).join("");
+    if (v.text.charAt(0) === "@") {
+      if (v.text === "@me") v.macro = "me";
+      else if (v.text === "@people") v.macro = "people";
+      else return { error: qerr(s + 1, sprintf("unknown macro %q at column %d; macros are @me and @people (quote the value to match it literally)", v.text, s + 1)) };
+    }
+    return v;
+  }
+  function checkValue(rs, v, f) {
+    var col = v.start + 1, unknownLit = !v.quoted && v.text === "unknown", vals = f.values || [];
+    if (v.macro) {
+      if (f.type === "enum" && vals.length) return badEnumValue(rs, v, f);
+      if (f.type !== "enum" && f.type !== "set" && f.type !== "text") return qerr(col, sprintf("%s does not apply to %s field %s at column %d; macros name people, for enum, set and text fields", v.text, f.type, f.name, col));
+      return null;
+    }
+    switch (f.type) {
+      case "text": case "set": return null;
+      case "enum":
+        if (!vals.length || unknownLit) return null;
+        return vals.indexOf(v.text.toLowerCase()) < 0 ? badEnumValue(rs, v, f) : null;
+      case "bool":
+        var t = v.text.toLowerCase();
+        return t !== "true" && t !== "false" && !unknownLit ? qerr(col, sprintf("%q is not a value of %s at column %d; allowed: true, false, unknown", v.text, f.name, col)) : null;
+    }
+    return unknownLit ? null : checkBound(v, f);
+  }
+  function badEnumValue(rs, v, f) {
+    var col = v.start + 1, allowed = (f.values || []).slice();
+    if (allowed.indexOf("unknown") < 0) allowed.push("unknown");
+    var s = closest(v.text.toLowerCase(), f.values || []);
+    if (s) return qerr(col, sprintf("%q is not a value of %s at column %d; did you mean %s? Allowed: %s", v.text, f.name, col, s, allowed.join(", ")), rs.slice(0, v.start).join("") + s + rs.slice(v.end).join(""));
+    return qerr(col, sprintf("%q is not a value of %s at column %d; allowed: %s", v.text, f.name, col, allowed.join(", ")));
+  }
+  function parseBound(rs, s, e, f) {
+    var v = parseValue(rs, s, e);
+    if (v.error) return v;
+    if (v.macro || v.quoted) return { error: qerr(s + 1, sprintf("%q is not a valid bound for %s at column %d; %s", v.text, f.name, s + 1, boundHint(f))) };
+    var err = checkBound(v, f);
+    return err ? { error: err } : v;
+  }
+  function checkBound(v, f) {
+    var col = v.start + 1, ok = false;
+    if (f.type === "number") ok = !v.quoted && NUMBER_RE.test(v.text);
+    else if (f.type === "duration") ok = !v.quoted && DURATION_RE.test(v.text);
+    else if (f.type === "date") ok = !v.quoted && (v.text === "today" || RELATIVE_RE.test(v.text) || validDate(v.text));
+    return ok ? null : qerr(col, sprintf("%q is not a valid %s for %s at column %d; %s", v.text, f.type, f.name, col, boundHint(f)));
+  }
+  function rangeAllowed(f, os, reg) {
+    if (ordered(f.type)) return null;
+    var names = reg.fields.filter(function (x) { return ordered(x.type); }).map(function (x) { return x.name; });
+    return qerr(os + 1, sprintf("%s does not take a range at column %d; ranges apply to number, duration and date fields: %s", f.name, os + 1, names.join(", ")));
+  }
+  function unknownFieldError(rs, ns, ne, name, reg) {
+    var col = ns + 1, list = reg.names.join(", ");
+    if (reg.planned.has(name)) return qerr(col, sprintf("field %s at column %d is not available yet: it arrives with %s. Fields: %s", name, col, reg.planned.get(name), list));
+    var s = closest(name.toLowerCase(), reg.names);
+    if (s) return qerr(col, sprintf("unknown field %q at column %d; did you mean %s? Fields: %s", name, col, s, list), rs.slice(0, ns).join("") + s + rs.slice(ne).join(""));
+    return qerr(col, sprintf("unknown field %q at column %d. Fields: %s", name, col, list));
+  }
+  function checkKinds(q) {
+    var common = QUERY_KINDS.slice(), seen = [], i;
+    for (i = 0; i < q.clauses.length; i++) {
+      var c = q.clauses[i];
+      if (c.name === "kind") continue;
+      var next = intersectKinds(common, c.field.kinds);
+      if (!next.length) {
+        var other = null;
+        for (var j = 0; j < seen.length; j++) if (!intersectKinds(seen[j].field.kinds, c.field.kinds).length) { other = seen[j]; break; }
+        var names = [], parts = [];
+        (other ? [other] : seen).concat([c]).forEach(function (d) {
+          if (names.indexOf(d.name) >= 0) return;
+          names.push(d.name);
+          parts.push(d.name + ": " + kindsIn(d.field.kinds).join(", "));
+        });
+        return qerr(c.col, sprintf("fields %s apply to no common node kind (%s) at column %d; split them into separate queries", joinAnd(names), parts.join("; "), c.col));
+      }
+      common = next;
+      seen.push(c);
+    }
+    var rows = QUERY_KINDS.slice(), first = 0;
+    q.clauses.forEach(function (c) {
+      if (c.name !== "kind") return;
+      if (!first) first = c.col;
+      var set = c.op === "any" ? QUERY_KINDS.slice() : c.vals.map(function (v) { return v.text.toLowerCase(); }).filter(function (k) { return QUERY_KINDS.indexOf(k) >= 0; });
+      if (c.neg) set = QUERY_KINDS.filter(function (k) { return set.indexOf(k) < 0; });
+      rows = intersectKinds(rows, set);
+    });
+    if (!first || intersectKinds(rows, common).length) return null;
+    if (!rows.length) return qerr(first, sprintf("the kind clause at column %d leaves no rows: it allows no kind; change or remove it", first));
+    var nk = [];
+    q.clauses.forEach(function (c) { if (c.name !== "kind" && nk.indexOf(c.name) < 0) nk.push(c.name); });
+    return qerr(first, sprintf("the kind clause at column %d leaves no rows: it allows %s, while %s can only match %s; change or remove it", first, rows.join(", "), nk.join(", "), common.join(", ")));
+  }
+
+  // queryEnv is what macros and relative dates resolve against, from the
+  // snapshot alone (queryEnv in query.go): @me is the person marked "me" in
+  // the optional people list (gh-97), @people every login, and "now" is
+  // generated_at, so a snapshot always gives the same answer.
+  function tzOffsetMs(ts) {
+    var m = /([+-])([0-9]{2}):([0-9]{2})$/.exec(ts);
+    return m ? (m[1] === "-" ? -1 : 1) * (+m[2] * 60 + +m[3]) * 60000 : 0;
+  }
+  L.queryEnv = function (snap) {
+    var env = { me: "", people: [], nowMs: null, offsetMs: 0 }, g = snap && snap.generated_at;
+    if (typeof g === "string" && TS_RE.test(g) && isFinite(Date.parse(g))) { env.nowMs = Date.parse(g); env.offsetMs = tzOffsetMs(g); }
+    var ppl = snap && snap.people;
+    if (Array.isArray(ppl)) ppl.forEach(function (p) {
+      if (!isObj(p)) return;
+      var login = typeof p.login === "string" ? p.login : "";
+      if (!login && typeof p.github === "string") login = p.github;
+      if (!login) return;
+      var qp = { login: login, jira: typeof p.jira === "string" ? p.jira : "", name: typeof p.name === "string" ? p.name : "", me: p.me === true };
+      if (qp.me && !env.me) env.me = login;
+      env.people.push(qp);
+    });
+    return env;
+  };
+  function dayOfMs(ms, off) { return new Date(ms + off).toISOString().slice(0, 10); }
+
+  // queryIndex decodes a snapshot once: every field's value on every node.
+  L.queryIndex = function (snap, reg) {
+    var ix = { reg: reg, env: L.queryEnv(snap), nodes: [], ids: [], kinds: [], byId: new Map(), out: [], inc: [], efforts: [], values: new Map(),
+      days: (snap && snap.counts && snap.counts.days) || [], activity: (snap && snap.counts && snap.counts.activity) || {}, today: "" };
+    if (ix.env.nowMs != null) ix.today = dayOfMs(ix.env.nowMs, ix.env.offsetMs);
+    ((snap && snap.nodes) || []).forEach(function (n) {
+      var id = n && typeof n.id === "string" ? n.id : "";
+      if (!id || ix.byId.has(id)) return;
+      ix.byId.set(id, ix.nodes.length); ix.nodes.push(n); ix.ids.push(id); ix.kinds.push(typeof n.kind === "string" ? n.kind : "");
+      ix.out.push([]); ix.inc.push([]); ix.efforts.push([]);
+    });
+    ((snap && snap.edges) || []).forEach(function (e) {
+      var s = e && ix.byId.get(e.source), t = e && ix.byId.get(e.target);
+      if (s == null || t == null) return;
+      ix.out[s].push(t); ix.inc[t].push(s);
+    });
+    ix.kinds.forEach(function (k, i) { if (k === "effort") reachIdx(ix.out, [i]).forEach(function (j) { ix.efforts[j].push(i); }); });
+    ix.efforts.forEach(function (l) { l.sort(function (a, b) { return a - b; }); });
+    reg.fields.forEach(function (f) {
+      var vals = new Array(ix.nodes.length);
+      for (var i = 0; i < ix.nodes.length; i++) vals[i] = extractField(ix, f, i);
+      ix.values.set(f.name, vals);
+    });
+    return ix;
+  };
+  function reachIdx(adj, seeds) {
+    var seen = new Set(), out = [], queue = [];
+    seeds.forEach(function (s) { if (!seen.has(s)) { seen.add(s); out.push(s); queue.push(s); } });
+    for (var q = 0; q < queue.length; q++) adj[queue[q]].forEach(function (j) { if (!seen.has(j)) { seen.add(j); out.push(j); queue.push(j); } });
+    return out;
+  }
+  function effortKey(ix, i) {
+    var k = own(own(ix.nodes[i], "effort"), "key");
+    return typeof k === "string" && k ? k : ix.ids[i].replace(/^effort:/, "");
+  }
+  function pathValues(ix, f, i) {
+    var vals = [], known = false;
+    f.segs.forEach(function (segs) { var r = walkPath(ix.nodes[i], segs); vals = vals.concat(r.vals); known = known || r.known; });
+    return { vals: vals, known: known };
+  }
+  function parseTimestampMs(v) { return typeof v === "string" && TS_RE.test(v) && isFinite(Date.parse(v)) ? Date.parse(v) : null; }
+  function rawValues(ix, f, i) {
+    var dk = f.derive_kinds || [];
+    if (!f.derive || (dk.length && dk.indexOf(ix.kinds[i]) < 0)) return pathValues(ix, f, i);
+    var vals = [], known = false, r;
+    switch (f.derive) {
+      case "efforts":
+        return { vals: ix.efforts[i].map(function (e) { return effortKey(ix, e); }), known: true };
+      case "activity_days":
+        if (!ix.days.length) return { vals: [], known: false };
+        var set = new Set();
+        ix.efforts[i].forEach(function (e) { (ix.activity[ix.ids[e]] || []).forEach(function (n, d) { if (n > 0 && d < ix.days.length) set.add(ix.days[d]); }); });
+        return { vals: Array.from(set).sort(), known: true };
+      case "linked_repos":
+        ix.inc[i].forEach(function (j) {
+          if (ix.kinds[j] !== "pr" && ix.kinds[j] !== "bookmark") return;
+          r = pathValues(ix, f, j); vals = vals.concat(r.vals); known = known || r.known;
+        });
+        return { vals: vals, known: known };
+      case "days_since":
+        if (!ix.today) return { vals: [], known: false };
+        r = pathValues(ix, f, i);
+        r.vals.forEach(function (t) { var ms = parseTimestampMs(t); if (ms != null) vals.push((ix.env.nowMs - ms) / 86400000); });
+        return { vals: vals, known: r.known };
+      case "count":
+        r = pathValues(ix, f, i);
+        return r.known ? { vals: [r.vals.length], known: true } : { vals: [], known: false };
+      case "prstate":
+        var n = ix.nodes[i], pr = own(n, "pr");
+        if (isObj(pr)) {
+          var st = typeof pr.state === "string" ? pr.state : "";
+          return { vals: [st === "open" && truthy(own(pr, "is_draft")) ? "draft" : st || "unknown"], known: true };
+        }
+        var bm = own(n, "bookmark"), lk = isObj(bm) && typeof bm.pr_lookup === "string" ? bm.pr_lookup : "";
+        if (!isObj(bm) || !lk || lk === "unknown" || lk === "error") return { vals: ["unknown"], known: true };
+        return typeof bm.pr_count === "number" && bm.pr_count > 0 ? { vals: [], known: true } : { vals: ["none"], known: true };
+    }
+    return { vals: [], known: false };
+  }
+  function extractField(ix, f, i) {
+    if (f.kinds.indexOf(ix.kinds[i]) < 0) return { na: true, unknown: true, disp: [], norm: [], nums: [] };
+    var r = rawValues(ix, f, i), known = r.known, fv = { na: false, unknown: false, disp: [], norm: [], nums: [] }, seen = new Set();
+    if (f.type === "number" || f.type === "duration") {
+      r.vals.forEach(function (v) { if (typeof v === "number") fv.nums.push(v); });
+    } else if (f.type === "date") {
+      r.vals.forEach(function (v) { var d = dayOfValue(ix, v); if (d && !seen.has(d)) { seen.add(d); fv.norm.push(d); fv.disp.push(d); } });
+    } else {
+      var map = f.type !== "text" && f.map ? f.map : null;
+      r.vals.forEach(function (v) {
+        var s = scalarString(v);
+        if (s === null || s === "") return;
+        if (map && hasOwn.call(map, s.toLowerCase())) s = map[s.toLowerCase()];
+        var n = s.toLowerCase();
+        if (f.type !== "text" && seen.has(n)) return;
+        seen.add(n); fv.disp.push(s); fv.norm.push(n);
+      });
+      if (!fv.norm.length && map && hasOwn.call(map, "")) { fv.disp = [map[""]]; fv.norm = [map[""].toLowerCase()]; known = true; }
+    }
+    fv.unknown = !known || ((f.type === "enum" || f.type === "set") && fv.norm.length === 1 && fv.norm[0] === "unknown");
+    return fv;
+  }
+  function dayOfValue(ix, v) {
+    if (typeof v !== "string") return "";
+    if (validDate(v)) return v;
+    if (ix.env.nowMs == null) return "";
+    var ms = parseTimestampMs(v);
+    return ms == null ? "" : dayOfMs(ms, ix.env.offsetMs);
+  }
+  function resolveDay(ix, s) {
+    if (validDate(s)) return s;
+    if (!ix.today) return null;
+    var n = 0;
+    if (s !== "today") { n = parseInt(s.slice(1, -1), 10) * (s.charAt(s.length - 1) === "w" ? 7 : 1); if (s.charAt(0) === "-") n = -n; }
+    var t = new Date(0);
+    t.setUTCFullYear(+ix.today.slice(0, 4), +ix.today.slice(5, 7) - 1, +ix.today.slice(8, 10) + n);
+    return t.toISOString().slice(0, 10);
+  }
+  function boundNumber(f, s) {
+    if (f.type !== "duration") return parseFloat(s);
+    var mult = 1, last = s.charAt(s.length - 1);
+    if (last === "w") { mult = 7; s = s.slice(0, -1); } else if (last === "d") s = s.slice(0, -1);
+    return parseFloat(s) * mult;
+  }
+  function bindClause(ix, c, warns) {
+    var b = { c: c, strs: [], nums: [], days: [], hasUnknown: false, empty: false, lo: null, hi: null }, t = c.field.type;
+    if (c.op === "list") {
+      c.vals.forEach(function (v) {
+        if (!v.quoted && v.text === "unknown" && t !== "text") { b.hasUnknown = true; return; }
+        var texts = [];
+        if (v.macro === "me") {
+          if (!ix.env.me) warns.push("@me is unknown: the snapshot names no authenticated person, so " + c.name + ":@me matches nothing");
+          else texts = [ix.env.me];
+        } else if (v.macro === "people") {
+          if (!ix.env.people.length) warns.push("@people is unknown: the snapshot lists no configured people, so " + c.name + ":@people matches nothing");
+          texts = ix.env.people.map(function (p) { return p.login; });
+        } else texts = [v.text];
+        texts.forEach(function (x) {
+          if (t === "number" || t === "duration") b.nums.push(boundNumber(c.field, x));
+          else if (t === "date") { var d = resolveDay(ix, x); if (d) b.days.push(d); }
+          else b.strs.push(x.toLowerCase());
+        });
+      });
+      b.empty = !b.strs.length && !b.nums.length && !b.days.length && !b.hasUnknown;
+    } else if (c.op === "range") {
+      var bind = function (v) {
+        if (!v) return null;
+        if (t === "date") { var d = resolveDay(ix, v.text); return { day: d || "", ok: !!d }; }
+        return { num: boundNumber(c.field, v.text), ok: true };
+      };
+      b.lo = bind(c.lo); b.hi = bind(c.hi);
+      if ((b.lo && !b.lo.ok) || (b.hi && !b.hi.ok)) b.empty = true;
+    }
+    return b;
+  }
+  var TRI_FALSE = 0, TRI_TRUE = 1, TRI_UNKNOWN = 2;
+  function testClause(b, v) {
+    var r;
+    if (v.na) return TRI_UNKNOWN;
+    if (v.unknown) r = b.c.op === "list" && b.hasUnknown ? TRI_TRUE : TRI_UNKNOWN;
+    else if (b.empty) r = TRI_UNKNOWN;
+    else r = holds(b, v) ? TRI_TRUE : TRI_FALSE;
+    if (b.c.neg && r !== TRI_UNKNOWN) r = 1 - r;
+    return r;
+  }
+  function inRange(x, b, cmp) {
+    if (b.lo) { var l = cmp(x, b.lo); if (l < 0 || (l === 0 && !b.c.loIncl)) return false; }
+    if (b.hi) { var h = cmp(x, b.hi); if (h > 0 || (h === 0 && !b.c.hiIncl)) return false; }
+    return true;
+  }
+  function cmpDay(d, bd) { return d < bd.day ? -1 : d > bd.day ? 1 : 0; }
+  function cmpNum(x, bd) { return x < bd.num ? -1 : x > bd.num ? 1 : 0; }
+  function holds(b, v) {
+    var t = b.c.field.type, i, j;
+    if (b.c.op === "any") return v.norm.length > 0 || v.nums.length > 0;
+    if (b.c.op === "list") {
+      if (t === "number" || t === "duration") return v.nums.some(function (x) { return b.nums.indexOf(x) >= 0; });
+      if (t === "date") return v.norm.some(function (d) { return b.days.indexOf(d) >= 0; });
+      if (t === "text") { for (i = 0; i < v.norm.length; i++) for (j = 0; j < b.strs.length; j++) if (v.norm[i].indexOf(b.strs[j]) >= 0) return true; return false; }
+      return v.norm.some(function (s) { return b.strs.indexOf(s) >= 0; });
+    }
+    if (t === "date") return v.norm.some(function (d) { return inRange(d, b, cmpDay); });
+    return v.nums.some(function (x) { return inRange(x, b, cmpNum); });
+  }
+
+  // evaluate runs a parsed query over an index: matches (every non-kind
+  // clause applies and holds), rows (matches the kind clauses keep) and vis,
+  // the closure of the matches, or null when nothing filters the graph.
+  L.evaluate = function (q, ix) {
+    var res = { expr: q.expr, matches: [], rows: [], matchIdx: [], rowIdx: [], rowSet: new Set(), matchSet: new Set(), vis: null, warnings: [] }, warns = [];
+    var filters = [], kinds = [];
+    q.clauses.forEach(function (c) { var b = bindClause(ix, c, warns); (c.name === "kind" ? kinds : filters).push(b); });
+    warns.forEach(function (w) { if (res.warnings.indexOf(w) < 0) res.warnings.push(w); });
+    var kindVals = ix.values.get("kind");
+    for (var i = 0; i < ix.nodes.length; i++) {
+      var ok = true, k;
+      for (k = 0; k < filters.length; k++) if (testClause(filters[k], ix.values.get(filters[k].c.name)[i]) !== TRI_TRUE) { ok = false; break; }
+      if (!ok) continue;
+      res.matchIdx.push(i); res.matches.push(ix.ids[i]); res.matchSet.add(ix.ids[i]);
+      var row = true;
+      for (k = 0; k < kinds.length; k++) if (testClause(kinds[k], kindVals[i]) !== TRI_TRUE) { row = false; break; }
+      if (row) { res.rowIdx.push(i); res.rows.push(ix.ids[i]); res.rowSet.add(ix.ids[i]); }
+    }
+    if (filters.length) {
+      res.vis = new Set();
+      reachIdx(ix.out, res.matchIdx).forEach(function (j) { res.vis.add(ix.ids[j]); });
+      reachIdx(ix.inc, res.matchIdx).forEach(function (j) { res.vis.add(ix.ids[j]); });
+    }
+    return res;
+  };
+  // runQuery parses and evaluates expr: {q, res} or {error}.
+  L.runQuery = function (expr, ix) {
+    var q = L.parseQuery(expr, ix.reg);
+    return q.error ? { error: q.error } : { q: q, res: L.evaluate(q, ix) };
+  };
+  // valueText is a field's value on a node as text: "unknown" when unknown,
+  // "none" when known and empty, never blank (extract.go formats the same way).
+  L.valueText = function (ix, name, id) {
+    var vals = ix.values.get(name), i = ix.byId.get(id), f = ix.reg.field(name);
+    if (!vals || i == null || !f) return "";
+    var v = vals[i];
+    if (v.na) return "";
+    if (v.unknown) return "unknown";
+    if (f.type === "number") return v.nums.length ? v.nums.map(function (x) { return String(Math.round(x * 100) / 100); }).join(", ") : "none";
+    if (f.type === "duration") return v.nums.length ? v.nums.map(function (x) { return Math.round(x) + "d"; }).join(", ") : "none";
+    return v.disp.length ? v.disp.join(", ") : "none";
+  };
+
+  // ---------- clauses from gestures ----------
+  // quoteValue writes v as a list value: bare when it is a plain token that
+  // reads back as itself, quoted otherwise.
+  L.quoteValue = function (v) {
+    v = String(v);
+    var bare = v !== "" && v !== "*" && v.charAt(0) !== "@" && v.indexOf("..") < 0 && Array.from(v).every(function (c) { return TOKEN_CHAR.test(c); });
+    return bare ? v : "\"" + v.replace(/[\\"]/g, "\\$&") + "\"";
+  };
+  function positiveValues(c) { return !c.neg && c.op === "list" ? c.vals.map(function (v) { return v.text.toLowerCase(); }) : []; }
+  // clauseActive reports whether expr has a positive clause name:…value….
+  L.clauseActive = function (expr, reg, name, value) {
+    var q = L.parseQuery(expr, reg);
+    if (q.error) return false;
+    return q.clauses.some(function (c) { return c.name === name && positiveValues(c).indexOf(String(value).toLowerCase()) >= 0; });
+  };
+  // toggleClause applies a chart click (requirement 10): choosing the active
+  // value (a lone name:value) removes that clause; any other value replaces
+  // every clause on name and leaves the other clauses alone.
+  L.toggleClause = function (expr, reg, name, value) {
+    var q = L.parseQuery(expr, reg), want = String(value).toLowerCase();
+    if (q.error) return name + ":" + L.quoteValue(value);
+    var active = q.clauses.filter(function (c) { var pv = positiveValues(c); return c.name === name && pv.length === 1 && pv[0] === want; })[0];
+    var keep = q.clauses.filter(function (c) { return active ? c !== active : c.name !== name; }).map(function (c) { return c.raw; });
+    if (!active) keep.push(name + ":" + L.quoteValue(value));
+    return keep.join(";");
+  };
+
+  // ---------- URL state (requirement 12) ----------
+  // The hash holds view, q, sort, cols and sel; other keys are kept as they
+  // were. Values are percent-encoded, keeping : ; , / @ ! * readable.
+  function decodePart(s) { try { return decodeURIComponent(s); } catch (e) { return s; } }
+  function encodeValue(v) { return encodeURIComponent(v).replace(/%(3A|3B|2C|2F|40|21|2A)/g, function (m) { return decodeURIComponent(m); }); }
+  function encodeItem(v) { return encodeValue(v).replace(/,/g, "%2C"); }
+  function splitItems(raw) { return raw ? raw.split(",").map(decodePart).filter(function (x) { return x !== ""; }) : []; }
+  L.HASH_KEYS = ["view", "q", "sort", "cols", "sel"];
+  // parseHash splits a location hash into [key, raw value, raw part] triples.
+  L.parseHash = function (hash) {
+    var s = String(hash || "").replace(/^#/, "");
+    return s ? s.split("&").filter(Boolean).map(function (part) {
+      var i = part.indexOf("=");
+      return [decodePart(i < 0 ? part : part.slice(0, i)), i < 0 ? "" : part.slice(i + 1), part];
+    }) : [];
+  };
+  L.hashState = function (pairs) {
+    var st = { view: "", q: "", sort: "", cols: [], sel: [] };
+    pairs.forEach(function (p) {
+      if (p[0] === "view" || p[0] === "q" || p[0] === "sort") st[p[0]] = decodePart(p[1]);
+      else if (p[0] === "cols" || p[0] === "sel") st[p[0]] = splitItems(p[1]);
+    });
+    return st;
+  };
+  // buildHash writes st over pairs: known keys are replaced in place (or
+  // appended, or dropped when empty); unknown keys are kept verbatim. The
+  // graph view, the default, is not written.
+  L.buildHash = function (pairs, st) {
+    var vals = {
+      view: st.view && st.view !== "graph" ? encodeValue(st.view) : "", q: st.q ? encodeValue(st.q) : "", sort: st.sort ? encodeValue(st.sort) : "",
+      cols: (st.cols || []).map(encodeItem).join(","), sel: (st.sel || []).map(encodeItem).join(",")
+    };
+    var out = [], done = {};
+    pairs.forEach(function (p) {
+      if (!hasOwn.call(vals, p[0])) { out.push(p[2]); return; }
+      if (!done[p[0]] && vals[p[0]]) out.push(p[0] + "=" + vals[p[0]]);
+      done[p[0]] = true;
+    });
+    L.HASH_KEYS.forEach(function (k) { if (!done[k] && vals[k]) out.push(k + "=" + vals[k]); });
+    return out.length ? "#" + out.join("&") : "";
+  };
+  // extractURL is the GET /api/extract request for a page state.
+  L.extractURL = function (base, p) {
+    var qs = [];
+    ["q", "cols", "group", "layout", "view", "sprint"].forEach(function (k) {
+      var v = p[k];
+      if (Array.isArray(v)) v = v.join(",");
+      if (v != null && v !== "") qs.push(k + "=" + encodeURIComponent(v));
+    });
+    return base + (qs.length ? "?" + qs.join("&") : "");
+  };
+
+  // ---------- extension seams (requirement 26) ----------
+  // Views and overview panels register here; addon scripts inlined after
+  // live.js (review.Page.Addons) call WGOLive.registerView/registerPanel
+  // before the page starts. Registering an id again replaces it in place,
+  // so an addon can supersede the built-in table or a built-in panel.
+  L.views = [];
+  L.panels = [];
+  L.onRegister = null; // set by the page once it has started
+  function registerIn(list, what, spec) {
+    if (!spec || typeof spec.id !== "string" || !spec.id || typeof spec.render !== "function") throw new Error("wgo dash: a " + what + " needs a string id and a render(ctx) function");
+    var i = list.findIndex(function (x) { return x.id === spec.id; });
+    if (i >= 0) list[i] = spec; else list.push(spec);
+    if (L.onRegister) L.onRegister(what, spec);
+    return spec;
+  }
+  // registerView adds {id, label, question, render(ctx), destroy(ctx),
+  // extract(ctx)}: render draws the view into ctx.container when it is shown
+  // and again on every data, query or selection change while it is; destroy
+  // runs when another view is chosen; extract, optional, returns the
+  // /api/extract parameters for Copy as Markdown (default view=rows).
+  L.registerView = function (spec) { return registerIn(L.views, "view", spec); };
+  // registerPanel adds an overview panel {id, label, render(ctx), destroy(ctx)}.
+  L.registerPanel = function (spec) { return registerIn(L.panels, "panel", spec); };
+  // viewTabs lists the tab buttons for the registered views.
+  L.viewTabs = function (views, active) {
+    return views.map(function (v) { return { id: v.id, label: v.label || v.id, title: v.question || "", pressed: v.id === active }; });
+  };
+
   if (typeof window !== "undefined") window.WGOLive = L;
   if (typeof module !== "undefined" && module.exports) module.exports = L;
   if (typeof document === "undefined") return;

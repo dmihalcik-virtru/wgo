@@ -354,6 +354,9 @@ func TestAssembleFreshnessPRs(t *testing.T) {
 	if !strings.Contains(bm(s, "p-err").PRError, "HTTP 502") {
 		t.Fatalf("error not surfaced: %+v", bm(s, "p-err"))
 	}
+	if got := bm(s, "p-fresh").RepoSlug; !strings.EqualFold(got, asmSlug) {
+		t.Fatalf("bookmark repo_slug = %q, want %q (the query field repo reads it)", got, asmSlug)
+	}
 	if pr := s.Node(prNodeID(asmSlug, 1)).PR; pr.Freshness != Fresh {
 		t.Fatalf("PR freshness: %+v", pr)
 	}
