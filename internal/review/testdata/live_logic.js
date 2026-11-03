@@ -577,6 +577,25 @@ test("table: CI marks put failures first, systemic hollow, skipped out, at most 
   assert.match(T.ciMarks({ repo: "acme/api", check_details: [], checks_truncated: true }, stats).label, /more checks than were read$/);
 });
 
+test("table: CI marks merge runs of one check name, the worst run winning (as gh-99)", () => {
+  const pr = { repo: "acme/api", check_details: [
+    { name: "build", state: "success" }, { name: "build", state: "failure" }, // push and pull_request runs
+    { name: "lint", state: "neutral" }, { name: "lint", state: "skipped" },
+    { name: "e2e", state: "success" }, { name: "e2e", state: "pending" },
+    { name: "docs", state: "skipped" }, { name: "docs", state: "skipped" },
+    { name: "vendor-hsm-tests", state: "failure" }, { name: "vendor-hsm-tests", state: "failure" }] };
+  const ci = T.ciMarks(pr, TV.snapshot.check_stats);
+  assert.deepEqual(ci.marks.map((m) => m.kind + ":" + m.name), ["fail:build", "systemic:vendor-hsm-tests", "pending:e2e", "pass:lint"]);
+  assert.equal(ci.label, "2 failing (1 fails everywhere), 1 pending, 1 passing");
+});
+
+test("table: sort text matches Go's lowercasing and byte order", () => {
+  assert.equal(T.sortText("İris"), "iris", "İ lowercases to i, as strings.ToLower does");
+  assert.equal(T.sortText("ΟΔΟΣ"), "οδοσ", "no final sigma");
+  assert.ok(T.sortText("ｚoe") < T.sortText("🐛bot"), "U+FF5A before U+1F41B, as in UTF-8");
+  assert.ok(T.sortText("é") > T.sortText("z") && T.sortText("Alice") === "alice");
+});
+
 test("table: one review glyph per reviewer, an outstanding request first-class", () => {
   const rv = (id) => T.reviewMarks(PR(id));
   assert.deepEqual(rv("pr:acme/api#1").marks.map((m) => T.REVIEW[m.state].glyph + m.who), ["○bob", "✓carol"]);

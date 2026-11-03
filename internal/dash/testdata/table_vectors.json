@@ -770,6 +770,71 @@
     }
    },
    {
+    "id": "ticket:jira:TEAM-4",
+    "kind": "ticket",
+    "label": "TEAM-4",
+    "ticket": {
+     "key": "TEAM-4",
+     "system": "jira",
+     "status": "To Do",
+     "title": "Non-ASCII assignee 1",
+     "assignee": "İris",
+     "freshness": "fresh"
+    }
+   },
+   {
+    "id": "ticket:jira:TEAM-5",
+    "kind": "ticket",
+    "label": "TEAM-5",
+    "ticket": {
+     "key": "TEAM-5",
+     "system": "jira",
+     "status": "To Do",
+     "title": "Non-ASCII assignee 2",
+     "assignee": "Iris",
+     "freshness": "fresh"
+    }
+   },
+   {
+    "id": "ticket:jira:TEAM-6",
+    "kind": "ticket",
+    "label": "TEAM-6",
+    "ticket": {
+     "key": "TEAM-6",
+     "system": "jira",
+     "status": "To Do",
+     "title": "Non-ASCII assignee 3",
+     "assignee": "Ωmega",
+     "freshness": "fresh"
+    }
+   },
+   {
+    "id": "ticket:jira:TEAM-7",
+    "kind": "ticket",
+    "label": "TEAM-7",
+    "ticket": {
+     "key": "TEAM-7",
+     "system": "jira",
+     "status": "To Do",
+     "title": "Non-ASCII assignee 4",
+     "assignee": "ｚoe",
+     "freshness": "fresh"
+    }
+   },
+   {
+    "id": "ticket:jira:TEAM-8",
+    "kind": "ticket",
+    "label": "TEAM-8",
+    "ticket": {
+     "key": "TEAM-8",
+     "system": "jira",
+     "status": "To Do",
+     "title": "Non-ASCII assignee 5",
+     "assignee": "🐛bot",
+     "freshness": "fresh"
+    }
+   },
+   {
     "id": "agent:a-1",
     "kind": "agent",
     "label": "claude",
@@ -883,7 +948,12 @@
     "pr:acme/web#6",
     "ticket:jira:TEAM-1",
     "ticket:jira:TEAM-2",
-    "ticket:jira:TEAM-3"
+    "ticket:jira:TEAM-3",
+    "ticket:jira:TEAM-4",
+    "ticket:jira:TEAM-5",
+    "ticket:jira:TEAM-6",
+    "ticket:jira:TEAM-7",
+    "ticket:jira:TEAM-8"
    ]
   },
   {
@@ -984,7 +1054,12 @@
    "order": [
     "ticket:jira:TEAM-1",
     "ticket:jira:TEAM-2",
-    "ticket:jira:TEAM-3"
+    "ticket:jira:TEAM-3",
+    "ticket:jira:TEAM-4",
+    "ticket:jira:TEAM-5",
+    "ticket:jira:TEAM-6",
+    "ticket:jira:TEAM-7",
+    "ticket:jira:TEAM-8"
    ]
   },
   {
@@ -994,7 +1069,12 @@
    "order": [
     "ticket:jira:TEAM-1",
     "ticket:jira:TEAM-2",
-    "ticket:jira:TEAM-3"
+    "ticket:jira:TEAM-3",
+    "ticket:jira:TEAM-4",
+    "ticket:jira:TEAM-5",
+    "ticket:jira:TEAM-6",
+    "ticket:jira:TEAM-7",
+    "ticket:jira:TEAM-8"
    ]
   },
   {
@@ -1046,6 +1126,11 @@
    "query": "kind:pr,ticket",
    "sort": "-text",
    "order": [
+    "ticket:jira:TEAM-8",
+    "ticket:jira:TEAM-7",
+    "ticket:jira:TEAM-6",
+    "ticket:jira:TEAM-5",
+    "ticket:jira:TEAM-4",
     "ticket:jira:TEAM-3",
     "ticket:jira:TEAM-2",
     "ticket:jira:TEAM-1",
@@ -1055,6 +1140,21 @@
     "pr:acme/api#5",
     "pr:acme/api#2",
     "pr:acme/api#1"
+   ]
+  },
+  {
+   "name": "non-ASCII text sorts in code point order after Go's lowercasing (İ is i; emoji after U+FF5A)",
+   "query": "kind:ticket",
+   "sort": "assignee",
+   "order": [
+    "ticket:jira:TEAM-1",
+    "ticket:jira:TEAM-4",
+    "ticket:jira:TEAM-5",
+    "ticket:jira:TEAM-6",
+    "ticket:jira:TEAM-7",
+    "ticket:jira:TEAM-8",
+    "ticket:jira:TEAM-2",
+    "ticket:jira:TEAM-3"
    ]
   }
  ]

@@ -315,7 +315,18 @@ async function runChecks() {
   await send("Runtime.evaluate", { expression: "Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Copy as Markdown').click()", userGesture: true });
   await waitFor("document.querySelector('.status').textContent.startsWith('Copied') || document.querySelector('.status').textContent.includes('failed') || !document.querySelector('.copyout').hidden", "the table's copy");
   const tclip = await evaluate("navigator.clipboard.readText()", { userGesture: true });
-  check(tclip.includes("Sort: `age` (unknown values last)") && tclip.includes(" · author: alice · move: ") && tclip.includes(" · age: 15d · size: ") && tclip.includes(" · ci: ") && tclip.includes("updated_ago: 1d"), "the extract follows the table: " + tclip.slice(0, 400));
+  // The copy is one list in the table's order: no effort sections, each row once.
+  const clipRows = tclip.split("\n").filter((l) => l.startsWith("- ")).map((l) => (/^- \[([^\]]+)\]/.exec(l) || /^- (\S+)/.exec(l))[1]);
+  const tableRows = await rowNames();
+  check(clipRows.join() === tableRows.join() && !tclip.includes("\n### "), "the copy lists the table's rows in its order: " + clipRows + " vs " + tableRows);
+  check(tclip.includes("Sort: `age` (unknown values last)") && tclip.includes(" · author: alice · move: ") && tclip.includes(" · age: 15d · size: ") && tclip.includes("updated_ago: 1d"), "the copy has the table's columns: " + tclip.slice(0, 400));
+  // A sort on the table's own column cannot reach the Markdown: the status says so.
+  await evaluate("window.__wgoStore.setState({ sort: '-last_activity,age' }, { commit: true })");
+  await send("Runtime.evaluate", { expression: "Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Copy as Markdown').click()", userGesture: true });
+  await waitFor("document.querySelector('.status').textContent.includes('Last activity') || document.querySelector('.status').textContent.includes('failed')", "the note");
+  check((await evaluate("document.querySelector('.status').textContent")).includes("Markdown cannot sort by Last activity"), "the status names the sort key the copy left out: " + (await evaluate("document.querySelector('.status').textContent")));
+  check((await evaluate("navigator.clipboard.readText()", { userGesture: true })).includes("Sort: `age` (unknown values last)"), "the copy keeps the other keys");
+  await evaluate("window.__wgoStore.setState({ sort: 'age' }, { commit: true })");
 
   // 7e. Rows by keyboard: arrows move and select, Shift+arrows only move,
   // Shift+Enter adds, Enter selects; hovering a row marks it in the store.
@@ -459,6 +470,29 @@ async function timeTable() {
   await evaluate("document.querySelector('.atable-scroll').scrollTop += 30");
   await sleep(200);
   check((await evaluate("document.activeElement.tagName")) === "TR", "a scroll that redraws the window keeps focus on a row");
+  // A long wheel scroll draws the focused row away: the keyboard parks on
+  // the scroller, and the next arrow resumes from that row, not from
+  // whatever is drawn.
+  const focusedId = await evaluate("Array.from(window.__wgoStore.selection)[0]");
+  await evaluate("document.querySelector('.atable-scroll').scrollTop += 4000");
+  await sleep(300);
+  check((await evaluate("document.activeElement === document.querySelector('.atable-scroll')")), "a far scroll parks the keyboard on the scroller");
+  check((await evaluate("Array.from(window.__wgoStore.selection)[0]")) === focusedId, "parking selects nothing");
+  await key("ArrowDown");
+  const resumed = await evaluate("({ tag: document.activeElement.tagName, at: document.activeElement.getAttribute('aria-rowindex'), sel: document.activeElement.classList.contains('sel') })");
+  check(resumed.tag === "TR" && resumed.at === "63" && resumed.sel, "ArrowDown resumes from the focused row: " + JSON.stringify(resumed));
+  // A re-sort, and Back, keep the keyboard on the same node wherever it lands.
+  const node = await evaluate("Array.from(window.__wgoStore.selection)[0]");
+  const onNode = () => evaluate("({ tag: document.activeElement.tagName, sel: document.activeElement.classList.contains('sel'), at: document.activeElement.getAttribute('aria-rowindex'), id: Array.from(window.__wgoStore.selection)[0] })");
+  await evaluate("window.__wgoStore.setState({ sort: '-updated_ago,repo' }, { commit: true })");
+  await sleep(200);
+  const afterSort = await onNode();
+  check(afterSort.tag === "TR" && afterSort.sel && afterSort.id === node && afterSort.at !== "63", "a re-sort keeps focus on the same node: " + JSON.stringify(afterSort));
+  await evaluate("history.back()"); await sleep(400);
+  const afterBack = await onNode();
+  // Back also undoes the arrow keys' selection (one history entry with the
+  // sort); the node is back at its old position, and so is the keyboard.
+  check(afterBack.tag === "TR" && afterBack.at === "63", "Back keeps focus on the same node: " + JSON.stringify(afterBack));
   check(r.rows >= 2000 && r.dom < 200, "the table draws only the rows in view: " + r.dom + " of " + r.rows);
   check(r.midOK, "the drawn rows follow the scroll: " + r.mid);
   return "table on the scaled analysis fixture (" + r.rows + " rows, " + r.dom + " in the DOM): show " + r.show + ", re-sort " + r.sort + ", kind:pr (" + r.prs + " rows) " + r.kindpr +

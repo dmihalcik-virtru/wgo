@@ -20,6 +20,18 @@
     var hasOwn = Object.prototype.hasOwnProperty;
     function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
     function trim(s) { return s.trim(); }
+    // Sort text is compared as internal/dash/sort.go compares it: lowercased
+    // a code point at a time as Go's strings.ToLower does (no final sigma,
+    // İ to i), and in code point order, which is Go's UTF-8 byte order.
+    // UTF-16 puts a surrogate pair (above U+FFFF) before U+E000-U+FFFF, so
+    // cpKey prefixes each surrogate with U+FFFF to make < agree.
+    var NON_ASCII = /[^\u0000-\u007f]/, SURROGATE = /[\ud800-\udfff]/g;
+    function lower(s) {
+      if (!NON_ASCII.test(s)) return s.toLowerCase();
+      return Array.from(s).map(function (ch) { return ch === "\u0130" ? "i" : ch.toLowerCase(); }).join("");
+    }
+    function cpKey(s) { return NON_ASCII.test(s) ? s.replace(SURROGATE, "\uffff$&") : s; }
+    T.sortText = function (s) { return cpKey(lower(String(s))); };
 
     // LOCAL columns are the table's own, worked out from a node by the page
     // rather than query fields, so the Markdown extract can neither print nor
@@ -145,7 +157,7 @@
         // The name column shows label and title: it sorts as the text field
         // (label, title, ID), which the extract can sort by too.
         if (ix.values.has("text")) return T.sortValue(ix, "text", i);
-        return { c: KNOWN, r: 0, s: label(ix, i).toLowerCase() };
+        return { c: KNOWN, r: 0, s: T.sortText(label(ix, i)) };
       }
       if (hasOwn.call(LOCAL, name)) {
         if (name === "last_activity") {
@@ -153,7 +165,7 @@
           if (isFinite(t)) return { c: KNOWN, r: 0, n: t };
           return { c: LAST_ACTIVITY_KINDS[n.kind] ? UNKNOWN : NA };
         }
-        var s = (name === "state" ? L.stateText(n) : L.dataText(n)).toLowerCase();
+        var s = T.sortText(name === "state" ? L.stateText(n) : L.dataText(n));
         return s ? { c: KNOWN, r: 0, s: s } : { c: EMPTY };
       }
       var f = ix.reg.field(name), vals = f && ix.values.get(name);
@@ -164,15 +176,15 @@
       if (f.type === "number" || f.type === "duration") return v.nums.length ? { c: KNOWN, r: 0, n: v.nums[0] } : { c: EMPTY };
       if (f.derive === "efforts") {
         if (!ix.efforts[i].length) return { c: EMPTY };
-        return { c: KNOWN, r: 0, s: ix.efforts[i].map(function (e) { return label(ix, e).toLowerCase(); }).join(",") };
+        return { c: KNOWN, r: 0, s: T.sortText(ix.efforts[i].map(function (e) { return label(ix, e); }).join(",")) };
       }
       if (!v.norm.length) return { c: EMPTY };
       if (f.type === "date") return { c: KNOWN, r: 0, s: v.norm.reduce(function (a, b) { return b > a ? b : a; }) };
       if (f.type === "enum" && f.values && f.values.length) {
         var r = f.values.indexOf(v.norm[0]);
-        return { c: KNOWN, r: r < 0 ? f.values.length : r, s: v.norm[0] };
+        return { c: KNOWN, r: r < 0 ? f.values.length : r, s: T.sortText(v.disp[0]) };
       }
-      return { c: KNOWN, r: 0, s: v.norm.join(",") };
+      return { c: KNOWN, r: 0, s: T.sortText(v.disp.join(",")) };
     };
     // compareValues orders two sort values for one key; only known values
     // follow the direction.
@@ -187,13 +199,13 @@
     // (the extract's default order). It does not change rows.
     T.sortRows = function (ix, rows, sort) {
       var keys = sort.map(function (s) { return rows.map(function (i) { return T.sortValue(ix, s.key, i); }); });
-      var labels = rows.map(function (i) { return label(ix, i).toLowerCase(); });
+      var labels = rows.map(function (i) { return T.sortText(label(ix, i)); }), ids = rows.map(function (i) { return cpKey(ix.ids[i]); });
       var kinds = sort.length ? null : rows.map(function (i) { var k = L.KIND_ORDER[ix.kinds[i]]; return k != null ? k : 99; });
       var pos = rows.map(function (r, p) { return p; });
       pos.sort(function (a, b) {
         for (var k = 0; k < sort.length; k++) { var c = T.compareValues(keys[k][a], keys[k][b], sort[k].desc); if (c) return c; }
         if (kinds && kinds[a] !== kinds[b]) return kinds[a] - kinds[b];
-        return cmp(labels[a], labels[b]) || cmp(ix.ids[rows[a]], ix.ids[rows[b]]) || a - b;
+        return cmp(labels[a], labels[b]) || cmp(ids[a], ids[b]) || a - b;
       });
       return pos.map(function (p) { return rows[p]; });
     };
@@ -241,9 +253,11 @@
     };
 
     var CI_ORDER = { fail: 0, systemic: 1, pending: 2, pass: 3 };
+    var CHECK_RANK = { failure: 4, pending: 3, success: 2, skipped: 1 };
     T.CI_MAX = 20;
-    function natural(a, b) { return String(a).localeCompare(String(b), "en", { numeric: true }) || cmp(a, b); }
-    // ciMarks lays out one mark per check, failures first: failing, then
+    var COLLATOR = new Intl.Collator("en", { numeric: true });
+    function natural(a, b) { return COLLATOR.compare(String(a), String(b)) || cmp(a, b); }
+    // ciMarks lays out one mark per check name, failures first: failing, then
     // failing but systemic in its repository (gh-99's check_stats), pending,
     // passing (a neutral check passes); skipped checks are left out. At most
     // CI_MAX marks, then more. null when the PR's checks are unknown.
@@ -252,15 +266,24 @@
       if (!Array.isArray(details)) return null;
       var systemic = new Set(), stats = checkStats && typeof pr.repo === "string" ? checkStats[pr.repo.toLowerCase()] : null;
       (Array.isArray(stats) ? stats : []).forEach(function (s) { if (s && s.systemic === true && typeof s.name === "string") systemic.add(s.name); });
-      var marks = [], n = { fail: 0, systemic: 0, pending: 0, pass: 0 };
+      // One mark per check name: a check run on both push and pull_request
+      // is listed twice. As gh-99's checkStates, the worst run wins.
+      var byName = new Map();
       details.forEach(function (d) {
-        var st = String((d && d.state) || "").toLowerCase(), name = String((d && d.name) || "check"), kind;
+        var st = String((d && d.state) || "").toLowerCase(), name = String((d && d.name) || "check");
+        if (st === "neutral") st = "success";
+        var prev = byName.get(name);
+        if (!prev || (CHECK_RANK[st] || 0) > (CHECK_RANK[prev.state] || 0)) byName.set(name, { state: st, url: d && d.url });
+      });
+      var marks = [], n = { fail: 0, systemic: 0, pending: 0, pass: 0 };
+      byName.forEach(function (d, name) {
+        var st = d.state, kind;
         if (st === "skipped") return;
         if (st === "failure") kind = systemic.has(name) ? "systemic" : "fail";
-        else if (st === "success" || st === "neutral") kind = "pass";
+        else if (st === "success") kind = "pass";
         else kind = "pending";
         n[kind]++;
-        marks.push({ kind: kind, name: name, state: st || "unknown", url: d && d.url });
+        marks.push({ kind: kind, name: name, state: st || "unknown", url: d.url });
       });
       marks.sort(function (a, b) { return CI_ORDER[a.kind] - CI_ORDER[b.kind] || natural(a.name, b.name); });
       var parts = [], failing = n.fail + n.systemic;
@@ -369,6 +392,9 @@
     V.chooser = el("div", "atable-chooser", null, host); V.chooser.id = "atable-chooser"; V.chooser.hidden = true;
     V.chooser.setAttribute("role", "group"); V.chooser.setAttribute("aria-label", "Columns");
     V.scroll = el("div", "atable-scroll", null, host);
+    // The scroller holds the keyboard when a wheel scroll draws the focused
+    // row away; arrows then resume from that row (V.focus).
+    V.scroll.tabIndex = -1;
     V.table = el("table", "live atable", null, V.scroll); V.table.setAttribute("role", "grid");
     el("caption", "sr", "Rows of the current query. Arrow keys move, Enter or Space selects, Shift+Enter adds. Column headers sort: Enter sorts, Shift+Enter adds a sort key.", V.table);
     V.thead = el("thead", null, null, V.table);
@@ -389,6 +415,7 @@
       cur.select([rowId(V.focus)], ev.shiftKey || ev.metaKey);
     });
     V.tbody.addEventListener("keydown", onRowKey);
+    V.scroll.addEventListener("keydown", function (ev) { if (ev.target === V.scroll) rowKey(ev, Math.max(0, V.focus)); });
     V.tbody.addEventListener("focusin", function (ev) { var row = ev.target.closest && ev.target.closest("tr[data-i]"); if (row) setFocus(+row.dataset.i); });
     V.tbody.addEventListener("mouseover", function (ev) { var row = ev.target.closest("tr[data-i]"); hover(row ? rowId(+row.dataset.i) : null); });
     V.table.addEventListener("mouseleave", function () { hover(null); });
@@ -453,6 +480,9 @@
       V.focus = first >= 0 ? first : 0;
     }
     setFocus(V.focus);
+    // A re-sort, Back or a new snapshot may move the focused node: bring it
+    // into the drawn window first, so the keyboard stays on it.
+    if (hadFocus && V.model.virtual && V.focus >= 0) scrollToRow(V.focus);
     paintBar(); paintChooser(); paintHead(); paintBody();
     if (hadFocus) focusRow(V.focus);
     else if (V.restore && V.restore.head) { var b = V.thead.querySelector("button[data-col=\"" + V.restore.head + "\"]"); if (b) b.focus(); }
@@ -580,11 +610,12 @@
     // Measure the real row height once, for the virtual window.
     var r = V.tbody.querySelector("tr[data-i]");
     if (r && r.offsetHeight && Math.abs(r.offsetHeight - V.rowH) > 0.5) { V.rowH = r.offsetHeight; if (m.virtual) { paintBody(); return; } }
-    // Redrawing the window must not drop the keyboard: refocus its row, or,
-    // when scrolling took it out of view, the first drawn row.
+    // Redrawing the window must not drop the keyboard or move it to another
+    // node: refocus the focused row, or, when a scroll drew it away, park
+    // the keyboard on the scroller (arrows resume from V.focus).
     if (hadFocus && n) {
-      var f = V.tbody.querySelector("tr[data-i=\"" + V.focus + "\"]") || V.tbody.querySelector("tr[data-i]");
-      if (f) { setFocus(+f.dataset.i); rove(); f.focus({ preventScroll: true }); }
+      var f = V.tbody.querySelector("tr[data-i=\"" + V.focus + "\"]");
+      if (f) { rove(); f.focus({ preventScroll: true }); } else V.scroll.focus({ preventScroll: true });
     }
   }
   function refreshSelection() {
@@ -594,25 +625,36 @@
       tr.classList.toggle("sel", on); tr.setAttribute("aria-selected", String(on));
     });
   }
+  // scrollToRow scrolls a virtual table so row p is in view below the
+  // sticky header.
+  function scrollToRow(p) {
+    var head = V.thead.offsetHeight || V.rowH, top = p * V.rowH, s = V.scroll;
+    if (top < s.scrollTop) s.scrollTop = top;
+    else if (top + V.rowH + head > s.scrollTop + s.clientHeight) s.scrollTop = top + V.rowH + head - s.clientHeight;
+  }
   // focusRow focuses row p, scrolling it into view (and into the virtual
   // window) first.
   function focusRow(p) {
     if (p < 0 || !V.model.rows.length) return;
+    setFocus(p);
     if (V.model.virtual) {
-      var head = V.thead.offsetHeight || V.rowH, top = p * V.rowH, s = V.scroll;
-      if (top < s.scrollTop) s.scrollTop = top;
-      else if (top + V.rowH + head > s.scrollTop + s.clientHeight) s.scrollTop = top + V.rowH + head - s.clientHeight;
+      scrollToRow(p);
       var w = windowFor(V.model.rows.length);
       if (w[0] !== V.win[0] || w[1] !== V.win[1]) paintBody();
     }
-    setFocus(p); rove();
+    rove();
     var row = V.tbody.querySelector("tr[data-i=\"" + p + "\"]");
     if (row) { row.focus({ preventScroll: V.model.virtual }); if (!V.model.virtual && row.scrollIntoView) row.scrollIntoView({ block: "nearest" }); }
   }
   function onRowKey(ev) {
     var row = ev.target.closest("tr[data-i]"); if (!row || ev.target !== row) return;
-    var p = +row.dataset.i;
-    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); setFocus(p); cur.select([rowId(p)], ev.shiftKey); return; }
+    rowKey(ev, +row.dataset.i);
+  }
+  // rowKey applies a key to row p: Enter or Space selects (Shift adds),
+  // arrows and paging move, selecting unless Shift is held.
+  function rowKey(ev, p) {
+    if (!V.model || !V.model.rows.length) return;
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); focusRow(p); cur.select([rowId(p)], ev.shiftKey); return; }
     var nx = L.nextIndex(V.model.rows.length, p, ev.key);
     if (nx < 0) return;
     ev.preventDefault();
@@ -765,13 +807,17 @@
   };
 
   // extract is what Copy as Markdown asks /api/extract for: the table's
-  // registry columns and sort keys (name sorts as text); its own state,
-  // data and last activity columns have no Markdown form.
+  // order as one list (group none: no effort sections, each row once), its
+  // registry columns and sort keys (name sorts as text). Its own state,
+  // data and last activity columns have no Markdown form; note says when
+  // a sort key on one of them had to be left out.
   function extract(ctx) {
     var m = V && V.model && V.model.ix === ctx.queryIndex ? V.model : model(ctx);
     var reg = ctx.registry, isField = function (c) { return !!reg.field(c) && !T.LOCAL[c]; };
     var sort = m.sort.map(function (s) { return s.key === "name" ? { key: "text", desc: s.desc } : s; });
-    return { cols: m.cols.filter(isField), sort: T.formatSort(sort.filter(function (s) { return isField(s.key); })) };
+    var dropped = sort.filter(function (s) { return !isField(s.key); }).map(function (s) { return T.colInfo(reg, s.key).label; });
+    return { cols: m.cols.filter(isField), sort: T.formatSort(sort.filter(function (s) { return isField(s.key); })), group: "none",
+      note: dropped.length ? "Markdown cannot sort by " + dropped.join(" or ") + " (the table's own column" + (dropped.length === 1 ? "" : "s") + "), so the copy leaves that out of its order." : "" };
   }
 
   window.WGOLive.registerView({ id: "table", label: "Table", question: "Across the rows I have filtered, how do they compare, and which come first by the measure I care about?",

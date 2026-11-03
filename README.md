@@ -1092,14 +1092,17 @@ check with failures first, and reviews one glyph per reviewer (`✓` approved,
 `✕` changes requested, `○` requested, `…` commented). Without a `kind:`
 clause, nodes kept only because a match leads to them are listed dimmed and
 can be hidden. Arrow keys move between rows, Enter selects and Shift+Enter
-adds. Copy as Markdown uses the table's columns and sort.
+adds. Copy as Markdown lists the table's rows in its order, as one list,
+with its columns; the table's own State, Data and Last activity columns
+have no Markdown form, and the status line says when a sort on one of them
+was left out.
 
 ```
 wgo dash --query 'kind:pr;prstate:open'           # open the page at this query
 wgo dash --json --query 'repo:acme/api;kind:pr'   # adds "query": {expr, matches, rows}
 wgo dash --md --query 'kind:pr' --cols prstate,checks --group repo
 wgo dash --md --preset shipped --layout table     # a saved filter as a Markdown table
-wgo dash --md --query 'kind:pr' --sort -updated_ago,repo   # sorted as the table sorts
+wgo dash --md --query 'kind:pr' --sort -updated_ago,repo --group none   # one list, as the table sorts
 ```
 
 A malformed query fails with the column, the fix and a corrected command.
