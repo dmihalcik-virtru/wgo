@@ -1181,6 +1181,42 @@ facets = ["move", "repo", "reviewer", "size", "mismatch"]
 A name that is not a field is reported on stderr and in the panel, and
 left out.
 
+### Scatterplot and CI grid
+
+The **Scatter** view asks which PRs are small and have waited long (push
+them) and which are big (split them). Each PR row of the query is a mark:
+waiting time across, size up, by default; either axis can be any PR number
+or duration field, kept in the address as `x=` and `y=`. Sizes and durations
+use log scales, labelled so, with gridlines at 1, 10, 100, 1,000 lines and
+1, 7, 30, 90 days. A mark's shape says whose move it is: ● a reviewer's, ▲
+the author's, ■ nobody's, ○ unknown, ◆ none (merged or closed). It is blue,
+with a dot in it, only when the move is yours, and carries a small × when
+the PR's own checks fail. A PR whose value on an axis is unknown, or that
+waits on no one (the author's move, or closed), sits in a labelled strip
+along that axis, never at zero. Up to five outliers (largest on both axes
+together) and the selection are labelled; hover any other mark for its
+details. **Median lines** (`median=on`) add the median of each axis.
+
+Drag a rectangle to select (Shift adds), click a mark, and scroll or pinch to
+zoom (**Reset zoom**, or `0`). The selection is the page's: the table, graph
+and detail panel follow it. By keyboard, Tab into the chart: the arrow keys
+walk the PRs in the table's sort order, Enter selects, Shift+Enter adds, and
+`+` and `-` zoom. With 1,000 PRs or more, the marks are drawn on a canvas.
+
+The **CI grid** asks whether failures are a PR's own or the check fails
+everywhere. Each repository gets a table: a column per PR (most failing
+checks first, then by number; past 60, a "+n more" button narrows the query
+to that repository) and a row per check that ran on any of them. A cell is
+`×` failing, `✓` passing, `·` pending, blank for skipped or neutral, empty
+when the check did not run, and `?` when it is unknown because the PR lists
+more than 100 checks (its column is marked `+`). A check that
+[fails everywhere](#attention-facts) is labelled "fails everywhere — 5 of
+6 PRs" and drawn as a neutral solid line, so a PR's own failures stand out
+in red. Click a check to filter with `check_failing:<name>` (again to
+remove it), a PR to select it, or a cell to select its PR and show that
+check's state and link in the detail panel (the address keeps the check as
+`check=`). The arrow keys move through a grid; Enter acts as a click.
+
 ### Actions
 
 Select a workspace to get these buttons:
