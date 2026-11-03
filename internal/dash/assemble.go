@@ -291,6 +291,11 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		b.edge(id, ai.WorkspaceID, EdgeWorksIn)
 	}
 
+	// Sprints of [jira] board and their tickets (gh-98). Keep this after
+	// every other source of ticket nodes: it attaches a sprint ticket to the
+	// sprint's group effort only when nothing else leads to it.
+	sprintStatus := c.addSprints(b, effortNode, &jiraTally, addJob)
+
 	s := &Snapshot{
 		Schema:      SchemaVersion,
 		GeneratedAt: ls.at,
@@ -307,6 +312,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	s.Sources[SourceGitHubPRs] = prTally.status()
 	s.Sources[SourceGitHubIssues] = issueTally.status()
 	s.Sources[SourceJira] = jiraTally.status()
+	s.Sources[SourceJiraSprints] = sprintStatus
 
 	for _, n := range b.nodes {
 		s.Nodes = append(s.Nodes, *n)

@@ -78,6 +78,12 @@ terminal_command, resume and editor; --port and --days win over it.
 [[dash.people]] lists the people whose PRs and tickets the dash follows
 (default: you and [pair]'s teammate).
 
+With [jira] board set, the dash also shows that board's active and future
+sprints, with their goals and dates, and every ticket in an active sprint
+assigned to those people, even one no PR or workspace leads to. Ticket
+facts (status category, type, sprints, story points, parent, team) come
+from acli; [jira.fields] names the site's custom field IDs.
+
 The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -138,6 +144,8 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		JiraSite: cfg.Jira.Site,
 		People:   dashPeople(cfg.Dash.People),
 		Pair:     dash.Person{Login: cfg.Pair.Teammate, Jira: cfg.Pair.TeammateJira, Name: cfg.Pair.DisplayName},
+		// The board whose sprints the dash shows (gh-98).
+		JiraBoard: cfg.Jira.Board,
 	})
 	opts := dash.Options{Dir: filepath.Join(st.BaseDir(), "cache", "dash"), Collector: collector}
 	if !dashJSON {
@@ -223,8 +231,10 @@ func dashFetchers() dash.Fetchers {
 	}
 	if _, err := exec.LookPath("acli"); err == nil {
 		f.Jira = jiraFetcherFn()
+		f.Sprints = sprintFetcherFn()
 	} else {
 		f.Missing[dash.JobJira] = "acli not on PATH"
+		f.Missing[dash.JobSprints] = "acli not on PATH"
 	}
 	return f
 }

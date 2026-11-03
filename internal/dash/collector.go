@@ -52,6 +52,9 @@ type Config struct {
 	// collection, so it must never make a network call or start a process.
 	// Nil means unknown.
 	Identity func() (login, jira string)
+	// JiraBoard is [jira] board, whose sprints the dash shows (gh-98);
+	// zero means none is configured.
+	JiraBoard int
 }
 
 // Collector builds snapshots. It runs outside HTTP request handling.
