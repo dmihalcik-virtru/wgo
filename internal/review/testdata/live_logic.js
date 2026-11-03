@@ -120,6 +120,49 @@ test("a workspace is on its bookmark, behind bookmarks that moved on, or has non
   assert.equal(ws({ error: "jj exploded" }), "unavailable: jj exploded");
 });
 
+test("ticket facts: category and points only when known", () => {
+  assert.deepEqual(L.ticketFacts({ status_category: "in_progress", story_points: 5, story_points_known: true }), { category: "in progress", points: "5 points" });
+  assert.deepEqual(L.ticketFacts({ status_category: "todo", story_points: 1, story_points_known: true }), { category: "to do", points: "1 point" });
+  assert.deepEqual(L.ticketFacts({ status_category: "done", story_points_known: true }), { category: "done", points: "unestimated" });
+  assert.deepEqual(L.ticketFacts({ status: "Open" }), { category: "", points: "" }, "unread points are unknown, never unestimated");
+  assert.deepEqual(L.ticketFacts(null), { category: "", points: "" });
+});
+
+test("sprints: state and dates, and their group's state text", () => {
+  assert.equal(L.sprintText({ state: "active", start: "2026-10-20T08:00:00Z", end: "2026-11-03T08:00:00Z" }), "active sprint · 2026-10-20 to 2026-11-03");
+  assert.equal(L.sprintText({ state: "future", start: "2026-11-03T08:00:00Z" }), "future sprint · 2026-11-03 to ?");
+  assert.equal(L.sprintText({}), "sprint state unknown");
+  assert.equal(L.stateText({ kind: "sprint", sprint: { state: "closed" } }), "closed sprint");
+  assert.equal(L.dataText({ kind: "sprint", sprint: { freshness: "stale" } }), "stale");
+  assert.equal(L.stateText({ kind: "effort", effort: { group: "sprint" } }), "sprint group");
+  assert.equal(L.stateText({ kind: "effort", effort: { group: "repo" } }), "repository group");
+});
+
+test("tracked lists an effort's PRs and tickets in natural order", () => {
+  const s = {
+    nodes: [
+      { id: "effort:repo:acme/api", kind: "effort", label: "acme/api" },
+      { id: "pr:acme/api#10", kind: "pr", label: "acme/api#10" }, { id: "pr:acme/api#9", kind: "pr", label: "acme/api#9" },
+      { id: "ticket:jira:TEAM-12", kind: "ticket", label: "TEAM-12" }, { id: "ticket:jira:TEAM-3", kind: "ticket", label: "TEAM-3" },
+      { id: "ticket:jira:TEAM-7", kind: "ticket", label: "TEAM-7" }, { id: "ws1", kind: "workspace", label: "api" },
+    ],
+    edges: [
+      { source: "effort:repo:acme/api", target: "pr:acme/api#10", kind: "tracks" }, { source: "effort:repo:acme/api", target: "pr:acme/api#9", kind: "tracks" },
+      { source: "effort:repo:acme/api", target: "ticket:jira:TEAM-12", kind: "tracks" }, { source: "effort:repo:acme/api", target: "ws1", kind: "contains" },
+      { source: "pr:acme/api#10", target: "ticket:jira:TEAM-3", kind: "ticket" }, { source: "pr:acme/api#9", target: "ticket:jira:TEAM-3", kind: "ticket" },
+      { source: "pr:acme/api#9", target: "ticket:jira:TEAM-7", kind: "ticket" },
+    ],
+  };
+  const idx = L.index(s), ids = (l) => l.map((n) => n.id);
+  const all = L.tracked(idx, "effort:repo:acme/api");
+  assert.deepEqual(ids(all.prs), ["pr:acme/api#9", "pr:acme/api#10"]);
+  assert.deepEqual(ids(all.tickets), ["ticket:jira:TEAM-3", "ticket:jira:TEAM-7", "ticket:jira:TEAM-12"], "tracked and PR tickets, once each");
+  const some = L.tracked(idx, "effort:repo:acme/api", (id) => id !== "pr:acme/api#9" && id !== "ticket:jira:TEAM-12");
+  assert.deepEqual(ids(some.prs), ["pr:acme/api#10"]);
+  assert.deepEqual(ids(some.tickets), ["ticket:jira:TEAM-3"], "only the visible PRs' tickets");
+  assert.deepEqual(L.tracked(idx, "ws1"), { prs: [], tickets: [] });
+});
+
 test("sortRows sorts both directions with stable tie-breaks", () => {
   const rows = [
     { id: "c", label: "same", kind: "pr", activity: "2026-10-01" },
