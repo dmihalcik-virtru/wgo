@@ -449,6 +449,34 @@ func TestAnalysisFixtureScenarios(t *testing.T) {
 		some("truncated checks", func(n *Node) bool { return n.PR.ChecksTruncated })
 	})
 
+	t.Run("scatter and CI grid (gh-103)", func(t *testing.T) {
+		moves := map[string]bool{}
+		for _, n := range prs {
+			if n.PR.Facts != nil {
+				moves[n.PR.Facts.Move] = true
+			}
+		}
+		for _, m := range moveValues {
+			if !moves[m] {
+				t.Errorf("no PR's move is %s; the scatterplot has a shape for each", m)
+			}
+		}
+		state := func(st string) func(n *Node) bool {
+			return func(n *Node) bool {
+				return slices.ContainsFunc(n.PR.CheckDetails, func(c CheckDetail) bool { return c.State == st })
+			}
+		}
+		some("with a skipped check", state(CheckSkipped))
+		some("with a neutral check", state(CheckNeutral))
+		some("with a pending check", state(CheckPending))
+		some("whose checks were not read", func(n *Node) bool { return n.PR.CheckDetails == nil })
+		some("of unknown size", func(n *Node) bool { return n.PR.Facts != nil && n.PR.Facts.Size == nil })
+		some("of known size whose wait is unknown", func(n *Node) bool {
+			f := n.PR.Facts
+			return f != nil && f.Size != nil && f.Move == MoveUnknown && f.WaitingSince.IsZero()
+		})
+	})
+
 	t.Run("attachment", func(t *testing.T) {
 		some("found through a bookmark and the inventory", func(n *Node) bool {
 			return slices.Equal(n.PR.Sources, []string{PRSourceBookmark, PRSourceInventory}) && n.PR.BookmarkID != ""

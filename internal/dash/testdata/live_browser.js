@@ -645,7 +645,7 @@ async function facetChecks(facetsURL) {
   // facet's dark bars, not its ghosts; the PR-state facet ignores its own.
   await evaluate("window.__wgoStore.setQuery('prstate:open', { commit: true })");
   await sleep(100);
-  check((await evaluate(row("repo", "acme/web") + ".querySelector('.fx-n').textContent")) === "4/11", "repo acme/web under prstate:open: " + (await evaluate(row("repo", "acme/web") + ".textContent")));
+  check((await evaluate(row("repo", "acme/web") + ".querySelector('.fx-n').textContent")) === "5/12", "repo acme/web under prstate:open: " + (await evaluate(row("repo", "acme/web") + ".textContent")));
   check((await evaluate(row("prstate", "merged") + ".querySelector('.fx-n').textContent")) === "6", "prstate's own clause is ignored");
   check((await evaluate(row("repo", "acme/web") + ".querySelector('.fx-solid').style.width")) !== (await evaluate(row("repo", "acme/web") + ".querySelector('.fx-ghost').style.width")), "solid and ghost bars differ");
 
@@ -832,3 +832,313 @@ async function timeFacets(tableURL) {
 }
 }
 // ---------- end gh-102 ----------
+
+// ---------- gh-103: the scatterplot and the CI grid ----------
+// The scatterplot and the CI grid on the analysis fixture (--scatter-ci):
+// what each view draws, and every gesture by pointer and by keyboard alone;
+// then "+n more" and their timings on the --perf-table page. --set=gh103
+// shoots both views on the analysis fixture, light and dark, then under each
+// colour-vision-deficiency simulation.
+{
+SHOT_SETS.gh103 = [
+  ["scatter-light.png", "light", "#view=scatter&q=kind:pr&sel=pr:acme/web%23203"],
+  ["scatter-dark.png", "dark", "#view=scatter&q=kind:pr&sel=pr:acme/web%23203"],
+  ["scatter-age-median-light.png", "light", "#view=scatter&q=kind:pr&x=age&median=on"],
+  ["scatter-age-median-dark.png", "dark", "#view=scatter&q=kind:pr&x=age&median=on"],
+  ["ci-light.png", "light", "#view=ci&q=kind:pr&sel=pr:acme/api%23101&check=pr:acme/api%23101%7Cvendor-hsm-tests"],
+  ["ci-dark.png", "dark", "#view=ci&q=kind:pr&sel=pr:acme/api%23101&check=pr:acme/api%23101%7Cvendor-hsm-tests"],
+];
+for (const type of ["protanopia", "deuteranopia", "tritanopia", "achromatopsia"]) {
+  for (const scheme of ["light", "dark"]) {
+    SHOT_SETS.gh103.push(["scatter-age-" + type + "-" + scheme + ".png", scheme, "#view=scatter&q=kind:pr&x=age", "cvd:" + type]);
+    SHOT_SETS.gh103.push(["ci-" + type + "-" + scheme + ".png", scheme, "#view=ci&q=kind:pr", "cvd:" + type]);
+  }
+}
+SHOT_SETS.gh103.viewport = { width: 1400, height: 900 };
+SUITES.push({ name: "scatterplot and CI grid", flag: "scatter-ci", checks: gh103Checks, perf: () => flag("--perf-table") ? timeGh103(flag("--perf-table")) : "", deadlineMs: 90000 });
+
+async function gh103Nav(base, hash, ready) {
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: base + hash });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)" + (ready ? " && " + ready : ""), hash);
+  await sleep(250);
+}
+// mouse drives the pointer as a person does (Input.dispatchMouseEvent);
+// path is [[x, y], …] from press to release, shift holds Shift.
+async function mouse(path, shift) {
+  const modifiers = shift ? 8 : 0, [x0, y0] = path[0], [x1, y1] = path[path.length - 1];
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x0, y: y0, modifiers });
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: x0, y: y0, button: "left", buttons: 1, clickCount: 1, modifiers });
+  for (const [x, y] of path.slice(1)) await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "left", buttons: 1, modifiers });
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: x1, y: y1, button: "left", buttons: 0, clickCount: 1, modifiers });
+  await sleep(150);
+}
+// press sends a printable key (key() covers the named ones).
+async function press(k) {
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: k, text: k });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: k });
+  await sleep(80);
+}
+const scMarkBoxes = (sel) => evaluate("Array.from(document.querySelectorAll(" + JSON.stringify(sel) + ")).map(g => { const r = g.getBoundingClientRect(); return { id: g.dataset.id, x: r.left + r.width / 2, y: r.top + r.height / 2 } })");
+const sortedSel = () => evaluate("Array.from(window.__wgoStore.selection).sort()");
+
+async function gh103Checks(analysisURL) {
+  // S1. The scatter draws the fixture: log axes labelled, shapes by move,
+  // unknowns in the strips, the accent and × where they belong, and at most
+  // five outlier labels.
+  await gh103Nav(analysisURL, "#view=scatter&q=kind:pr", "!!document.querySelector('.sc-marks .sc-mk')");
+  const sc = await evaluate(`(() => { const q = (s) => Array.from(document.querySelectorAll(s)); return {
+    titles: q('.sc-title').map(t => t.textContent), shapes: ['circle', 'triangle', 'square', 'ring', 'diamond'].map(s => q('.sc-marks .sc-mk.s-' + s).length),
+    marks: q('.sc-marks .sc-mk').length, zones: q('.sc-marks .sc-mk').reduce((a, g) => (a[g.dataset.zone] = (a[g.dataset.zone] || 0) + 1, a), {}),
+    strips: q('.sc-stripl').map(t => t.firstChild.textContent), outl: q('.sc-lbl.out').map(t => t.textContent), mine: q('.sc-marks .sc-mk.mine').map(g => g.dataset.id).sort(),
+    fail: q('.sc-marks .sc-mk.fail').map(g => g.dataset.id).sort(), aria: q('.sc-marks .sc-mk').map(g => g.getAttribute('aria-label')), ticks: q('.sc-tick').map(t => t.textContent),
+    key: document.querySelector('.sc-key').textContent, tabs: q('.view-tabs button').map(b => b.textContent) } })()`);
+  check(sc.tabs.includes("Scatter") && sc.tabs.includes("CI grid"), "both views are tabs: " + sc.tabs);
+  check(sc.titles.join("|") === "Waiting (days, log scale)|Size (lines changed, log scale)", "log axes labelled: " + sc.titles);
+  check(sc.marks === 20 && sc.shapes.every((n) => n > 0), "every PR row a mark, every shape drawn: " + sc.marks + " " + sc.shapes);
+  check(sc.zones.plot === 5 && sc.zones.xstrip === 14 && sc.zones.corner === 1, "unknowns in the strips, not at zero: " + JSON.stringify(sc.zones));
+  check(sc.strips.includes("Waiting unknown: 1 · not waiting: 13") && sc.strips.includes("both"), "the strips are labelled: " + sc.strips);
+  check(sc.outl.length >= 1 && sc.outl.length <= 5, "at most five outlier labels: " + sc.outl);
+  check(sc.mine.join() === "pr:acme/api#103,pr:acme/api#104,pr:acme/infra#301,pr:acme/web#202", "the accent marks only alice's move: " + sc.mine);
+  check(sc.fail.join() === "pr:acme/api#103,pr:acme/infra#301,pr:acme/web#203", "× marks a CI failing on its own checks: " + sc.fail);
+  check(sc.ticks.includes("1,000") && sc.ticks.includes("7d"), "gridlines at readable steps: " + sc.ticks);
+  const ariaRE = /^acme\/(api|web|infra)#\d+: Waiting .+, Size .+, .*move/;
+  check(sc.aria.every((a) => ariaRE.test(a)), "every mark says ref, values and move: " + sc.aria.find((a) => !ariaRE.test(a)));
+  check(sc.key.includes("reviewer's move") && sc.key.includes("your move") && sc.key.includes("CI failing"), "one compact key: " + sc.key);
+  check((await evaluate("getComputedStyle(document.querySelector('.sc-chart')).position")) === "relative", "the addon's stylesheet applies under the CSP");
+
+  // S2. Axis switching is in the URL and in history.
+  await evaluate("(() => { const s = document.querySelectorAll('.sc-bar select')[0]; s.value = 'age'; s.dispatchEvent(new Event('change', { bubbles: true })); })()");
+  await sleep(150);
+  check((await evaluate("location.hash")).includes("x=age") && (await evaluate("window.__wgoStore.getState('x')")) === "age", "x= follows the axis: " + (await evaluate("location.hash")));
+  check((await evaluate("document.querySelector('.sc-title').textContent")) === "Age (days, log scale)" && (await evaluate("document.querySelectorAll('.sc-marks .sc-mk[data-zone=plot]').length")) === 19, "the age axis plots 19");
+  await evaluate("(() => { const s = document.querySelectorAll('.sc-bar select')[1]; s.value = 'files'; s.dispatchEvent(new Event('change', { bubbles: true })); })()");
+  await sleep(150);
+  check((await evaluate("location.hash")).includes("y=files"), "y= follows the axis");
+  // (One Back only: by now Chrome's 50-entry session history has dropped
+  // this document's first entry.)
+  await evaluate("history.back()"); await sleep(300);
+  check(!(await evaluate("location.hash")).includes("y=") && (await evaluate("window.__wgoStore.getState('x')")) === "age", "Back restores the axes: y= goes, x= stays");
+  await evaluate("(() => { const s = document.querySelectorAll('.sc-bar select')[0]; s.value = 'waiting'; s.dispatchEvent(new Event('change', { bubbles: true })); })()");
+  await sleep(150);
+  check(!(await evaluate("location.hash")).includes("x=") && (await evaluate("document.querySelector('.sc-title').textContent")) === "Waiting (days, log scale)", "the default axis leaves the URL");
+
+  // S3. Brush select: a drag selects the marks inside, as one history entry;
+  // Shift adds; the table shows the same selection.
+  const plotted = await scMarkBoxes(".sc-marks .sc-mk[data-zone=plot]");
+  const xs = plotted.map((m) => m.x), ys = plotted.map((m) => m.y);
+  const r = [Math.min(...xs) - 9, Math.min(...ys) - 9, Math.max(...xs) + 9, Math.max(...ys) + 9];
+  await mouse([[r[0], r[1]], [(r[0] + r[2]) / 2, (r[1] + r[3]) / 2], [r[2], r[3]]]);
+  const brushed = await sortedSel();
+  check(brushed.join() === plotted.map((m) => m.id).sort().join(), "the brush selects the marks inside: " + brushed);
+  check(decodeURIComponent(await evaluate("location.hash")).includes("sel="), "the selection is in the URL");
+  const corner = (await scMarkBoxes(".sc-marks .sc-mk[data-zone=corner]"))[0];
+  await mouse([[corner.x - 8, corner.y - 8], [corner.x, corner.y + 2], [corner.x + 8, corner.y + 8]], true);
+  check((await sortedSel()).length === 6 && (await sortedSel()).includes(corner.id), "Shift+drag adds: " + (await sortedSel()));
+  await evaluate("history.back()"); await sleep(300);
+  check((await sortedSel()).join() === brushed.join(), "one Back undoes the Shift+drag");
+  check((await evaluate("document.querySelectorAll('.sc-selring').length")) === 5 && (await evaluate("document.querySelectorAll('.sc-lbl.sel').length")) >= 1, "selected marks are ringed and labelled");
+  await evaluate("window.__wgoStore.setState({ view: 'table' }, { commit: true })"); await sleep(200);
+  check((await evaluate("document.querySelectorAll('table.atable tbody tr.sel').length")) === 5, "the table shows the scatter's selection");
+  await evaluate("history.back()"); await sleep(300);
+
+  // S4. A click selects one mark; a click on nothing clears.
+  const one = plotted.find((m) => m.id === "pr:acme/api#101");
+  await mouse([[one.x, one.y]]);
+  check((await sortedSel()).join() === "pr:acme/api#101", "a click selects the mark: " + (await sortedSel()));
+  check((await evaluate("Array.from(document.querySelectorAll('.sc-lbl.sel')).map(t => t.textContent).join()")) === "acme/api#101", "the selected mark has a direct label");
+  check((await evaluate("!document.querySelector('.sc-tip').hidden && document.querySelector('.sc-tip').textContent.includes('acme/api#101')")), "details on demand: the tooltip");
+  await mouse([[r[2] + 40, r[1] - 4]]);
+  check((await evaluate("window.__wgoStore.selection.size")) === 0, "a click on nothing clears the selection");
+
+  // S5. Median lines are off by default, and in the URL when on.
+  check((await evaluate("document.querySelectorAll('.sc-med').length")) === 0, "no median lines by default");
+  await evaluate("document.querySelector('.sc-bar input[type=checkbox]').click()"); await sleep(150);
+  const meds = await evaluate("Array.from(document.querySelectorAll('.sc-medl')).map(t => t.textContent)");
+  check((await evaluate("location.hash")).includes("median=on") && meds.length === 2 && meds.every((t) => t.startsWith("median ")), "median lines labelled with their values: " + meds);
+
+  // S6. The wheel zooms; Reset zoom returns.
+  const plot = await evaluate("(() => { const r = document.querySelector('.sc-over').getBoundingClientRect(); return { x: r.left + r.width * 0.6, y: r.top + r.height * 0.45 } })()");
+  await send("Input.dispatchMouseEvent", { type: "mouseWheel", x: plot.x, y: plot.y, deltaX: 0, deltaY: -400 }); await sleep(200);
+  check(!(await evaluate("document.querySelector('.sc-bar button').disabled")), "the wheel zooms in");
+  await evaluate("document.querySelector('.sc-bar button').click()"); await sleep(100);
+  check((await evaluate("document.querySelector('.sc-bar button').disabled")), "Reset zoom");
+
+  // S7. Keyboard only, in the table's sort order: arrows move and select,
+  // Shift+arrows only move, Shift+Enter adds, Enter selects; + zooms, 0 resets.
+  await gh103Nav(analysisURL, "#view=scatter&q=kind:pr&sort=-size", "!!document.querySelector('.sc-marks .sc-mk')");
+  const order = await evaluate("(() => { const s = window.__wgoStore, T = WGOLive.tableLogic, ix = s.qi; return T.sortRows(ix, s.qres.rowIdx.filter(i => ix.kinds[i] === 'pr'), T.sortKeys(s.qi.reg, s.getState('sort'))).map(i => ix.ids[i]) })()");
+  await evaluate("document.querySelector('.sc-marks .sc-mk[tabindex=\"0\"]').focus()");
+  const focused = () => evaluate("document.activeElement.dataset.id || ''");
+  check((await focused()) === order[0], "the keyboard enters at the first mark in the table's order: " + (await focused()));
+  await key("ArrowDown");
+  check((await focused()) === order[1] && (await sortedSel()).join() === order[1], "ArrowDown moves to the next and selects it");
+  check((await evaluate("document.activeElement.getAttribute('aria-label')")).startsWith(order[1].replace(/^pr:/, "") + ": Waiting"), "the focused mark's aria-label");
+  await key("ArrowDown", true);
+  await key("Enter", true);
+  check((await sortedSel()).join() === [order[1], order[2]].sort().join(), "Shift+ArrowDown only moves; Shift+Enter adds");
+  await key("Enter");
+  check((await sortedSel()).join() === order[2], "Enter selects the focused mark alone");
+  await press("+");
+  check(!(await evaluate("document.querySelector('.sc-bar button').disabled")) && (await focused()) !== "", "+ zooms and keeps the keyboard on a mark");
+  await press("0");
+  check((await evaluate("document.querySelector('.sc-bar button').disabled")), "0 resets the zoom");
+
+  // S8. From 1,000 marks the canvas draws them (forced here): a quadtree
+  // still hit-tests the brush, and one proxy carries the keyboard.
+  await evaluate("WGOLive.scatterOptions = { canvasMin: 0 }; window.__wgoStore.setState({ x: 'age' }, { commit: true })"); await sleep(200);
+  const cv = await evaluate("({ canvas: !document.querySelector('.sc-canvas').hidden, svgMarks: document.querySelectorAll('.sc-marks .sc-mk:not(.sc-proxy)').length, proxy: document.querySelector('.sc-proxy') && document.querySelector('.sc-proxy').getAttribute('aria-label') })");
+  check(cv.canvas && cv.svgMarks === 0 && /^acme\//.test(cv.proxy || ""), "the canvas path: " + JSON.stringify(cv));
+  const over = await evaluate("(() => { const r = document.querySelector('.sc-over').getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom] })()");
+  await mouse([[over[0] + 60, over[1] + 4], [over[2] - 4, over[3] - 30]]);
+  check((await evaluate("window.__wgoStore.selection.size")) >= 15, "the canvas brush selects through the quadtree: " + (await evaluate("window.__wgoStore.selection.size")));
+  await evaluate("document.querySelector('.sc-proxy').focus()");
+  const p0 = await evaluate("({ label: document.activeElement.getAttribute('aria-label'), pos: document.activeElement.getAttribute('aria-posinset') })");
+  await key("ArrowDown");
+  const p1 = await evaluate("({ label: document.activeElement.getAttribute('aria-label'), live: document.querySelector('.sc-chart [aria-live]').textContent, pos: document.activeElement.getAttribute('aria-posinset') })");
+  check(p1.label !== p0.label && p1.live === p1.label && +p1.pos === +p0.pos + 1, "the proxy walks the marks and announces each: " + JSON.stringify([p0, p1]));
+  await evaluate("WGOLive.scatterOptions = null");
+
+  // G1. The CI grid: one table per repository; the systemic check is a
+  // labelled solid row in acme/api and not in acme/web; PRs failing only it
+  // have no isolated failing cells.
+  await gh103Nav(analysisURL, "#view=ci&q=kind:pr", "!!document.querySelector('table.cg')");
+  const cg = await evaluate(`(() => { const sec = (k) => document.querySelector('section.cg-repo[data-repo="' + k + '"]'), api = sec('acme/api'), web = sec('acme/web');
+    const own = (s, id) => s.querySelectorAll('td.cg-cell.failure:not(.sys)[data-pr="' + id + '"]').length;
+    const row = (s, n) => s.querySelector('th.cg-row[data-check="' + n + '"]').parentNode;
+    return { repos: Array.from(document.querySelectorAll('section.cg-repo h3')).map(h => h.firstChild.textContent),
+      cols: Array.from(api.querySelectorAll('th.cg-col')).map(t => t.textContent), apiSys: Array.from(api.querySelectorAll('tr.sys th')).map(t => t.textContent),
+      apiSysCells: Array.from(row(api, 'vendor-hsm-tests').querySelectorAll('td')).map(td => td.className.replace('cg-cell ', '') + td.textContent),
+      webSys: web.querySelectorAll('tr.sys').length, webRow: Array.from(row(web, 'vendor-hsm-tests').querySelectorAll('td.failure')).map(td => td.className),
+      ownApi: ['101', '102', '104', '106'].map(n => own(api, 'pr:acme/api#' + n)), own103: own(api, 'pr:acme/api#103'),
+      trunc: Array.from(web.querySelectorAll('th.cg-col.trunc')).map(t => t.dataset.pr), unread: web.querySelector('.cg-unread') ? web.querySelector('.cg-unread').textContent : '',
+      skipped: web.querySelector('td[data-pr="pr:acme/web#201"][data-check="docs-preview"]').getAttribute('aria-label'),
+      labels: Array.from(document.querySelectorAll('td.cg-cell')).every(td => (td.getAttribute('aria-label') || '').length > 10) } })()`);
+  check(cg.repos.join() === "acme/api,acme/infra,acme/web", "one grid per repository: " + cg.repos);
+  check(cg.cols.join() === "#103,#101,#102,#104,#106,#105,#107,#108,#109", "columns by failures, then number: " + cg.cols);
+  check(cg.apiSys.length === 1 && cg.apiSys[0] === "vendor-hsm-testsfails everywhere — 5 of 6 PRs", "the systemic row is labelled in acme/api: " + cg.apiSys);
+  check(cg.apiSysCells.slice(0, 5).every((c) => c === "failure sys×") && cg.apiSysCells.slice(5).every((c) => !c.startsWith("failure")), "it reads as a solid line from the left: " + cg.apiSysCells);
+  check(cg.webSys === 0 && cg.webRow.length === 1 && !cg.webRow[0].includes("sys"), "not systemic in acme/web: an isolated failing cell there");
+  check(cg.ownApi.every((n) => n === 0) && cg.own103 === 1, "PRs failing only the systemic check have no isolated failing cells: " + cg.ownApi + " / " + cg.own103);
+  check(cg.trunc.join() === "pr:acme/web#202" && cg.unread.includes("acme/web#207"), "truncated checks marked on the column; unread checks named: " + cg.trunc + " " + cg.unread);
+  check(cg.skipped.endsWith("docs-preview: skipped") && cg.labels, "blank cells carry an aria-label: " + cg.skipped);
+
+  // G2. A row header applies check_failing:, again removes it; a cell
+  // selects the PR and shows the check in the detail panel; a column header
+  // selects the PR.
+  const clickCell = (sel) => evaluate("document.querySelector(" + JSON.stringify(sel) + ").dispatchEvent(new MouseEvent('click', { bubbles: true }))");
+  await clickCell("section[data-repo='acme/api'] th.cg-row[data-check='vendor-hsm-tests']"); await sleep(150);
+  check((await evaluate("window.__wgoStore.query")) === "kind:pr;check_failing:vendor-hsm-tests", "a row header applies check_failing:");
+  check((await evaluate("document.querySelectorAll('section[data-repo=\"acme/api\"] th.cg-col').length")) === 5 && (await evaluate("document.querySelector('th.cg-row.on') !== null")), "the grid follows the filter and marks its row");
+  await clickCell("section[data-repo='acme/api'] th.cg-row[data-check='vendor-hsm-tests']"); await sleep(150);
+  check((await evaluate("window.__wgoStore.query")) === "kind:pr", "again removes it");
+  await clickCell("td[data-pr='pr:acme/api#101'][data-check='vendor-hsm-tests']"); await sleep(150);
+  const det = await evaluate("({ sel: Array.from(window.__wgoStore.selection).join(), hash: decodeURIComponent(location.hash), text: document.querySelector('.detail .ckd') ? document.querySelector('.detail .ckd').textContent : '', href: document.querySelector('.detail .ckd a') ? document.querySelector('.detail .ckd a').href : '', ck: document.querySelectorAll('td.cg-cell.ck').length })");
+  check(det.sel === "pr:acme/api#101" && det.hash.includes("check=pr:acme/api#101|vendor-hsm-tests") && det.text === "Check vendor-hsm-tests: failure · details" && det.href.endsWith("/runs/7100004") && det.ck === 1,
+    "a cell selects the PR and the detail panel links its check: " + JSON.stringify(det));
+  // The check belongs to that PR in the CI grid: another view hides it, and
+  // any selection the grid did not make (a scatter click, Esc) clears it.
+  const ckd = () => evaluate("document.querySelector('.detail .ckd') ? document.querySelector('.detail .ckd').textContent : ''");
+  const hashCheck = async () => /(^|&)check=/.test((await evaluate("location.hash")).slice(1));
+  await evaluate("window.__wgoStore.setState({ view: 'scatter', x: 'age' }, { commit: true })"); await sleep(250);
+  check((await ckd()) === "" && (await hashCheck()), "in another view the detail panel leaves the check out (the URL keeps it with its PR)");
+  const m208 = (await scMarkBoxes(".sc-marks .sc-mk[data-id='pr:acme/web#208']"))[0];
+  await mouse([[m208.x, m208.y]]);
+  check((await sortedSel()).join() === "pr:acme/web#208" && !(await hashCheck()) && (await ckd()) === "", "a scatter click on another PR drops the check: " + (await evaluate("location.hash")));
+  await evaluate("window.__wgoStore.setState({ view: 'ci', x: '' }, { commit: true })"); await sleep(200);
+  check((await ckd()) === "", "back in the grid with acme/web#208 selected: no stale check");
+  await clickCell("td[data-pr='pr:acme/api#101'][data-check='vendor-hsm-tests']"); await sleep(150);
+  check((await ckd()).startsWith("Check vendor-hsm-tests"), "the cell again");
+  await key("Escape");
+  check(!(await hashCheck()) && (await evaluate("window.__wgoStore.selection.size")) === 0, "Esc clears the selection and its check");
+  await gh103Nav(analysisURL, "#view=ci&q=kind:pr&sel=pr:acme/web%23208&check=pr:acme/api%23101%7Cvendor-hsm-tests", "!!document.querySelector('table.cg')");
+  check((await ckd()) === "", "a shared link whose check names another PR shows none");
+  await gh103Nav(analysisURL, "#view=ci&q=kind:pr&sel=pr:acme/api%23101&check=pr:acme/api%23101%7Cvendor-hsm-tests", "!!document.querySelector('table.cg')");
+  check((await ckd()) === "Check vendor-hsm-tests: failure · details" && (await evaluate("document.querySelectorAll('td.cg-cell.ck').length")) === 1, "a shared link to the PR and its check shows it");
+  await clickCell("section[data-repo='acme/api'] th.cg-col[data-pr='pr:acme/api#103']"); await sleep(150);
+  check((await sortedSel()).join() === "pr:acme/api#103" && !(await evaluate("location.hash")).includes("check="), "a column header selects the PR");
+
+  // G3. Keyboard only: arrows move through a grid; Enter on a check filters
+  // (and the keyboard stays on it), on a PR or a cell selects.
+  await evaluate("document.querySelector('section[data-repo=\"acme/api\"] table.cg [tabindex=\"0\"]').focus()");
+  const at = () => evaluate("(() => { const a = document.activeElement; return (a.dataset.r || '') + ',' + (a.dataset.c || '') + ':' + (a.dataset.check || '') + ':' + (a.dataset.pr || '') })()");
+  await key("ArrowUp");
+  check((await at()).startsWith("0,"), "ArrowUp reaches the column headers: " + (await at()));
+  await key("ArrowDown");
+  await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Home", code: "Home", windowsVirtualKeyCode: 36 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Home", code: "Home", windowsVirtualKeyCode: 36 }); await sleep(60);
+  check((await at()) === "1,0:vendor-hsm-tests:", "Home reaches the row header: " + (await at()));
+  await key("Enter");
+  check((await evaluate("window.__wgoStore.query")) === "kind:pr;check_failing:vendor-hsm-tests" && (await at()) === "1,0:vendor-hsm-tests:", "Enter on a check filters, and the keyboard stays on it: " + (await at()));
+  await key("Enter");
+  check((await evaluate("window.__wgoStore.query")) === "kind:pr", "Enter again removes the filter");
+  await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 }); await sleep(60);
+  await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 }); await sleep(60);
+  check((await at()) === "1,2:vendor-hsm-tests:pr:acme/api#101", "ArrowRight walks the cells: " + (await at()));
+  await key("Enter");
+  check((await sortedSel()).join() === "pr:acme/api#101" && decodeURIComponent(await evaluate("location.hash")).includes("check=pr:acme/api#101|vendor-hsm-tests"), "Enter on a cell selects its PR and names its check");
+  await key("ArrowUp");
+  await key("Enter", true);
+  check((await sortedSel()).length === 0, "Shift+Enter on the selected PR's header toggles it off: " + (await sortedSel()));
+
+  // G4. Copy as Markdown from each view lists the rows with its fields.
+  await send("Browser.grantPermissions", { origin: new URL(analysisURL).origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] }, null);
+  const copy = async () => {
+    await evaluate("document.querySelector('.status').textContent = ''");
+    await send("Runtime.evaluate", { expression: "Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Copy as Markdown').click()", userGesture: true });
+    await waitFor("document.querySelector('.status').textContent.startsWith('Copied') || document.querySelector('.status').textContent.includes('failed') || !document.querySelector('.copyout').hidden", "the copy");
+    return evaluate("navigator.clipboard.readText()", { userGesture: true });
+  };
+  const ciCopy = await copy();
+  check(ciCopy.includes("acme/api#101") && ciCopy.includes(" · ci: systemic_only") && ciCopy.includes("check_failing: vendor-hsm-tests"), "the CI grid's copy: " + ciCopy.slice(0, 300));
+  await evaluate("window.__wgoStore.setState({ view: 'scatter' }, { commit: true })"); await sleep(200);
+  const scCopy = await copy();
+  check(/waiting: \d+d · size: \d+ · move: reviewer/.test(scCopy), "the scatterplot's copy names its axes and the move: " + scCopy.slice(0, 300));
+
+  const problems = events.filter((e) => (e.method === "Log.entryAdded" && e.params.entry.level === "error" && !/\/favicon\.ico$/.test(e.params.entry.url || "")) || e.method === "Runtime.exceptionThrown")
+    .map((e) => e.method === "Runtime.exceptionThrown" ? e.params.exceptionDetails.text + " " + ((e.params.exceptionDetails.exception || {}).description || "") : e.params.entry.text + " " + (e.params.entry.url || ""));
+  check(problems.length === 0, "gh-103: console errors: " + problems.join(" | "));
+}
+
+// timeGh103 checks "+n more" on the scaled analysis fixture (--perf-table)
+// and times both views there (median of 7, synchronous and to the next
+// frame): showing each, and applying and clearing a query; the scatterplot
+// on SVG (its ~800 marks) and forced onto the canvas.
+async function timeGh103(tableURL) {
+  await gh103Nav(tableURL, "#view=ci&q=kind:pr", "!!document.querySelector('table.cg')");
+  const more = await evaluate("(() => { const s = document.querySelector('section[data-repo=\"acme/api\"]'); return { cols: s.querySelectorAll('th.cg-col').length, more: s.querySelector('.cg-more button').textContent } })()");
+  check(more.cols === 60 && /^\+\d+ more PRs — narrow to acme\/api$/.test(more.more), "past 60 PRs: the 60 with the most failures and +n more: " + JSON.stringify(more));
+  await evaluate("document.querySelector('section[data-repo=\"acme/api\"] .cg-more button').click()"); await sleep(150);
+  check((await evaluate("window.__wgoStore.query")) === "kind:pr;repo:acme/api" && (await evaluate("document.querySelector('.cg-more button').textContent")).endsWith("the table lists every one"), "+n more narrows the query to the repository");
+  await gh103Nav(tableURL, "#view=graph", "");
+  await sleep(1000);
+  const r = await evaluate(`(async () => {
+    const s = window.__wgoStore, frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    const med = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1], out = {};
+    const time = async (name, a, b) => {
+      const sync = [], to = [];
+      for (let i = 0; i < 7; i++) {
+        const t0 = performance.now(); a(); const t1 = performance.now(); await frame(); sync.push(t1 - t0); to.push(performance.now() - t0);
+        b(); await frame();
+      }
+      out[name] = med(sync).toFixed(1) + " ms (" + med(to).toFixed(1) + " to frame)";
+    };
+    for (const [name, view, canvasMin] of [["svg", "scatter", 1000], ["canvas", "scatter", 0], ["ci", "ci", 1000]]) {
+      WGOLive.scatterOptions = { canvasMin };
+      s.setQuery("", { commit: true });
+      await time(name + "Show", () => s.setState({ view }, { commit: true }), () => s.setState({ view: "graph" }, { commit: true }));
+      s.setState({ view }, { commit: true }); await frame();
+      if (view === "scatter") out[name + "Marks"] = document.querySelectorAll(".sc-marks .sc-mk:not(.sc-proxy)").length + (document.querySelector(".sc-canvas").hidden ? " SVG" : " canvas") + " of " + document.querySelector(".sc-sum").textContent.split(" ")[0];
+      else out.ciCells = document.querySelectorAll("td.cg-cell").length;
+      await time(name + "Query", () => s.setQuery("kind:pr;prstate:open,draft", { commit: true }), () => s.setQuery("", { commit: true }));
+      // An axis switch re-renders the scatterplot (and the overview panels) only.
+      if (view === "scatter") await time(name + "Axis", () => s.setState({ x: "age" }, { commit: true }), () => s.setState({ x: "" }, { commit: true }));
+      s.setState({ view: "graph" }, { commit: true }); await frame();
+    }
+    WGOLive.scatterOptions = null;
+    return out;
+  })()`);
+  return "gh-103 on the scaled analysis fixture: scatter SVG (" + r.svgMarks + " marks) show " + r.svgShow + ", query " + r.svgQuery + ", axis " + r.svgAxis +
+    "; scatter canvas (" + r.canvasMarks + ") show " + r.canvasShow + ", query " + r.canvasQuery + ", axis " + r.canvasAxis + "; CI grid (" + r.ciCells + " cells) show " + r.ciShow + ", query " + r.ciQuery;
+}
+}
+// ---------- end gh-103 ----------
