@@ -22,9 +22,12 @@ import (
 type builder struct {
 	nodes map[string]*Node
 	edges map[Edge]bool
-	// diags are notes found while building, such as Jira facts that could
-	// not be read; they join the snapshot's diagnostics.
+	// diags are problems found while building; they join the snapshot's
+	// diagnostics. notes are per-ticket notes, such as Jira facts that
+	// could not be read, keyed by cause: each becomes one diagnostic with
+	// the tickets it affects.
 	diags []string
+	notes map[string][]string
 }
 
 func (b *builder) node(n Node) *Node {
@@ -301,7 +304,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		GeneratedAt: ls.at,
 		Days:        ls.days,
 		Sources:     map[string]SourceStatus{},
-		Diagnostics: dedupeStrings(slices.Concat(ls.diags, b.diags)),
+		Diagnostics: dedupeStrings(slices.Concat(ls.diags, b.diags, b.noteDiagnostics())),
 	}
 	maps.Copy(s.Sources, ls.sources)
 	var login, jira string
@@ -468,7 +471,9 @@ func (c *Collector) jiraTicketNode(b *builder, ticket string, jira *remoteTally,
 	}
 	if ti.Freshness.hasData() {
 		applyJiraFacts(ti, info)
-		b.diags = append(b.diags, info.Notes...)
+		for _, n := range info.Notes {
+			b.note(n, ticket)
+		}
 	}
 	site := c.cfg.JiraSite
 	if site == "" {

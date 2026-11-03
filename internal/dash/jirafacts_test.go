@@ -2,6 +2,7 @@ package dash
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +34,31 @@ func TestJiraTicketFacts(t *testing.T) {
 	if len(ti.Sprints) != 1 || ti.Sprints[0].State != "" {
 		t.Fatalf("an unknown sprint state is dropped, not published: %+v", ti.Sprints)
 	}
-	if !slices.Contains(s.Diagnostics, "Jira team are unknown: set team in [jira.fields]") {
+	if !slices.Contains(s.Diagnostics, "Jira team are unknown: set team in [jira.fields] (1 ticket: TEAM-9)") {
 		t.Fatalf("diagnostics %v", s.Diagnostics)
+	}
+}
+
+// TestJiraNotesAreCountedByCause: the same note on many tickets is one
+// diagnostic with a count and the first few keys, not one per ticket.
+func TestJiraNotesAreCountedByCause(t *testing.T) {
+	a := newAsm(t)
+	const cause = "Jira's story points field customfield_10016 ([jira.fields] story_points) holds an unrecognised object value, so those tickets' story points are unknown"
+	for _, key := range []string{"TEAM-1", "TEAM-2", "TEAM-3", "TEAM-4", "TEAM-5"} {
+		a.ws("/w/acme/widgets-"+key, key+"-work")
+		if err := jiracache.Write(key, jiracache.Info{Status: "To Do", Notes: []string{cause}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, _ := a.build()
+	var got []string
+	for _, d := range s.Diagnostics {
+		if strings.HasPrefix(d, "Jira's story points field") {
+			got = append(got, d)
+		}
+	}
+	want := []string{cause + " (5 tickets: TEAM-1, TEAM-2, TEAM-3, …)"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("diagnostics:\n got %q\nwant %q", got, want)
 	}
 }

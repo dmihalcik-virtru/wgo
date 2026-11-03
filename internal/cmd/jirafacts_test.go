@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -148,7 +149,8 @@ func TestFetchTicketFactsIgnoresInvalidFieldIDs(t *testing.T) {
 }
 
 // TestFetchTicketFactsFallsBack: should acli refuse '*all', the system
-// fields are read by name and the custom ones are noted as unknown.
+// fields are read by name, the custom ones are unknown with a note, and
+// the entry is marked partial so it is retried soon.
 func TestFetchTicketFactsFallsBack(t *testing.T) {
 	jiraHome(t, "")
 	calls := stubIssueJSON(t, map[string]string{jira.FactFieldList: viewAll})
@@ -158,13 +160,85 @@ func TestFetchTicketFactsFallsBack(t *testing.T) {
 	assert.Equal(t, "In Review", info.Status)
 	assert.Nil(t, info.Sprints)
 	assert.False(t, info.StoryPointsKnown)
+	assert.True(t, info.Partial)
 	require.Len(t, info.Notes, 1)
-	assert.Contains(t, info.Notes[0], "acli could not return every field")
+	assert.Contains(t, info.Notes[0], "acli refused to return every Jira field")
+	assert.NotContains(t, info.Notes[0], "TEAM-123", "notes name the cause, not the ticket")
 
 	// When both fail, the first error is returned.
 	stubIssueJSON(t, map[string]string{})
 	_, err = fetchTicketFacts("TEAM-123")
 	assert.ErrorContains(t, err, "*all")
+}
+
+// TestFetchTicketFactsDoesNotFallBackOnOtherErrors: an expired login fails
+// any field list, so it costs one acli call, not two.
+func TestFetchTicketFactsDoesNotFallBackOnOtherErrors(t *testing.T) {
+	jiraHome(t, "")
+	calls := 0
+	old := getIssueJSON
+	getIssueJSON = func(ticket, fields string) ([]byte, error) {
+		calls++
+		return nil, errors.New("get issue TEAM-123: exit status 1\n✗ Error: unauthorized: use 'acli jira auth login' to authenticate")
+	}
+	t.Cleanup(func() { getIssueJSON = old })
+	_, err := fetchTicketFacts("TEAM-123")
+	assert.ErrorContains(t, err, "unauthorized")
+	assert.Equal(t, 1, calls)
+}
+
+// TestRunRefreshJiraLoadsFieldsConfig: the statusline's background warmer
+// writes the same entry wgo dash reads, so it must honour [jira.fields]
+// even though nothing loaded config before it.
+func TestRunRefreshJiraLoadsFieldsConfig(t *testing.T) {
+	home := jiraHome(t, "") // config in memory has no [jira.fields]
+	t.Setenv("PATH", t.TempDir())
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".wgo", "config.toml"),
+		[]byte("[jira.fields]\nstory_points = \"customfield_10016\"\nteam = \"customfield_10001\"\n"), 0o644))
+	stubIssueJSON(t, map[string]string{jira.FactFields: viewAll})
+	old := jiraFetcherFn
+	jiraFetcherFn = newJiraFetcher
+	t.Cleanup(func() { jiraFetcherFn = old })
+
+	require.NoError(t, runRefreshJira("TEAM-123"))
+	info, state := jiracache.Read("TEAM-123", time.Hour)
+	require.Equal(t, jiracache.Fresh, state)
+	require.NotNil(t, info.StoryPoints, "story points lost: [jira.fields] was not loaded")
+	assert.Equal(t, 5.0, *info.StoryPoints)
+	assert.Equal(t, "Platform", info.Team)
+	assert.NotContains(t, strings.Join(info.Notes, "\n"), "set story_points", "no note asks for a key that is set")
+}
+
+// TestACLISiteHostIsAskedOnce: many tickets cost one site lookup per
+// siteHostTTL, and none when jira.site is configured.
+func TestACLISiteHostIsAskedOnce(t *testing.T) {
+	jiraHome(t, "")
+	calls := 0
+	old := siteHostFn
+	siteHostFn = func() (string, error) { calls++; return "acme.example", nil }
+	t.Cleanup(func() { siteHostFn = old })
+	siteHostMemo.Lock()
+	siteHostMemo.at = time.Time{}
+	siteHostMemo.Unlock()
+	t.Cleanup(func() {
+		siteHostMemo.Lock()
+		siteHostMemo.at = time.Time{}
+		siteHostMemo.Unlock()
+	})
+	stubIssueJSON(t, map[string]string{jira.FactFields: viewAll})
+	for range 5 {
+		info, err := jiraFetcher{}.FetchJira("TEAM-123")
+		require.NoError(t, err)
+		assert.Equal(t, "acme.example", info.Site)
+	}
+	assert.Equal(t, 1, calls)
+
+	jiraHome(t, "[jira]\nsite = \"acme.example\"\n")
+	siteHostMemo.Lock()
+	siteHostMemo.at = time.Time{}
+	siteHostMemo.Unlock()
+	assert.Empty(t, acliSiteHost())
+	assert.Equal(t, 1, calls, "a configured site needs no acli call")
 }
 
 // TestStatuslineJiraReadGainsNoCall: the statusline's Jira lookup is still

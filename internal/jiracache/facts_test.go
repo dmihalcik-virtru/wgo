@@ -118,3 +118,17 @@ func BenchmarkReadEntry(b *testing.B) {
 		})
 	}
 }
+
+// TestPartialEntryShortTTL: an entry whose fetch could not read every field
+// is retried after negativeTTL, not served for the caller's full ttl.
+func TestPartialEntryShortTTL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, writeEntry("TEAM-4", entry{Info: Info{Status: "To Do", Partial: true}, FetchedAt: time.Now().Add(-negativeTTL - time.Second)}))
+	info, state := Read("TEAM-4", time.Hour)
+	assert.Equal(t, Stale, state)
+	assert.Equal(t, "To Do", info.Status, "its data is still served")
+
+	require.NoError(t, writeEntry("TEAM-5", entry{Info: Info{Status: "To Do"}, FetchedAt: time.Now().Add(-negativeTTL - time.Second)}))
+	_, state = Read("TEAM-5", time.Hour)
+	assert.Equal(t, Fresh, state)
+}

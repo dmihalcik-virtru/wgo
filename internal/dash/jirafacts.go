@@ -1,7 +1,10 @@
 package dash
 
 import (
+	"fmt"
+	"maps"
 	"slices"
+	"strings"
 
 	"github.com/virtru/wgo/internal/jiracache"
 )
@@ -46,4 +49,35 @@ func sprintState(s string) string {
 		return s
 	}
 	return ""
+}
+
+// note records that ticket carries note.
+func (b *builder) note(note, ticket string) {
+	if b.notes == nil {
+		b.notes = map[string][]string{}
+	}
+	b.notes[note] = append(b.notes[note], ticket)
+}
+
+// maxNoteTickets bounds how many tickets a note's diagnostic names.
+const maxNoteTickets = 3
+
+// noteDiagnostics turns the per-ticket notes into one diagnostic per cause,
+// saying how many tickets it affects and naming the first few, so 200
+// tickets with one unreadable field are one line, not 200.
+func (b *builder) noteDiagnostics() []string {
+	var out []string
+	for _, note := range slices.Sorted(maps.Keys(b.notes)) {
+		keys := slices.Compact(slices.Sorted(slices.Values(b.notes[note])))
+		named, more := keys, ""
+		if len(named) > maxNoteTickets {
+			named, more = named[:maxNoteTickets], ", …"
+		}
+		word := "tickets"
+		if len(keys) == 1 {
+			word = "ticket"
+		}
+		out = append(out, fmt.Sprintf("%s (%d %s: %s%s)", note, len(keys), word, strings.Join(named, ", "), more))
+	}
+	return out
 }

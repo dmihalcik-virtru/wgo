@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/virtru/wgo/internal/config"
@@ -46,9 +47,7 @@ func (jiraFetcher) FetchJira(ticket string) (jiracache.Info, error) {
 	// a Jira browse link when jira.site isn't configured. A failure here (no
 	// acli, not authenticated) just leaves Site empty — it doesn't fail the
 	// status fetch.
-	if site, err := jira.SiteHost(); err == nil {
-		info.Site = site
-	}
+	info.Site = acliSiteHost()
 	return info, nil
 }
 
@@ -104,15 +103,23 @@ var getIssueJSON = jira.GetIssueJSON
 // note saying so.
 func fetchTicketFacts(ticket string) (jiracache.Info, error) {
 	raw, err := getIssueJSON(ticket, jira.FactFields)
+	partial := false
 	var ids jira.FieldIDs
 	var notes []string
-	if err != nil {
+	switch {
+	case err != nil && fieldsRefused(err):
+		// Only a refused field list is worth a second call; any other
+		// failure (an expired login, a missing ticket) would fail it too.
+		debugf("jira %s: acli refused %s: %v", ticket, jira.FactFields, err)
 		var ferr error
 		if raw, ferr = getIssueJSON(ticket, jira.FactFieldList); ferr != nil {
 			return jiracache.Info{}, err
 		}
-		notes = append(notes, fmt.Sprintf("Jira %s: acli could not return every field (%s), so story points, sprints and team are unknown", ticket, acliErrorLine(err.Error())))
-	} else {
+		partial = true
+		notes = append(notes, "acli refused to return every Jira field ('*all'), so story points, sprints and team are unknown; wgo retries soon")
+	case err != nil:
+		return jiracache.Info{}, err
+	default:
 		ids, notes = jiraFieldIDs(raw)
 	}
 	facts, factNotes, err := jira.ParseFacts(raw, ids)
@@ -121,7 +128,48 @@ func fetchTicketFacts(ticket string) (jiracache.Info, error) {
 	}
 	info := infoFromFacts(facts)
 	info.Notes = append(notes, factNotes...)
+	info.Partial = partial
 	return info, nil
+}
+
+// fieldsRefused reports whether acli rejected the --fields value, as it
+// does with "field '…' is not allowed" for fields its search refuses.
+func fieldsRefused(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not allowed") || (strings.Contains(s, "field") && strings.Contains(s, "invalid"))
+}
+
+// siteHostTTL bounds how long a process reuses the acli-detected site host.
+const siteHostTTL = 15 * time.Minute
+
+// siteHostFn is the acli seam of acliSiteHost; tests replace it.
+var siteHostFn = jira.SiteHost
+
+var siteHostMemo struct {
+	sync.Mutex
+	site string
+	at   time.Time
+}
+
+// acliSiteHost returns the Jira host acli is logged in to, or "" when
+// jira.site is configured (it is then never used) or acli cannot say. acli
+// is asked at most once per siteHostTTL in a process, so a refresh of many
+// tickets costs one extra acli call, not one per ticket.
+func acliSiteHost() string {
+	if cfg := config.Get(); cfg != nil && cfg.Jira.Site != "" {
+		return ""
+	}
+	siteHostMemo.Lock()
+	defer siteHostMemo.Unlock()
+	if !siteHostMemo.at.IsZero() && time.Since(siteHostMemo.at) < siteHostTTL {
+		return siteHostMemo.site
+	}
+	site, err := siteHostFn()
+	if err != nil {
+		site = ""
+	}
+	siteHostMemo.site, siteHostMemo.at = site, time.Now()
+	return site
 }
 
 // fieldIDRe matches a custom field ID.
@@ -136,8 +184,16 @@ const noField = "none"
 // JSON, whose finds are cached. notes name each field that stays unknown
 // and the [jira.fields] key that would fix it.
 func jiraFieldIDs(raw []byte) (jira.FieldIDs, []string) {
+	cfg := config.Get()
+	if cfg == nil {
+		// A command that never loaded config would write the entry without
+		// [jira.fields]; every command that fetches loads it first, so this
+		// only guards a future one.
+		_ = config.Init()
+		cfg = config.Get()
+	}
 	var conf config.JiraFieldsConfig
-	if cfg := config.Get(); cfg != nil {
+	if cfg != nil {
 		conf = cfg.Jira.Fields
 	}
 	configured := map[string]string{
