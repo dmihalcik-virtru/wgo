@@ -1044,6 +1044,12 @@ with `--ignore-working-copy` so it never snapshots a workspace. It also
 refreshes stale PR, Jira and GitHub issue data. Year-in-review runs are
 served under `/review/`. Stop the server with Ctrl-C.
 
+With `[jira] board` set, the dashboard also shows that board's active and
+future sprints, with their goals and dates, and every ticket in an active
+sprint assigned to the people it follows, including tickets no PR or
+workspace leads to; those are grouped under their sprint. See
+[Jira sprints and ticket facts](#jira-sprints-and-ticket-facts).
+
 To open a workspace from a `wgo://open?ws=<id>` link outside the dashboard,
 install the optional [macOS URL handler](#wgo-links-with-wgo-setup-url-handler).
 The dashboard does not need it.
@@ -1179,6 +1185,40 @@ Without entries it follows you (the authenticated GitHub user) and
 login, with something else in its place (`@alice`, an email, a team), or
 repeating another entry's login stops `wgo dash` with an error naming the
 entry.
+
+### Jira sprints and ticket facts
+
+Ticket nodes carry the facts Jira reports through `acli`: summary, status
+category, type, priority, sprints, story points, parent epic, team,
+components, labels, resolution and dates. Story points, sprint and team are
+custom fields whose IDs differ per site. Name yours in `[jira.fields]`:
+
+```toml
+[jira]
+board = 42                          # the board whose sprints wgo dash shows
+
+[jira.fields]
+story_points = "customfield_10016"  # or "none" if the site has no such field
+sprint       = "customfield_10020"
+team         = "customfield_10001"
+epic_link    = "customfield_10014"  # legacy epic link; not needed when epics show as parent
+```
+
+`acli` cannot list a site's fields, so only the sprint field is discovered
+on its own, from a ticket that is in a sprint. The discovery is cached for
+7 days in `~/.wgo/cache/jira/fields.json`. A field that is neither set nor
+discovered stays unknown, and the dashboard says which key to set. It never
+shows a blank as "none". Find a site's IDs in any ticket's JSON:
+`acli jira workitem view TEAM-123 --fields '*all' --json`.
+
+The board's sprints are cached for 15 minutes in
+`~/.wgo/cache/jira/sprints/board-<id>.json`. Each active sprint's search
+is bounded to 200 tickets assigned to the people `[[dash.people]]` names
+(their `jira` values, plus `currentUser()`); a sprint with more is marked
+truncated. Without `acli`, or with its login expired, the `jira` and
+`jira_sprints` sources are unknown or failed and say why, and the rest of
+the dashboard is unaffected. `wgo statusline` still reads only the ticket's
+cache entry.
 
 A `terminal`, `terminal_command` or `resume` value of the right type that
 wgo does not support (an unknown terminal, `terminal = "command"` with no
