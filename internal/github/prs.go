@@ -78,18 +78,32 @@ func (c *CLIClient) CurrentUser() (string, error) {
 	return u.Login, nil
 }
 
+// searchPRPageSize is the REST search page size searchPRs asks for, the most
+// GitHub allows.
+const searchPRPageSize = 100
+
 // searchPRs runs the GitHub Search API for issues/PRs and returns the items
 // as ExtendedPRInfo. q is the search query body (without the type filter).
+// It follows the result pages to the end, so it returns every match up to the
+// SearchLimit GitHub serves for one query; a failed page fails the call.
 func (c *CLIClient) searchPRs(q string) ([]ExtendedPRInfo, error) {
 	full := q + " is:pr"
-	endpoint := fmt.Sprintf("/search/issues?q=%s&per_page=50", url.QueryEscape(full))
-	var resp apiSearchResults
-	if err := c.getJSON(endpoint, &resp); err != nil {
-		return nil, err
+	var out []ExtendedPRInfo
+	for page := 1; ; page++ {
+		endpoint := fmt.Sprintf("/search/issues?q=%s&per_page=%d&page=%d", url.QueryEscape(full), searchPRPageSize, page)
+		var resp apiSearchResults
+		if err := c.getJSON(endpoint, &resp); err != nil {
+			return nil, err
+		}
+		for i := range resp.Items {
+			out = append(out, resp.Items[i].toExtendedPRInfo())
+		}
+		if len(resp.Items) < searchPRPageSize || len(out) >= resp.TotalCount || len(out) >= SearchLimit {
+			break
+		}
 	}
-	out := make([]ExtendedPRInfo, 0, len(resp.Items))
-	for i := range resp.Items {
-		out = append(out, resp.Items[i].toExtendedPRInfo())
+	if out == nil {
+		out = []ExtendedPRInfo{}
 	}
 	return out, nil
 }
