@@ -462,3 +462,34 @@ func TestRefreshWaitQueueOverflowIsNotAFailure(t *testing.T) {
 		t.Fatalf("diagnostics %v", v.Diagnostics)
 	}
 }
+
+// TestSprintSearchFillsTicketsOthersAdded: a ticket a bookmark (or PR)
+// added first, with no Jira data of its own, gets the sprint search's
+// facts, freshness and URL; one whose own entry has data keeps it.
+func TestSprintSearchFillsTicketsOthersAdded(t *testing.T) {
+	a := newAsm(t)
+	a.c.cfg.JiraBoard = 42
+	cacheBoard(t, boardFixture(), JiraCurrentUser)
+	a.ws("/w/acme/widgets-2", "TEAM-2-docs")
+	a.ws("/w/acme/widgets-3", "TEAM-3-limits")
+	if err := jiracache.Write("TEAM-3", jiracache.Info{Status: "In Review", Summary: "Rate-limit the token endpoints", StatusCategory: StatusInProgress}); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := a.build()
+
+	t2 := s.Node(jiraTicketID("TEAM-2")).Ticket
+	if t2.Status != "To Do" || t2.Title != "Document the token API" || t2.StatusCategory != StatusToDo ||
+		t2.Freshness != Fresh || t2.FetchedAt.IsZero() || t2.URL != "https://acme.example/browse/TEAM-2" {
+		t.Fatalf("a bookmark's ticket without Jira data gets the search's facts: %+v", t2)
+	}
+	t3 := s.Node(jiraTicketID("TEAM-3")).Ticket
+	if t3.Status != "In Review" || t3.Title != "Rate-limit the token endpoints" || t3.Freshness != Fresh {
+		t.Fatalf("a ticket's own Jira data is kept over the search's: %+v", t3)
+	}
+	if got := edgesFrom(s, effortNodeID(sprintEffortKey(1234)), EdgeTracks); slices.Contains(got, jiraTicketID("TEAM-2")) {
+		t.Fatal("a ticket a bookmark leads to is not tracked by the sprint group")
+	}
+	if got := edgesFrom(s, jiraTicketID("TEAM-2"), EdgeInSprint); !slices.Equal(got, []string{sprintNodeID(1234)}) {
+		t.Fatalf("TEAM-2 in_sprint %v", got)
+	}
+}

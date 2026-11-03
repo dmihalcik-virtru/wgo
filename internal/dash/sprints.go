@@ -180,17 +180,14 @@ func sprintRank(state string) int {
 	return 2
 }
 
-// sprintTicketNode adds a ticket a sprint search found and returns its ID.
-// Its facts come from the ticket's own cache entry when that has data,
-// since it holds every field; until then, from what the search reported,
-// with the sprint list's freshness f. Either way the ticket's own entry is
-// queued for refresh when it is not fresh.
+// sprintTicketNode adds a ticket a sprint search found, or finds the node a
+// bookmark or PR already added for it, and returns its ID. Its facts come
+// from the ticket's own cache entry when that has data, since it holds
+// every field; until then, from what the search reported, with the sprint
+// list's freshness f. Either way the ticket's own entry is queued for
+// refresh when it is not fresh.
 func (c *Collector) sprintTicketNode(b *builder, t jiracache.SprintTicket, f Freshness, res jiracache.SprintsResult, jira *remoteTally, addJob func(Job)) string {
-	id := jiraTicketID(t.Key)
-	if _, done := b.nodes[id]; done {
-		return id
-	}
-	id = c.jiraTicketNode(b, t.Key, jira, addJob)
+	id := c.jiraTicketNode(b, t.Key, jira, addJob)
 	ti := b.nodes[id].Ticket
 	if !ti.Freshness.hasData() {
 		applyJiraFacts(ti, t.Info)
