@@ -119,6 +119,10 @@
       return out;
     };
     T.formatSort = function (sort) { return sort.map(function (s) { return (s.desc ? "-" : "") + s.key; }).join(","); };
+    // sortKeys reads sort= into the keys the table sorts by: name and the
+    // columns that exist (a stale key is dropped). Other views that follow
+    // the table's order (gh-103) read it the same way.
+    T.sortKeys = function (reg, raw) { return T.parseSort(raw).filter(function (s) { return s.key === "name" || T.isColumn(reg, s.key); }); };
     // defaultDesc: numbers, durations and dates sort largest or latest first.
     T.defaultDesc = function (reg, key) {
       if (key === "last_activity") return true;
@@ -369,6 +373,9 @@
 
   // ---------- the view ----------
   var L = window.WGOLive, T = logic(L);
+  // Views that order their marks as the table orders its rows (gh-103's
+  // scatterplot) use this same logic rather than a copy.
+  L.tableLogic = T;
   var VIRTUAL_MIN = 500, MARGIN = 15, SHOW_REVIEWERS = 3, SHOW_ITEMS = 2;
   var cur = null; // the latest ctx: handlers read the live store through it
   var V = null; // the view's DOM and model, built once per container
@@ -448,7 +455,7 @@
     var tr = T.tableRows(ix, res, hasKind, showCtx);
     var kinds = tr.kinds.length ? tr.kinds : hasKind ? res.rowKinds : [];
     var cs = T.columns(reg, ctx.getState("cols"), kinds);
-    var sort = T.parseSort(ctx.getState("sort")).filter(function (s) { return s.key === "name" || T.isColumn(reg, s.key); });
+    var sort = T.sortKeys(reg, ctx.getState("sort"));
     var m = { ix: ix, reg: reg, kinds: kinds, cols: cs.cols, custom: cs.custom, sort: sort, hasKind: hasKind, showCtx: showCtx,
       context: tr.context, ctxCount: tr.contextCount, nRows: tr.rows.length - (showCtx ? tr.contextCount : 0), scales: {} };
     m.rows = T.sortRows(ix, tr.rows, sort);
