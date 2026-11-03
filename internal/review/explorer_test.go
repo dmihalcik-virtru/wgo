@@ -3,6 +3,7 @@ package review
 import (
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,7 +44,18 @@ func TestRenderPageRejectsBadAddonsAndModes(t *testing.T) {
 		_, err := RenderPage(Page{Mode: ModeReview, Graph: g, Addons: []string{name}})
 		assert.Error(t, err, name)
 	}
-	_, err := RenderPage(Page{Mode: "other"})
+	for _, name := range []string{"web/vendor/x.css", "../go.mod", "web/live.js", "web/missing.css"} {
+		_, err := RenderPage(Page{Mode: ModeLive, AddonStyles: []string{name}})
+		assert.Error(t, err, name)
+	}
+	_, err := RenderPage(Page{Mode: ModeLive, AddonStyles: []string{"web/live-x.css"}, AddonFS: fstest.MapFS{"web/live-x.css": {Data: []byte("a { content: \"</STYLE>\" }")}}})
+	assert.ErrorContains(t, err, "</style", "a stylesheet must not close the page's <style>")
+	page, err := RenderPage(Page{Mode: ModeLive, AddonStyles: []string{"web/live-x.css", "web/live-y.css"},
+		AddonFS: fstest.MapFS{"web/live-x.css": {Data: []byte(".x{}")}, "web/live-y.css": {Data: []byte(".y{}")}}})
+	require.NoError(t, err)
+	css, x, y := strings.Index(string(page), "wgo dash (live mode) additions"), strings.Index(string(page), "<style>\n.x{}\n</style>"), strings.Index(string(page), "<style>\n.y{}\n</style>")
+	assert.True(t, css > 0 && x > css && y > x && y < strings.Index(string(page), "</head>"), "addon stylesheets follow live.css, in order, in the head")
+	_, err = RenderPage(Page{Mode: "other"})
 	assert.Error(t, err)
 	_, err = RenderPage(Page{Mode: ModeReview})
 	assert.Error(t, err, "review mode needs a graph")

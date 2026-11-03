@@ -859,9 +859,7 @@
     q.clauses.forEach(function (c) {
       if (c.name !== "kind") return;
       if (!first) first = c.col;
-      var set = c.op === "any" ? QUERY_KINDS.slice() : c.vals.map(function (v) { return v.text.toLowerCase(); }).filter(function (k) { return QUERY_KINDS.indexOf(k) >= 0; });
-      if (c.neg) set = QUERY_KINDS.filter(function (k) { return set.indexOf(k) < 0; });
-      rows = intersectKinds(rows, set);
+      rows = intersectKinds(rows, kindClauseSet(c));
     });
     if (!first || intersectKinds(rows, common).length) return null;
     if (!rows.length) {
@@ -873,6 +871,11 @@
     q.clauses.forEach(function (c) { if (c.name !== "kind" && nk.indexOf(c.name) < 0) nk.push(c.name); });
     return qerr(first, sprintf("the kind clause at column %d leaves no rows: it allows %s, while %s can only match %s; change or remove it", first, rows.join(", "), nk.join(", "), common.join(", ")),
       withoutClauses(q, function (d) { return d.name === "kind"; }));
+  }
+  // kindClauseSet is the node kinds a kind: clause allows.
+  function kindClauseSet(c) {
+    var set = c.op === "any" ? QUERY_KINDS.slice() : c.vals.map(function (v) { return v.text.toLowerCase(); }).filter(function (k) { return QUERY_KINDS.indexOf(k) >= 0; });
+    return c.neg ? QUERY_KINDS.filter(function (k) { return set.indexOf(k) < 0; }) : set;
   }
   function withoutClauses(q, drop) { return q.clauses.filter(function (c) { return !drop(c); }).map(function (c) { return c.raw; }).join(";"); }
 
@@ -1114,10 +1117,14 @@
   }
 
   // evaluate runs a parsed query over an index: matches (every non-kind
-  // clause applies and holds), rows (matches the kind clauses keep) and vis,
-  // the closure of the matches, or null when nothing filters the graph.
+  // clause applies and holds), rows (matches the kind clauses keep), vis,
+  // the closure of the matches, or null when nothing filters the graph, and
+  // rowKinds.
   L.evaluate = function (q, ix) {
-    var res = { expr: q.expr, matches: [], rows: [], matchIdx: [], rowIdx: [], rowSet: new Set(), matchSet: new Set(), vis: null, warnings: [] }, warns = [];
+    var res = { expr: q.expr, matches: [], rows: [], matchIdx: [], rowIdx: [], rowSet: new Set(), matchSet: new Set(), vis: null, warnings: [], rowKinds: null }, warns = [];
+    // rowKinds: the node kinds the kind: clauses allow (null without one),
+    // so a view knows its rows' kinds without parsing the query.
+    q.clauses.forEach(function (c) { if (c.name === "kind") res.rowKinds = intersectKinds(res.rowKinds || QUERY_KINDS, kindClauseSet(c)); });
     var filters = [], kinds = [];
     q.clauses.forEach(function (c) { var b = bindClause(ix, c, warns); (c.name === "kind" ? kinds : filters).push(b); });
     warns.forEach(function (w) { if (res.warnings.indexOf(w) < 0) res.warnings.push(w); });

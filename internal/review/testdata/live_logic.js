@@ -676,8 +676,9 @@ test("table: a kind clause drops context rows; otherwise they are listed unless 
   const k = L.runQuery("kind:pr;move:reviewer", tix).res;
   assert.equal(T.tableRows(tix, k, true, true).contextCount, 0, "kind: keeps only rows");
   assert.equal(T.tableRows(tix, null, false, true).rows.length, tix.nodes.length, "no query: every node");
-  assert.deepEqual(T.kindClauseKinds(L.parseQuery("kind:pr,ticket;!kind:ticket", TREG)), ["pr"]);
-  assert.equal(T.kindClauseKinds(L.parseQuery("repo:acme/api", TREG)), null);
+  assert.deepEqual(L.runQuery("kind:pr,ticket;!kind:ticket", tix).res.rowKinds, ["pr"], "ctx.query.rowKinds: the kinds kind: clauses allow");
+  assert.deepEqual(L.runQuery("kind:*;repo:acme/api", tix).res.rowKinds, L.QUERY_KINDS);
+  assert.equal(L.runQuery("repo:acme/api", tix).res.rowKinds, null, "no kind: clause");
 });
 
 test("table: column info names the scales", () => {
