@@ -1144,3 +1144,188 @@ async function timeGh103(tableURL) {
 }
 }
 // ---------- end gh-103 ----------
+
+// ---------- gh-105: the sprint view (web/live-sprint.js) ----------
+// The sprint view on the analysis fixture (--sprint) and on a snapshot
+// without [jira] board (--sprint-noboard): the header, bars and direct
+// labels, the selector and sprint= in the URL, every mismatch on its ticket
+// filtering when clicked, the points labels and segments filtering, dimming
+// and the hide toggle, shared selection, keyboard-only use, Copy as
+// Markdown as /api/extract?view=sprint serves it, and the explanation
+// without a board; then its timings on the --perf-table page. --set=sprint
+// shoots the view light and dark, then under each colour-vision-deficiency
+// simulation.
+{
+SHOT_SETS.sprint = [
+  ["sprint-light.png", "light", "#view=sprint"],
+  ["sprint-dark.png", "dark", "#view=sprint"],
+  ["sprint-query-light.png", "light", "#view=sprint&q=status_category:in_progress&sel=ticket:jira:TEAM-105"],
+  ["sprint-query-dark.png", "dark", "#view=sprint&q=mismatch:ticket_done_code_open&outside=hide"],
+  ["sprint-second-light.png", "light", "#view=sprint&sprint=1240"],
+  ["sprint-unknown-light.png", "light", "#view=sprint&sprint=999"],
+];
+for (const type of ["protanopia", "deuteranopia", "tritanopia", "achromatopsia"]) {
+  for (const scheme of ["light", "dark"]) SHOT_SETS.sprint.push(["sprint-" + type + "-" + scheme + ".png", scheme, "#view=sprint&q=status_category:in_progress", "cvd:" + type]);
+}
+SHOT_SETS.sprint.viewport = { width: 1400, height: 900 };
+SUITES.push({ name: "sprint view", flag: "sprint", checks: sprintChecks, perf: () => flag("--perf-table") ? timeSprint(flag("--perf-table")) : "", deadlineMs: 90000 });
+
+async function sprintChecks(sprintURL) {
+  const from = events.length, sprintNoBoardURL = flag("--sprint-noboard");
+  await send("Browser.grantPermissions", { origin: new URL(sprintURL).origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] }, null);
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: sprintURL + "#view=sprint" });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('.sv-head')", "the sprint view");
+  const q = () => evaluate("window.__wgoStore.query");
+  const text = (sel) => evaluate("(() => { const e = document.querySelector(" + JSON.stringify(sel) + "); return e ? e.textContent : null })()");
+  const rowsOf = () => evaluate("Array.from(document.querySelectorAll('.sv-table tr[data-id]')).map(tr => (tr.querySelector('td.nm a') || tr.querySelector('td.nm')).textContent.split(' ')[0] + (tr.classList.contains('out') ? ':out' : '') + (tr.classList.contains('sel') ? ':sel' : ''))");
+  const click = (sel) => evaluate("(() => { const e = document.querySelector(" + JSON.stringify(sel) + "); e.dispatchEvent(new MouseEvent('click', { bubbles: true })); return window.__wgoStore.query })()");
+  const active = () => evaluate("(() => { const a = document.activeElement; return a ? (a.dataset.k || a.tagName) : '' })()");
+
+  // The header, the bars and their direct labels.
+  check((await evaluate("Array.from(document.querySelectorAll('.view-tabs button')).map(b => b.textContent).join()")).includes("Sprint"), "the sprint view is a tab");
+  check((await text(".sv-head h2")) === "Sprint 12" && (await text(".sv-meta")) === "Sprint 1234 · board 42 · 2026-10-20 to 2026-11-03", "header: " + (await text(".sv-meta")));
+  check((await text(".sv-goal")) === "Ship token refresh and rate limits", "the goal verbatim");
+  check((await evaluate("document.querySelector('.sv-time').getAttribute('aria-label')")) === "Time: day 11 of 14; 74% of the sprint's time has passed" && (await text(".sv-row .sv-val")) === "day 11 of 14", "elapsed time");
+  check((await evaluate("getComputedStyle(document.querySelector('.sv-pts')).display")) === "flex", "the addon's stylesheet (live-sprint.css) applies under the CSP");
+  const labels = await evaluate("Array.from(document.querySelectorAll('.sv-plabels .plab')).map(b => b.textContent)");
+  check(labels.join("|") === "Done3 pts · 1 ticket|In Progress15 pts · 3 tickets|To Do0 pts · 2 tickets", "direct labels: " + labels.join("|"));
+  const placed = await evaluate("(() => { const bar = document.querySelector('.sv-pts').getBoundingClientRect(), segs = Array.from(document.querySelectorAll('.sv-pts .seg')).map(s => s.getBoundingClientRect()), ls = Array.from(document.querySelectorAll('.plab')).map(b => b.getBoundingClientRect()); return { placed: document.querySelector('.sv-plabels').classList.contains('placed'), ip: ls[1].left >= segs[1].left - 1 && ls[1].left < segs[1].right, overlap: ls[0].right > ls[1].left || ls[1].right > ls[2].left, inside: ls[2].right <= bar.right + 1 } })()");
+  check(placed.placed && placed.ip && !placed.overlap && placed.inside, "labels sit under their segments without overlapping: " + JSON.stringify(placed));
+  check((await text(".sv-apart")) === "Not in the points: 1 unestimated · 1 with points unknown", "unestimated counted apart from unknown: " + (await text(".sv-apart")));
+  check((await rowsOf()).join() === "TEAM-102,TEAM-101,TEAM-103,TEAM-105,TEAM-104,TEAM-106", "grouped by category, then assignee: " + (await rowsOf()));
+  const prs = await evaluate("Array.from(document.querySelectorAll('.sv-table tr[data-id=\"ticket:jira:TEAM-101\"] .pr')).map(s => s.textContent + '|' + s.title.split('\\n')[1])");
+  check(prs.join() === "○acme/api#101|Whose move: reviewer (bob),●acme/api#107|Whose move: none,○acme/web#201|Whose move: author (alice)" || prs.length === 3 && prs.every((p) => /^[○●]acme\/\w+#\d+\|Whose move: /.test(p)), "linked PR glyphs with whose move on hover: " + prs);
+
+  // The selector and sprint= in the URL; Back returns.
+  const picks = await evaluate("Array.from(document.querySelectorAll('.sv-pick button')).map(b => b.textContent + ':' + b.getAttribute('aria-pressed'))");
+  check(picks.join() === "Sprint 12 · 6 tickets:true,Web Sprint 4 · 1 ticket:false", "selector: " + picks);
+  await click(".sv-pick button[data-sprint='1240']");
+  check((await evaluate("location.hash")).includes("sprint=1240") && (await text(".sv-head h2")) === "Web Sprint 4", "choosing a sprint writes sprint= and shows it");
+  check((await text(".sv-goal")) === "no sprint goal" && (await evaluate("document.querySelector('.sv-goal').classList.contains('none')")), "a sprint without a goal says so");
+  // The fixture's in_progress_idle mismatch sits on TEAM-107 here.
+  check((await click(".sv-table tr[data-id='ticket:jira:TEAM-107'] .mmb[data-code='in_progress_idle']")) === "mismatch:in_progress_idle", "the idle mismatch filters");
+  await evaluate("window.__wgoStore.setQuery('', { commit: true })");
+  for (let i = 0; i < 3; i++) { await evaluate("history.back()"); await sleep(300); }
+  check(!(await evaluate("location.hash")).includes("sprint=") && (await text(".sv-head h2")) === "Sprint 12", "Back returns to the default sprint");
+
+  // Every gh-99 mismatch appears on its ticket and filters when clicked;
+  // tickets outside the query are dimmed, not hidden; a second click clears.
+  for (const [ticket, code] of [["TEAM-102", "ticket_done_code_open"], ["TEAM-103", "code_merged_ticket_open"], ["TEAM-105", "in_progress_no_code"], ["TEAM-106", "unassigned_in_sprint"]]) {
+    const sel = ".sv-table tr[data-id='ticket:jira:" + ticket + "'] .mmb[data-code='" + code + "']";
+    check((await evaluate("document.querySelectorAll(" + JSON.stringify(sel) + ").length")) === 1, code + " on " + ticket);
+    check((await click(sel)) === "mismatch:" + code, code + " applies mismatch:" + code);
+    const rows = await rowsOf();
+    check(rows.length === 6 && rows.filter((r) => r.endsWith(":out")).length === 5 && rows.includes(ticket), code + ": the sprint stays whole, the rest dimmed: " + rows);
+    check((await evaluate("document.querySelector(" + JSON.stringify(sel) + ").getAttribute('aria-pressed')")) === "true", code + " shows it is active");
+    check((await click(sel)) === "", code + " clicked again clears");
+  }
+
+  // Points labels and segments apply status_category:<c>, replacing each other.
+  check((await click(".plab[data-cat='in_progress']")) === "status_category:in_progress", "the In Progress label filters");
+  check((await rowsOf()).filter((r) => r.endsWith(":out")).length === 3, "To Do and Done dimmed");
+  check((await click(".sv-pts .seg[data-cat='done']")) === "status_category:done", "a segment replaces the clause");
+  check((await evaluate("document.querySelector('.sv-pts .seg.done').classList.contains('on') && document.querySelector('.plab.done').getAttribute('aria-pressed') === 'true'")), "the active part is marked");
+  // The toggle hides tickets outside the query, as URL state; Back undoes it.
+  check((await text(".sv-bar button")) === "Hide 5 tickets outside the query", "the toggle names what it hides");
+  await click(".sv-bar button");
+  check((await evaluate("location.hash")).includes("outside=hide") && (await rowsOf()).join() === "TEAM-102", "hidden: " + (await rowsOf()));
+  await evaluate("history.back()"); await sleep(300);
+  check((await rowsOf()).length === 6, "Back shows them dimmed again");
+  // A combination the query language refuses is shown here with its fix.
+  await evaluate("window.__wgoStore.setQuery('kind:pr', { commit: true })");
+  check((await click(".plab[data-cat='todo']")) === "kind:pr" && /leaves no rows/.test(await text(".sv-msg")), "an invalid click is explained, not applied: " + (await text(".sv-msg")));
+  await click(".sv-msg button");
+  check((await q()) === "status_category:todo", "its fix applies");
+  await evaluate("window.__wgoStore.setQuery('', { commit: true })");
+
+  // Selection is shared with every view.
+  await click(".sv-table tr[data-id='ticket:jira:TEAM-103'] td.st");
+  check((await evaluate("Array.from(window.__wgoStore.selection).join()")) === "ticket:jira:TEAM-103" && (await rowsOf()).includes("TEAM-103:sel"), "a row click selects");
+  await evaluate("window.__wgoStore.setState({ view: 'table' }, { commit: true })");
+  check((await evaluate("document.querySelectorAll('table.atable tr.sel').length")) === 1 && (await text(".detail h3")) === "TEAM-103", "the table and detail panel share the selection");
+  await evaluate("window.__wgoStore.setState({ view: 'sprint', sel: '' }, { commit: true })");
+
+  // Keyboard only: the picker, the points labels, the toggle, then the rows.
+  await evaluate("document.querySelector('.sv-pick button').focus()");
+  await key("Tab");
+  check((await active()) === "sprint:1240", "Tab moves along the picker: " + (await active()));
+  await key("Enter");
+  check((await text(".sv-head h2")) === "Web Sprint 4" && (await active()) === "sprint:1240", "Enter chooses; the focus stays: " + (await active()));
+  await key("Tab", true); await key("Enter");
+  check((await text(".sv-head h2")) === "Sprint 12", "Shift+Tab, Enter: back to Sprint 12");
+  await key("Tab"); await key("Tab"); await key("Tab");
+  check((await active()) === "cat:in_progress", "Tab reaches the points labels: " + (await active()));
+  await key("Enter");
+  check((await q()) === "status_category:in_progress" && (await active()) === "cat:in_progress", "Enter on a label filters and keeps the focus");
+  await key("Tab"); await key("Tab");
+  check((await active()) === "outside", "then the toggle: " + (await active()));
+  await key("Tab");
+  check((await active()) === "row:ticket:jira:TEAM-102", "then the table, one tab stop: " + (await active()));
+  await key("ArrowDown");
+  check((await active()) === "row:ticket:jira:TEAM-101" && (await evaluate("Array.from(window.__wgoStore.selection).join()")) === "ticket:jira:TEAM-101", "ArrowDown moves and selects");
+  await key("ArrowDown"); await key("ArrowDown", true);
+  await key("Enter", true);
+  check((await evaluate("Array.from(window.__wgoStore.selection).sort().join()")) === "ticket:jira:TEAM-103,ticket:jira:TEAM-105", "Shift+ArrowDown moves without selecting; Shift+Enter adds");
+  await key("Tab");
+  check((await active()) === "link:ticket:jira:TEAM-105", "Tab enters the focused row's links: " + (await active()));
+  await key("Tab");
+  check((await active()) === "mm:ticket:jira:TEAM-105:in_progress_no_code", "and its mismatch: " + (await active()));
+  await key("Enter");
+  check((await q()) === "status_category:in_progress;mismatch:in_progress_no_code" && (await active()) === "mm:ticket:jira:TEAM-105:in_progress_no_code", "Enter on a mismatch adds its clause; the focus stays: " + (await q()) + " " + (await active()));
+
+  // Copy as Markdown asks /api/extract for the sprint summary.
+  await send("Runtime.evaluate", { expression: "Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Copy as Markdown').click()", userGesture: true });
+  await waitFor("document.querySelector('.status').textContent.startsWith('Copied') || document.querySelector('.status').textContent.includes('failed') || !document.querySelector('.copyout').hidden", "the sprint copy");
+  const clip = await evaluate("navigator.clipboard.readText()", { userGesture: true });
+  const served = await evaluate("fetch('/api/extract?view=sprint&sprint=1234&q=' + encodeURIComponent('status_category:in_progress;mismatch:in_progress_no_code')).then(r => r.text())");
+  check(clip === served && clip.startsWith("## Sprint 12\n") && clip.includes("Query: `status_category:in_progress;mismatch:in_progress_no_code`") && clip.includes("· sprint 1234 on board 42"), "the copy is the sprint summary: " + clip.slice(0, 160));
+  await evaluate("window.__wgoStore.setState({ sprint: '999' }, { commit: true })");
+  check(/No sprint 999 in this snapshot; the active sprints are 1234 \(Sprint 12\), 1240 \(Web Sprint 4\)/.test(await text(".sv-gap")), "an unknown sprint= names the active sprints");
+
+  // Without a [jira] board the view explains what to configure.
+  if (sprintNoBoardURL) {
+    await send("Page.navigate", { url: "about:blank" });
+    await send("Page.navigate", { url: sprintNoBoardURL + "#view=sprint" });
+    await waitFor("!!document.querySelector('.sv-gap')", "the no-board explanation");
+    check((await text(".sv-gap h2")) === "No sprint to show: No [jira] board is configured" && (await text(".sv-gap pre code")) === "[jira]\nboard = <id>", "no board: " + (await text(".sv-gap")));
+  }
+  const problems = events.slice(from).filter((e) => (e.method === "Log.entryAdded" && e.params.entry.level === "error" && !/\/favicon\.ico$/.test(e.params.entry.url || "")) || e.method === "Runtime.exceptionThrown")
+    .map((e) => e.method === "Runtime.exceptionThrown" ? e.params.exceptionDetails.text + " " + ((e.params.exceptionDetails.exception || {}).description || "") : e.params.entry.text + " " + (e.params.entry.url || ""));
+  check(problems.length === 0, "sprint view console errors: " + problems.join(" | "));
+}
+
+// timeSprint times the sprint view on the analysis fixture scaled to 2,000
+// nodes, whose copies of Sprint 12 make one sprint of about 250 tickets
+// (median of 7, synchronous and to the next frame): showing it, a points
+// click, a mismatch click and a selection.
+async function timeSprint(tableURL) {
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: tableURL + "#view=graph" });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the scaled analysis fixture");
+  await sleep(1500);
+  const r = await evaluate(`(async () => {
+    const s = window.__wgoStore, frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    const med = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1], out = {};
+    const time = async (name, a, b) => {
+      const sync = [], to = [];
+      for (let i = 0; i < 7; i++) {
+        const t0 = performance.now(); a(); const t1 = performance.now(); await frame(); sync.push(t1 - t0); to.push(performance.now() - t0);
+        b(); await frame();
+      }
+      out[name] = med(sync).toFixed(1) + " ms (" + med(to).toFixed(1) + " to frame)";
+    };
+    await time("show", () => s.setState({ view: "sprint" }, { commit: true }), () => s.setState({ view: "graph" }, { commit: true }));
+    s.setState({ view: "sprint" }, { commit: true }); await frame();
+    out.rows = document.querySelectorAll(".sv-table tr[data-id]").length;
+    await time("cat", () => document.querySelector(".plab[data-cat='in_progress']").click(), () => s.setQuery("", { commit: true }));
+    await time("mm", () => document.querySelector(".mmb[data-code='ticket_done_code_open']").click(), () => s.setQuery("", { commit: true }));
+    const ids = Array.from(document.querySelectorAll(".sv-table tr[data-id]")).map((tr) => tr.dataset.id);
+    await time("select", () => s.select([ids[5]], false), () => s.clear());
+    return out;
+  })()`);
+  check(r.rows >= 200, "the scaled sprint has its tickets: " + r.rows);
+  return "sprint view on the scaled analysis fixture (" + r.rows + " tickets in one sprint): show " + r.show + ", points click " + r.cat + ", mismatch click " + r.mm + ", select " + r.select;
+}
+}
+// ---------- end gh-105 ----------
