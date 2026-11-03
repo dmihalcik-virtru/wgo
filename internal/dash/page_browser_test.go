@@ -42,7 +42,10 @@ func (noAck) Acknowledge(uint64) error { return nil }
 // reload, kind: rows, the context toggle, row keys and hover), and Copy as
 // Markdown under the page's CSP, with no console errors; then it times
 // filter changes on a 2,000-node snapshot, and the table on the analysis
-// fixture scaled to 2,000 nodes. It needs node and Chrome,
+// fixture scaled to 2,000 nodes; and the linked filters (gh-102) on the
+// analysis fixture — facet gestures by pointer and keyboard, the brushable
+// when chart, the attention summary, saved filter chips — and their latency
+// on the scaled fixture. It needs node and Chrome,
 // so it runs only when WGO_BROWSER_TESTS is set; WGO_CHROME names the
 // browser and WGO_SHOTS a directory for light and dark screenshots.
 // WGO_SHOT_SET selects a view's screenshot set; WGO_SHOTS_ONLY skips the
@@ -99,7 +102,13 @@ func TestLivePageInBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	table := newServerOpts(t, HandlerOptions{Source: StaticSource{V: scaledView}})
-	args := []string{filepath.Join("testdata", "live_browser.js"), chrome, srv.URL + "/", "--perf=" + perf.URL + "/", "--perf-table=" + table.URL + "/"}
+	// The analysis fixture as it is, for the linked filters (gh-102).
+	fixture, err := LoadFixture(analysisFixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facets := newServerOpts(t, HandlerOptions{Source: StaticSource{V: fixture}})
+	args := []string{filepath.Join("testdata", "live_browser.js"), chrome, srv.URL + "/", "--perf=" + perf.URL + "/", "--perf-table=" + table.URL + "/", "--facets=" + facets.URL + "/"}
 	if dir := os.Getenv("WGO_SHOTS"); dir != "" {
 		// Screenshot sets describe the analysis fixture, not the small
 		// query-vector page used by the core interaction checks.

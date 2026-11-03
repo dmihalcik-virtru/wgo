@@ -59,6 +59,11 @@ type HandlerOptions struct {
 	// Filters are the saved filters ([dash.filters] merged over the
 	// built-ins); nil means the built-ins alone.
 	Filters []SavedFilter
+	// Facets are the facet panel's fields ([dash] facets resolved by
+	// ResolveFacets), and FacetNotes the names it left out; nil Facets
+	// means DefaultFacets.
+	Facets     []string
+	FacetNotes []string
 	// Addons and AddonStyles replace the live page's addon scripts and
 	// stylesheets (liveAddons) when Addons is non-nil, read from AddonFS
 	// when set instead of the embedded files. Tests use them.
@@ -114,10 +119,13 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	if opts.Filters == nil {
 		opts.Filters = MergeFilters(nil, Fields())
 	}
+	if opts.Facets == nil {
+		opts.Facets, _ = ResolveFacets(nil, Fields())
+	}
 	s := &server{opts: opts}
 	reg := Fields().JSON()
 	s.boot = liveBoot{Mode: string(review.ModeLive), API: "/api/snapshot", PollMS: opts.PollInterval.Milliseconds(),
-		Fields: &reg, Filters: opts.Filters, Extract: ExtractPath}
+		Fields: &reg, Filters: opts.Filters, Extract: ExtractPath, Facets: opts.Facets, FacetNotes: opts.FacetNotes}
 	if opts.Reviews != nil {
 		s.boot.Links = "/api/review-links"
 	}

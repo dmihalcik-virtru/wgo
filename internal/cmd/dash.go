@@ -214,6 +214,12 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 			fmt.Fprintf(os.Stderr, "wgo dash: saved filter %s is unavailable: %s\n", f.Name, f.Reason)
 		}
 	}
+	facets, facetNotes := dash.ResolveFacets(cfg.Dash.Facets, dash.Fields())
+	if serving {
+		for _, n := range facetNotes {
+			fmt.Fprintf(os.Stderr, "wgo dash: %s\n", n)
+		}
+	}
 	expr, hasQuery, err := dashQueryExpr(filters, flagChanged)
 	if err != nil {
 		return err
@@ -261,7 +267,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		// A fixture is served as it is: no collection, refresh or actions.
-		return serveDash(ctx, out, ln, dashServer{source: dash.StaticSource{V: v}, open: !dashNoOpen, filters: filters, hash: hash})
+		return serveDash(ctx, out, ln, dashServer{source: dash.StaticSource{V: v}, open: !dashNoOpen, filters: filters, facets: facets, facetNotes: facetNotes, hash: hash})
 	}
 	st, err := store.New()
 	if err != nil {
@@ -343,6 +349,8 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 					return readOnly.NearestBookmark(root)
 				},
 			},
+			facets:     facets,
+			facetNotes: facetNotes,
 		})
 	}
 	if dashRefresh {
@@ -727,6 +735,10 @@ type dashServer struct {
 	// the URL opened and printed (#q=… for --query).
 	filters []dash.SavedFilter
 	hash    string
+	// facets are the facet panel's fields and facetNotes what [dash]
+	// facets named that could not be one.
+	facets     []string
+	facetNotes []string
 }
 
 // prefixLogf logs "wgo dash: ..." lines to w.
@@ -755,6 +767,9 @@ func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServe
 		Ack:     ds.ack,
 		Logf:    logf,
 		Filters: ds.filters,
+		Facets:  ds.facets,
+		// The page shows these beside the facets; serving printed them.
+		FacetNotes: ds.facetNotes,
 	})
 	if err != nil {
 		ln.Close()
