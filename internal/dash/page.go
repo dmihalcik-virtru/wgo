@@ -78,6 +78,8 @@ var liveAddons = []liveAddon{
 	// gh-103: the scatterplot of PRs and the CI grid.
 	{Script: "web/live-scatter.js", Style: "web/live-scatter.css"},
 	{Script: "web/live-cigrid.js", Style: "web/live-cigrid.css"},
+	// gh-105: the sprint view.
+	{Script: "web/live-sprint.js", Style: "web/live-sprint.css"},
 }
 
 // liveAddonFiles returns the addons' scripts and stylesheets, in order.
