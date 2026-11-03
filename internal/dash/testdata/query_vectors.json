@@ -1,0 +1,1910 @@
+{
+ "description": "Shared query vectors for wgo dash (spec/gh-100.md). internal/dash/query_test.go runs them in Go and internal/review/testdata/live_logic.js runs them in node; both must pass. Expectations list node IDs sorted; 'visible' is 'all' when the query does not filter the graph. 'error' must appear in the message, 'pos' is the 1-based column and 'fixed' the suggested expression. A case with 'base': true uses the canonical registry alone; 'env' replaces snapshot fields before indexing; 'preset' names the built-in saved filter whose expression 'query' must equal.",
+ "fields_note": "fields are test-only registrations of the catalogue fields gh-97, gh-98 and gh-99 register when they land (paths follow those specs' JSON shapes), plus requested_count to exercise the count derive. They replace registry fields of the same name for these vectors; drop an entry once the real registry carries it.",
+ "snapshot": {
+  "schema": 1,
+  "generation": 7,
+  "generated_at": "2026-10-20T15:00:00-04:00",
+  "days": 14,
+  "timezone": "America/New_York",
+  "sources": {
+   "agents": {
+    "state": "fresh",
+    "fresh": 2
+   },
+   "github_issues": {
+    "state": "unknown",
+    "unknown": 1
+   },
+   "github_prs": {
+    "state": "stale",
+    "fresh": 3,
+    "stale": 2,
+    "oldest_fetch": "2026-10-20T09:00:00-04:00"
+   },
+   "jira": {
+    "state": "stale",
+    "fresh": 2,
+    "stale": 1
+   },
+   "jj": {
+    "state": "fresh",
+    "fresh": 4,
+    "error": 1
+   }
+  },
+  "nodes": [
+   {
+    "id": "effort:api-widgets",
+    "kind": "effort",
+    "label": "API widgets",
+    "effort": {
+     "key": "api-widgets",
+     "group": "effort",
+     "description": "Widget endpoints for the API",
+     "source": "plan"
+    }
+   },
+   {
+    "id": "effort:ticket-team-7",
+    "kind": "effort",
+    "label": "TEAM-7",
+    "effort": {
+     "key": "ticket-team-7",
+     "group": "ticket"
+    }
+   },
+   {
+    "id": "effort:ungrouped",
+    "kind": "effort",
+    "label": "Ungrouped",
+    "effort": {
+     "key": "ungrouped",
+     "group": "ungrouped"
+    }
+   },
+   {
+    "id": "ws-0000000000000001",
+    "kind": "workspace",
+    "label": "api/team-123-widgets",
+    "workspace": {
+     "slug": "team-123-widgets",
+     "repo": "api",
+     "path": "/src/worktrees/team-123-widgets",
+     "main_clone": "/src/api",
+     "effort_id": "effort:api-widgets",
+     "repo_slug": "acme/api",
+     "bookmark": "team-123-widgets",
+     "last_activity": "2026-10-19T10:00:00-04:00"
+    }
+   },
+   {
+    "id": "ws-0000000000000002",
+    "kind": "workspace",
+    "label": "web/web-spike",
+    "workspace": {
+     "slug": "web-spike",
+     "repo": "web",
+     "path": "/src/worktrees/web-spike",
+     "main_clone": "/src/web",
+     "effort_id": "effort:ungrouped",
+     "repo_slug": "acme/web",
+     "bookmark": "web-spike",
+     "last_activity": "2026-09-30T10:00:00-04:00"
+    }
+   },
+   {
+    "id": "ws-0000000000000003",
+    "kind": "workspace",
+    "label": "api/team-7-fix",
+    "workspace": {
+     "slug": "team-7-fix",
+     "repo": "api",
+     "path": "/src/worktrees/team-7-fix",
+     "main_clone": "/src/api",
+     "effort_id": "effort:ticket-team-7",
+     "repo_slug": "acme/api",
+     "bookmark": "team-7-fix",
+     "last_activity": "2026-10-08T17:00:00-04:00"
+    }
+   },
+   {
+    "id": "ws-0000000000000004",
+    "kind": "workspace",
+    "label": "notes",
+    "workspace": {
+     "slug": "notes",
+     "repo": "notes",
+     "path": "/src/worktrees/notes",
+     "main_clone": "/src/notes",
+     "effort_id": "effort:ungrouped",
+     "error": "repository is locked"
+    }
+   },
+   {
+    "id": "ws-0000000000000005",
+    "kind": "workspace",
+    "label": "web/web-review",
+    "workspace": {
+     "slug": "web-review",
+     "repo": "web",
+     "path": "/src/worktrees/web-review",
+     "main_clone": "/src/web",
+     "effort_id": "effort:ungrouped",
+     "repo_slug": "acme/web",
+     "bookmark": "web-review",
+     "last_activity": "2026-10-16T09:00:00-04:00"
+    }
+   },
+   {
+    "id": "bm-0000000000000001",
+    "kind": "bookmark",
+    "label": "team-123-widgets",
+    "bookmark": {
+     "name": "team-123-widgets",
+     "repo": "api",
+     "repo_slug": "acme/api",
+     "pr_lookup": "fresh",
+     "pr_fetched_at": "2026-10-20T14:58:00-04:00",
+     "pr_count": 3
+    }
+   },
+   {
+    "id": "bm-0000000000000002",
+    "kind": "bookmark",
+    "label": "web-spike",
+    "bookmark": {
+     "name": "web-spike",
+     "repo": "web",
+     "repo_slug": "acme/web",
+     "pr_lookup": "fresh",
+     "pr_fetched_at": "2026-10-20T14:58:00-04:00",
+     "pr_count": 0
+    }
+   },
+   {
+    "id": "bm-0000000000000003",
+    "kind": "bookmark",
+    "label": "team-7-fix",
+    "bookmark": {
+     "name": "team-7-fix",
+     "repo": "api",
+     "repo_slug": "acme/api",
+     "pr_lookup": "unknown",
+     "pr_count": 0
+    }
+   },
+   {
+    "id": "bm-0000000000000004",
+    "kind": "bookmark",
+    "label": "web-review",
+    "bookmark": {
+     "name": "web-review",
+     "repo": "web",
+     "repo_slug": "acme/web",
+     "pr_lookup": "stale",
+     "pr_fetched_at": "2026-10-20T09:00:00-04:00",
+     "pr_count": 2
+    }
+   },
+   {
+    "id": "pr:acme/api#41",
+    "kind": "pr",
+    "label": "acme/api#41",
+    "pr": {
+     "number": 41,
+     "repo": "acme/api",
+     "url": "https://github.com/acme/api/pull/41",
+     "title": "Add widget endpoints",
+     "state": "open",
+     "checks": "failure",
+     "requested_reviewers": ["bob"],
+     "reviewers_known": true,
+     "updated_at": "2026-10-19T12:00:00-04:00",
+     "freshness": "fresh",
+     "bookmark_id": "bm-0000000000000001",
+     "author": "alice",
+     "mergeable": "mergeable",
+     "check_details": [
+      {
+       "name": "vendor-hsm-tests",
+       "state": "failure"
+      },
+      {
+       "name": "lint",
+       "state": "success"
+      }
+     ],
+     "facts": {
+      "stale": false
+     }
+    }
+   },
+   {
+    "id": "pr:acme/api#42",
+    "kind": "pr",
+    "label": "acme/api#42",
+    "pr": {
+     "number": 42,
+     "repo": "acme/api",
+     "url": "https://github.com/acme/api/pull/42",
+     "title": "Widget pagination (WIP)",
+     "state": "open",
+     "is_draft": true,
+     "checks": "pending",
+     "reviewers_known": false,
+     "updated_at": "2026-10-18T09:00:00-04:00",
+     "freshness": "fresh",
+     "bookmark_id": "bm-0000000000000001",
+     "author": "alice",
+     "mergeable": "unknown",
+     "facts": {
+      "stale": true
+     }
+    }
+   },
+   {
+    "id": "pr:acme/api#38",
+    "kind": "pr",
+    "label": "acme/api#38",
+    "pr": {
+     "number": 38,
+     "repo": "acme/api",
+     "url": "https://github.com/acme/api/pull/38",
+     "title": "Widget schema",
+     "state": "merged",
+     "review_decision": "APPROVED",
+     "checks": "success",
+     "requested_reviewers": [],
+     "reviewers_known": true,
+     "updated_at": "2026-10-19T08:00:00-04:00",
+     "merged_at": "2026-10-07T16:00:00-04:00",
+     "freshness": "stale",
+     "bookmark_id": "bm-0000000000000001",
+     "author": "alice"
+    }
+   },
+   {
+    "id": "pr:acme/web#12",
+    "kind": "pr",
+    "label": "acme/web#12",
+    "pr": {
+     "number": 12,
+     "repo": "acme/web",
+     "url": "https://github.com/acme/web/pull/12",
+     "title": "Theme tokens for the web app",
+     "state": "open",
+     "review_decision": "REVIEW_REQUIRED",
+     "checks": "success",
+     "requested_reviewers": ["team:web"],
+     "reviewers_known": true,
+     "updated_at": "2026-10-16T11:00:00-04:00",
+     "freshness": "fresh",
+     "bookmark_id": "bm-0000000000000004",
+     "author": "bob",
+     "mergeable": "conflicting",
+     "review_requests": [
+      {
+       "reviewer": "team:web",
+       "kind": "team"
+      }
+     ],
+     "involvement": [
+      {
+       "person": "bob",
+       "role": "author"
+      },
+      {
+       "person": "alice",
+       "role": "review_requested"
+      }
+     ],
+     "check_details": [
+      {
+       "name": "lint",
+       "state": "success"
+      }
+     ],
+     "facts": {
+      "move": "reviewer",
+      "move_people": ["team:web", "alice"],
+      "stale": false
+     }
+    }
+   },
+   {
+    "id": "pr:acme/web#9",
+    "kind": "pr",
+    "label": "acme/web#9",
+    "pr": {
+     "number": 9,
+     "repo": "acme/web",
+     "url": "https://github.com/acme/web/pull/9",
+     "title": "Old spike",
+     "state": "closed",
+     "review_decision": "CHANGES_REQUESTED",
+     "reviewers_known": true,
+     "updated_at": "2026-10-09T10:00:00-04:00",
+     "closed_at": "2026-10-09T10:00:00-04:00",
+     "freshness": "stale",
+     "bookmark_id": "bm-0000000000000004",
+     "author": "bob"
+    }
+   },
+   {
+    "id": "ticket:jira:TEAM-123",
+    "kind": "ticket",
+    "label": "TEAM-123",
+    "ticket": {
+     "key": "TEAM-123",
+     "system": "jira",
+     "status": "In Progress",
+     "title": "Widget endpoints",
+     "url": "https://example.atlassian.net/browse/TEAM-123",
+     "assignee": "Alice",
+     "freshness": "fresh",
+     "status_category": "in_progress",
+     "story_points": 5,
+     "updated_at": "2026-10-17T09:00:00-04:00"
+    }
+   },
+   {
+    "id": "ticket:jira:TEAM-7",
+    "kind": "ticket",
+    "label": "TEAM-7",
+    "ticket": {
+     "key": "TEAM-7",
+     "system": "jira",
+     "status": "Done",
+     "title": "Fix flaky export",
+     "url": "https://example.atlassian.net/browse/TEAM-7",
+     "freshness": "stale",
+     "status_category": "done",
+     "story_points": 3,
+     "resolved_at": "2026-10-12T00:30:00-04:00",
+     "updated_at": "2026-10-19T09:00:00-04:00"
+    }
+   },
+   {
+    "id": "ticket:gh:acme/web#5",
+    "kind": "ticket",
+    "label": "acme/web#5",
+    "ticket": {
+     "key": "gh-5",
+     "system": "github",
+     "url": "https://github.com/acme/web/issues/5",
+     "freshness": "unknown"
+    }
+   },
+   {
+    "id": "ticket:jira:TEAM-99",
+    "kind": "ticket",
+    "label": "TEAM-99",
+    "ticket": {
+     "key": "TEAM-99",
+     "system": "jira",
+     "status": "To Do",
+     "title": "Widget docs",
+     "url": "https://example.atlassian.net/browse/TEAM-99",
+     "assignee": "Bob",
+     "freshness": "fresh",
+     "status_category": "todo",
+     "updated_at": "2026-10-02T09:00:00-04:00"
+    }
+   },
+   {
+    "id": "agent:claude-1",
+    "kind": "agent",
+    "label": "claude",
+    "agent": {
+     "session_id": "claude-1",
+     "tool": "claude",
+     "status": "working",
+     "liveness": "active",
+     "branch": "team-123-widgets",
+     "path": "/src/worktrees/team-123-widgets",
+     "workspace_id": "ws-0000000000000001",
+     "last_activity": "2026-10-20T14:50:00-04:00",
+     "effort_id": "effort:api-widgets"
+    }
+   },
+   {
+    "id": "agent:codex-2",
+    "kind": "agent",
+    "label": "codex",
+    "agent": {
+     "session_id": "codex-2",
+     "tool": "codex",
+     "status": "waiting",
+     "liveness": "uncertain",
+     "branch": "web-spike",
+     "path": "/src/worktrees/web-spike",
+     "workspace_id": "ws-0000000000000002",
+     "last_activity": "2026-10-18T10:00:00-04:00",
+     "effort_id": "effort:ungrouped"
+    }
+   }
+  ],
+  "edges": [
+   {
+    "source": "effort:api-widgets",
+    "target": "ws-0000000000000001",
+    "kind": "contains"
+   },
+   {
+    "source": "effort:ticket-team-7",
+    "target": "ws-0000000000000003",
+    "kind": "contains"
+   },
+   {
+    "source": "effort:ungrouped",
+    "target": "ws-0000000000000002",
+    "kind": "contains"
+   },
+   {
+    "source": "effort:ungrouped",
+    "target": "ws-0000000000000004",
+    "kind": "contains"
+   },
+   {
+    "source": "effort:ungrouped",
+    "target": "ws-0000000000000005",
+    "kind": "contains"
+   },
+   {
+    "source": "ws-0000000000000001",
+    "target": "bm-0000000000000001",
+    "kind": "on"
+   },
+   {
+    "source": "ws-0000000000000002",
+    "target": "bm-0000000000000002",
+    "kind": "on"
+   },
+   {
+    "source": "ws-0000000000000003",
+    "target": "bm-0000000000000003",
+    "kind": "on"
+   },
+   {
+    "source": "ws-0000000000000005",
+    "target": "bm-0000000000000004",
+    "kind": "on"
+   },
+   {
+    "source": "bm-0000000000000001",
+    "target": "pr:acme/api#41",
+    "kind": "pr"
+   },
+   {
+    "source": "bm-0000000000000001",
+    "target": "pr:acme/api#42",
+    "kind": "pr"
+   },
+   {
+    "source": "bm-0000000000000001",
+    "target": "pr:acme/api#38",
+    "kind": "pr"
+   },
+   {
+    "source": "bm-0000000000000004",
+    "target": "pr:acme/web#12",
+    "kind": "pr"
+   },
+   {
+    "source": "bm-0000000000000004",
+    "target": "pr:acme/web#9",
+    "kind": "pr"
+   },
+   {
+    "source": "pr:acme/api#41",
+    "target": "ticket:jira:TEAM-123",
+    "kind": "ticket"
+   },
+   {
+    "source": "pr:acme/api#42",
+    "target": "ticket:jira:TEAM-123",
+    "kind": "ticket"
+   },
+   {
+    "source": "pr:acme/api#38",
+    "target": "ticket:jira:TEAM-123",
+    "kind": "ticket"
+   },
+   {
+    "source": "bm-0000000000000003",
+    "target": "ticket:jira:TEAM-7",
+    "kind": "ticket"
+   },
+   {
+    "source": "pr:acme/web#12",
+    "target": "ticket:gh:acme/web#5",
+    "kind": "ticket"
+   },
+   {
+    "source": "effort:api-widgets",
+    "target": "agent:claude-1",
+    "kind": "runs"
+   },
+   {
+    "source": "effort:ungrouped",
+    "target": "agent:codex-2",
+    "kind": "runs"
+   },
+   {
+    "source": "agent:claude-1",
+    "target": "ws-0000000000000001",
+    "kind": "works_in"
+   },
+   {
+    "source": "agent:codex-2",
+    "target": "ws-0000000000000002",
+    "kind": "works_in"
+   }
+  ],
+  "counts": {
+   "days": ["2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18", "2026-10-19", "2026-10-20"],
+   "activity": {
+    "effort:api-widgets": [0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0],
+    "effort:ticket-team-7": [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "effort:ungrouped": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+   },
+   "pr_states": {
+    "effort:api-widgets": {
+     "open": 1,
+     "draft": 1,
+     "merged": 1
+    },
+    "effort:ticket-team-7": {
+     "unknown": 1
+    },
+    "effort:ungrouped": {
+     "none": 1,
+     "open": 1,
+     "closed": 1
+    }
+   },
+   "agents": {
+    "effort:api-widgets": {
+     "active": 1
+    },
+    "effort:ungrouped": {
+     "uncertain": 1
+    }
+   }
+  },
+  "diagnostics": ["jj failed in /src/notes: repository is locked"],
+  "people": [
+   {
+    "login": "alice",
+    "jira": "alice@example.com",
+    "name": "Alice",
+    "me": true
+   },
+   {
+    "login": "bob",
+    "name": "Bob"
+   }
+  ]
+ },
+ "fields": [
+  {
+   "name": "author",
+   "label": "Author",
+   "type": "enum",
+   "kinds": ["pr"],
+   "paths": ["pr.author"]
+  },
+  {
+   "name": "requested_from",
+   "label": "Review requested from",
+   "type": "set",
+   "kinds": ["pr"],
+   "paths": ["pr[reviewers_known=true].requested_reviewers", "pr.review_requests.reviewer", "pr.involvement[role=review_requested].person"]
+  },
+  {
+   "name": "reviewed_by",
+   "label": "Reviewed by",
+   "type": "set",
+   "kinds": ["pr"],
+   "paths": ["pr.reviews.author"]
+  },
+  {
+   "name": "reviewer",
+   "label": "Reviewer",
+   "type": "set",
+   "kinds": ["pr"],
+   "paths": ["pr[reviewers_known=true].requested_reviewers", "pr.review_requests.reviewer", "pr.involvement[role=review_requested].person", "pr.reviews.author"]
+  },
+  {
+   "name": "created",
+   "label": "Created",
+   "type": "date",
+   "kinds": ["pr"],
+   "paths": ["pr.created_at"],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "merged",
+   "label": "Merged",
+   "type": "date",
+   "kinds": ["pr"],
+   "paths": ["pr.merged_at"],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "closed",
+   "label": "Closed",
+   "type": "date",
+   "kinds": ["pr"],
+   "paths": ["pr.closed_at"],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "updated",
+   "label": "Updated",
+   "type": "date",
+   "kinds": ["pr"],
+   "paths": ["pr.updated_at"],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "ready",
+   "label": "Ready for review",
+   "type": "date",
+   "kinds": ["pr"],
+   "paths": ["pr.ready_at"],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "age",
+   "label": "Age",
+   "type": "duration",
+   "kinds": ["pr"],
+   "paths": ["pr.created_at"],
+   "derive": "days_since",
+   "unit": "days",
+   "scale": "log"
+  },
+  {
+   "name": "updated_ago",
+   "label": "Since update",
+   "type": "duration",
+   "kinds": ["pr"],
+   "paths": ["pr.updated_at"],
+   "derive": "days_since",
+   "unit": "days",
+   "scale": "log"
+  },
+  {
+   "name": "additions",
+   "label": "Additions",
+   "type": "number",
+   "kinds": ["pr"],
+   "paths": ["pr.additions"],
+   "unit": "lines",
+   "scale": "log"
+  },
+  {
+   "name": "deletions",
+   "label": "Deletions",
+   "type": "number",
+   "kinds": ["pr"],
+   "paths": ["pr.deletions"],
+   "unit": "lines",
+   "scale": "log"
+  },
+  {
+   "name": "files",
+   "label": "Files changed",
+   "type": "number",
+   "kinds": ["pr"],
+   "paths": ["pr.changed_files"],
+   "unit": "files",
+   "scale": "log"
+  },
+  {
+   "name": "mergeable",
+   "label": "Mergeable",
+   "type": "enum",
+   "kinds": ["pr"],
+   "paths": ["pr.mergeable"],
+   "values": ["mergeable", "conflicting", "unknown"]
+  },
+  {
+   "name": "check_failing",
+   "label": "Failing checks",
+   "type": "set",
+   "kinds": ["pr"],
+   "paths": ["pr.check_details[state=failure].name"]
+  },
+  {
+   "name": "ticket",
+   "label": "Tickets",
+   "type": "set",
+   "kinds": ["pr"],
+   "paths": ["pr.ticket_keys"]
+  },
+  {
+   "name": "source",
+   "label": "Found through",
+   "type": "set",
+   "kinds": ["pr"],
+   "paths": ["pr.sources"],
+   "values": ["bookmark", "inventory"]
+  },
+  {
+   "name": "status_category",
+   "label": "Status category",
+   "type": "enum",
+   "kinds": ["ticket"],
+   "paths": ["ticket.status_category"],
+   "values": ["todo", "in_progress", "done"]
+  },
+  {
+   "name": "sprint",
+   "label": "Sprint",
+   "type": "set",
+   "kinds": ["ticket"],
+   "paths": ["ticket.sprints.id", "ticket.sprints.name"]
+  },
+  {
+   "name": "sprint_state",
+   "label": "Sprint state",
+   "type": "set",
+   "kinds": ["ticket"],
+   "paths": ["ticket.sprints.state"],
+   "values": ["active", "future", "closed"]
+  },
+  {
+   "name": "points",
+   "label": "Story points",
+   "type": "number",
+   "kinds": ["ticket"],
+   "paths": ["ticket.story_points"],
+   "unit": "points",
+   "scale": "linear"
+  },
+  {
+   "name": "epic",
+   "label": "Epic",
+   "type": "enum",
+   "kinds": ["ticket"],
+   "paths": ["ticket.parent.key"]
+  },
+  {
+   "name": "team",
+   "label": "Team",
+   "type": "enum",
+   "kinds": ["ticket"],
+   "paths": ["ticket.team"]
+  },
+  {
+   "name": "type",
+   "label": "Type",
+   "type": "enum",
+   "kinds": ["ticket"],
+   "paths": ["ticket.type"]
+  },
+  {
+   "name": "priority",
+   "label": "Priority",
+   "type": "enum",
+   "kinds": ["ticket"],
+   "paths": ["ticket.priority"]
+  },
+  {
+   "name": "component",
+   "label": "Components",
+   "type": "set",
+   "kinds": ["ticket"],
+   "paths": ["ticket.components"]
+  },
+  {
+   "name": "label",
+   "label": "Labels",
+   "type": "set",
+   "kinds": ["ticket"],
+   "paths": ["ticket.labels"]
+  },
+  {
+   "name": "resolved",
+   "label": "Resolved",
+   "type": "date",
+   "kinds": ["ticket"],
+   "paths": ["ticket.resolved_at"],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "move",
+   "label": "Whose move",
+   "type": "enum",
+   "kinds": ["pr"],
+   "paths": ["pr.facts.move"],
+   "values": ["author", "reviewer", "nobody", "none", "unknown"]
+  },
+  {
+   "name": "move_people",
+   "label": "Move held by",
+   "type": "set",
+   "kinds": ["pr"],
+   "paths": ["pr.facts.move_people"]
+  },
+  {
+   "name": "waiting_on",
+   "label": "Waiting on",
+   "type": "set",
+   "kinds": ["pr"],
+   "paths": ["pr.facts.waiting_on"]
+  },
+  {
+   "name": "reason",
+   "label": "Reasons",
+   "type": "set",
+   "kinds": ["pr"],
+   "paths": ["pr.facts.reasons"]
+  },
+  {
+   "name": "waiting",
+   "label": "Waiting",
+   "type": "duration",
+   "kinds": ["pr"],
+   "paths": ["pr.facts.waiting_since"],
+   "derive": "days_since",
+   "unit": "days",
+   "scale": "log"
+  },
+  {
+   "name": "ci",
+   "label": "CI",
+   "type": "enum",
+   "kinds": ["pr"],
+   "paths": ["pr.facts.ci"],
+   "values": ["green", "failing", "systemic_only", "pending", "none", "unknown"]
+  },
+  {
+   "name": "size",
+   "label": "Size",
+   "type": "number",
+   "kinds": ["pr"],
+   "paths": ["pr.facts.size"],
+   "unit": "lines",
+   "scale": "log"
+  },
+  {
+   "name": "size_bucket",
+   "label": "Size bucket",
+   "type": "enum",
+   "kinds": ["pr"],
+   "paths": ["pr.facts.size_bucket"],
+   "values": ["xs", "s", "m", "l", "xl"]
+  },
+  {
+   "name": "stale",
+   "label": "Stale",
+   "type": "bool",
+   "kinds": ["pr"],
+   "paths": ["pr.facts.stale"]
+  },
+  {
+   "name": "mismatch",
+   "label": "Jira mismatch",
+   "type": "set",
+   "kinds": ["ticket"],
+   "paths": ["ticket.facts.mismatches"]
+  },
+  {
+   "name": "linked_prs",
+   "label": "Linked PRs",
+   "type": "set",
+   "kinds": ["ticket"],
+   "paths": ["ticket.facts.linked_prs.state"],
+   "values": ["draft", "open", "approved", "merged", "closed"]
+  },
+  {
+   "name": "when",
+   "label": "When",
+   "type": "date",
+   "kinds": ["effort", "workspace", "pr", "ticket"],
+   "paths": ["pr[state=merged].merged_at", "pr[state=closed].closed_at", "pr[state=open].updated_at", "ticket.resolved_at", "ticket[!resolved_at].updated_at"],
+   "derive": "activity_days",
+   "derive_kinds": ["effort", "workspace"],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "requested_count",
+   "label": "Requested reviewers (test-only count)",
+   "type": "number",
+   "kinds": ["pr"],
+   "paths": ["pr[reviewers_known=true].requested_reviewers"],
+   "derive": "count",
+   "unit": "reviewers",
+   "scale": "linear"
+  }
+ ],
+ "cases": [
+  {
+   "name": "empty query matches everything and filters nothing",
+   "query": "",
+   "expect": {
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "visible": "all"
+   }
+  },
+  {
+   "name": "kind restricts rows, not matches",
+   "query": "kind:pr",
+   "expect": {
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"],
+    "visible": "all"
+   }
+  },
+  {
+   "name": "trailing semicolon and whitespace are tolerated",
+   "query": " kind:pr ; prstate:open ; ",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "prstate open excludes drafts",
+   "query": "prstate:open",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "prstate draft, with its visible closure",
+   "query": "prstate:draft",
+   "expect": {
+    "matches": ["pr:acme/api#42"],
+    "rows": ["pr:acme/api#42"],
+    "visible": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"]
+   }
+  },
+  {
+   "name": "prstate none is a bookmark known to have no PR",
+   "query": "prstate:none",
+   "expect": {
+    "matches": ["bm-0000000000000002"],
+    "rows": ["bm-0000000000000002"]
+   }
+  },
+  {
+   "name": "prstate unknown is a bookmark whose lookup has no data",
+   "query": "prstate:unknown",
+   "expect": {
+    "matches": ["bm-0000000000000003"],
+    "rows": ["bm-0000000000000003"]
+   }
+  },
+  {
+   "name": "negation never matches unknowns, nor bookmarks that have PRs",
+   "query": "!prstate:open",
+   "expect": {
+    "matches": ["bm-0000000000000002", "pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9"],
+    "rows": ["bm-0000000000000002", "pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "negated prstate keeps open PRs out of the closure",
+   "query": "kind:pr;!prstate:open",
+   "expect": {
+    "matches": ["bm-0000000000000002", "pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9"],
+    "visible": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000004", "effort:api-widgets", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#9", "ticket:jira:TEAM-123", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000005"]
+   }
+  },
+  {
+   "name": "unknown can be included explicitly",
+   "query": "prstate:open,unknown",
+   "expect": {
+    "matches": ["bm-0000000000000003", "pr:acme/api#41", "pr:acme/web#12"],
+    "rows": ["bm-0000000000000003", "pr:acme/api#41", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "star holds for known non-empty values",
+   "query": "prstate:*",
+   "expect": {
+    "matches": ["bm-0000000000000002", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"],
+    "rows": ["bm-0000000000000002", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "prstate does not apply to a bookmark that has PRs",
+   "query": "!prstate:*",
+   "expect": {
+    "matches": [],
+    "rows": []
+   }
+  },
+  {
+   "name": "quoted unknown means unknown",
+   "query": "prstate:\"unknown\"",
+   "expect": {
+    "matches": ["bm-0000000000000003"],
+    "rows": ["bm-0000000000000003"]
+   }
+  },
+  {
+   "name": "unknown in any case means unknown",
+   "query": "prstate:UNKNOWN",
+   "expect": {
+    "matches": ["bm-0000000000000003"],
+    "rows": ["bm-0000000000000003"]
+   }
+  },
+  {
+   "name": "quoted unknown in a set",
+   "query": "repo:\"unknown\"",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-99", "ws-0000000000000004"],
+    "rows": ["ticket:jira:TEAM-99", "ws-0000000000000004"]
+   }
+  },
+  {
+   "name": "review maps a missing decision and REVIEW_REQUIRED to none",
+   "query": "review:none",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "review changes_requested",
+   "query": "review:changes_requested",
+   "expect": {
+    "matches": ["pr:acme/web#9"],
+    "rows": ["pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "negated enum",
+   "query": "!review:approved",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"],
+    "rows": ["pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "enum list is OR",
+   "query": "checks:failure,pending",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/api#42"],
+    "rows": ["pr:acme/api#41", "pr:acme/api#42"]
+   }
+  },
+  {
+   "name": "negated enum skips unreported checks",
+   "query": "!checks:failure",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#42", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "checks unknown",
+   "query": "checks:unknown",
+   "expect": {
+    "matches": ["pr:acme/web#9"],
+    "rows": ["pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "freshness across kinds",
+   "query": "freshness:stale",
+   "expect": {
+    "matches": ["bm-0000000000000004", "pr:acme/api#38", "pr:acme/web#9", "ticket:jira:TEAM-7"],
+    "rows": ["bm-0000000000000004", "pr:acme/api#38", "pr:acme/web#9", "ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "a literal unknown value is unknown",
+   "query": "freshness:unknown",
+   "expect": {
+    "matches": ["bm-0000000000000003", "ticket:gh:acme/web#5"],
+    "rows": ["bm-0000000000000003", "ticket:gh:acme/web#5"]
+   }
+  },
+  {
+   "name": "negated freshness skips unknowns",
+   "query": "!freshness:fresh",
+   "expect": {
+    "matches": ["bm-0000000000000004", "pr:acme/api#38", "pr:acme/web#9", "ticket:jira:TEAM-7"],
+    "rows": ["bm-0000000000000004", "pr:acme/api#38", "pr:acme/web#9", "ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "effort matches every kind in the effort",
+   "query": "effort:api-widgets",
+   "expect": {
+    "matches": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"],
+    "rows": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"]
+   }
+  },
+  {
+   "name": "effort list",
+   "query": "effort:ungrouped,ticket-team-7",
+   "expect": {
+    "matches": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"]
+   }
+  },
+  {
+   "name": "effort values are case-insensitive",
+   "query": "effort:API-Widgets",
+   "expect": {
+    "matches": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"],
+    "rows": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"]
+   }
+  },
+  {
+   "name": "a node in no effort has a known empty effort set",
+   "query": "!effort:*",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-99"],
+    "rows": ["ticket:jira:TEAM-99"]
+   }
+  },
+  {
+   "name": "activity on a day",
+   "query": "activity:2026-10-14",
+   "expect": {
+    "matches": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"],
+    "rows": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"]
+   }
+  },
+  {
+   "name": "relative day resolves against generated_at",
+   "query": "activity:-6d",
+   "expect": {
+    "matches": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"],
+    "rows": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"]
+   }
+  },
+  {
+   "name": "today with no activity matches nothing",
+   "query": "activity:today",
+   "expect": {
+    "matches": [],
+    "rows": []
+   }
+  },
+  {
+   "name": "closed date range",
+   "query": "activity:2026-10-07..2026-10-08",
+   "expect": {
+    "matches": ["bm-0000000000000003", "effort:ticket-team-7", "ticket:jira:TEAM-7", "ws-0000000000000003"],
+    "rows": ["bm-0000000000000003", "effort:ticket-team-7", "ticket:jira:TEAM-7", "ws-0000000000000003"]
+   }
+  },
+  {
+   "name": "lower bound",
+   "query": "activity:>=2026-10-19",
+   "expect": {
+    "matches": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"],
+    "rows": ["agent:claude-1", "bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ws-0000000000000001"]
+   }
+  },
+  {
+   "name": "strict upper bound",
+   "query": "activity:<2026-10-14",
+   "expect": {
+    "matches": ["bm-0000000000000003", "effort:ticket-team-7", "ticket:jira:TEAM-7", "ws-0000000000000003"],
+    "rows": ["bm-0000000000000003", "effort:ticket-team-7", "ticket:jira:TEAM-7", "ws-0000000000000003"]
+   }
+  },
+  {
+   "name": "relative range in weeks",
+   "query": "activity:-2w..-1w",
+   "expect": {
+    "matches": ["bm-0000000000000003", "effort:ticket-team-7", "ticket:jira:TEAM-7", "ws-0000000000000003"],
+    "rows": ["bm-0000000000000003", "effort:ticket-team-7", "ticket:jira:TEAM-7", "ws-0000000000000003"]
+   }
+  },
+  {
+   "name": "any activity",
+   "query": "activity:*",
+   "expect": {
+    "matches": ["agent:claude-1", "bm-0000000000000001", "bm-0000000000000003", "effort:api-widgets", "effort:ticket-team-7", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001", "ws-0000000000000003"],
+    "rows": ["agent:claude-1", "bm-0000000000000001", "bm-0000000000000003", "effort:api-widgets", "effort:ticket-team-7", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001", "ws-0000000000000003"]
+   }
+  },
+  {
+   "name": "no activity is known, not unknown",
+   "query": "!activity:*",
+   "expect": {
+    "matches": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000004", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-99", "ws-0000000000000002", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000004", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-99", "ws-0000000000000002", "ws-0000000000000004", "ws-0000000000000005"]
+   }
+  },
+  {
+   "name": "activity and PR state combine across kinds",
+   "query": "activity:2026-10-14;prstate:open",
+   "expect": {
+    "matches": ["pr:acme/api#41"],
+    "rows": ["pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "kind keeps rows of a cross-kind match",
+   "query": "activity:2026-10-14;prstate:open;kind:pr",
+   "expect": {
+    "matches": ["pr:acme/api#41"],
+    "rows": ["pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "text is a case-insensitive substring of label, title and ID",
+   "query": "text:widget",
+   "expect": {
+    "matches": ["bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-99", "ws-0000000000000001"],
+    "rows": ["bm-0000000000000001", "effort:api-widgets", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-99", "ws-0000000000000001"]
+   }
+  },
+  {
+   "name": "quoted text",
+   "query": "text:\"API WIDGETS\"",
+   "expect": {
+    "matches": ["effort:api-widgets"],
+    "rows": ["effort:api-widgets"]
+   }
+  },
+  {
+   "name": "negated text",
+   "query": "!text:widget",
+   "expect": {
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"]
+   }
+  },
+  {
+   "name": "text matches IDs",
+   "query": "text:acme/web#",
+   "expect": {
+    "matches": ["pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5"],
+    "rows": ["pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5"]
+   }
+  },
+  {
+   "name": "escaped quote in a quoted value",
+   "query": "text:\"a\\\"b\"",
+   "expect": {
+    "matches": [],
+    "rows": []
+   }
+  },
+  {
+   "name": "repo from paths and, for tickets, linked PRs and bookmarks",
+   "query": "repo:acme/api",
+   "expect": {
+    "matches": ["bm-0000000000000001", "bm-0000000000000003", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001", "ws-0000000000000003"],
+    "rows": ["bm-0000000000000001", "bm-0000000000000003", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001", "ws-0000000000000003"]
+   }
+  },
+  {
+   "name": "repo with kind rows",
+   "query": "repo:acme/api;kind:ticket",
+   "expect": {
+    "matches": ["bm-0000000000000001", "bm-0000000000000003", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001", "ws-0000000000000003"],
+    "rows": ["ticket:jira:TEAM-123", "ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "repo unknown: no slug, or a ticket with no linked PR or bookmark",
+   "query": "repo:unknown",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-99", "ws-0000000000000004"],
+    "rows": ["ticket:jira:TEAM-99", "ws-0000000000000004"]
+   }
+  },
+  {
+   "name": "negated repo skips unknown repos",
+   "query": "!repo:acme/api",
+   "expect": {
+    "matches": ["bm-0000000000000002", "bm-0000000000000004", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ws-0000000000000002", "ws-0000000000000005"],
+    "rows": ["bm-0000000000000002", "bm-0000000000000004", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ws-0000000000000002", "ws-0000000000000005"]
+   }
+  },
+  {
+   "name": "ticket repo via linked_repos and status category",
+   "query": "repo:acme/api;status_category:done",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-7"],
+    "rows": ["ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "two kinds of row",
+   "query": "kind:pr,ticket;repo:acme/api",
+   "expect": {
+    "matches": ["bm-0000000000000001", "bm-0000000000000003", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001", "ws-0000000000000003"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "negated kind",
+   "query": "!kind:pr",
+   "expect": {
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:ticket-team-7", "effort:ungrouped", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "visible": "all"
+   }
+  },
+  {
+   "name": "liveness",
+   "query": "liveness:active",
+   "expect": {
+    "matches": ["agent:claude-1"],
+    "rows": ["agent:claude-1"]
+   }
+  },
+  {
+   "name": "liveness list with kind",
+   "query": "liveness:active,uncertain;kind:agent",
+   "expect": {
+    "matches": ["agent:claude-1", "agent:codex-2"],
+    "rows": ["agent:claude-1", "agent:codex-2"]
+   }
+  },
+  {
+   "name": "open enum with a quoted value",
+   "query": "ticket_status:\"In Progress\"",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-123"],
+    "rows": ["ticket:jira:TEAM-123"]
+   }
+  },
+  {
+   "name": "open enum is case-insensitive",
+   "query": "ticket_status:\"in progress\"",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-123"],
+    "rows": ["ticket:jira:TEAM-123"]
+   }
+  },
+  {
+   "name": "open enum list",
+   "query": "ticket_status:done,\"to do\"",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-7", "ticket:jira:TEAM-99"],
+    "rows": ["ticket:jira:TEAM-7", "ticket:jira:TEAM-99"]
+   }
+  },
+  {
+   "name": "assignee unknown",
+   "query": "assignee:unknown",
+   "expect": {
+    "matches": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-7"],
+    "rows": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "assignee",
+   "query": "assignee:alice",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-123"],
+    "rows": ["ticket:jira:TEAM-123"]
+   }
+  },
+  {
+   "name": "my-move: a team-only request for @me",
+   "query": "move_people:@me",
+   "expect": {
+    "matches": ["pr:acme/web#12"],
+    "rows": ["pr:acme/web#12"]
+   },
+   "preset": "my-move"
+  },
+  {
+   "name": "review-inbox: a team-only request for @me",
+   "query": "kind:pr;requested_from:@me",
+   "expect": {
+    "matches": ["pr:acme/web#12"],
+    "rows": ["pr:acme/web#12"]
+   },
+   "preset": "review-inbox"
+  },
+  {
+   "name": "@people expands to every configured login",
+   "query": "requested_from:@people",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "negated macro skips unknown reviewers",
+   "query": "!requested_from:@me",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/api#41"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "only the first colon splits name from value",
+   "query": "move_people:team:web",
+   "expect": {
+    "matches": ["pr:acme/web#12"],
+    "rows": ["pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "@me without people matches nothing and warns",
+   "query": "move_people:@me",
+   "expect": {
+    "matches": [],
+    "rows": []
+   },
+   "env": {
+    "people": []
+   },
+   "warnings": ["@me is unknown: the snapshot names no authenticated person, so move_people:@me matches nothing"]
+  },
+  {
+   "name": "when uses the merge day of a merged PR",
+   "query": "when:2026-10-05..2026-10-11",
+   "expect": {
+    "matches": ["effort:ticket-team-7", "pr:acme/api#38", "pr:acme/web#9", "ws-0000000000000003"],
+    "rows": ["effort:ticket-team-7", "pr:acme/api#38", "pr:acme/web#9", "ws-0000000000000003"]
+   }
+  },
+  {
+   "name": "a merged PR updated later is not in its update week",
+   "query": "when:2026-10-19..2026-10-25",
+   "expect": {
+    "matches": ["effort:api-widgets", "pr:acme/api#41", "ws-0000000000000001"],
+    "rows": ["effort:api-widgets", "pr:acme/api#41", "ws-0000000000000001"]
+   }
+  },
+  {
+   "name": "when with PR rows",
+   "query": "kind:pr;when:2026-10-05..2026-10-11",
+   "expect": {
+    "matches": ["effort:ticket-team-7", "pr:acme/api#38", "pr:acme/web#9", "ws-0000000000000003"],
+    "rows": ["pr:acme/api#38", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "open-ended relative range",
+   "query": "merged:-14d..",
+   "expect": {
+    "matches": ["pr:acme/api#38"],
+    "rows": ["pr:acme/api#38"]
+   }
+  },
+  {
+   "name": "shipped in the last week",
+   "query": "kind:pr;prstate:merged;merged:-7d..",
+   "expect": {
+    "matches": [],
+    "rows": []
+   },
+   "preset": "shipped"
+  },
+  {
+   "name": "merged in the last two weeks",
+   "query": "kind:pr;prstate:merged;merged:-14d..",
+   "expect": {
+    "matches": ["pr:acme/api#38"],
+    "rows": ["pr:acme/api#38"]
+   }
+  },
+  {
+   "name": "duration lower bound in days",
+   "query": "updated_ago:>=2",
+   "expect": {
+    "matches": ["pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"],
+    "rows": ["pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "durations are whole days",
+   "query": "updated_ago:1",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/api#41"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "duration strict upper bound",
+   "query": "updated_ago:<2",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/api#41"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "duration range in weeks",
+   "query": "updated_ago:1w..2w",
+   "expect": {
+    "matches": ["pr:acme/web#9"],
+    "rows": ["pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "duration with a d suffix",
+   "query": "updated_ago:2d..",
+   "expect": {
+    "matches": ["pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"],
+    "rows": ["pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "number list",
+   "query": "points:3,5",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-123", "ticket:jira:TEAM-7"],
+    "rows": ["ticket:jira:TEAM-123", "ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "number lower bound",
+   "query": "points:>=4",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-123"],
+    "rows": ["ticket:jira:TEAM-123"]
+   }
+  },
+  {
+   "name": "number unknown",
+   "query": "points:unknown",
+   "expect": {
+    "matches": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-99"],
+    "rows": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-99"]
+   }
+  },
+  {
+   "name": "negated number",
+   "query": "!points:5",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-7"],
+    "rows": ["ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "bool true",
+   "query": "stale:true",
+   "expect": {
+    "matches": ["pr:acme/api#42"],
+    "rows": ["pr:acme/api#42"]
+   }
+  },
+  {
+   "name": "bool false",
+   "query": "stale:false",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "bool unknown",
+   "query": "stale:unknown",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/web#9"],
+    "rows": ["pr:acme/api#38", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "negated bool skips unknowns",
+   "query": "!stale:true",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "count derive",
+   "query": "requested_count:1",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "count of a known empty list is zero",
+   "query": "requested_count:0",
+   "expect": {
+    "matches": ["pr:acme/api#38"],
+    "rows": ["pr:acme/api#38"]
+   }
+  },
+  {
+   "name": "closed enum with unknown included",
+   "query": "mergeable:mergeable,unknown",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#9"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "negated closed enum skips literal and missing unknowns",
+   "query": "!mergeable:conflicting",
+   "expect": {
+    "matches": ["pr:acme/api#41"],
+    "rows": ["pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "filtered list path",
+   "query": "check_failing:vendor-hsm-tests",
+   "expect": {
+    "matches": ["pr:acme/api#41"],
+    "rows": ["pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "a filtered list with no match is known empty",
+   "query": "!check_failing:*",
+   "expect": {
+    "matches": ["pr:acme/web#12"],
+    "rows": ["pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "a field with no data matches nothing",
+   "query": "ci:green,systemic_only",
+   "expect": {
+    "matches": [],
+    "rows": []
+   }
+  },
+  {
+   "name": "a timestamp across DST lands on its local day in the snapshot's zone",
+   "query": "resolved:2026-10-12",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-7"],
+    "rows": ["ticket:jira:TEAM-7"]
+   },
+   "env": {
+    "generated_at": "2026-11-10T12:00:00-05:00"
+   }
+  },
+  {
+   "name": "without a timezone, days use generated_at's offset",
+   "query": "resolved:2026-10-11",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-7"],
+    "rows": ["ticket:jira:TEAM-7"]
+   },
+   "env": {
+    "generated_at": "2026-11-10T12:00:00-05:00",
+    "timezone": null
+   }
+  },
+  {
+   "name": "the largest relative date parses",
+   "query": "activity:-5214w..",
+   "expect": {
+    "matches": ["agent:claude-1", "bm-0000000000000001", "bm-0000000000000003", "effort:api-widgets", "effort:ticket-team-7", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001", "ws-0000000000000003"],
+    "rows": ["agent:claude-1", "bm-0000000000000001", "bm-0000000000000003", "effort:api-widgets", "effort:ticket-team-7", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001", "ws-0000000000000003"]
+   }
+  },
+  {
+   "name": "unknown field suggests the closest",
+   "query": "prstat:open",
+   "error": "unknown field \"prstat\" at column 1; did you mean prstate? Fields: kind,",
+   "pos": 1,
+   "fixed": "prstate:open"
+  },
+  {
+   "name": "field names are lowercase",
+   "query": "PRSTATE:open",
+   "error": "unknown field \"PRSTATE\" at column 1; did you mean prstate?",
+   "pos": 1,
+   "fixed": "prstate:open"
+  },
+  {
+   "name": "a value outside a closed enum lists the allowed values",
+   "query": "prstate:opne",
+   "error": "\"opne\" is not a value of prstate at column 9; did you mean open? Allowed: open, draft, merged, closed, none, unknown",
+   "pos": 9,
+   "fixed": "prstate:open"
+  },
+  {
+   "name": "unknown kind",
+   "query": "kind:robot",
+   "error": "\"robot\" is not a value of kind at column 6; allowed: effort, workspace, bookmark, pr, ticket, agent, unknown",
+   "pos": 6
+  },
+  {
+   "name": "range on an enum",
+   "query": "prstate:1..3",
+   "error": "prstate does not take a range at column 9; ranges apply to number, duration and date fields: activity, when,",
+   "pos": 9
+  },
+  {
+   "name": "comparison on an enum",
+   "query": "checks:<1",
+   "error": "checks does not take a range at column 8;",
+   "pos": 8
+  },
+  {
+   "name": "missing colon",
+   "query": "prstate",
+   "error": "expected name:value at column 1; for example prstate:open",
+   "pos": 1
+  },
+  {
+   "name": "missing value",
+   "query": "prstate:",
+   "error": "missing value after \"prstate:\" at column 9; use prstate:* for any known value",
+   "pos": 9
+  },
+  {
+   "name": "missing name",
+   "query": ":open",
+   "error": "missing field name before \":\" at column 1; for example prstate:open",
+   "pos": 1
+  },
+  {
+   "name": "unterminated quote",
+   "query": "text:\"abc",
+   "error": "unterminated quoted value at column 6; close it with \"",
+   "pos": 6
+  },
+  {
+   "name": "text after a quoted value",
+   "query": "text:\"a\"b",
+   "error": "unexpected \"b\" after a quoted value at column 9; separate values with \",\"",
+   "pos": 9
+  },
+  {
+   "name": "space in a token",
+   "query": "text:a b",
+   "error": "unexpected space at column 7; put a value with spaces or punctuation in double quotes",
+   "pos": 7
+  },
+  {
+   "name": "impossible date",
+   "query": "activity:2026-13-01",
+   "error": "\"2026-13-01\" is not a valid date for activity at column 10; use YYYY-MM-DD, today, -7d or +2w",
+   "pos": 10
+  },
+  {
+   "name": "word that is not a date",
+   "query": "activity:yesterday",
+   "error": "\"yesterday\" is not a valid date for activity at column 10;",
+   "pos": 10
+  },
+  {
+   "name": "negative duration",
+   "query": "updated_ago:-7d",
+   "error": "\"-7d\" is not a valid duration for updated_ago at column 13; use days such as 30, 30d or 2w",
+   "pos": 13
+  },
+  {
+   "name": "star with other values",
+   "query": "prstate:*,open",
+   "error": "* cannot be combined with other values at column 9; use prstate:* alone",
+   "pos": 9
+  },
+  {
+   "name": "empty clause",
+   "query": "kind:pr;;prstate:open",
+   "error": "empty clause at column 9; remove the extra \";\"",
+   "pos": 9
+  },
+  {
+   "name": "empty value",
+   "query": "text:a,,b",
+   "error": "empty value at column 8; remove the extra \",\"",
+   "pos": 8
+  },
+  {
+   "name": "unknown macro",
+   "query": "move_people:@you",
+   "error": "unknown macro \"@you\" at column 13; macros are @me and @people (quote the value to match it literally)",
+   "pos": 13
+  },
+  {
+   "name": "range combined with a list",
+   "query": "activity:1..2,3",
+   "error": "a range cannot be combined with other values at column 14; write a separate clause for each",
+   "pos": 14
+  },
+  {
+   "name": "range with no bound",
+   "query": "activity:..",
+   "error": "a range needs at least one bound at column 10; use YYYY-MM-DD, today, -7d or +2w",
+   "pos": 10
+  },
+  {
+   "name": "comparison with no bound",
+   "query": "activity:>",
+   "error": "missing bound after \">\" at column 11; use YYYY-MM-DD, today, -7d or +2w",
+   "pos": 11
+  },
+  {
+   "name": "not a number",
+   "query": "points:abc",
+   "error": "\"abc\" is not a valid number for points at column 8; use a number such as 10",
+   "pos": 8
+  },
+  {
+   "name": "not a bool",
+   "query": "stale:yes",
+   "error": "\"yes\" is not a value of stale at column 7; allowed: true, false, unknown",
+   "pos": 7
+  },
+  {
+   "name": "macro on a number field",
+   "query": "points:@me",
+   "error": "@me does not apply to number field points at column 8;",
+   "pos": 8
+  },
+  {
+   "name": "incompatible fields are named",
+   "query": "prstate:open;status_category:done",
+   "error": "fields prstate and status_category apply to no common node kind (prstate: bookmark, pr; status_category: ticket) at column 14; split them into separate queries",
+   "pos": 14,
+   "fixed": "status_category:done"
+  },
+  {
+   "name": "incompatible fields that exist today",
+   "query": "checks:success;liveness:active",
+   "error": "fields checks and liveness apply to no common node kind (checks: pr; liveness: agent) at column 16;",
+   "pos": 16,
+   "fixed": "liveness:active"
+  },
+  {
+   "name": "the disjoint earlier field is named",
+   "query": "repo:acme/api;prstate:open;ticket_status:Done",
+   "error": "fields prstate and ticket_status apply to no common node kind (prstate: bookmark, pr; ticket_status: ticket) at column 28;",
+   "pos": 28,
+   "fixed": "repo:acme/api;ticket_status:Done"
+  },
+  {
+   "name": "kind rows that no clause can match",
+   "query": "kind:agent;prstate:open",
+   "error": "the kind clause at column 1 leaves no rows: it allows agent, while prstate can only match bookmark, pr; change or remove it",
+   "pos": 1,
+   "fixed": "prstate:open"
+  },
+  {
+   "name": "kind clauses that allow no kind",
+   "query": "kind:pr;kind:ticket",
+   "error": "the kind clause at column 1 leaves no rows: it allows no kind; change or remove it",
+   "pos": 1,
+   "fixed": "kind:ticket"
+  },
+  {
+   "name": "an overflowing relative date",
+   "query": "activity:-99999999999999999999d..",
+   "error": "\"-99999999999999999999d\" is out of range for activity at column 10; relative dates reach at most 36500d (about 100 years)",
+   "pos": 10
+  },
+  {
+   "name": "a relative date past 100 years",
+   "query": "activity:-200000000d..",
+   "error": "\"-200000000d\" is out of range for activity at column 10;",
+   "pos": 10
+  },
+  {
+   "name": "weeks count toward the relative cap",
+   "query": "activity:+5215w",
+   "error": "\"+5215w\" is out of range for activity at column 10;",
+   "pos": 10
+  },
+  {
+   "name": "a planned field is not available yet",
+   "query": "waiting:>3",
+   "error": "field waiting at column 1 is not available yet: it arrives with gh-99. Fields: kind,",
+   "pos": 1,
+   "base": true
+  }
+ ]
+}

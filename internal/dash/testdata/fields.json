@@ -1,0 +1,265 @@
+{
+ "fields": [
+  {
+   "name": "kind",
+   "label": "Kind",
+   "type": "enum",
+   "kinds": [
+    "effort",
+    "workspace",
+    "bookmark",
+    "pr",
+    "ticket",
+    "agent"
+   ],
+   "paths": [
+    "kind"
+   ],
+   "values": [
+    "effort",
+    "workspace",
+    "bookmark",
+    "pr",
+    "ticket",
+    "agent"
+   ]
+  },
+  {
+   "name": "text",
+   "label": "Text (label, title, ID)",
+   "type": "text",
+   "kinds": [
+    "effort",
+    "workspace",
+    "bookmark",
+    "pr",
+    "ticket",
+    "agent"
+   ],
+   "paths": [
+    "label",
+    "pr.title",
+    "ticket.title",
+    "id"
+   ]
+  },
+  {
+   "name": "effort",
+   "label": "Effort",
+   "type": "set",
+   "kinds": [
+    "effort",
+    "workspace",
+    "bookmark",
+    "pr",
+    "ticket",
+    "agent"
+   ],
+   "derive": "efforts"
+  },
+  {
+   "name": "repo",
+   "label": "Repository",
+   "type": "set",
+   "kinds": [
+    "workspace",
+    "bookmark",
+    "pr",
+    "ticket"
+   ],
+   "paths": [
+    "workspace.repo_slug",
+    "bookmark.repo_slug",
+    "pr.repo"
+   ],
+   "derive": "linked_repos",
+   "derive_kinds": [
+    "ticket"
+   ]
+  },
+  {
+   "name": "prstate",
+   "label": "PR state",
+   "type": "enum",
+   "kinds": [
+    "pr",
+    "bookmark"
+   ],
+   "derive": "prstate",
+   "values": [
+    "open",
+    "draft",
+    "merged",
+    "closed",
+    "none",
+    "unknown"
+   ]
+  },
+  {
+   "name": "review",
+   "label": "Review decision",
+   "type": "enum",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.review_decision"
+   ],
+   "map": {
+    "": "none",
+    "review_required": "none"
+   },
+   "values": [
+    "approved",
+    "changes_requested",
+    "none"
+   ]
+  },
+  {
+   "name": "checks",
+   "label": "CI checks",
+   "type": "enum",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.checks"
+   ],
+   "values": [
+    "success",
+    "failure",
+    "pending",
+    "none"
+   ]
+  },
+  {
+   "name": "freshness",
+   "label": "Data freshness",
+   "type": "enum",
+   "kinds": [
+    "pr",
+    "ticket",
+    "bookmark"
+   ],
+   "paths": [
+    "pr.freshness",
+    "ticket.freshness",
+    "bookmark.pr_lookup"
+   ],
+   "values": [
+    "fresh",
+    "stale",
+    "unknown",
+    "error"
+   ]
+  },
+  {
+   "name": "activity",
+   "label": "Local activity",
+   "type": "date",
+   "kinds": [
+    "effort",
+    "workspace",
+    "bookmark",
+    "pr",
+    "ticket",
+    "agent"
+   ],
+   "derive": "activity_days",
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "liveness",
+   "label": "Agent liveness",
+   "type": "enum",
+   "kinds": [
+    "agent"
+   ],
+   "paths": [
+    "agent.liveness"
+   ],
+   "values": [
+    "active",
+    "live",
+    "uncertain"
+   ]
+  },
+  {
+   "name": "ticket_status",
+   "label": "Ticket status",
+   "type": "enum",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.status"
+   ]
+  },
+  {
+   "name": "assignee",
+   "label": "Assignee",
+   "type": "enum",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.assignee"
+   ]
+  },
+  {
+   "name": "when",
+   "label": "When",
+   "type": "date",
+   "kinds": [
+    "effort",
+    "workspace"
+   ],
+   "derive": "activity_days",
+   "unit": "day",
+   "scale": "linear"
+  }
+ ],
+ "planned": {
+  "additions": "gh-97",
+  "age": "gh-97",
+  "author": "gh-97",
+  "check_failing": "gh-97",
+  "ci": "gh-99",
+  "closed": "gh-97",
+  "component": "gh-98",
+  "created": "gh-97",
+  "deletions": "gh-97",
+  "epic": "gh-98",
+  "files": "gh-97",
+  "label": "gh-98",
+  "linked_prs": "gh-99",
+  "mergeable": "gh-97",
+  "merged": "gh-97",
+  "mismatch": "gh-99",
+  "move": "gh-99",
+  "move_people": "gh-99",
+  "points": "gh-98",
+  "priority": "gh-98",
+  "ready": "gh-97",
+  "reason": "gh-99",
+  "requested_from": "gh-97",
+  "resolved": "gh-98",
+  "reviewed_by": "gh-97",
+  "reviewer": "gh-97",
+  "size": "gh-99",
+  "size_bucket": "gh-99",
+  "source": "gh-97",
+  "sprint": "gh-98",
+  "sprint_state": "gh-98",
+  "stale": "gh-99",
+  "status_category": "gh-98",
+  "team": "gh-98",
+  "ticket": "gh-97",
+  "type": "gh-98",
+  "updated": "gh-97",
+  "updated_ago": "gh-97",
+  "waiting": "gh-99",
+  "waiting_on": "gh-99"
+ }
+}

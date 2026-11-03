@@ -14,6 +14,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +36,16 @@ var (
 	dashRefresh bool
 	dashPort    int
 	dashNoOpen  bool
+	// gh-100: query, saved filter, Markdown extract and fixture flags.
+	dashQuery   string
+	dashPreset  string
+	dashMD      bool
+	dashCols    string
+	dashGroup   string
+	dashLayout  string
+	dashView    string
+	dashSprint  string
+	dashFixture string
 )
 
 // DefaultDashPort is the default loopback port `wgo dash` serves on.
@@ -76,10 +87,38 @@ launch does changes jj, the plan or agent state.
 [dash] in ~/.wgo/config.toml sets port, days, refresh_seconds, terminal,
 terminal_command, resume and editor; --port and --days win over it.
 
-The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.`,
+The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.
+
+Queries filter the dashboard. A query is clauses joined by ";" (all must
+hold), each [!]field:value — a value, a comma-separated list (any of them),
+* (any known value), or a range such as 2026-10-01..2026-10-07, >=30 or
+-7d.. (relative to the snapshot). For example kind:pr;prstate:open,draft or
+activity:-7d..;repo:acme/api. A clause never matches a node whose value is
+unknown, negated or not; list unknown to include those. kind:… clauses
+choose which matches are rows. The page shows the query in its address, so
+every view is a link; the same text works here:
+
+  wgo dash --query 'kind:pr;prstate:open'    open the dashboard at it
+  wgo dash --json --query EXPR               add {"query": {expr, matches,
+                                             rows}} and keep only the
+                                             nodes it shows
+  wgo dash --md --query EXPR                 print its rows as Markdown,
+                                             with --cols, --group,
+                                             --layout table
+  wgo dash --md --preset NAME                the same for a saved filter
+
+Saved filters are built in (my-move, review-inbox, shipped, … — each hidden
+until the fields it needs exist) or named under [dash.filters] in
+~/.wgo/config.toml, which override built-ins of the same name.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runDash(cmd.Context(), cmd.OutOrStdout(), cmd.Flags().Changed)
+		err := runDash(cmd.Context(), cmd.OutOrStdout(), cmd.Flags().Changed)
+		var qe *dashQueryError
+		if errors.As(err, &qe) {
+			// The message already shows the query, the column and a fix.
+			cmd.SilenceUsage = true
+		}
+		return err
 	},
 }
 
@@ -93,6 +132,18 @@ func init() {
 	dashCmd.Flags().BoolVar(&dashRefresh, "refresh", false, "with --json, also fetch missing or stale PR, Jira and GitHub issue data")
 	dashCmd.Flags().IntVar(&dashPort, "port", DefaultDashPort, "loopback port to serve the dashboard on")
 	dashCmd.Flags().BoolVar(&dashNoOpen, "no-open", false, "serve without opening a browser")
+	dashCmd.Flags().StringVar(&dashQuery, "query", "", "filter with a query: with --json add the matches and keep only what it shows, with --md choose the rows, alone open the dashboard at it")
+	dashCmd.Flags().StringVar(&dashPreset, "preset", "", "use a saved filter's query (built-in or [dash.filters]) in place of --query")
+	dashCmd.Flags().BoolVar(&dashMD, "md", false, "print the query's rows as Markdown, with links and provenance, and exit")
+	dashCmd.Flags().StringVar(&dashCols, "cols", "", "with --md, comma-separated fields to show per row, e.g. prstate,repo")
+	dashCmd.Flags().StringVar(&dashGroup, "group", "", "with --md, section the rows by effort (default), repo or none")
+	dashCmd.Flags().StringVar(&dashLayout, "layout", "", "with --md, bullets (default) or table")
+	dashCmd.Flags().StringVar(&dashView, "view", "", "with --md, the extract view: rows (default); sprint arrives with the sprint view")
+	dashCmd.Flags().StringVar(&dashSprint, "sprint", "", "with --md --view sprint, the sprint to summarize (arrives with the sprint view)")
+	// --fixture serves or prints a saved snapshot instead of collecting one:
+	// for screenshots and for comparing the CLI with the page. Hidden.
+	dashCmd.Flags().StringVar(&dashFixture, "fixture", "", "load this snapshot JSON instead of collecting (testing)")
+	_ = dashCmd.Flags().MarkHidden("fixture")
 	rootCmd.AddCommand(dashCmd)
 }
 
@@ -102,10 +153,22 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	if dashDays < 1 || dashDays > 366 {
 		return fmt.Errorf("--days must be between 1 and 366, got %d", dashDays)
 	}
-	if dashRefresh && !dashJSON {
-		return errors.New("--refresh only applies with --json; the dashboard server refreshes remote data in the background by itself. Run wgo dash --json --refresh to print a refreshed snapshot")
+	if dashJSON && dashMD {
+		return errors.New("--json and --md are alternatives: --json prints the snapshot, --md the Markdown extract; pick one")
 	}
-	if !dashJSON && (dashPort < 1 || dashPort > 65535) {
+	if dashRefresh && !dashJSON && !dashMD {
+		return errors.New("--refresh only applies with --json or --md; the dashboard server refreshes remote data in the background by itself. Run wgo dash --json --refresh to print a refreshed snapshot")
+	}
+	if flagChanged("query") && dashPreset != "" {
+		return errors.New("give --query or --preset, not both: --preset NAME stands for --query with that saved filter's expression")
+	}
+	for _, name := range []string{"cols", "group", "layout", "view", "sprint"} {
+		if flagChanged(name) && !dashMD {
+			return fmt.Errorf("--%s only applies with --md (the Markdown extract); run wgo dash --md --%s …", name, name)
+		}
+	}
+	serving := !dashJSON && !dashMD
+	if serving && (dashPort < 1 || dashPort > 65535) {
 		return fmt.Errorf("--port must be between 1 and 65535, got %d", dashPort)
 	}
 	if ctx == nil {
@@ -117,6 +180,61 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	cfg := config.Get()
 	if err := applyDashConfig(cfg.Dash, flagChanged); err != nil {
 		return err
+	}
+	filters := dash.MergeConfigFilters(cfg.Dash.Filters, dash.Fields())
+	for _, f := range filters {
+		if f.Hidden && !f.Builtin {
+			fmt.Fprintf(os.Stderr, "wgo dash: saved filter %s is unavailable: %s\n", f.Name, f.Reason)
+		}
+	}
+	expr, hasQuery, err := dashQueryExpr(filters, flagChanged)
+	if err != nil {
+		return err
+	}
+	extract := dash.ExtractArgs{Query: expr, Cols: dash.SplitCols(dashCols), Group: dashGroup, Layout: dashLayout, View: dashView, Sprint: dashSprint}
+	if dashMD {
+		if err := dash.CheckExtractArgs(dash.Fields(), extract); err != nil {
+			return dashQueryFailure(err, expr)
+		}
+	}
+	emit := func(v *dash.View) error {
+		switch {
+		case dashMD:
+			md, err := dash.Extract(v, dash.Fields(), filters, extract)
+			if err != nil {
+				return dashQueryFailure(err, expr)
+			}
+			_, err = io.WriteString(out, md)
+			return err
+		case hasQuery:
+			res, err := v.Query(expr)
+			if err != nil {
+				return dashQueryFailure(err, expr)
+			}
+			return v.WriteQueryJSON(out, time.Now(), res, filters)
+		}
+		return v.WriteJSON(out, time.Now())
+	}
+	hash := ""
+	if hasQuery && expr != "" {
+		hash = "#q=" + hashEscape(expr)
+	}
+	if dashFixture != "" {
+		v, err := dash.LoadFixture(dashFixture)
+		if err != nil {
+			return fmt.Errorf("wgo dash --fixture: %w", err)
+		}
+		if !serving {
+			return emit(v)
+		}
+		ln, err := listenDash(dashPort)
+		if err != nil {
+			return err
+		}
+		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		// A fixture is served as it is: no collection, refresh or actions.
+		return serveDash(ctx, out, ln, dashServer{source: dash.StaticSource{V: v}, open: !dashNoOpen, filters: filters, hash: hash})
 	}
 	st, err := store.New()
 	if err != nil {
@@ -136,7 +254,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		JiraSite: cfg.Jira.Site,
 	})
 	opts := dash.Options{Dir: filepath.Join(st.BaseDir(), "cache", "dash"), Collector: collector}
-	if !dashJSON {
+	if serving {
 		// Bind first: a busy port fails before any collection starts.
 		ln, err := listenDash(dashPort)
 		if err != nil {
@@ -167,6 +285,8 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 			open:     !dashNoOpen,
 			ack:      d,
 			logf:     logf,
+			filters:  filters,
+			hash:     hash,
 			actions: &dash.ActionOptions{
 				Resolver: d,
 				Launcher: launch.NewSystem(lcfg, launch.ExecRunner{Logf: logf}),
@@ -196,13 +316,104 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		}
 		return errors.New("wgo dash: no snapshot was produced")
 	}
-	if err := v.WriteJSON(out, time.Now()); err != nil {
+	if err := emit(v); err != nil {
 		return err
 	}
 	// Any refresh error (a failed collection, a snapshot that could not be
 	// saved, failed remote lookups) is also in the printed diagnostics; the
 	// error makes it visible to scripts through the exit status.
 	return refreshErr
+}
+
+// dashQueryExpr resolves --query and --preset to an expression, and reports
+// whether either was given. A query that does not parse is a
+// dashQueryError.
+func dashQueryExpr(filters []dash.SavedFilter, flagChanged func(string) bool) (string, bool, error) {
+	if dashPreset != "" {
+		f, ok := dash.LookupFilter(filters, dashPreset)
+		if !ok {
+			var names []string
+			for _, f := range filters {
+				if !f.Hidden {
+					names = append(names, f.Name)
+				}
+			}
+			avail := "none can run yet"
+			if len(names) > 0 {
+				avail = "available: " + strings.Join(names, ", ")
+			}
+			return "", false, &dashQueryError{msg: fmt.Sprintf("no saved filter named %q (%s); name one under [dash.filters] in ~/.wgo/config.toml", dashPreset, avail)}
+		}
+		if f.Hidden {
+			return "", false, &dashQueryError{msg: fmt.Sprintf("saved filter %s cannot run: %s", f.Name, f.Reason)}
+		}
+		return f.Expr, true, nil
+	}
+	if !flagChanged("query") {
+		return "", false, nil
+	}
+	if _, err := dash.ParseQuery(dashQuery, dash.Fields()); err != nil {
+		return "", false, dashQueryFailure(err, dashQuery)
+	}
+	return dashQuery, true, nil
+}
+
+// dashQueryError is a query, saved filter or extract request that cannot
+// run, explained in full (for a query: a caret under the column and a
+// corrected command when there is one), so no usage text follows it.
+type dashQueryError struct{ msg string }
+
+func (e *dashQueryError) Error() string { return e.msg }
+
+// dashQueryFailure turns a *dash.QueryError into a dashQueryError and
+// strips the marker from extract argument errors; others pass through.
+func dashQueryFailure(err error, expr string) error {
+	var qe *dash.QueryError
+	if !errors.As(err, &qe) {
+		if errors.Is(err, dash.ErrExtractArgs) {
+			return &dashQueryError{msg: "wgo dash --md: " + strings.TrimPrefix(err.Error(), dash.ErrExtractArgs.Error()+": ")}
+		}
+		return err
+	}
+	var b strings.Builder
+	b.WriteString("query error: " + qe.Msg + "\n")
+	b.WriteString("  " + expr + "\n")
+	b.WriteString("  " + strings.Repeat(" ", max(qe.Pos-1, 0)) + "^")
+	if qe.Fixed != "" {
+		b.WriteString("\nTry: " + dashCommand(qe.Fixed))
+	} else {
+		b.WriteString("\nEdit the query at column " + strconv.Itoa(qe.Pos) + " as above and rerun: " + dashCommand(expr))
+	}
+	return &dashQueryError{msg: b.String()}
+}
+
+// dashCommand is the wgo dash command line that runs expr in the current
+// output mode.
+func dashCommand(expr string) string {
+	parts := []string{"wgo dash"}
+	switch {
+	case dashJSON:
+		parts = append(parts, "--json")
+	case dashMD:
+		parts = append(parts, "--md")
+	}
+	return strings.Join(append(parts, "--query", shellQuote(expr)), " ")
+}
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// hashEscape percent-encodes a query for the page's #q=, keeping the
+// characters queries are made of readable, as live.js does.
+func hashEscape(s string) string {
+	var b strings.Builder
+	for _, c := range []byte(s) {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("-_.~!*'():;,/@", c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
 }
 
 // dashFetchers returns the lookups this machine can actually make. An
@@ -336,6 +547,10 @@ type dashServer struct {
 	ack      dash.Acker          // nil disables /api/ack
 	// logf receives server and launcher faults; nil writes them to errOut.
 	logf func(format string, args ...any)
+	// filters are the saved filters the page offers; hash is appended to
+	// the URL opened and printed (#q=… for --query).
+	filters []dash.SavedFilter
+	hash    string
 }
 
 // prefixLogf logs "wgo dash: ..." lines to w.
@@ -363,6 +578,7 @@ func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServe
 		Actions: ds.actions,
 		Ack:     ds.ack,
 		Logf:    logf,
+		Filters: ds.filters,
 	})
 	if err != nil {
 		ln.Close()
@@ -375,6 +591,9 @@ func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServe
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
+		if ds.refresh == nil {
+			return // a fixed view (--fixture): nothing to refresh
+		}
 		var lastScanErrs []string
 		lastRefreshErr := ""
 		dash.Loop(loopCtx, ds.interval, func(ctx context.Context) {
@@ -419,10 +638,13 @@ func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServe
 		})
 	}()
 
-	url := "http://" + host + "/"
+	url := "http://" + host + "/" + ds.hash
 	mode := "read-only"
 	if ds.actions != nil {
 		mode = "actions enabled for this page only"
+	}
+	if ds.refresh == nil {
+		mode = "read-only, a fixed snapshot"
 	}
 	fmt.Fprintf(out, "wgo dash: serving %s (%s). Press Ctrl-C to stop.\n", url, mode)
 	if ds.open {

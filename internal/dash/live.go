@@ -55,6 +55,16 @@ type View struct {
 	Diagnostics  []string
 	snapshotJSON []byte
 	deltaJSON    []byte
+	// index is the snapshot's query index, built on first use and shared by
+	// the copies withDiagnostics makes.
+	index *lazyIndex
+}
+
+// lazyIndex builds a view's query index once, for the canonical registry.
+type lazyIndex struct {
+	once sync.Once
+	ix   *queryIndex
+	err  error
 }
 
 func newView(s *Snapshot, d *Delta, loaded bool, diags []string) (*View, error) {
@@ -62,11 +72,89 @@ func newView(s *Snapshot, d *Delta, loaded bool, diags []string) (*View, error) 
 	if err != nil {
 		return nil, err
 	}
+	return newViewJSON(s, sj, d, loaded, diags)
+}
+
+// newViewJSON is newView with the snapshot already encoded as sj, which is
+// served as is.
+func newViewJSON(s *Snapshot, sj []byte, d *Delta, loaded bool, diags []string) (*View, error) {
 	dj, err := json.Marshal(d)
 	if err != nil {
 		return nil, err
 	}
-	return &View{Snapshot: s, Delta: d, Loaded: loaded, Diagnostics: diags, snapshotJSON: sj, deltaJSON: dj}, nil
+	return &View{Snapshot: s, Delta: d, Loaded: loaded, Diagnostics: diags, snapshotJSON: sj, deltaJSON: dj, index: &lazyIndex{}}, nil
+}
+
+// queryIndex returns the query index of v's snapshot for reg, built once
+// for the canonical registry. It decodes the encoded snapshot, so fields
+// that only a later build models (a fixture's) still resolve.
+func (v *View) queryIndex(reg *Registry) (*queryIndex, error) {
+	if reg != defaultRegistry || v.index == nil {
+		return newQueryIndex(v.snapshotJSON, reg)
+	}
+	v.index.once.Do(func() { v.index.ix, v.index.err = newQueryIndex(v.snapshotJSON, reg) })
+	return v.index.ix, v.index.err
+}
+
+// Query parses expr and runs it over v's snapshot with the canonical
+// registry.
+func (v *View) Query(expr string) (*QueryResult, error) {
+	q, err := ParseQuery(expr, Fields())
+	if err != nil {
+		return nil, err
+	}
+	ix, err := v.queryIndex(Fields())
+	if err != nil {
+		return nil, err
+	}
+	return ix.evaluate(q), nil
+}
+
+// Env returns what v's queries resolve @me, @people and relative dates
+// against (queryEnv); the live page's bootstrap carries its people.
+func (v *View) Env() QueryEnv {
+	ix, err := v.queryIndex(Fields())
+	if err != nil {
+		return QueryEnv{}
+	}
+	return ix.env
+}
+
+// StaticSource serves one fixed view, such as a fixture, read-only.
+type StaticSource struct{ V *View }
+
+// Current implements ViewSource.
+func (s StaticSource) Current() *View { return s.V }
+
+// LoadFixture reads a snapshot from path — a bare snapshot or a whole
+// /api/snapshot body — for wgo dash --fixture. It must be a valid snapshot;
+// its JSON is served and queried as written, so fields this build does not
+// model (a later spec's) still reach the page and the query.
+func LoadFixture(path string) (*View, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil, fmt.Errorf("fixture %s: %w", path, err)
+	}
+	raw := json.RawMessage(data)
+	if inner, ok := top["snapshot"]; ok && len(inner) > 0 && inner[0] == '{' {
+		raw = inner
+	}
+	var s Snapshot
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, fmt.Errorf("fixture %s: %w", path, err)
+	}
+	if err := s.Validate(); err != nil {
+		return nil, fmt.Errorf("fixture %s is not a valid dash snapshot: %w", path, err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return nil, fmt.Errorf("fixture %s: %w", path, err)
+	}
+	return newViewJSON(&s, compact.Bytes(), computeDelta(nil, &s), false, nil)
 }
 
 // withDiagnostics returns a copy of v carrying diags. The encoded snapshot
@@ -88,11 +176,90 @@ func (v *View) WriteJSON(w io.Writer, now time.Time) error {
 	return err
 }
 
+// QueryOutput is the "query" object wgo dash --json --query adds.
+type QueryOutput struct {
+	*QueryResult
+	// Filters are the saved filters, with the reason any is hidden.
+	Filters []SavedFilter `json:"filters"`
+}
+
+// WriteQueryJSON writes the API body for v with its snapshot's nodes and
+// edges limited to res's visible set, and a "query" object after the delta.
+func (v *View) WriteQueryJSON(w io.Writer, now time.Time, res *QueryResult, filters []SavedFilter) error {
+	snap, err := v.visibleSnapshotJSON(res)
+	if err != nil {
+		return err
+	}
+	q, err := json.Marshal(QueryOutput{QueryResult: res, Filters: filters})
+	if err != nil {
+		return err
+	}
+	body, err := v.encodeBody(now, snap, q)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(body)
+	return err
+}
+
+// visibleSnapshotJSON is the encoded snapshot with only the nodes res
+// keeps visible and the edges between them; the rest is kept as encoded.
+func (v *View) visibleSnapshotJSON(res *QueryResult) ([]byte, error) {
+	if !res.Filtered() {
+		return v.snapshotJSON, nil
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(v.snapshotJSON, &top); err != nil {
+		return nil, err
+	}
+	var nodes, edges, keptN, keptE []json.RawMessage
+	_ = json.Unmarshal(top["nodes"], &nodes)
+	_ = json.Unmarshal(top["edges"], &edges)
+	for _, n := range nodes {
+		var id struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(n, &id) == nil && res.Visible(id.ID) {
+			keptN = append(keptN, n)
+		}
+	}
+	for _, e := range edges {
+		var ends struct {
+			Source string `json:"source"`
+			Target string `json:"target"`
+		}
+		if json.Unmarshal(e, &ends) == nil && res.Visible(ends.Source) && res.Visible(ends.Target) {
+			keptE = append(keptE, e)
+		}
+	}
+	var err error
+	if top["nodes"], err = json.Marshal(nonNilRaw(keptN)); err != nil {
+		return nil, err
+	}
+	if top["edges"], err = json.Marshal(nonNilRaw(keptE)); err != nil {
+		return nil, err
+	}
+	return json.Marshal(top)
+}
+
+func nonNilRaw(l []json.RawMessage) []json.RawMessage {
+	if l == nil {
+		return []json.RawMessage{}
+	}
+	return l
+}
+
 // encodeJSON builds the body WriteJSON writes, so a caller can tell an
 // encoding failure (nothing sent yet) from a failed write.
 func (v *View) encodeJSON(now time.Time) ([]byte, error) {
+	return v.encodeBody(now, v.snapshotJSON, nil)
+}
+
+// encodeBody builds the API body with snap as the snapshot and, when set,
+// query as a trailing "query" member.
+func (v *View) encodeBody(now time.Time, snap, query []byte) ([]byte, error) {
 	var buf bytes.Buffer
-	buf.Grow(len(v.snapshotJSON) + len(v.deltaJSON) + 128)
+	buf.Grow(len(snap) + len(v.deltaJSON) + len(query) + 128)
 	age := now.Sub(v.Snapshot.GeneratedAt).Seconds()
 	if age < 0 {
 		age = 0
@@ -114,9 +281,13 @@ func (v *View) encodeJSON(now time.Time) ([]byte, error) {
 	}
 	buf.Write(dj)
 	buf.WriteString(`,"snapshot":`)
-	buf.Write(v.snapshotJSON)
+	buf.Write(snap)
 	buf.WriteString(`,"delta":`)
 	buf.Write(v.deltaJSON)
+	if query != nil {
+		buf.WriteString(`,"query":`)
+		buf.Write(query)
+	}
 	buf.WriteString("}\n")
 	return buf.Bytes(), nil
 }
