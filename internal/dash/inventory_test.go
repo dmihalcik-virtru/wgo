@@ -375,6 +375,27 @@ func TestInventoryCoveredSince(t *testing.T) {
 	}
 }
 
+// TestInventoryCoveredSinceNeedsWholeSearches: a closed-recent search GitHub
+// cut short may lack merges anywhere in its window, so nothing is covered.
+func TestInventoryCoveredSinceNeedsWholeSearches(t *testing.T) {
+	a := inventoryAsm(t)
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/closed-recent": {}, "bob/closed-recent": {}})
+	if s, _ := a.build(); !s.Sources[SourceGitHubInventory].CoveredSince.Equal(a.since()) {
+		t.Fatal("whole searches should cover the window")
+	}
+	if _, err := inventory.Refresh(context.Background(), &truncatingInventory{}, inventory.Key{Login: "bob", Set: inventory.ClosedRecent}, a.since()); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := a.build()
+	st := s.Sources[SourceGitHubInventory]
+	if p := st.Parts[5]; p.Name != "bob/closed-recent" || !p.Truncated {
+		t.Fatalf("bob's closed-recent part %+v, want truncated", p)
+	}
+	if !st.CoveredSince.IsZero() {
+		t.Fatalf("covered since %v from a truncated closed-recent search", st.CoveredSince)
+	}
+}
+
 // TestInventoryPRMergedBetweenRefreshes: a PR that leaves open-authored
 // stays in the snapshot, stale, and closed-recent is due at once, until
 // closed-recent shows it merged.

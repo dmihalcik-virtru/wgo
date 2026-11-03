@@ -122,8 +122,9 @@ type SourceStatus struct {
 	// merged and closed PRs are known from: the latest start of their
 	// closed-recent windows (gh-102 compares a period with the one before
 	// it only inside it). Omitted while nobody is followed, or while a
-	// followed person's closed-recent set has no data or lags their
-	// open-authored set: then no period is known to be complete.
+	// followed person's closed-recent set has no data, was cut short by
+	// GitHub's search limit, or lags their open-authored set: then no
+	// period is known to be complete.
 	CoveredSince time.Time `json:"covered_since,omitzero"`
 }
 
