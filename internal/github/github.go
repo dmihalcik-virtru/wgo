@@ -358,6 +358,10 @@ type CLIClient struct {
 	// never finds it. In production this reads the remotes jj records for the
 	// bookmark; tests inject a fixed answer.
 	headOwnerResolver func(repoPath, branch string) []string
+
+	// retryBackoff is the wait before each retry of a GraphQL search page
+	// that failed with a 5xx or a timeout; its length is the retry count.
+	retryBackoff []time.Duration
 }
 
 // ClientOption configures a CLIClient at construction time.
@@ -394,6 +398,13 @@ func WithToken(tok string) ClientOption {
 	}
 }
 
+// WithRetryBackoff sets the waits before each retry of a GraphQL search page
+// that failed with a 5xx or a timeout: 1s, 2s and 4s by default. The number
+// of waits is the number of retries. Tests pass zeros.
+func WithRetryBackoff(waits ...time.Duration) ClientOption {
+	return func(c *CLIClient) { c.retryBackoff = append([]time.Duration{}, waits...) }
+}
+
 const (
 	defaultBaseURL  = "https://api.github.com"
 	defaultCacheTTL = 60 * time.Second
@@ -407,6 +418,7 @@ func NewClient(opts ...ClientOption) *CLIClient {
 	}
 	c.slugResolver = c.defaultSlugResolver
 	c.headOwnerResolver = defaultHeadOwnerResolver
+	c.retryBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 	for _, opt := range opts {
 		opt(c)
 	}
