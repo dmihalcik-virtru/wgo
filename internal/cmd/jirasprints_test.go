@@ -57,7 +57,11 @@ func TestFetchSprints(t *testing.T) {
 		"sprint = 1234 AND assignee in ('acct-bob',currentUser()) ORDER BY updated DESC",
 		"sprint = 1240 AND assignee in ('acct-bob',currentUser()) ORDER BY updated DESC",
 		"sprint = 1241 AND assignee in ('acct-bob',currentUser()) ORDER BY updated DESC",
+		// The failed search is retried per assignee, and fails for each.
+		"sprint = 1241 AND assignee in ('acct-bob') ORDER BY updated DESC",
+		"sprint = 1241 AND assignee in (currentUser()) ORDER BY updated DESC",
 	}, jqls, "only active sprints are searched")
+	assert.Empty(t, got.Notes, "a search that fails for everyone is not blamed on an identity")
 	require.Len(t, got.Sprints, 4)
 
 	s12 := got.Sprints[0]
@@ -94,4 +98,66 @@ func TestFetchSprintsListFailure(t *testing.T) {
 func TestACLIErrorLine(t *testing.T) {
 	assert.Equal(t, "a: b", acliErrorLine("a\n\n  b  \n"))
 	assert.Len(t, []rune(acliErrorLine(strings.Repeat("x", 400))), 300)
+}
+
+// TestFetchSprintsSurvivesARejectedIdentity: Jira rejects a search naming
+// an identity it does not know. The other assignees' tickets are still
+// found, the bad identity is named with its config key, and later sprints
+// leave it out.
+func TestFetchSprintsSurvivesARejectedIdentity(t *testing.T) {
+	jiraHome(t, "[pair]\nteammate = \"bob\"\nteammate_jira = \"acct-gone\"\n")
+	t.Setenv("PATH", t.TempDir())
+	oldList, oldSearch := listSprints, searchIssuesJSON
+	t.Cleanup(func() { listSprints, searchIssuesJSON = oldList, oldSearch })
+	listSprints = func(int, string, bool) ([]jira.Sprint, error) {
+		return []jira.Sprint{{ID: 1234, Name: "Sprint 12", State: "active"}, {ID: 1240, Name: "Web 7", State: "active"}}, nil
+	}
+	var jqls []string
+	searchIssuesJSON = func(jql string, fields []string, limit int) ([]json.RawMessage, error) {
+		jqls = append(jqls, jql)
+		if strings.Contains(jql, "acct-gone") {
+			return nil, errors.New("search issues: exit status 1\nError: The value 'acct-gone' does not exist for the field 'assignee'.")
+		}
+		return []json.RawMessage{json.RawMessage(`{"key":"TEAM-1","fields":{"summary":"mine"}}`)}, nil
+	}
+	got, err := sprintFetcher{}.FetchSprints(42, []string{"acct-gone", "currentUser()"})
+	require.NoError(t, err)
+	require.Len(t, got.Sprints, 2)
+	for _, s := range got.Sprints {
+		assert.Empty(t, s.Error)
+		require.Len(t, s.Tickets, 1, "sprint %d", s.ID)
+		assert.Equal(t, "TEAM-1", s.Tickets[0].Key)
+	}
+	assert.Equal(t, []string{
+		"sprint = 1234 AND assignee in ('acct-gone',currentUser()) ORDER BY updated DESC",
+		"sprint = 1234 AND assignee in ('acct-gone') ORDER BY updated DESC",
+		"sprint = 1234 AND assignee in (currentUser()) ORDER BY updated DESC",
+		"sprint = 1240 AND assignee in (currentUser()) ORDER BY updated DESC",
+	}, jqls, "the rejected identity is left out of later sprints")
+	require.Len(t, got.Notes, 1)
+	assert.Contains(t, got.Notes[0], `"acct-gone"`)
+	assert.Contains(t, got.Notes[0], "[pair] teammate_jira")
+	assert.Contains(t, got.Notes[0], "does not exist")
+}
+
+// TestFetchSprintsCutsPagedResults: paginated results beyond the bound are
+// cut locally and the sprint marked truncated, however acli pages them.
+func TestFetchSprintsCutsPagedResults(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	oldList, oldSearch := listSprints, searchIssuesJSON
+	t.Cleanup(func() { listSprints, searchIssuesJSON = oldList, oldSearch })
+	listSprints = func(int, string, bool) ([]jira.Sprint, error) {
+		return []jira.Sprint{{ID: 1234, Name: "Sprint 12", State: "active"}}, nil
+	}
+	searchIssuesJSON = func(string, []string, int) ([]json.RawMessage, error) {
+		var out []json.RawMessage
+		for i := range 250 { // more than the limit asked for
+			out = append(out, json.RawMessage(fmt.Sprintf(`{"key":"TEAM-%d","fields":{}}`, i+1)))
+		}
+		return out, nil
+	}
+	got, err := sprintFetcher{}.FetchSprints(42, []string{"currentUser()"})
+	require.NoError(t, err)
+	assert.Len(t, got.Sprints[0].Tickets, jiracache.MaxSprintTickets)
+	assert.True(t, got.Sprints[0].Truncated)
 }

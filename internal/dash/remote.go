@@ -175,6 +175,11 @@ func (r BatchResult) Err() error {
 	return fmt.Errorf("remote refresh: %s", strings.Join(parts, ", "))
 }
 
+// failedErr is Err for the failed jobs alone, leaving out the dropped ones.
+func (r BatchResult) failedErr() error {
+	return BatchResult{Jobs: r.Jobs, Failed: r.Failed}.Err()
+}
+
 // NewRefresher starts a Refresher's workers.
 func NewRefresher(f Fetchers, opts RefresherOptions) *Refresher {
 	if opts.Workers <= 0 {

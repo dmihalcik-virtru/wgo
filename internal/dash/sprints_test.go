@@ -388,3 +388,77 @@ func TestRefreshWaitFetchesSprintTicketFacts(t *testing.T) {
 		t.Fatalf("jira_sprints: %+v", st)
 	}
 }
+
+// TestAssembleSprintsKeepsTicketsOfAFailedSearch: a sprint whose search
+// failed still shows the tickets of its last good search, as stale with
+// the error, and the board is refetched once negativeTTL has passed.
+func TestAssembleSprintsKeepsTicketsOfAFailedSearch(t *testing.T) {
+	a := newAsm(t)
+	a.c.cfg.JiraBoard = 42
+	cacheBoard(t, boardFixture(), JiraCurrentUser)
+	failed := boardFixture()
+	failed.Sprints[2].Tickets, failed.Sprints[2].Error = nil, "search issues: exit status 1"
+	if err := jiracache.RefreshSprints(&stubSprintFetcher{data: failed}, 42, []string{JiraCurrentUser}); err == nil {
+		t.Fatal("the failed search is reported")
+	}
+	s, jobs := a.build()
+	if got := edgesFrom(s, effortNodeID(sprintEffortKey(1234)), EdgeTracks); len(got) != 3 {
+		t.Fatalf("Sprint 12's tickets are kept: tracks %v", got)
+	}
+	var part *SourcePart
+	st := s.Sources[SourceJiraSprints]
+	for i := range st.Parts {
+		if st.Parts[i].Name == "sprint 1234" {
+			part = &st.Parts[i]
+		}
+	}
+	if part == nil || part.State != Stale || part.Error == "" || part.FetchedAt.IsZero() {
+		t.Fatalf("kept part: %+v", part)
+	}
+	if st.State != Stale {
+		t.Fatalf("jira_sprints: %+v", st)
+	}
+	if countJobs(jobs, JobSprints) != 0 {
+		t.Fatal("within negativeTTL the board is not refetched yet")
+	}
+}
+
+// TestAssembleSprintsShowsSearchNotes: the board's notes, such as a
+// rejected Jira identity, are diagnostics.
+func TestAssembleSprintsShowsSearchNotes(t *testing.T) {
+	a := newAsm(t)
+	a.c.cfg.JiraBoard = 42
+	data := boardFixture()
+	data.Notes = []string{`Jira rejected the sprint search for "acct-old" ([pair] teammate_jira)`}
+	cacheBoard(t, data, JiraCurrentUser)
+	s, _ := a.build()
+	if !slices.Contains(s.Diagnostics, data.Notes[0]) {
+		t.Fatalf("diagnostics %v", s.Diagnostics)
+	}
+}
+
+// TestRefreshWaitQueueOverflowIsNotAFailure: jobs beyond the queue bound
+// are not run; a waited refresh says so but does not fail, and their data
+// stays unknown.
+func TestRefreshWaitQueueOverflowIsNotAFailure(t *testing.T) {
+	f := newFixture(t)
+	bf := &blockingFetchers{release: make(chan struct{})}
+	r := NewRefresher(Fetchers{PR: bf, Jira: bf, Issue: bf}, RefresherOptions{Workers: 1, Queue: 1, IgnoreLeases: true})
+	defer r.Close()
+	d, err := Open(Options{Dir: t.TempDir(), Collector: f.collector(t, time.Now(), memSource{}), Refresher: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for bf.calls.Load() < 1 {
+			time.Sleep(time.Millisecond)
+		}
+		close(bf.release)
+	}()
+	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true}); err != nil {
+		t.Fatalf("dropped lookups must not fail the refresh: %v", err)
+	}
+	if v := d.Current(); !hasDiag(v, "not run (queue full)") {
+		t.Fatalf("diagnostics %v", v.Diagnostics)
+	}
+}

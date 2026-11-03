@@ -79,3 +79,36 @@ func TestLockSprintsRefreshBacksOff(t *testing.T) {
 	assert.False(t, LockSprintsRefresh(42, time.Hour))
 	assert.True(t, LockSprintsRefresh(43, time.Hour), "leases are per board")
 }
+
+// TestFailedSearchKeepsTheSprintsTickets: a sprint whose search fails keeps
+// the tickets of its last good search, stamped with when that ran, and the
+// entry is retried after negativeTTL rather than the full SprintTTL.
+func TestFailedSearchKeepsTheSprintsTickets(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	good := BoardSprints{Sprints: []SprintEntry{{ID: 1234, Name: "Sprint 12", State: "active", Truncated: true,
+		Tickets: []SprintTicket{{Key: "TEAM-1", Info: Info{Status: "To Do"}}}}}}
+	require.NoError(t, RefreshSprints(&stubSprints{data: good}, 42, nil))
+	first := ReadSprints(42, SprintTTL).FetchedAt
+
+	failed := BoardSprints{Sprints: []SprintEntry{{ID: 1234, Name: "Sprint 12", State: "active", Error: "search issues: exit status 1"}}}
+	require.Error(t, RefreshSprints(&stubSprints{data: failed}, 42, nil))
+	r := ReadSprints(42, SprintTTL)
+	require.Len(t, r.Data.Sprints, 1)
+	s := r.Data.Sprints[0]
+	assert.Equal(t, "search issues: exit status 1", s.Error)
+	assert.Equal(t, []SprintTicket{{Key: "TEAM-1", Info: Info{Status: "To Do"}}}, s.Tickets, "the last good tickets are kept")
+	assert.True(t, s.Truncated)
+	assert.True(t, s.TicketsFetchedAt.Equal(first), "stamped with the search that found them")
+
+	// A second failure keeps the original stamp.
+	require.Error(t, RefreshSprints(&stubSprints{data: failed}, 42, nil))
+	assert.True(t, ReadSprints(42, SprintTTL).Data.Sprints[0].TicketsFetchedAt.Equal(first))
+
+	// Retried soon: stale after negativeTTL although within SprintTTL.
+	e := sprintsEntry{Data: ReadSprints(42, SprintTTL).Data, FetchedAt: time.Now().Add(-negativeTTL - time.Second)}
+	require.NoError(t, writeSprints(42, e))
+	assert.Equal(t, Stale, ReadSprints(42, SprintTTL).State)
+	e.Data.Sprints[0].Error = ""
+	require.NoError(t, writeSprints(42, e))
+	assert.Equal(t, Fresh, ReadSprints(42, SprintTTL).State, "a clean entry lives its full TTL")
+}

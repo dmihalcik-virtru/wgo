@@ -74,6 +74,9 @@ func (c *Collector) addSprints(b *builder, effortNode func(string) string, jira 
 	}
 
 	parts := []SourcePart{boardPart}
+	if boardPart.State.hasData() {
+		b.diags = append(b.diags, res.Data.Notes...)
+	}
 	members := map[string][]int{} // ticket node ID -> the active sprints whose search found it
 	var found []string            // ticket node IDs in the order found
 	if boardPart.State.hasData() {
@@ -102,7 +105,11 @@ func (c *Collector) addSprints(b *builder, effortNode func(string) string, jira 
 				continue
 			}
 			part := SourcePart{Name: "sprint " + strconv.Itoa(sp.ID), State: boardPart.State, FetchedAt: res.FetchedAt, Truncated: sp.Truncated}
-			if sp.Error != "" {
+			switch {
+			case sp.Error != "" && sp.Tickets != nil:
+				// The search failed; its tickets are an earlier search's.
+				part.State, part.Error, part.FetchedAt = Stale, sp.Error, sp.TicketsFetchedAt
+			case sp.Error != "":
 				part.State, part.Error, part.FetchedAt = Error, sp.Error, time.Time{}
 			}
 			parts = append(parts, part)

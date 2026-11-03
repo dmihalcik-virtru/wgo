@@ -415,9 +415,12 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 			}
 			s, _ = c.assemble(ls)
 		}
-		remoteErr := res.Err()
-		d.recordRefreshError(remoteErr)
+		// Every problem is shown; only failed lookups fail the command. Jobs
+		// beyond the queue bound were not run, so their data stays stale or
+		// unknown, which the snapshot already says.
+		d.recordRefreshError(res.Err())
 		d.recordSkipped(d.opts.Refresher.skipSummary(res))
+		remoteErr := res.failedErr()
 		if err := d.Publish(s); err != nil {
 			return errors.Join(err, remoteErr)
 		}

@@ -40,6 +40,9 @@ var (
 // DefaultDashPort is the default loopback port `wgo dash` serves on.
 const DefaultDashPort = 8766
 
+// dashRefreshQueue bounds the jobs `wgo dash --json --refresh` queues.
+const dashRefreshQueue = 4096
+
 // dashCmd is `wgo dash`: the live dashboard of ongoing work (gh-70).
 var dashCmd = &cobra.Command{
 	Use:   "dash",
@@ -192,7 +195,10 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		})
 	}
 	if dashRefresh {
-		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, IgnoreLeases: true})
+		// One waited-for batch: queue it whole. The server's smaller bound
+		// protects a long-running process; here two full sprints' tickets
+		// alone are 400 lookups.
+		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, IgnoreLeases: true, Queue: dashRefreshQueue})
 		defer r.Close()
 		opts.Refresher = r
 	}
