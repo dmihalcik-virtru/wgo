@@ -143,8 +143,8 @@ func TestExtractArgErrors(t *testing.T) {
 		args ExtractArgs
 		want string
 	}{
-		{ExtractArgs{View: "sprint"}, "the sprint view is not available yet: it arrives with gh-105"},
-		{ExtractArgs{Sprint: "42"}, "a sprint is chosen for the sprint view, which is not available yet"},
+		{ExtractArgs{View: "sprint", Sprint: "42"}, "no sprint 42 in this snapshot; the active sprint is 1234 (Sprint 12)"},
+		{ExtractArgs{Sprint: "42"}, "a sprint only applies to the sprint view"},
 		{ExtractArgs{View: "kanban"}, `unknown view "kanban"`},
 		{ExtractArgs{Group: "team"}, `unknown group "team"; use effort, repo or none`},
 		{ExtractArgs{Layout: "csv"}, `unknown layout "csv"`},
@@ -203,7 +203,7 @@ func TestExtractRouteMatchesExtract(t *testing.T) {
 		}
 	}
 	for path, want := range map[string]string{
-		"?view=sprint&sprint=42": "the sprint view is not available yet",
+		"?view=sprint&sprint=42": "no sprint 42 in this snapshot",
 		"?q=prstat:open":         `unknown field "prstat" at column 1; did you mean prstate?`,
 		"?cols=nope":             `unknown column "nope"`,
 		"?sort=-mov":             `unknown sort key "mov"; did you mean move?`,

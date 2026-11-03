@@ -97,12 +97,15 @@ func (c *Collector) addSprints(b *builder, effortNode func(string) string, jira 
 			if label == "" {
 				label = "Sprint " + strconv.Itoa(sp.ID)
 			}
-			b.node(Node{ID: nid, Kind: KindSprint, Label: label, Sprint: &SprintInfo{
+			sn := b.node(Node{ID: nid, Kind: KindSprint, Label: label, Sprint: &SprintInfo{
 				ID: sp.ID, Name: sp.Name, State: sprintState(sp.State), Start: sp.Start, End: sp.End, Goal: sp.Goal,
 				Board: board, Freshness: boardPart.State, FetchedAt: res.FetchedAt, Truncated: sp.Truncated,
 			}})
 			if sp.State != SprintActive {
 				continue
+			}
+			if sn.Sprint != nil {
+				sn.Sprint.Searched = sp.Tickets != nil
 			}
 			part := SourcePart{Name: "sprint " + strconv.Itoa(sp.ID), State: boardPart.State, FetchedAt: res.FetchedAt, Truncated: sp.Truncated}
 			switch {
@@ -124,6 +127,13 @@ func (c *Collector) addSprints(b *builder, effortNode func(string) string, jira 
 				members[tid] = append(members[tid], sp.ID)
 				b.edge(tid, nid, EdgeInSprint)
 			}
+		}
+	}
+
+	// Whose tickets the searches found: the followed people's (gh-105).
+	for tid, ids := range members {
+		if n := b.nodes[tid]; n != nil && n.Ticket != nil {
+			n.Ticket.SprintSearch = slices.Compact(slices.Sorted(slices.Values(ids)))
 		}
 	}
 

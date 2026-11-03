@@ -65,14 +65,16 @@ func TestHandlerReadPathIsPure(t *testing.T) {
 		}
 	}
 	extract := func(wantStatus int) {
-		for _, q := range []string{"", "?q=kind:pr;prstate:open&cols=repo,checks", "?q=repo:acme/repo&group=repo&layout=table", "?q=prstat:x", "?view=sprint"} {
+		for _, q := range []string{"", "?q=kind:pr;prstate:open&cols=repo,checks", "?q=repo:acme/repo&group=repo&layout=table", "?q=prstat:x", "?view=sprint", "?view=sprint&sprint=999&q=kind:ticket"} {
 			resp, err := srv.Client().Get(srv.URL + ExtractPath + q)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, _ = io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if want := wantStatus; want == 200 && (strings.Contains(q, "prstat:") || strings.Contains(q, "sprint")) {
+			// The snapshot has no sprints: the sprint view explains that,
+			// whichever sprint is asked for.
+			if want := wantStatus; want == 200 && strings.Contains(q, "prstat:") {
 				want = 400
 				if resp.StatusCode != want {
 					t.Fatalf("%s: %d, want %d", q, resp.StatusCode, want)

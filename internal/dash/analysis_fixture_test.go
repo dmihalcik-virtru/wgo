@@ -496,19 +496,28 @@ func TestAnalysisFixtureScenarios(t *testing.T) {
 
 	t.Run("sprints", func(t *testing.T) {
 		var active, future *SprintInfo
+		var actives []*SprintInfo
 		for _, n := range s.Nodes {
 			if n.Sprint == nil {
 				continue
 			}
 			switch n.Sprint.State {
 			case SprintActive:
-				active = n.Sprint
+				actives = append(actives, n.Sprint)
+				if active == nil {
+					active = n.Sprint
+				}
 			case SprintFuture:
 				future = n.Sprint
 			}
 		}
 		if active == nil || active.Goal == "" || active.Start.IsZero() || active.End.IsZero() || active.Board != 42 || future == nil {
 			t.Fatalf("want an active sprint with goal, dates and board 42, and a future sprint; got %+v and %+v", active, future)
+		}
+		// gh-105's sprint selector: a second, parallel active sprint, with
+		// no goal.
+		if len(actives) != 2 || actives[1].Goal != "" {
+			t.Errorf("want a second active sprint without a goal; got %+v", actives)
 		}
 		activeID := sprintNodeID(active.ID)
 		type tk struct {

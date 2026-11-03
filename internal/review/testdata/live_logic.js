@@ -671,6 +671,182 @@ test("table: column info names the scales", () => {
   assert.ok(T.numeric(T.colInfo(TREG, "points")) && !T.numeric(T.colInfo(TREG, "author")));
 });
 
+// ===== gh-105: the sprint view's pure logic (web/live-sprint.js) =====
+// Loaded beside live.js, on the analysis fixture beside fields.json; the
+// day count, default sprint and points must agree with extract_sprint.go
+// (the last test reads its golden summary). A block keeps its names local.
+{
+const SP = require(require("node:path").join(require("node:path").dirname(process.argv[2]), "live-sprint.js"))(L);
+const SPDATA = require("node:path").dirname(process.argv[3]);
+const AFIX = JSON.parse(fs.readFileSync(require("node:path").join(SPDATA, "analysis_fixture.json"), "utf8"));
+const keysOf = (nodes) => nodes.map((x) => x.label);
+
+test("sprint: active sprints, their tickets and the default", () => {
+  const list = SP.activeSprints(AFIX);
+  assert.deepEqual(list.map((a) => [a.id, a.tickets.length, a.people, a.unknownPeople]), [[1234, 6, 5, 0], [1240, 1, 0, 0]], "Sprint 12: five of six for alice and bob; Web Sprint 4: carol's");
+  assert.equal(SP.defaultSprint(list).id, 1234);
+  assert.equal(SP.peopleText(list[0]), "5 of its 6 tickets are assigned to the people wgo dash follows");
+  const mk = (id, n, people, unknown) => ({ id, sprint: { id }, tickets: new Array(n), people, unknownPeople: unknown });
+  for (const [l, want, what] of [
+    [[mk(1, 9, 1, 0), mk(2, 3, 2, 0)], 2, "people first"],
+    [[mk(1, 3, 2, 0), mk(2, 4, 2, 0)], 2, "then tickets"],
+    [[mk(1, 4, 2, 0), mk(2, 4, 2, 0)], 1, "then the first"],
+    [[mk(1, 0, 0, 0), mk(2, 0, 0, 0)], 1, "none"],
+    [[mk(1, 3, 3, 0), mk(2, 4, 0, 4)], 2, "unknown for some sprint: the most tickets"],
+    [[mk(1, 4, 3, 1), mk(2, 4, 0, 0)], 1, "unknown, tied: the first"],
+  ]) assert.equal(SP.defaultSprint(l).id, want, what);
+  assert.equal(SP.defaultSprint([]), null);
+  assert.match(SP.peopleText(mk(2, 4, 1, 3)), /^whose tickets these are is unknown for 3 of its 4 tickets \(1 is known to be assigned to the people wgo dash follows\): .*\[\[dash\.people\]\]$/);
+});
+
+test("sprint: whose tickets: account IDs or the sprint's search, else unknown (TestForPeople's cases)", () => {
+  const acct = [{ login: "alice", jira: "acct-alice", me: true }, { login: "bob", jira: "acct-bob" }];
+  const placeholder = [{ login: "alice", jira: "currentUser()", me: true }, { login: "bob", jira: "acct-bob" }];
+  const noJira = [{ login: "alice", jira: "currentUser()", me: true }, { login: "bob" }];
+  const searched = { id: 7, searched: true };
+  for (const [name, t, sp, people, want] of [
+    ["account ID", { assignee_id: "ACCT-BOB" }, { id: 7 }, placeholder, true],
+    ["found by the search", { assignee_id: "acct-x", sprint_search: [7] }, { id: 7 }, placeholder, true],
+    ["found by another sprint's search", { assignee_id: "acct-x", sprint_search: [8] }, { id: 7 }, placeholder, null],
+    ["unassigned", { freshness: "fresh" }, { id: 7 }, placeholder, false],
+    ["assignee unknown", { freshness: "unknown" }, { id: 7 }, placeholder, null],
+    ["compared with every account ID", { assignee_id: "acct-carol" }, { id: 7 }, acct, false],
+    ["currentUser() cannot be compared", { assignee_id: "acct-carol" }, { id: 7 }, placeholder, null],
+    ["an email cannot be compared", { assignee_id: "acct-carol" }, { id: 7 }, [{ login: "alice", jira: "alice@example.com" }], null],
+    ["display names are not trusted", { assignee: "Alice", freshness: "fresh" }, { id: 7 }, [{ login: "alice", jira: "currentUser()", name: "Alice" }], null],
+    ["the complete search missed it", { assignee_id: "acct-carol" }, searched, placeholder, false],
+    ["a truncated search", { assignee_id: "acct-carol" }, { id: 7, searched: true, truncated: true }, placeholder, null],
+    ["a search that skipped someone", { assignee_id: "acct-carol" }, searched, noJira, null],
+    ["nobody followed", { assignee_id: "acct-carol" }, searched, [], null],
+  ]) assert.equal(SP.forPeople(t, sp, people), want, name);
+  // Without account IDs or the search: unknown, and the default is the
+  // sprint with the most tickets.
+  const snap = JSON.parse(JSON.stringify(AFIX));
+  snap.people = placeholder;
+  snap.nodes.forEach((x) => { if (x.ticket) delete x.ticket.sprint_search; if (x.sprint) delete x.sprint.searched; });
+  const list = SP.activeSprints(snap);
+  assert.deepEqual(list.map((a) => [a.people, a.unknownPeople]), [[1, 4], [0, 1]]);
+  assert.equal(SP.peopleKnown(list), false);
+  assert.equal(SP.defaultSprint(list).id, 1234);
+});
+
+test("sprint: sprint= chooses a sprint or names the active ones", () => {
+  const list = SP.activeSprints(AFIX);
+  assert.equal(SP.chooseSprint(AFIX, list, "").sprint.id, 1234);
+  assert.equal(SP.chooseSprint(AFIX, list, "1240").sprint.id, 1240);
+  assert.equal(SP.chooseSprint(AFIX, list, "sprint:1240").sprint.id, 1240);
+  assert.equal(SP.chooseSprint(AFIX, list, "1235").error, "sprint 1235 (Sprint 13) is future, and the sprint view shows active sprints only; the active sprints are 1234 (Sprint 12), 1240 (Web Sprint 4)");
+  assert.equal(SP.chooseSprint(AFIX, list, "999").error, "no sprint 999 in this snapshot; the active sprints are 1234 (Sprint 12), 1240 (Web Sprint 4)");
+  assert.match(SP.chooseSprint(AFIX, list, "Sprint 12").error, /^sprint "Sprint 12" is not a sprint ID/);
+});
+
+test("sprint: points by status category, unestimated and unknown apart", () => {
+  const p = SP.progress(SP.activeSprints(AFIX)[0].tickets);
+  assert.deepEqual(p.parts.map((x) => [x.key, x.points, x.tickets]), [["done", 3, 1], ["in_progress", 15, 3], ["todo", 0, 2]]);
+  assert.equal(p.points, 18);
+  assert.deepEqual(keysOf(p.unestimated), ["TEAM-104"], "read without points: unestimated, not zero");
+  assert.deepEqual(keysOf(p.unknownPoints), ["TEAM-106"], "points never read (no story_points_known): unknown, not unestimated");
+  assert.deepEqual(p.parts.map((x) => [+x.start.toFixed(3), +x.frac.toFixed(3)]), [[0, 0.167], [0.167, 0.833], [1, 0]], "bar starts and lengths, done first");
+  const odd = SP.progress([{ label: "X-1", ticket: { story_points_known: true, story_points: 2.5 } }, { label: "X-2", ticket: { status_category: "todo" } }]);
+  assert.deepEqual(keysOf(odd.unknownCategory), ["X-1"], "unknown category: listed, not in a part");
+  assert.equal(odd.points, 0, "its points are in no part");
+  assert.deepEqual(SP.pointsOf({ story_points_known: true, story_points: 0 }), { kind: "known", value: 0, text: "0" }, "zero is an estimate");
+  assert.equal(SP.pointsOf({ story_points: 5 }).kind, "unknown", "points without story_points_known are not trusted");
+  assert.equal(SP.ptsText(1) + "|" + SP.ptsText(2.5), "1 pt|2.5 pts");
+  // Two decimals, as pointsText in Go (TestCountSprint has the same cases).
+  assert.deepEqual([1, 2.5, 0, 0.1 + 0.2, 1 / 3, 1e-9, 13].map(SP.num), ["1", "2.5", "0", "0.3", "0.33", "0", "13"]);
+  const sum = SP.progress([{ label: "F-1", ticket: { status_category: "done", story_points_known: true, story_points: 0.1 } }, { label: "F-2", ticket: { status_category: "done", story_points_known: true, story_points: 0.2 } }]);
+  assert.equal(SP.ptsText(sum.parts[0].points), "0.3 pts", "a sum of fractions");
+});
+
+test("sprint: tickets by status category, then assignee, then key", () => {
+  const g = SP.groups(SP.activeSprints(AFIX)[0].tickets);
+  assert.deepEqual(g.map((x) => [x.label, x.rows.map((r) => r.node.label + ":" + r.assignee.text)]), [
+    ["Done", ["TEAM-102:Alice"]],
+    ["In Progress", ["TEAM-101:Alice", "TEAM-103:Alice", "TEAM-105:Alice"]],
+    ["To Do", ["TEAM-104:Bob", "TEAM-106:Unassigned"]],
+  ]);
+  const t = (key, cat, assignee, freshness) => ({ id: key, label: key, ticket: { key, status_category: cat, assignee, freshness } });
+  const g2 = SP.groups([t("A-10", "todo", "", "unknown"), t("A-9", "todo", "", "fresh"), t("A-2", "todo", "zed"), t("A-1", "todo", "Amy"), t("A-3", "", "Amy")]);
+  assert.deepEqual(g2.map((x) => [x.key, x.rows.map((r) => r.node.label)]), [["todo", ["A-1", "A-2", "A-9", "A-10"]], ["", ["A-3"]]], "named, unassigned, unknown; unknown category last");
+  assert.equal(SP.assigneeOf({ freshness: "unknown" }).text, "unknown", "no Jira data: the assignee is unknown, not unassigned");
+  assert.equal(SP.compareKeys("TEAM-9", "TEAM-10") < 0, true);
+});
+
+test("sprint: linked PR glyphs, mismatches and whose move on hover", () => {
+  assert.deepEqual(["draft", "open", "approved", "merged", "closed", "", "weird"].map((s) => SP.prGlyph(s).glyph).join(""), "◇○✓●✕??");
+  assert.equal(SP.prGlyph("open").text, "open, awaiting review");
+  const byId = new Map(AFIX.nodes.map((x) => [x.id, x]));
+  const t102 = byId.get("ticket:jira:TEAM-102").ticket;
+  assert.deepEqual(SP.mismatchesOf(t102).list.map((m) => m.code), ["ticket_done_code_open"]);
+  assert.deepEqual(SP.mismatchesOf(byId.get("ticket:jira:TEAM-101").ticket).list, []);
+  assert.deepEqual(SP.mismatchesOf(byId.get("ticket:jira:TEAM-108").ticket), { unknown: true, why: "could not be decided: status_category unknown" });
+  assert.equal(SP.mismatchesOf({ key: "X" }).unknown, true);
+  // Whose move, with the table's details (L.moveTitle): who, why, uncertain.
+  const lp = t102.facts.linked_prs[0], pr102 = byId.get(lp.id).pr, tip = SP.prTitle(lp, pr102, "alice");
+  assert.equal(tip, lp.ref + ": open, awaiting review — " + pr102.title + "\nWhose move: " + L.moveWord(pr102.facts, "alice").word + "\n" + L.moveTitle(pr102.facts));
+  const mine = { title: "T", facts: { move: "author", move_people: ["alice"], reasons: [{ code: "draft", evidence: "draft since Oct 8" }] } };
+  assert.equal(SP.prTitle({ id: "p", ref: "acme/x#2", state: "draft" }, mine, "ALICE"), "acme/x#2: draft — T\nWhose move: you (author)\nHeld by alice\ndraft: draft since Oct 8");
+  const unk = { facts: { move: "unknown", reasons: [{ code: "ci_pending", evidence: "2 checks pending" }], uncertain: ["requested_at:bob"] } };
+  assert.equal(SP.prTitle({ id: "p", ref: "acme/x#3", state: "open" }, unk, "alice"), "acme/x#3: open, awaiting review\nWhose move: unknown\nci pending: 2 checks pending\nUncertain: requested_at:bob", "unknown keeps its reasons and what is uncertain");
+  assert.equal(SP.prTitle({ id: "p", ref: "acme/x#4", state: "open" }, {}, "alice"), "acme/x#4: open, awaiting review\nWhose move is unknown: no derived facts for this PR");
+  assert.equal(SP.prTitle({ id: "pr:x", ref: "acme/x#1", state: "merged" }, null), "acme/x#1: merged\nNot in the snapshot");
+  assert.equal(SP.codeText("ticket_done_code_open"), "ticket done code open");
+});
+
+test("sprint: day N of M in the snapshot's timezone (TestSprintDay's cases)", () => {
+  const day = (start, end, now, tz) => SP.sprintDay(start, end, Date.parse(now), L.queryEnv({ generated_at: now, timezone: tz }).dayOf).text;
+  for (const [s, e, now, tz, want] of [
+    ["2026-10-20T08:00:00Z", "2026-11-03T08:00:00Z", "2026-10-30T16:00:00Z", "UTC", "day 11 of 14"],
+    ["2026-10-20T08:00:00Z", "2026-11-03T08:00:00Z", "2026-10-20T08:00:00Z", "UTC", "day 1 of 14"],
+    ["2026-10-20T08:00:00Z", "2026-11-03T08:00:00Z", "2026-11-03T07:00:00Z", "UTC", "day 14 of 14"],
+    ["2026-10-20T08:00:00Z", "2026-11-03T08:00:00Z", "2026-11-04T09:00:00Z", "UTC", "day 14 of 14, past its end"],
+    ["2026-10-20T08:00:00Z", "2026-11-03T08:00:00Z", "2026-10-18T09:00:00Z", "UTC", "starts in 2 days"],
+    ["2026-10-20T08:00:00Z", "2026-11-03T08:00:00Z", "2026-10-20T07:00:00Z", "UTC", "starts today"],
+    ["2026-10-05T14:00:00Z", "2026-10-26T14:00:00Z", "2026-10-08T13:00:00Z", "America/New_York", "day 4 of 21"],
+    ["2026-10-05T14:00:00Z", "2026-10-26T14:00:00Z", "2026-10-09T03:30:00Z", "America/New_York", "day 4 of 21"],
+    ["2026-10-05T14:00:00Z", "2026-10-26T14:00:00Z", "2026-10-09T03:30:00Z", "UTC", "day 5 of 21"],
+    ["2026-10-26T13:00:00Z", "2026-11-09T14:00:00Z", "2026-11-08T15:00:00Z", "America/New_York", "day 14 of 14"],
+  ]) assert.equal(day(s, e, now, tz), want, s + ".." + e + " at " + now + " in " + tz);
+  const d = SP.sprintDay("2026-10-20T08:00:00Z", "2026-11-03T08:00:00Z", Date.parse("2026-10-30T16:00:00Z"), L.queryEnv(AFIX).dayOf);
+  assert.equal(d.frac.toFixed(3), "0.738", "the bar: the share of the sprint's time passed");
+  assert.equal(SP.sprintDay(undefined, "2026-11-03T08:00:00Z", 0, L.queryEnv(AFIX).dayOf).ok, false, "unknown dates");
+});
+
+test("sprint: explains a missing board or missing sprint data", () => {
+  const base = { generated_at: "2026-10-30T16:00:00Z", nodes: [], edges: [] };
+  const ex = (sources, nodes) => SP.explain(Object.assign({}, base, { sources, nodes: nodes || [] }), []);
+  assert.deepEqual(ex({}), { title: "No sprint data", config: true, detail: ["This snapshot does not report the jira_sprints source, so it holds no sprints: it was made by a wgo dash without sprint support, or before a [jira] board was set."] });
+  const noBoard = ex({ jira_sprints: { state: "unknown", detail: "no [jira] board is configured; set board in the [jira] section of ~/.wgo/config.toml to show its sprints" } });
+  assert.equal(noBoard.title + "|" + noBoard.config, "No [jira] board is configured|true");
+  assert.match(SP.BOARD_SNIPPET, /^\[jira\]\nboard = <id>$/);
+  const miss = ex({ jira_sprints: { state: "unknown", detail: "board 42's sprints are not cached yet", parts: [{ name: "board 42", state: "unknown" }] } });
+  assert.deepEqual([miss.title, miss.config, miss.detail], ["Board 42's sprints are not known yet", false, ["Board 42's sprints are not cached yet."]]);
+  const failed = ex({ jira_sprints: { state: "error", detail: "board 42: the sprint lookup failed", parts: [{ name: "board 42", state: "error", error: "acli: not logged in" }] } });
+  assert.deepEqual([failed.title, failed.detail], ["Board 42's sprints could not be read", ["The lookup failed: acli: not logged in.", "Board 42: the sprint lookup failed."]]);
+  const none = ex({ jira_sprints: { state: "fresh", parts: [{ name: "board 42", state: "fresh" }] } }, [{ id: "sprint:1235", kind: "sprint", sprint: { id: 1235, name: "Sprint 13", state: "future", start: "2026-11-03T08:00:00Z" } }]);
+  assert.deepEqual([none.title, none.detail], ["Board 42 has no active sprint", ["The sprint view shows active sprints only.", "Future: Sprint 13 (1235) from 2026-11-03."]]);
+  assert.equal(SP.explain(AFIX, SP.activeSprints(AFIX)), null, "an active sprint needs no explanation");
+});
+
+test("sprint: direct labels sit under their segments without overlapping", () => {
+  assert.deepEqual(SP.labelLayout([0, 85, 514], [60, 100, 70], 514, 8), [0, 85, 444], "each at its start; the last pulled inside");
+  assert.deepEqual(SP.labelLayout([0, 20, 40], [60, 60, 60], 300, 8), [0, 68, 136], "pushed right past the previous label");
+  assert.deepEqual(SP.labelLayout([0, 300, 300], [60, 60, 60], 300, 8), [0, 172, 240], "pulled back from the right");
+  assert.equal(SP.labelLayout([0, 50, 100], [80, 80, 80], 200, 8), null, "too wide: the labels wrap instead");
+});
+
+test("sprint: the page counts as extract_sprint.go does (its golden summary)", () => {
+  const golden = fs.readFileSync(require("node:path").join(SPDATA, "sprint_extract.golden.md"), "utf8");
+  const sp = SP.activeSprints(AFIX)[0], p = SP.progress(sp.tickets);
+  for (const part of p.parts) assert.ok(golden.includes("- " + part.label + ": " + SP.num(part.points) + " points · " + part.tickets + " ticket" + (part.tickets === 1 ? "" : "s") + "\n"), part.label);
+  assert.ok(golden.includes("Not in the points: " + p.unestimated.length + " unestimated (TEAM-104) · " + p.unknownPoints.length + " with points unknown (TEAM-106)\n"));
+  const d = SP.sprintDay(sp.sprint.start, sp.sprint.end, L.queryEnv(AFIX).nowMs, L.queryEnv(AFIX).dayOf);
+  assert.ok(golden.includes("## " + SP.sprintName(sp.sprint) + "\n") && golden.includes(" · " + d.text + "\n"), "same default sprint and day");
+});
+}
+// ===== end gh-105 =====
+
 // ---------- performance (requirement 28): logged, not asserted ----------
 // genSnapshot mirrors genSnapshot in internal/dash/query_test.go.
 function genSnapshot(n) {
@@ -799,7 +975,11 @@ test("facets: ghosts are the whole snapshot; the selection's share is its own", 
   assert.equal(rows[0].person, "alice");
   const sprint = FX.valueRows(aix, FX.fieldIndex(aix, "sprint"), FX.facetCounts(FX.fieldIndex(aix, "sprint"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("", AREG), "sprint"));
   assert.ok(sprint.some((r) => r.key === "sprint 12") && !sprint.some((r) => r.key === "1234"), "a sprint's ID beside its name is listed once: " + sprint.map((r) => r.key));
-  assert.deepEqual(sprint.slice(-2).map((r) => r.kind), ["unknown", "none"], "unknown and none are their own rows");
+  // (gh-105 put the fixture's one ticket in no sprint into Web Sprint 4;
+  // components still have an unknown and a none.)
+  const comp = FX.valueRows(aix, FX.fieldIndex(aix, "component"), FX.facetCounts(FX.fieldIndex(aix, "component"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("", AREG), "component"));
+  assert.deepEqual(comp.slice(-2).map((r) => r.kind), ["unknown", "none"], "unknown and none are their own rows");
+  assert.equal(sprint[sprint.length - 1].kind, "unknown", "a sprint unknown is its own row");
   const named = FX.valueRows(aix, FX.fieldIndex(aix, "sprint"), FX.facetCounts(FX.fieldIndex(aix, "sprint"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("sprint:1234", AREG), "sprint"));
   assert.deepEqual(named.filter((r) => r.key === "1234").map((r) => r.ghost + ":" + r.sel), ["6:true"], "an ID the query names shows with its count");
   const shown = FX.shownRows(FX.valueRows(aix, FX.fieldIndex(aix, "repo"), FX.facetCounts(FX.fieldIndex(aix, "repo"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("", AREG), "repo")), "WEB", 8);
