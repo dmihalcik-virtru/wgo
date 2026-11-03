@@ -23,11 +23,17 @@ func TestLiveJSLogic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The query vectors and the field registry are internal/dash's; the JS
-	// evaluator must agree with the Go one on every case.
+	table, err := filepath.Abs(filepath.Join("web", "live-table.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The query vectors, the table vectors and the field registry are
+	// internal/dash's; the JS evaluator and the table's sort must agree with
+	// the Go ones on every case.
 	dashData := filepath.Join("..", "dash", "testdata")
 	out, err := exec.Command(node, filepath.Join("testdata", "live_logic.js"), live,
-		filepath.Join(dashData, "fields.json"), filepath.Join(dashData, "query_vectors.json")).CombinedOutput()
+		filepath.Join(dashData, "fields.json"), filepath.Join(dashData, "query_vectors.json"),
+		table, filepath.Join(dashData, "table_vectors.json")).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node live_logic.js: %v\n%s", err, out)
 	}

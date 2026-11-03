@@ -59,10 +59,12 @@ type HandlerOptions struct {
 	// Filters are the saved filters ([dash.filters] merged over the
 	// built-ins); nil means the built-ins alone.
 	Filters []SavedFilter
-	// Addons replaces the live page's addon scripts (liveAddons), read from
-	// AddonFS when set instead of the embedded files. Tests use them.
-	Addons  []string
-	AddonFS fs.FS
+	// Addons and AddonStyles replace the live page's addon scripts and
+	// stylesheets (liveAddons) when Addons is non-nil, read from AddonFS
+	// when set instead of the embedded files. Tests use them.
+	Addons      []string
+	AddonStyles []string
+	AddonFS     fs.FS
 }
 
 func stderrLogf(format string, args ...any) {
@@ -138,11 +140,11 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 			s.boot.AckAPI = AckPath
 		}
 	}
-	addons := liveAddons
+	addons, styles := liveAddonFiles(liveAddons)
 	if opts.Addons != nil {
-		addons = opts.Addons
+		addons, styles = opts.Addons, opts.AddonStyles
 	}
-	s.live, s.err = newPage(review.Page{Mode: review.ModeLive, Title: "live work", Boot: s.boot, Addons: addons, AddonFS: opts.AddonFS})
+	s.live, s.err = newPage(review.Page{Mode: review.ModeLive, Title: "live work", Boot: s.boot, Addons: addons, AddonStyles: styles, AddonFS: opts.AddonFS})
 	if s.err != nil {
 		opts.Logf("render the live page: %v", s.err)
 	}
@@ -229,7 +231,7 @@ func (s *server) serveSnapshot(w http.ResponseWriter, r *http.Request) {
 const ExtractPath = "/api/extract"
 
 // serveExtract renders the held snapshot as Markdown for q, cols, group,
-// layout, view and sprint, exactly as wgo dash --md does. Like every GET
+// layout, view, sprint and sort, exactly as wgo dash --md does. Like every GET
 // route it reads only the published view.
 func (s *server) serveExtract(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
@@ -242,7 +244,7 @@ func (s *server) serveExtract(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Query()
 	md, err := Extract(v, Fields(), s.opts.Filters, ExtractArgs{
 		Query: p.Get("q"), Cols: SplitCols(p.Get("cols")), Group: p.Get("group"),
-		Layout: p.Get("layout"), View: p.Get("view"), Sprint: p.Get("sprint"),
+		Layout: p.Get("layout"), View: p.Get("view"), Sprint: p.Get("sprint"), Sort: SplitCols(p.Get("sort")),
 	})
 	if err != nil {
 		var qe *QueryError

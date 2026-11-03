@@ -2,6 +2,8 @@ package dash
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -180,13 +182,14 @@ func TestExtractRouteMatchesExtract(t *testing.T) {
 		{Query: "repo:acme/api", Cols: []string{"kind", "freshness"}, Group: "repo", Layout: "table"},
 		{Query: "activity:-6d;prstate:open", Cols: []string{"activity"}, Group: "none"},
 		{Query: "text:\"API WIDGETS\"", Layout: "bullets"},
+		{Query: "kind:pr", Cols: []string{"updated_ago"}, Group: "none", Sort: []string{"-updated_ago", "repo"}},
 	} {
 		want, err := Extract(v, Fields(), filters, args)
 		if err != nil {
 			t.Fatal(err)
 		}
 		p := url.Values{}
-		for k, val := range map[string]string{"q": args.Query, "cols": strings.Join(args.Cols, ","), "group": args.Group, "layout": args.Layout} {
+		for k, val := range map[string]string{"q": args.Query, "cols": strings.Join(args.Cols, ","), "group": args.Group, "layout": args.Layout, "sort": strings.Join(args.Sort, ",")} {
 			if val != "" {
 				p.Set(k, val)
 			}
@@ -203,6 +206,7 @@ func TestExtractRouteMatchesExtract(t *testing.T) {
 		"?view=sprint&sprint=42": "the sprint view is not available yet",
 		"?q=prstat:open":         `unknown field "prstat" at column 1; did you mean prstate?`,
 		"?cols=nope":             `unknown column "nope"`,
+		"?sort=-mov":             `unknown sort key "mov"; did you mean move?`,
 	} {
 		resp, body := get(t, srv.URL+ExtractPath+path)
 		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, want) || strings.Contains(body, "extract:") {
@@ -332,8 +336,9 @@ func TestLiveBootCarriesRegistryFiltersAndPeople(t *testing.T) {
 // live.js, hashed into the CSP, and registers before the page starts.
 func TestLivePageInlinesAddonsAfterLiveJS(t *testing.T) {
 	probe := "(function () { window.WGOLive.registerView({ id: \"probe\", label: \"Probe\", question: \"Do addon views appear?\", render: function (ctx) { ctx.container.textContent = \"probe view\"; } }); })();"
-	srv := newServerOpts(t, HandlerOptions{Source: fixtureDash(t), Addons: []string{"web/live-probe.js"},
-		AddonFS: fstest.MapFS{"web/live-probe.js": {Data: []byte(probe)}}})
+	probeCSS := ".probe-view { color: var(--ink2); }"
+	srv := newServerOpts(t, HandlerOptions{Source: fixtureDash(t), Addons: []string{"web/live-probe.js"}, AddonStyles: []string{"web/live-probe.css"},
+		AddonFS: fstest.MapFS{"web/live-probe.js": {Data: []byte(probe)}, "web/live-probe.css": {Data: []byte(probeCSS)}}})
 	resp, body := get(t, srv.URL+"/")
 	if resp.StatusCode != 200 {
 		t.Fatalf("page: %d", resp.StatusCode)
@@ -342,7 +347,37 @@ func TestLivePageInlinesAddonsAfterLiveJS(t *testing.T) {
 	if live < 0 || add < 0 || add < live {
 		t.Fatalf("addon at %d, live.js at %d: the addon must follow live.js", add, live)
 	}
+	csp := resp.Header.Get("Content-Security-Policy")
+	checkCSP(t, csp, body)
+	// The addon's stylesheet is its own <style>, after style.css and
+	// live.css, in the head, and hashed into style-src.
+	liveCSS, sheet, head := strings.Index(body, "wgo dash (live mode) additions"), strings.Index(body, "<style>\n"+probeCSS+"\n</style>"), strings.Index(body, "</head>")
+	if liveCSS < 0 || sheet < liveCSS || head < sheet {
+		t.Fatalf("live.css at %d, the addon stylesheet at %d, </head> at %d: the stylesheet must follow live.css in the head", liveCSS, sheet, head)
+	}
+	sum := sha256.Sum256([]byte("\n" + probeCSS + "\n"))
+	if h := "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"; !strings.Contains(csp, "style-src") || !strings.Contains(strings.SplitN(strings.SplitN(csp, "style-src", 2)[1], ";", 2)[0], h) {
+		t.Errorf("style-src lacks the addon stylesheet's hash %s: %s", h, csp)
+	}
+	// The served page inlines the real addons' stylesheets the same way.
+	real := newServer(t, fixtureDash(t))
+	resp, body = get(t, real.URL+"/")
 	checkCSP(t, resp.Header.Get("Content-Security-Policy"), body)
+	_, styles := liveAddonFiles(liveAddons)
+	for _, name := range styles {
+		b, err := os.ReadFile(filepath.Join("..", "review", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i := strings.Index(body, "<style>\n"+string(b)+"\n</style>"); i < strings.Index(body, "wgo dash (live mode) additions") || i > strings.Index(body, "</head>") {
+			t.Errorf("%s is not inlined after live.css in the head", name)
+		}
+	}
+	var badLogged []string
+	if _, err := NewHandler(HandlerOptions{Source: fixtureDash(t), Host: "x", Addons: []string{}, AddonStyles: []string{"web/live-x.js"},
+		Logf: func(f string, a ...any) { badLogged = append(badLogged, f) }}); err != nil || len(badLogged) != 1 {
+		t.Fatalf("a stylesheet that is not web/*.css is a logged render failure, got %v, logged %q", err, badLogged)
+	}
 	var logged []string
 	if _, err := NewHandler(HandlerOptions{Source: fixtureDash(t), Host: "x", Addons: []string{"web/missing.js"},
 		Logf: func(f string, a ...any) { logged = append(logged, f) }}); err != nil || len(logged) != 1 {

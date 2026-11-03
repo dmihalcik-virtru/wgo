@@ -849,9 +849,7 @@
     q.clauses.forEach(function (c) {
       if (c.name !== "kind") return;
       if (!first) first = c.col;
-      var set = c.op === "any" ? QUERY_KINDS.slice() : c.vals.map(function (v) { return v.text.toLowerCase(); }).filter(function (k) { return QUERY_KINDS.indexOf(k) >= 0; });
-      if (c.neg) set = QUERY_KINDS.filter(function (k) { return set.indexOf(k) < 0; });
-      rows = intersectKinds(rows, set);
+      rows = intersectKinds(rows, kindClauseSet(c));
     });
     if (!first || intersectKinds(rows, common).length) return null;
     if (!rows.length) {
@@ -863,6 +861,11 @@
     q.clauses.forEach(function (c) { if (c.name !== "kind" && nk.indexOf(c.name) < 0) nk.push(c.name); });
     return qerr(first, sprintf("the kind clause at column %d leaves no rows: it allows %s, while %s can only match %s; change or remove it", first, rows.join(", "), nk.join(", "), common.join(", ")),
       withoutClauses(q, function (d) { return d.name === "kind"; }));
+  }
+  // kindClauseSet is the node kinds a kind: clause allows.
+  function kindClauseSet(c) {
+    var set = c.op === "any" ? QUERY_KINDS.slice() : c.vals.map(function (v) { return v.text.toLowerCase(); }).filter(function (k) { return QUERY_KINDS.indexOf(k) >= 0; });
+    return c.neg ? QUERY_KINDS.filter(function (k) { return set.indexOf(k) < 0; }) : set;
   }
   function withoutClauses(q, drop) { return q.clauses.filter(function (c) { return !drop(c); }).map(function (c) { return c.raw; }).join(";"); }
 
@@ -1104,10 +1107,14 @@
   }
 
   // evaluate runs a parsed query over an index: matches (every non-kind
-  // clause applies and holds), rows (matches the kind clauses keep) and vis,
-  // the closure of the matches, or null when nothing filters the graph.
+  // clause applies and holds), rows (matches the kind clauses keep), vis,
+  // the closure of the matches, or null when nothing filters the graph, and
+  // rowKinds.
   L.evaluate = function (q, ix) {
-    var res = { expr: q.expr, matches: [], rows: [], matchIdx: [], rowIdx: [], rowSet: new Set(), matchSet: new Set(), vis: null, warnings: [] }, warns = [];
+    var res = { expr: q.expr, matches: [], rows: [], matchIdx: [], rowIdx: [], rowSet: new Set(), matchSet: new Set(), vis: null, warnings: [], rowKinds: null }, warns = [];
+    // rowKinds: the node kinds the kind: clauses allow (null without one),
+    // so a view knows its rows' kinds without parsing the query.
+    q.clauses.forEach(function (c) { if (c.name === "kind") res.rowKinds = intersectKinds(res.rowKinds || QUERY_KINDS, kindClauseSet(c)); });
     var filters = [], kinds = [];
     q.clauses.forEach(function (c) { var b = bindClause(ix, c, warns); (c.name === "kind" ? kinds : filters).push(b); });
     warns.forEach(function (w) { if (res.warnings.indexOf(w) < 0) res.warnings.push(w); });
@@ -1245,7 +1252,7 @@
   // extractURL is the GET /api/extract request for a page state.
   L.extractURL = function (base, p) {
     var qs = [];
-    ["q", "cols", "group", "layout", "view", "sprint"].forEach(function (k) {
+    ["q", "cols", "sort", "group", "layout", "view", "sprint"].forEach(function (k) {
       var v = p[k];
       if (Array.isArray(v)) v = v.join(",");
       if (v != null && v !== "") qs.push(k + "=" + encodeURIComponent(v));
@@ -1272,7 +1279,8 @@
   // extract(ctx)}: render draws the view into ctx.container when it is shown
   // and again on every data, query or selection change while it is; destroy
   // runs when another view is chosen; extract, optional, returns the
-  // /api/extract parameters for Copy as Markdown (default view=rows).
+  // /api/extract parameters for Copy as Markdown (default view=rows), and
+  // note, a sentence the status line adds (what the copy could not keep).
   L.registerView = function (spec) { return registerIn(L.views, "view", spec); };
   // registerPanel adds an overview panel {id, label, render(ctx), destroy(ctx)}.
   L.registerPanel = function (spec) { return registerIn(L.panels, "panel", spec); };
@@ -1378,7 +1386,9 @@
       keys.forEach(function (k) {
         if (k === "q" || k === "view" || k === "sel") return;
         var val = obj[k] == null ? "" : String(obj[k]);
-        if ((self.hashVals[k] || "") !== val) { if (val) self.hashVals[k] = val; else delete self.hashVals[k]; changed.state = true; }
+        // An emptied key stays as "" so buildHash drops it from the URL
+        // (a key the state does not name is kept there verbatim).
+        if ((self.hashVals[k] || "") !== val) { self.hashVals[k] = val; changed.state = true; }
       });
       if (changed.query) recomputeQuery();
       writeHash(opts && opts.commit ? "commit" : "live");
@@ -1399,6 +1409,9 @@
       if (key === "sel") return Array.from(this.selection);
       return hasOwn.call(this.hashVals, key) ? this.hashVals[key] : "";
     },
+    // setHover marks id (or nothing, for null) as hovered in every view:
+    // the graph rings it, and addons hear "hover" (gh-101's table rows).
+    setHover: function (id) { if (this.hover !== id) { this.hover = id; dirty = true; this.notify("hover"); } },
     isVisible: function (id) { return !this.vis || this.vis.has(id); },
     isRow: function (id) { return !this.qres || this.qres.rowSet.has(id); }
   };
@@ -1454,7 +1467,6 @@
   canvas.tabIndex = 0; canvas.setAttribute("role", "img");
   canvas.setAttribute("aria-label", "Graph of efforts, workspaces, PRs, tickets, sprints and agents. The Table view lists the same nodes.");
   var tip = el("div", "tip", null, stage); tip.hidden = true;
-  var tableWrap = el("div", "tablewrap", null, stage); tableWrap.hidden = true;
   var loadingEl = el("div", "loading", "Loading the snapshot… the page fills in as soon as wgo dash has one.", stage);
   var side = el("div", "side", null, main);
   var detailBox = el("div", "detail", null, side);
@@ -1468,7 +1480,6 @@
   function viewSpec(id) { return L.views.filter(function (v) { return v.id === id; })[0] || L.views[0]; }
   function viewBox(spec) {
     if (spec.id === "graph" && spec.builtin) return canvas;
-    if (spec.id === "table" && spec.builtin) return tableWrap;
     var b = viewBoxes.get(spec.id);
     if (!b) { b = el("div", "viewwrap", null, stage); b.hidden = true; b.setAttribute("aria-label", spec.label || spec.id); viewBoxes.set(spec.id, b); }
     return b;
@@ -1489,6 +1500,7 @@
       setState: function (obj, opts) { return store.setState(obj, opts); },
       getState: function (key) { return store.getState(key); },
       select: function (ids, add, how) { store.select(ids, add, how); },
+      hover: function (id) { store.setHover(id == null ? null : id); },
       subscribe: function (fn) {
         var off = store.subscribe(fn), list = ownedSubs.get(owner) || [];
         list.push(off); ownedSubs.set(owner, list);
@@ -2050,84 +2062,10 @@
   }
 
   // ---------- table ----------
-  // The built-in table view: six fixed columns plus any registry fields the
-  // URL's cols names. With a query, nodes kept only as context (visible but
-  // not rows) are dimmed, or left out when a kind: clause chooses the rows.
-  // gh-101 replaces it with an addon.
-  var tableRows = [], focusRow = -1;
-  var COLS = [["label", "Name"], ["kind", "Kind"], ["effort", "Effort"], ["state", "State"], ["data", "Data"], ["activity", "Last activity"]];
-  // tableSort reads sort= for this table: its first key when that is one
-  // of the six columns, else the default. The raw value stays in the URL
-  // for whichever table owns it (gh-101's multi-key sort).
-  function tableSort() {
-    var first = String(store.hashVals.sort || "").split(",")[0], desc = first.charAt(0) === "-", key = desc ? first.slice(1) : first;
-    return COLS.some(function (c) { return c[0] === key; }) ? { key: key, dir: desc ? -1 : 1 } : { key: "kind", dir: 1 };
-  }
-  function colsList() { return String(store.hashVals.cols || "").split(",").map(function (c) { return c.trim(); }).filter(Boolean); }
-  function sortedTableRows() {
-    var rows = L.filterRows(store.rows, store.vis), sort = tableSort();
-    if (store.qres && store.qHasKind) rows = rows.filter(function (r) { return store.qres.rowSet.has(r.id); });
-    return L.sortRows(rows, sort.key, sort.dir);
-  }
-  function renderTable() {
-    if (store.view !== "table" || !store.snap) return;
-    var hadFocus = tableWrap.contains(document.activeElement) && document.activeElement.tagName === "TR";
-    tableWrap.textContent = "";
-    var tbl = el("table", "live", null, tableWrap); tbl.setAttribute("role", "grid");
-    el("caption", "sr", "Nodes in the current query. Use the arrow keys to move, Enter or Space to select, Shift+Enter to add.", tbl);
-    var thead = el("thead", null, null, tbl), tr = el("tr", null, null, thead);
-    var sort = tableSort();
-    COLS.forEach(function (c) {
-      var th = el("th", null, null, tr), on = sort.key === c[0], dir = sort.dir;
-      th.scope = "col";
-      th.setAttribute("aria-sort", on ? (dir > 0 ? "ascending" : "descending") : "none");
-      button(th, c[1] + (on ? (dir > 0 ? " ▲" : " ▼") : ""), null, function () {
-        var next = on ? { key: c[0], dir: -dir } : { key: c[0], dir: c[0] === "activity" ? -1 : 1 };
-        store.setState({ sort: next.key === "kind" && next.dir === 1 ? "" : (next.dir < 0 ? "-" : "") + next.key }, { commit: true });
-      });
-    });
-    var extra = colsList().filter(function (name) { return REG.field(name) && !COLS.some(function (c) { return c[0] === name; }); });
-    extra.forEach(function (name) { var th = el("th", null, REG.field(name).label, tr); th.scope = "col"; th.title = "Query field " + name; });
-    var ctxRows = !!store.qres && !store.qHasKind;
-    tableRows = sortedTableRows();
-    var tb = el("tbody", null, null, tbl), frag = document.createDocumentFragment(), now = Date.now();
-    if (focusRow >= tableRows.length) focusRow = tableRows.length - 1;
-    if (focusRow < 0 && tableRows.length) {
-      var firstSel = tableRows.findIndex(function (r) { return store.selection.has(r.id); });
-      focusRow = firstSel >= 0 ? firstSel : 0;
-    }
-    tableRows.forEach(function (r, i) {
-      var sel = store.selection.has(r.id), context = ctxRows && !store.qres.rowSet.has(r.id);
-      var row = el("tr", (sel ? "sel" : "") + (context ? " ctx" : "") || null, null, frag);
-      row.setAttribute("aria-selected", String(sel)); row.tabIndex = i === focusRow ? 0 : -1; row.dataset.i = String(i);
-      if (context) row.title = "Context: shown because a match leads to it or from it";
-      var n = store.idx.byId.get(r.id), url = n && ((n.pr && n.pr.url) || (n.ticket && n.ticket.url));
-      link(el("td", null, null, row), r.label, url);
-      el("td", null, r.kind, row); el("td", null, r.effort, row); el("td", null, r.state, row); el("td", null, r.data, row);
-      el("td", null, r.activity ? L.relTime(r.activity, now) : "", row);
-      extra.forEach(function (name) { el("td", null, store.qi ? L.valueText(store.qi, name, r.id) : "", row); });
-    });
-    tb.appendChild(frag);
-    if (!tableRows.length) { var er = el("tr", null, null, tb); var td = el("td", "empty", store.vis ? "Nothing matches the query." : "No nodes.", er); td.colSpan = COLS.length + extra.length; }
-    tb.addEventListener("click", function (ev) {
-      if (ev.target.closest("a")) return;
-      var row = ev.target.closest("tr"); if (!row || row.dataset.i == null) return;
-      focusRow = +row.dataset.i; store.select([tableRows[focusRow].id], ev.shiftKey || ev.metaKey);
-    });
-    tb.addEventListener("keydown", function (ev) {
-      var row = ev.target.closest("tr"); if (!row || row.dataset.i == null) return;
-      var cur = +row.dataset.i;
-      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); focusRow = cur; store.select([tableRows[cur].id], ev.shiftKey); return; }
-      var nx = L.nextIndex(tableRows.length, cur, ev.key);
-      if (nx < 0) return;
-      ev.preventDefault();
-      focusRow = nx;
-      var rows = tb.querySelectorAll("tr");
-      rows[cur].tabIndex = -1; rows[nx].tabIndex = 0; rows[nx].focus();
-      if (!ev.shiftKey) store.select([tableRows[nx].id], false, "replace");
-    });
-    if (hadFocus) { var f = tb.querySelectorAll("tr")[focusRow]; if (f) f.focus(); }
-  }
+  // The table is an addon, web/live-table.js (gh-101). colsList is the
+  // URL's cols= for Copy as Markdown from views that have no columns: the
+  // query fields in it, not the table's own columns.
+  function colsList() { return String(store.hashVals.cols || "").split(",").map(function (c) { return c.trim(); }).filter(function (c) { return !!REG.field(c); }); }
 
   // ---------- graph ----------
   var view = null, posCache = new Map(), sim = null, quad = null, quadDirty = true;
@@ -2336,9 +2274,12 @@
     f = k2 / T.k; T.x = p[0] - (p[0] - T.x) * f; T.y = p[1] - (p[1] - T.y) * f; T.k = k2; dirty = true;
   }, { passive: false });
   canvas.addEventListener("keydown", function (ev) {
-    // Keyboard selection on the canvas: arrows walk the visible nodes in table order.
+    // Keyboard selection on the canvas: arrows walk the visible nodes (only
+    // the rows under a kind: clause) in the table's default order.
     if (!view || !view.nodes.length) return;
-    var order = sortedTableRows().map(function (r) { return r.id; });
+    var rows = L.filterRows(store.rows, store.vis);
+    if (store.qres && store.qHasKind) rows = rows.filter(function (r) { return store.qres.rowSet.has(r.id); });
+    var order = L.sortRows(rows, "kind", 1).map(function (r) { return r.id; });
     var cur = order.indexOf(Array.from(store.selection)[0]);
     var key = ev.key === "ArrowRight" ? "ArrowDown" : ev.key === "ArrowLeft" ? "ArrowUp" : ev.key;
     var nx = L.nextIndex(order.length, cur, key);
@@ -2369,8 +2310,6 @@
   // ---------- built-in views ----------
   L.registerView({ id: "graph", label: "Graph", question: "How do efforts, workspaces, PRs, tickets and agents connect?", builtin: true,
     render: function (ctx) { if (ctx.reason === "view") resize(); if (simStale) startSim(false); dirty = true; } });
-  L.registerView({ id: "table", label: "Table", question: "Which nodes does the query keep, and in what state?", builtin: true,
-    render: function () { renderTable(); } });
 
   // ---------- query bar ----------
   var qDirty = false; // the text differs from the applied query
@@ -2453,6 +2392,7 @@
     var spec = viewSpec(store.view), extra = null;
     if (spec && spec.extract) { try { extra = spec.extract(viewCtx(spec, "extract")); } catch (e) { viewFailed(spec, e); return; } }
     var url = L.extractURL(EXTRACT_API, Object.assign({ q: store.query, cols: colsList(), view: "rows" }, extra || {}));
+    var note = extra && typeof extra.note === "string" && extra.note ? " " + extra.note : "";
     var text = fetch(url, { cache: "no-store", credentials: "same-origin" }).then(function (r) {
       return r.text().then(function (t) {
         if (!r.ok) { var e = new Error(t || "HTTP " + r.status); e.status = r.status; e.detail = t.trim(); throw e; }
@@ -2472,9 +2412,9 @@
       wrote = Promise.reject(new Error("no clipboard access"));
     }
     wrote.then(function () { return text; }).then(function (t) {
-      statusEl.textContent = "Copied the Markdown (" + plural(t.split("\n").length, "line") + ").";
+      statusEl.textContent = "Copied the Markdown (" + plural(t.split("\n").length, "line") + ")." + note;
     }, function () {
-      text.then(showCopyFallback, function (e) { statusEl.textContent = "Copy as Markdown failed: " + L.actionError(e); });
+      text.then(function (t) { showCopyFallback(t); statusEl.textContent += note; }, function (e) { statusEl.textContent = "Copy as Markdown failed: " + L.actionError(e); });
     });
   }
   function showCopyFallback(t) {
