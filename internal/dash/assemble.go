@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,7 +41,7 @@ func (b *builder) edge(src, dst string, kind EdgeKind) {
 }
 
 var kindOrder = map[NodeKind]int{
-	KindEffort: 0, KindWorkspace: 1, KindBookmark: 2, KindPR: 3, KindTicket: 4, KindAgent: 5,
+	KindEffort: 0, KindWorkspace: 1, KindBookmark: 2, KindPR: 3, KindTicket: 4, KindAgent: 5, KindSprint: 6,
 }
 
 // remoteTally counts item freshness for one remote source.
@@ -107,6 +108,14 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		case strings.HasPrefix(key, "ticket-"):
 			info.Group = GroupTicket
 			label = strings.ToUpper(strings.TrimPrefix(key, "ticket-"))
+		case strings.HasPrefix(key, repoEffortPrefix):
+			info.Group = GroupRepo
+			label = strings.TrimPrefix(key, repoEffortPrefix)
+		case strings.HasPrefix(key, sprintEffortPrefix):
+			// The sprint's name is not known here; whoever adds the
+			// sprint node may relabel the effort.
+			info.Group = GroupSprint
+			label = "Sprint " + strings.TrimPrefix(key, sprintEffortPrefix)
 		default:
 			info.Group = GroupTheme
 		}
@@ -211,6 +220,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 					UpdatedAt:          pr.UpdatedAt,
 					Freshness:          bi.PRLookup,
 					BookmarkID:         bmID,
+					Sources:            []string{PRSourceBookmark},
 				}})
 				b.edge(bmID, id, EdgePR)
 			}
@@ -286,6 +296,11 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		Diagnostics: dedupeStrings(ls.diags),
 	}
 	maps.Copy(s.Sources, ls.sources)
+	var login, jira string
+	if c.cfg.Identity != nil {
+		login, jira = c.cfg.Identity()
+	}
+	s.People = ResolvePeople(c.cfg.People, c.cfg.Pair, login, jira)
 	s.Sources[SourceGitHubPRs] = prTally.status()
 	s.Sources[SourceGitHubIssues] = issueTally.status()
 	s.Sources[SourceJira] = jiraTally.status()
@@ -506,6 +521,7 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 		Activity: map[string][]int{},
 		PRStates: map[string]map[string]int{},
 		Agents:   map[string]map[string]int{},
+		Merged:   map[string][]int{},
 	}
 	for i := range days {
 		c.Days = append(c.Days, start.AddDate(0, 0, i).Format("2006-01-02"))
@@ -515,6 +531,7 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 			c.Activity[n.ID] = make([]int, days)
 			c.PRStates[n.ID] = map[string]int{}
 			c.Agents[n.ID] = map[string]int{}
+			c.Merged[n.ID] = make([]int, days)
 		}
 	}
 
@@ -542,27 +559,66 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 		}
 	}
 
-	// PR states per effort, over its bookmarks.
-	prsByBookmark := map[string][]*PRInfo{}
+	// PR states per effort, over its bookmarks and the PRs it tracks.
+	// prEfforts records which efforts each PR counted under, for Merged.
+	prsByBookmark := map[string][]*Node{}
+	prByID := map[string]*Node{}
+	prEfforts := map[*Node][]string{}
 	for i := range s.Nodes {
 		if p := s.Nodes[i].PR; p != nil {
-			prsByBookmark[p.BookmarkID] = append(prsByBookmark[p.BookmarkID], p)
+			prByID[s.Nodes[i].ID] = &s.Nodes[i]
+			if p.BookmarkID != "" {
+				prsByBookmark[p.BookmarkID] = append(prsByBookmark[p.BookmarkID], &s.Nodes[i])
+			}
 		}
+	}
+	countPR := func(eff string, n *Node) {
+		if slices.Contains(prEfforts[n], eff) {
+			return
+		}
+		prEfforts[n] = append(prEfforts[n], eff)
+		c.PRStates[eff][prBucket(n.PR)]++
 	}
 	for eff, bms := range effortBookmarks {
 		for bm := range bms {
 			n := s.Node(bm)
 			switch {
 			case n == nil:
+			case len(prsByBookmark[bm]) > 0:
+				// A bookmark whose lookup is unknown can still hold a PR
+				// the inventory attached to it.
+				for _, p := range prsByBookmark[bm] {
+					countPR(eff, p)
+				}
 			case n.Bookmark.PRLookup == Unknown || n.Bookmark.PRLookup == Error:
 				c.PRStates[eff]["unknown"]++
-			case len(prsByBookmark[bm]) == 0:
-				c.PRStates[eff]["none"]++
 			default:
-				for _, p := range prsByBookmark[bm] {
-					c.PRStates[eff][prBucket(p)]++
-				}
+				c.PRStates[eff]["none"]++
 			}
+		}
+	}
+	for _, e := range s.Edges {
+		if e.Kind != EdgeTracks || c.PRStates[e.Source] == nil {
+			continue
+		}
+		if n := prByID[e.Target]; n != nil {
+			countPR(e.Source, n)
+		}
+	}
+
+	// Merged PRs per effort per local day of merge.
+	for n, effs := range prEfforts {
+		if n.PR.State != "merged" || n.PR.MergedAt.IsZero() {
+			continue
+		}
+		t := n.PR.MergedAt.In(loc)
+		day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+		idx := int(day.Sub(start).Hours()/24 + 0.5)
+		if day.Before(start) || idx < 0 || idx >= days {
+			continue
+		}
+		for _, eff := range effs {
+			c.Merged[eff][idx]++
 		}
 	}
 

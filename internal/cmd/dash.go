@@ -75,6 +75,8 @@ launch does changes jj, the plan or agent state.
 
 [dash] in ~/.wgo/config.toml sets port, days, refresh_seconds, terminal,
 terminal_command, resume and editor; --port and --days win over it.
+[[dash.people]] lists the people whose PRs and tickets the dash follows
+(default: you and [pair]'s teammate).
 
 The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.`,
 	Args: cobra.NoArgs,
@@ -134,6 +136,8 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		// shares the Jira TTL rather than having its own setting.
 		IssueTTL: jiraTTL(),
 		JiraSite: cfg.Jira.Site,
+		People:   dashPeople(cfg.Dash.People),
+		Pair:     dash.Person{Login: cfg.Pair.Teammate, Jira: cfg.Pair.TeammateJira, Name: cfg.Pair.DisplayName},
 	})
 	opts := dash.Options{Dir: filepath.Join(st.BaseDir(), "cache", "dash"), Collector: collector}
 	if !dashJSON {
@@ -226,8 +230,9 @@ func dashFetchers() dash.Fetchers {
 }
 
 // applyDashConfig uses [dash] port and days in place of any flag the user
-// did not pass, and checks refresh_seconds. A setting a flag overrides is
-// not checked, and neither is port under --json, which never serves.
+// did not pass, and checks refresh_seconds and [[dash.people]]. A setting a
+// flag overrides is not checked, and neither is port under --json, which
+// never serves.
 func applyDashConfig(dc config.DashConfig, flagChanged func(name string) bool) error {
 	if dc.Port != 0 && !dashJSON && !flagChanged("port") {
 		if dc.Port < 1 || dc.Port > 65535 {
@@ -247,7 +252,17 @@ func applyDashConfig(dc config.DashConfig, flagChanged func(name string) bool) e
 			return fmt.Errorf("[dash] refresh_seconds in ~/.wgo/config.toml must be between %d and %d, got %d; fix it, or remove it to use the %v default", minS, maxS, dc.RefreshSeconds, dash.DefaultRefreshInterval)
 		}
 	}
-	return nil
+	return dc.ValidatePeople()
+}
+
+// dashPeople turns [[dash.people]], already checked by applyDashConfig, into
+// the collector's configured people.
+func dashPeople(entries []config.DashPerson) []dash.Person {
+	var out []dash.Person
+	for _, p := range entries {
+		out = append(out, dash.Person{Login: p.GitHub, Jira: p.Jira, Name: p.Name})
+	}
+	return out
 }
 
 // dashInterval is [dash] refresh_seconds, already range-checked by

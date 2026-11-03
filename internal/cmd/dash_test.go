@@ -376,6 +376,9 @@ func TestApplyDashConfig(t *testing.T) {
 		// --json never serves, so it ignores port and refresh_seconds.
 		{name: "json ignores port and refresh", dc: config.DashConfig{Port: 70000, RefreshSeconds: 1, Days: 30}, json: true, flags: noDashFlags, wantPort: 1111, wantDays: 30},
 		{name: "json still checks days", dc: config.DashConfig{Days: 999}, json: true, flags: noDashFlags, wantErr: "[dash] days"},
+		{name: "people", dc: config.DashConfig{People: []config.DashPerson{{GitHub: "alice"}, {GitHub: "bob", Jira: "acct-bob"}}}, flags: noDashFlags, wantPort: 1111, wantDays: 2},
+		{name: "person without login", dc: config.DashConfig{People: []config.DashPerson{{Name: "Alice"}}}, flags: noDashFlags, wantErr: "[[dash.people]] entry 1"},
+		{name: "json checks people", dc: config.DashConfig{People: []config.DashPerson{{GitHub: "@alice"}}}, json: true, flags: noDashFlags, wantErr: "[[dash.people]] entry 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			saveDashFlags(t)
@@ -394,6 +397,17 @@ func TestApplyDashConfig(t *testing.T) {
 				t.Fatalf("port %d days %d, want %d and %d", dashPort, dashDays, tc.wantPort, tc.wantDays)
 			}
 		})
+	}
+}
+
+func TestDashPeople(t *testing.T) {
+	got := dashPeople([]config.DashPerson{{GitHub: "alice", Jira: "acct-alice", Name: "Alice"}, {GitHub: "bob"}})
+	want := []dash.Person{{Login: "alice", Jira: "acct-alice", Name: "Alice"}, {Login: "bob"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	if dashPeople(nil) != nil {
+		t.Fatal("no entries means no configured people")
 	}
 }
 

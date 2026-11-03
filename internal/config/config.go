@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -62,6 +63,62 @@ type DashConfig struct {
 	// Days is the activity window of the small multiples, 1 to 366
 	// (dash.DefaultDays when zero).
 	Days int `mapstructure:"days"`
+	// People are the people whose PRs and tickets the dash follows, from
+	// [[dash.people]]. When empty, the dash follows the authenticated user
+	// and [pair]'s teammate; the authenticated user is always included.
+	People []DashPerson `mapstructure:"people"`
+}
+
+// DashPerson is one [[dash.people]] entry.
+type DashPerson struct {
+	// GitHub is the person's GitHub login. Required.
+	GitHub string `mapstructure:"github"`
+	// Jira is a Jira account ID, email or currentUser(). Optional.
+	Jira string `mapstructure:"jira"`
+	// Name is a display name. Optional.
+	Name string `mapstructure:"name"`
+}
+
+// githubLoginRe matches a GitHub login: letters, digits and hyphens, at most
+// 39 characters. It rejects the usual mistakes: "@alice", an email, a team.
+var githubLoginRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,39}$`)
+
+// ValidatePeople checks [[dash.people]]: every entry needs a GitHub login,
+// and no login may repeat (logins are case-insensitive). The error names the
+// entry and says how to fix it.
+func (c DashConfig) ValidatePeople() error {
+	seen := map[string]int{}
+	for i, p := range c.People {
+		n := i + 1
+		switch {
+		case strings.TrimSpace(p.GitHub) == "":
+			return fmt.Errorf("[[dash.people]] entry %d in ~/.wgo/config.toml has no github login; fix it by adding github = \"<login>\", or remove the entry", n)
+		case !githubLoginRe.MatchString(p.GitHub):
+			return fmt.Errorf("[[dash.people]] entry %d in ~/.wgo/config.toml has github = %q, which is not a GitHub login; fix it to the bare login, such as github = %q", n, p.GitHub, suggestLogin(p.GitHub))
+		}
+		key := strings.ToLower(p.GitHub)
+		if first, dup := seen[key]; dup {
+			return fmt.Errorf("[[dash.people]] entries %d and %d in ~/.wgo/config.toml both have github = %q; fix it by removing one", first, n, p.GitHub)
+		}
+		seen[key] = n
+	}
+	return nil
+}
+
+// suggestLogin guesses the login meant by an invalid github value: without
+// spaces, a leading @, an email domain, or a URL or team prefix.
+func suggestLogin(s string) string {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "@")
+	if i := strings.IndexByte(s, '@'); i > 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndexAny(s, "/:"); i >= 0 {
+		s = s[i+1:]
+	}
+	if !githubLoginRe.MatchString(s) {
+		return "<login>"
+	}
+	return s
 }
 
 // RigConfig controls `wgo rig`, which materialises one pinned checkout per
@@ -547,6 +604,14 @@ gh_stack = "auto"
 # editor = "zed"                # Editor/Plan/Spec: one executable, no arguments; tried before code, then xed
 # refresh_seconds = 30          # background re-collection interval (5 to 3600)
 # days = 14                     # activity window (--days overrides)
+#
+# People whose PRs and tickets the dash follows. Without any entries it
+# follows you (the authenticated GitHub user) and [pair]'s teammate; you are
+# always included.
+# [[dash.people]]
+# github = "alice"              # GitHub login (required)
+# jira = "alice@example.com"    # Jira account ID, email or currentUser() (optional)
+# name = "Alice"                # display name (optional)
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)

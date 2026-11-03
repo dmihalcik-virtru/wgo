@@ -290,9 +290,10 @@
     return (links.efforts && links.efforts[id]) || (links.entities && links.entities[id]) || null;
   };
 
-  // effortOrder sorts efforts: named efforts, then ticket groups, themes, Ungrouped last.
+  // effortOrder sorts efforts: named efforts, then ticket groups, themes,
+  // repository and sprint groups, Ungrouped last (dash.CompareEfforts).
   L.effortOrder = function (a, b) {
-    var g = { effort: 0, ticket: 1, theme: 2, ungrouped: 3 };
+    var g = { effort: 0, ticket: 1, theme: 2, repo: 3, sprint: 4, ungrouped: 5 };
     var ga = g[(a.effort || {}).group] != null ? g[a.effort.group] : 2, gb = g[(b.effort || {}).group] != null ? g[b.effort.group] : 2;
     return ga - gb || cmp(a.label.toLowerCase(), b.label.toLowerCase()) || cmp(a.id, b.id);
   };

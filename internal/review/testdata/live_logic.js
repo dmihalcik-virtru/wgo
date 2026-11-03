@@ -219,6 +219,13 @@ test("localURL accepts only same-origin paths", () => {
   }
 });
 
+test("effortOrder puts repo and sprint groups after themes and before Ungrouped", () => {
+  const e = (id, group, label) => ({ id, kind: "effort", label: label || id, effort: { group } });
+  const list = [e("u", "ungrouped"), e("s", "sprint"), e("r2", "repo", "acme/web"), e("r1", "repo", "acme/api"),
+    e("th", "theme"), e("t", "ticket"), e("n", "effort"), e("x", "mystery")];
+  assert.deepEqual(list.sort(L.effortOrder).map((n) => n.id), ["n", "t", "th", "x", "r1", "r2", "s", "u"]);
+});
+
 test("Resume is labelled with the configured tool", () => {
   const r = L.actionButtons({ token: "t", action_api: "/api/action", resume: "codex" }).find((a) => a.kind === "resume");
   assert.equal(r.label, "Resume codex");
