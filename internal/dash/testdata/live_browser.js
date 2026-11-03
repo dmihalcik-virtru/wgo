@@ -1174,6 +1174,9 @@ async function sprintChecks(sprintURL) {
   await send("Page.navigate", { url: "about:blank" });
   await send("Page.navigate", { url: sprintURL + "#view=sprint" });
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('.sv-head')", "the sprint view");
+  // Earlier suites fill Chrome's 50-entry session history, beyond which
+  // Back can leave the page; start this one's afresh.
+  await send("Page.resetNavigationHistory");
   const q = () => evaluate("window.__wgoStore.query");
   const text = (sel) => evaluate("(() => { const e = document.querySelector(" + JSON.stringify(sel) + "); return e ? e.textContent : null })()");
   const rowsOf = () => evaluate("Array.from(document.querySelectorAll('.sv-table tr[data-id]')).map(tr => (tr.querySelector('td.nm a') || tr.querySelector('td.nm')).textContent.split(' ')[0] + (tr.classList.contains('out') ? ':out' : '') + (tr.classList.contains('sel') ? ':sel' : ''))");
@@ -1188,7 +1191,7 @@ async function sprintChecks(sprintURL) {
   check((await evaluate("getComputedStyle(document.querySelector('.sv-pts')).display")) === "flex", "the addon's stylesheet (live-sprint.css) applies under the CSP");
   const labels = await evaluate("Array.from(document.querySelectorAll('.sv-plabels .plab')).map(b => b.textContent)");
   check(labels.join("|") === "Done3 pts · 1 ticket|In Progress15 pts · 3 tickets|To Do0 pts · 2 tickets", "direct labels: " + labels.join("|"));
-  const placed = await evaluate("(() => { const bar = document.querySelector('.sv-pts').getBoundingClientRect(), segs = Array.from(document.querySelectorAll('.sv-pts .seg')).map(s => s.getBoundingClientRect()), ls = Array.from(document.querySelectorAll('.plab')).map(b => b.getBoundingClientRect()); return { placed: document.querySelector('.sv-plabels').classList.contains('placed'), ip: ls[1].left >= segs[1].left - 1 && ls[1].left < segs[1].right, overlap: ls[0].right > ls[1].left || ls[1].right > ls[2].left, inside: ls[2].right <= bar.right + 1 } })()");
+  const placed = await evaluate("(() => { const bar = document.querySelector('.sv-pts').getBoundingClientRect(), segs = Array.from(document.querySelectorAll('.sv-pts .seg')).map(s => s.getBoundingClientRect()), ls = Array.from(document.querySelectorAll('.plab')).map(b => b.getBoundingClientRect()); return { placed: document.querySelector('.sv-plabels').classList.contains('placed'), ip: ls[1].left >= segs[1].left - 1 && ls[1].left < segs[1].right, overlap: ls[0].right > ls[1].left || ls[1].right > ls[2].left, inside: ls[2].right <= document.querySelector('.sv-plabels').getBoundingClientRect().right + 1 } })()");
   check(placed.placed && placed.ip && !placed.overlap && placed.inside, "labels sit under their segments without overlapping: " + JSON.stringify(placed));
   check((await text(".sv-apart")) === "Not in the points: 1 unestimated · 1 with points unknown", "unestimated counted apart from unknown: " + (await text(".sv-apart")));
   check((await rowsOf()).join() === "TEAM-102,TEAM-101,TEAM-103,TEAM-105,TEAM-104,TEAM-106", "grouped by category, then assignee: " + (await rowsOf()));
@@ -1203,9 +1206,11 @@ async function sprintChecks(sprintURL) {
   check((await text(".sv-goal")) === "no sprint goal" && (await evaluate("document.querySelector('.sv-goal').classList.contains('none')")), "a sprint without a goal says so");
   // The fixture's in_progress_idle mismatch sits on TEAM-107 here.
   check((await click(".sv-table tr[data-id='ticket:jira:TEAM-107'] .mmb[data-code='in_progress_idle']")) === "mismatch:in_progress_idle", "the idle mismatch filters");
-  await evaluate("window.__wgoStore.setQuery('', { commit: true })");
-  for (let i = 0; i < 3; i++) { await evaluate("history.back()"); await sleep(300); }
-  check(!(await evaluate("location.hash")).includes("sprint=") && (await text(".sv-head h2")) === "Sprint 12", "Back returns to the default sprint");
+  // Back steps through both.
+  await evaluate("history.back()"); await sleep(300);
+  check((await q()) === "" && (await evaluate("location.hash")).includes("sprint=1240"), "Back undoes the mismatch click: " + (await evaluate("location.hash")));
+  await evaluate("history.back()"); await sleep(300);
+  check(!(await evaluate("location.hash")).includes("sprint=") && (await text(".sv-head h2")) === "Sprint 12", "Back returns to the default sprint: " + (await evaluate("location.hash")));
 
   // Every gh-99 mismatch appears on its ticket and filters when clicked;
   // tickets outside the query are dimmed, not hidden; a second click clears.
