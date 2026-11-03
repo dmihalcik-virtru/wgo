@@ -364,7 +364,7 @@ function genSnapshot(n) {
     act[e % 14] = 1 + (e % 3);
     activity[eid] = act;
   }
-  return { schema: 1, generated_at: "2026-10-20T15:00:00-04:00", days: 14, nodes: nodes, edges: edges, counts: { days: days, activity: activity } };
+  return { schema: 1, generated_at: "2026-10-20T15:00:00-04:00", timezone: "America/New_York", days: 14, nodes: nodes, edges: edges, counts: { days: days, activity: activity } };
 }
 const PERF_QUERY = "kind:pr;prstate:open,draft,merged;!checks:pending;freshness:fresh,stale;repo:*;effort:*;activity:*;!text:zzz;review:none,approved;!prstate:closed;text:change;!repo:acme/repo-19";
 let perfLine = "";

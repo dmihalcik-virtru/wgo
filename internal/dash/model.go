@@ -82,6 +82,10 @@ type Snapshot struct {
 	Edges       []Edge                  `json:"edges"`
 	Counts      Counts                  `json:"counts"`
 	Diagnostics []string                `json:"diagnostics,omitempty"`
+	// Timezone is the IANA name of the zone local days were counted in
+	// (Counts.Days), when known; queries count days in it too, so a
+	// timestamp across a DST change lands on its own local day.
+	Timezone string `json:"timezone,omitempty"`
 }
 
 // SourceStatus is the freshness of one data source. For remote sources the

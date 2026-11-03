@@ -64,8 +64,11 @@ type DashConfig struct {
 	Days int `mapstructure:"days"`
 	// Filters maps saved filter names to query expressions (gh-100); an
 	// entry overrides a built-in of the same name. Names are read
-	// lowercased, and may not contain ".".
-	Filters map[string]string `mapstructure:"filters"`
+	// lowercased. It is decoded loosely — a dotted name arrives as a nested
+	// table, and a value may not be a string — so a bad entry hides that
+	// filter (dash.MergeConfigFilters says why) instead of breaking every
+	// command.
+	Filters map[string]any `mapstructure:"filters"`
 }
 
 // RigConfig controls `wgo rig`, which materialises one pinned checkout per

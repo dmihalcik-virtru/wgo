@@ -65,7 +65,8 @@ type Clause struct {
 	// Range bounds; nil means open.
 	lo, hi         *qValue
 	loIncl, hiIncl bool
-	col            int // 1-based column of the clause
+	col            int    // 1-based column of the clause
+	raw            string // the clause's text, for suggested fixes
 }
 
 // Query is a parsed expression.
@@ -176,7 +177,7 @@ func ParseQuery(expr string, reg *Registry) (*Query, error) {
 }
 
 func parseClause(rs []rune, s, e int, reg *Registry) (Clause, error) {
-	c := Clause{col: s + 1}
+	c := Clause{col: s + 1, raw: string(rs[s:e])}
 	if rs[s] == '!' {
 		c.Neg = true
 		s++
@@ -378,7 +379,7 @@ func quoteRune(r rune) string {
 // checkValue validates a list value against its field's type.
 func checkValue(rs []rune, v qValue, f Field, reg *Registry) error {
 	col := v.start + 1
-	unknownLit := !v.quoted && v.text == "unknown"
+	unknownLit := isUnknownWord(v)
 	if v.macro != "" {
 		switch {
 		case f.Type == FieldEnum && len(f.Values) > 0:
@@ -410,6 +411,10 @@ func checkValue(rs []rune, v qValue, f Field, reg *Registry) error {
 	}
 	return nil
 }
+
+// isUnknownWord reports whether v is the word unknown, quoted or not, in any
+// case: outside text fields it always means "the value is unknown".
+func isUnknownWord(v qValue) bool { return v.macro == "" && strings.ToLower(v.text) == "unknown" }
 
 func badEnumValue(rs []rune, v qValue, f Field) error {
 	col := v.start + 1
@@ -448,12 +453,30 @@ func checkBound(v qValue, f Field) error {
 	case FieldDuration:
 		ok = !v.quoted && durationRe.MatchString(v.text)
 	case FieldDate:
+		if !v.quoted && relativeRe.MatchString(v.text) && !relativeInRange(v.text) {
+			return qerr(col, "%q is out of range for %s at column %d; relative dates reach at most %dd (about 100 years)", v.text, f.Name, col, maxRelativeDays)
+		}
 		ok = !v.quoted && (v.text == "today" || relativeRe.MatchString(v.text) || validDate(v.text))
 	}
 	if !ok {
 		return qerr(col, "%q is not a valid %s for %s at column %d; %s", v.text, f.Type, f.Name, col, boundHint(f))
 	}
 	return nil
+}
+
+// maxRelativeDays bounds relative dates (-7d, +2w) so they cannot overflow.
+const maxRelativeDays = 36500
+
+func relativeInRange(s string) bool {
+	digits := s[1 : len(s)-1]
+	if len(digits) > 6 {
+		return false
+	}
+	n, err := strconv.Atoi(digits)
+	if s[len(s)-1] == 'w' {
+		n *= 7
+	}
+	return err == nil && n <= maxRelativeDays
 }
 
 func validDate(s string) bool {
@@ -565,7 +588,13 @@ func checkKinds(q *Query) error {
 				names = append(names, d.Name)
 				parts = append(parts, d.Name+": "+strings.Join(kindNames(intersectKinds(queryKinds, d.field.Kinds)), ", "))
 			}
-			return qerr(c.col, "fields %s apply to no common node kind (%s) at column %d; split them into separate queries", joinAnd(names), strings.Join(parts, "; "), c.col)
+			e := qerr(c.col, "fields %s apply to no common node kind (%s) at column %d; split them into separate queries", joinAnd(names), strings.Join(parts, "; "), c.col)
+			// The suggested fix keeps the newest clause (a chart click adds
+			// one at the end) and drops the earlier ones it conflicts with.
+			e.Fixed = withoutClauses(q, func(d Clause) bool {
+				return slices.ContainsFunc(list, func(x Clause) bool { return x.col == d.col })
+			})
+			return e
 		}
 		common = next
 		seen = append(seen, c)
@@ -606,10 +635,31 @@ func checkKinds(q *Query) error {
 		return nil
 	}
 	if len(rows) == 0 {
-		return qerr(first, "the kind clause at column %d leaves no rows: it allows no kind; change or remove it", first)
+		e := qerr(first, "the kind clause at column %d leaves no rows: it allows no kind; change or remove it", first)
+		last := 0
+		for _, c := range q.Clauses {
+			if c.Name == "kind" {
+				last = c.col
+			}
+		}
+		e.Fixed = withoutClauses(q, func(d Clause) bool { return d.Name == "kind" && d.col != last })
+		return e
 	}
-	return qerr(first, "the kind clause at column %d leaves no rows: it allows %s, while %s can only match %s; change or remove it",
+	e := qerr(first, "the kind clause at column %d leaves no rows: it allows %s, while %s can only match %s; change or remove it",
 		first, strings.Join(kindNames(rows), ", "), strings.Join(nonKindNames(q), ", "), strings.Join(kindNames(common), ", "))
+	e.Fixed = withoutClauses(q, func(d Clause) bool { return d.Name == "kind" })
+	return e
+}
+
+// withoutClauses is q's expression with the clauses drop selects removed.
+func withoutClauses(q *Query, drop func(Clause) bool) string {
+	var keep []string
+	for _, c := range q.Clauses {
+		if !drop(c) {
+			keep = append(keep, c.raw)
+		}
+	}
+	return strings.Join(keep, ";")
 }
 
 func nonKindNames(q *Query) []string {
@@ -732,6 +782,7 @@ type queryIndex struct {
 
 type rawSnapshot struct {
 	GeneratedAt string           `json:"generated_at"`
+	Timezone    string           `json:"timezone"`
 	Nodes       []map[string]any `json:"nodes"`
 	Edges       []struct {
 		Source string `json:"source"`
@@ -753,8 +804,7 @@ func newQueryIndex(raw []byte, reg *Registry) (*queryIndex, error) {
 	ix := &queryIndex{reg: reg, env: queryEnv(doc.GeneratedAt, doc.People), byID: map[string]int{},
 		days: doc.Counts.Days, activity: doc.Counts.Activity}
 	if !ix.env.Now.IsZero() {
-		_, off := ix.env.Now.Zone()
-		ix.loc = time.FixedZone("", off)
+		ix.loc = snapshotLocation(doc.Timezone, ix.env.Now)
 		ix.nowMs = ix.env.Now.UnixMilli()
 		ix.today = ix.env.Now.In(ix.loc).Format("2006-01-02")
 	}
@@ -802,6 +852,19 @@ func newQueryIndex(raw []byte, reg *Registry) (*queryIndex, error) {
 		ix.values[f.Name] = vals
 	}
 	return ix, nil
+}
+
+// snapshotLocation is the time zone local days are counted in: the
+// snapshot's IANA timezone when it names one this machine knows, else the
+// fixed offset of generated_at (which is wrong across a DST change).
+func snapshotLocation(name string, now time.Time) *time.Location {
+	if name != "" && name != "Local" {
+		if l, err := time.LoadLocation(name); err == nil {
+			return l
+		}
+	}
+	_, off := now.Zone()
+	return time.FixedZone("", off)
 }
 
 // reach returns seeds and every node reachable from them along adj, in
@@ -894,7 +957,9 @@ func (ix *queryIndex) raw(f Field, i int) (vals []any, known bool) {
 		ts, k := ix.pathValues(f, i)
 		for _, t := range ts {
 			if ms, ok := parseTimestampMs(t); ok {
-				vals = append(vals, float64(ix.nowMs-ms)/86400000)
+				// Whole days, so updated_ago:1 matches what the extract
+				// prints as 1d (live.js floors the same way).
+				vals = append(vals, math.Floor(float64(ix.nowMs-ms)/86400000))
 			}
 		}
 		return vals, k
@@ -922,11 +987,25 @@ func (ix *queryIndex) raw(f Field, i int) (vals []any, known bool) {
 			return []any{"unknown"}, true
 		}
 		if c, _ := bm["pr_count"].(float64); c > 0 {
-			return nil, true
+			return nil, true // unreachable: prStateNA
 		}
 		return []any{"none"}, true
 	}
 	return nil, false
+}
+
+// prStateNA reports whether f is today's PR-state bucket on a bookmark that
+// has PRs: the field does not apply there, since its PR nodes carry their
+// own states. (A value there would let !prstate:open match the bookmark of
+// an open PR, and the closure would bring that PR back.)
+func (ix *queryIndex) prStateNA(f Field, i int) bool {
+	if f.Derive != DerivePRState || ix.kinds[i] != KindBookmark || (len(f.DeriveKinds) > 0 && !slices.Contains(f.DeriveKinds, KindBookmark)) {
+		return false
+	}
+	bm, _ := ix.nodes[i]["bookmark"].(map[string]any)
+	lookup, _ := bm["pr_lookup"].(string)
+	count, _ := bm["pr_count"].(float64)
+	return (lookup == "fresh" || lookup == "stale") && count > 0
 }
 
 func parseTimestampMs(v any) (int64, bool) {
@@ -943,7 +1022,7 @@ func parseTimestampMs(v any) (int64, bool) {
 
 // extract computes and normalizes f's value on node i.
 func (ix *queryIndex) extract(f Field, i int) fieldValue {
-	if !slices.Contains(f.Kinds, ix.kinds[i]) {
+	if !slices.Contains(f.Kinds, ix.kinds[i]) || ix.prStateNA(f, i) {
 		return fieldValue{na: true, unknown: true}
 	}
 	vals, known := ix.raw(f, i)
@@ -1112,7 +1191,7 @@ func (ix *queryIndex) bind(c Clause) (boundClause, []string) {
 	switch c.op {
 	case opList:
 		for _, v := range c.vals {
-			if !v.quoted && v.text == "unknown" && c.field.Type != FieldText {
+			if isUnknownWord(v) && c.field.Type != FieldText {
 				b.hasUnknown = true
 				continue
 			}

@@ -137,6 +137,10 @@ func TestExtractArgErrors(t *testing.T) {
 			t.Errorf("%+v: err = %v, want %q", tc.args, err, tc.want)
 		}
 	}
+	noRepo := mustRegistry([]Field{{Name: "kind", Type: FieldEnum, Kinds: queryKinds, Paths: []string{"kind"}}}, nil)
+	if _, err := Extract(v, noRepo, nil, ExtractArgs{Group: "repo"}); !errors.Is(err, ErrExtractArgs) || !strings.Contains(err.Error(), "group repo needs the repo field") {
+		t.Errorf("group repo without a repo field: %v", err)
+	}
 	_, err := Extract(v, Fields(), nil, ExtractArgs{Query: "prstat:open"})
 	var qe *QueryError
 	if !errors.As(err, &qe) || qe.Pos != 1 || qe.Fixed != "prstate:open" {
