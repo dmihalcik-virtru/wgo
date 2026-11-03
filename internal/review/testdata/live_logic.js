@@ -1494,7 +1494,7 @@ test("detail panel: check= names a check of the selected PR", () => {
     assert.equal(sum("pr:acme/web#204"), "history not fetched yet; 1d from creation to merge");
     assert.equal(sum("pr:acme/web#207"), "history not fetched yet; created at an unknown time");
     const st = (id) => TL.stateText(apr(id), TL.segments(apr(id), now), op, now, env);
-    assert.equal(st("pr:acme/api#105"), "waiting on you 150d", "whoever is waited on now");
+    assert.equal(st("pr:acme/api#105"), "waiting on you 149d", "whoever is waited on now, since their request (Jun 3), not the segment's start");
     assert.equal(st("pr:acme/api#104"), "waiting on team:web (you) 5d");
     assert.equal(st("pr:acme/api#107"), "merged Oct 28");
     assert.equal(st("pr:acme/api#103"), "draft · no history");
@@ -1506,6 +1506,39 @@ test("detail panel: check= names a check of the selected PR", () => {
     assert.equal(TL.dur(30 * 60000), "<1h");
     assert.equal(TL.dur(5 * H), "5h");
     assert.equal(TL.dur(36 * H), "2d");
+  });
+
+  // A PR built from segments and lanes, at the fixture's now.
+  const synth = (segs, lanes) => ({ state: "open", timeline: { freshness: "fresh", segments: segs, lanes: lanes } });
+  test("timeline: the current wait counts from the requests still open, and the label sits on the accent", () => {
+    const op = TL.operator(aix);
+    // bob asked Oct 21, alice Oct 28, then bob commented: alice waited 2d,
+    // though the waiting segment began with bob.
+    const pr = synth([{ state: "waiting", start: "2026-10-21T09:00:00Z", reviewers: ["bob", "alice"] }],
+      [{ reviewer: "bob", waits: [{ start: "2026-10-21T09:00:00Z", end: "2026-10-29T09:00:00Z" }] }, { reviewer: "alice", waits: [{ start: "2026-10-28T09:00:00Z" }] }]);
+    const segs = TL.segments(pr, now), mine = TL.mineSpans(pr, segs, op, now);
+    assert.deepEqual(TL.currentWait(pr, segs, now), { state: "waiting", reviewers: ["alice"], a: at("2026-10-28T09:00:00Z") });
+    assert.equal(TL.stateText(pr, segs, op, now, env), "waiting on you 2d", "Oct 28 09:00 to Oct 30 16:00, not 9d from bob's request");
+    assert.deepEqual(mine, [{ a: at("2026-10-28T09:00:00Z"), b: now }]);
+    assert.deepEqual(TL.labels(segs[0], mine, op), [
+      { a: at("2026-10-21T09:00:00Z"), b: at("2026-10-28T09:00:00Z"), text: "waiting on bob", short: "waiting", mine: false },
+      { a: at("2026-10-28T09:00:00Z"), b: now, text: "waiting on you", short: "you", mine: true }]);
+    // bob's request swapped for carol's in the same second.
+    const sw = synth([{ state: "unattended", start: "2026-10-20T09:00:00Z" }, { state: "waiting", start: "2026-10-21T09:00:00Z", reviewers: ["bob", "carol"] }],
+      [{ reviewer: "bob", waits: [{ start: "2026-10-21T09:00:00Z", end: "2026-10-25T10:00:00Z" }] }, { reviewer: "carol", waits: [{ start: "2026-10-25T10:00:00Z" }] }]);
+    assert.equal(TL.stateText(sw, TL.segments(sw, now), op, now, env), "waiting on carol 5d");
+    assert.equal(TL.stateText(apr("pr:acme/api#101"), TL.segments(apr("pr:acme/api#101"), now), op, now, env), "waiting on bob 4d");
+  });
+
+  test("timeline: no accent outside waiting, on the row or the operator's lane", () => {
+    const op = TL.operator(aix);
+    // alice is asked; bob then requests changes while her request is open.
+    const pr = synth([{ state: "waiting", start: "2026-10-21T09:00:00Z", reviewers: ["alice"] }, { state: "changes_requested", start: "2026-10-24T09:00:00Z", reviewers: ["bob"] }],
+      [{ reviewer: "alice", waits: [{ start: "2026-10-21T09:00:00Z" }] }]);
+    const segs = TL.segments(pr, now), mine = TL.mineSpans(pr, segs, op, now);
+    assert.deepEqual(mine, [{ a: at("2026-10-21T09:00:00Z"), b: at("2026-10-24T09:00:00Z") }], "her lane is open until now, the accent stops at the change request");
+    assert.deepEqual(TL.labels(segs[1], mine, op).map((l) => l.text), ["changes requested by bob"]);
+    assert.equal(TL.stateText(pr, segs, op, now, env), "changes requested by bob 6d");
   });
 
   test("timeline: layout clips to the axis, caps a merge, and labels only what fits", () => {
