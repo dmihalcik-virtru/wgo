@@ -48,6 +48,8 @@ var (
 	dashView    string
 	dashSprint  string
 	dashFixture string
+	// gh-101: the analysis table's sort, for --md.
+	dashSort string
 )
 
 // DefaultDashPort is the default loopback port `wgo dash` serves on.
@@ -123,7 +125,9 @@ every view is a link; the same text works here:
                                              nodes it shows
   wgo dash --md --query EXPR                 print its rows as Markdown,
                                              with --cols, --group,
-                                             --layout table
+                                             --layout table, and --sort
+                                             (-waiting,size: the table's
+                                             order, unknown last)
   wgo dash --md --preset NAME                the same for a saved filter
 
 Saved filters are built in (my-move, review-inbox, shipped, … — each hidden
@@ -160,6 +164,7 @@ func init() {
 	dashCmd.Flags().StringVar(&dashLayout, "layout", "", "with --md, bullets (default) or table")
 	dashCmd.Flags().StringVar(&dashView, "view", "", "with --md, the extract view: rows (default); sprint arrives with the sprint view")
 	dashCmd.Flags().StringVar(&dashSprint, "sprint", "", "with --md --view sprint, the sprint to summarize (arrives with the sprint view)")
+	dashCmd.Flags().StringVar(&dashSort, "sort", "", "with --md, sort rows by these fields as the table does, e.g. -waiting,size (- sorts descending; unknown values sort last)")
 	// --fixture serves or prints a saved snapshot instead of collecting one:
 	// for screenshots and for comparing the CLI with the page. Hidden.
 	dashCmd.Flags().StringVar(&dashFixture, "fixture", "", "load this snapshot JSON instead of collecting (testing)")
@@ -182,7 +187,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	if flagChanged("query") && dashPreset != "" {
 		return errors.New("give --query or --preset, not both: --preset NAME stands for --query with that saved filter's expression")
 	}
-	for _, name := range []string{"cols", "group", "layout", "view", "sprint"} {
+	for _, name := range []string{"cols", "group", "layout", "view", "sprint", "sort"} {
 		if flagChanged(name) && !dashMD {
 			return fmt.Errorf("--%s only applies with --md (the Markdown extract); run wgo dash --md --%s …", name, name)
 		}
@@ -211,7 +216,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	if err != nil {
 		return err
 	}
-	extract := dash.ExtractArgs{Query: expr, Cols: dash.SplitCols(dashCols), Group: dashGroup, Layout: dashLayout, View: dashView, Sprint: dashSprint}
+	extract := dash.ExtractArgs{Query: expr, Cols: dash.SplitCols(dashCols), Group: dashGroup, Layout: dashLayout, View: dashView, Sprint: dashSprint, Sort: dash.SplitCols(dashSort)}
 	if dashMD {
 		if err := dash.CheckExtractArgs(dash.Fields(), extract); err != nil {
 			return dashQueryFailure(err, expr)

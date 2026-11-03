@@ -180,13 +180,14 @@ func TestExtractRouteMatchesExtract(t *testing.T) {
 		{Query: "repo:acme/api", Cols: []string{"kind", "freshness"}, Group: "repo", Layout: "table"},
 		{Query: "activity:-6d;prstate:open", Cols: []string{"activity"}, Group: "none"},
 		{Query: "text:\"API WIDGETS\"", Layout: "bullets"},
+		{Query: "kind:pr", Cols: []string{"updated_ago"}, Group: "none", Sort: []string{"-updated_ago", "repo"}},
 	} {
 		want, err := Extract(v, Fields(), filters, args)
 		if err != nil {
 			t.Fatal(err)
 		}
 		p := url.Values{}
-		for k, val := range map[string]string{"q": args.Query, "cols": strings.Join(args.Cols, ","), "group": args.Group, "layout": args.Layout} {
+		for k, val := range map[string]string{"q": args.Query, "cols": strings.Join(args.Cols, ","), "group": args.Group, "layout": args.Layout, "sort": strings.Join(args.Sort, ",")} {
 			if val != "" {
 				p.Set(k, val)
 			}
@@ -203,6 +204,7 @@ func TestExtractRouteMatchesExtract(t *testing.T) {
 		"?view=sprint&sprint=42": "the sprint view is not available yet",
 		"?q=prstat:open":         `unknown field "prstat" at column 1; did you mean prstate?`,
 		"?cols=nope":             `unknown column "nope"`,
+		"?sort=-mov":             `unknown sort key "mov"; did you mean move?`,
 	} {
 		resp, body := get(t, srv.URL+ExtractPath+path)
 		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, want) || strings.Contains(body, "extract:") {

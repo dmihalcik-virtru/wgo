@@ -229,7 +229,7 @@ func (s *server) serveSnapshot(w http.ResponseWriter, r *http.Request) {
 const ExtractPath = "/api/extract"
 
 // serveExtract renders the held snapshot as Markdown for q, cols, group,
-// layout, view and sprint, exactly as wgo dash --md does. Like every GET
+// layout, view, sprint and sort, exactly as wgo dash --md does. Like every GET
 // route it reads only the published view.
 func (s *server) serveExtract(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
@@ -242,7 +242,7 @@ func (s *server) serveExtract(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Query()
 	md, err := Extract(v, Fields(), s.opts.Filters, ExtractArgs{
 		Query: p.Get("q"), Cols: SplitCols(p.Get("cols")), Group: p.Get("group"),
-		Layout: p.Get("layout"), View: p.Get("view"), Sprint: p.Get("sprint"),
+		Layout: p.Get("layout"), View: p.Get("view"), Sprint: p.Get("sprint"), Sort: SplitCols(p.Get("sort")),
 	})
 	if err != nil {
 		var qe *QueryError
