@@ -734,4 +734,203 @@ test("12 clauses over 2,000 nodes (timing logged)", () => {
   perfLine += "; table sort of " + all.length + " rows by 2 keys " + (Number(process.hrtime.bigint() - t0) / 1e6 / 10).toFixed(2) + " ms";
 });
 
+// ---------- gh-102: linked filters (web/live-facets.js) ----------
+// The addon and the analysis fixture sit beside live.js and fields.json.
+const path = require("node:path");
+const FX = require(path.join(path.dirname(process.argv[2]), "live-facets.js"))(L);
+const AFIX = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[3]), "analysis_fixture.json"), "utf8"));
+const AREG = L.registry(FIELDS);
+const aix = L.queryIndex(AFIX, AREG);
+
+// bruteCoupled counts, by scanning nodes, the rows of expr without field
+// name's clauses that pass has(value of name on the node).
+function bruteRows(ix, expr, name) {
+  const q = L.parseQuery(expr, ix.reg);
+  const rest = q.clauses.filter((c) => c.name !== name).map((c) => c.raw).join(";");
+  const r = L.runQuery(rest, ix);
+  assert.ok(!r.error, rest + ": " + (r.error && r.error.error));
+  return r.res.rowIdx;
+}
+function bruteCount(ix, rows, name, has) {
+  const vals = ix.values.get(name);
+  return rows.filter((i) => !vals[i].na && has(vals[i])).length;
+}
+const FACET_QUERIES = ["", "kind:pr", "repo:acme/api;prstate:open", "kind:pr;prstate:open,draft;!ci:failing;author:alice,carol", "move:reviewer,nobody;size:30..299",
+  "kind:pr;prstate:merged;merged:2026-10-16..2026-10-22", "kind:ticket;mismatch:*;sprint:\"Sprint 12\"", "when:2026-10-20..;!repo:acme/infra;kind:pr,ticket", "waiting:2..;age:..13;!reviewer:*"];
+const FACET_FIELDS = FX.DEFAULT_FACETS.concat(["kind", "when", "merged", "stale", "points", "effort"]);
+
+test("facets: coupled counts ignore the facet's own clauses and honour all others", () => {
+  let checked = 0;
+  for (const expr of FACET_QUERIES) {
+    const qm = FX.queryMasks(aix, expr);
+    assert.equal(qm.error, null, expr);
+    for (const name of FACET_FIELDS) {
+      const fi = FX.fieldIndex(aix, name), rows = bruteRows(aix, expr, name), c = FX.facetCounts(fi, FX.others(qm, name), null);
+      const at = expr + " / " + name;
+      assert.equal(c.unknown.coupled, bruteCount(aix, rows, name, (v) => v.unknown), at + " unknown");
+      assert.equal(c.none.coupled, bruteCount(aix, rows, name, (v) => !v.unknown && !v.norm.length && !v.nums.length), at + " none");
+      if (fi.type === "bars") c.values.forEach((r) => { assert.equal(r.coupled, bruteCount(aix, rows, name, (v) => !v.unknown && v.norm.includes(r.key)), at + " " + r.key); checked++; });
+      if (fi.type === "hist") c.bins.forEach((r, k) => {
+        const b = fi.bins[k];
+        assert.equal(r.coupled, bruteCount(aix, rows, name, (v) => !v.unknown && v.nums.some((x) => x >= b.lo && (b.open || x < b.hi))), at + " bin " + b.label); checked++;
+      });
+      if (fi.type === "days") c.bins.forEach((r, k) => { assert.equal(r.coupled, bruteCount(aix, rows, name, (v) => !v.unknown && v.norm.includes(fi.days[k])), at + " " + fi.days[k]); checked++; });
+    }
+  }
+  assert.ok(checked > 1000, "checked " + checked);
+  // Concretely: under repo:acme/api;prstate:open the repo facet still counts
+  // acme/web's open PRs (its own clause is ignored), and the prstate facet
+  // counts only acme/api's (the repo clause holds).
+  const qm = FX.queryMasks(aix, "repo:acme/api;prstate:open");
+  const repo = FX.facetCounts(FX.fieldIndex(aix, "repo"), FX.others(qm, "repo"), null).values.find((v) => v.key === "acme/web");
+  assert.deepEqual([repo.coupled, repo.ghost], [4, 11]);
+  const st = FX.facetCounts(FX.fieldIndex(aix, "prstate"), FX.others(qm, "prstate"), null).values;
+  assert.deepEqual(st.map((v) => v.key + ":" + v.coupled + "/" + v.ghost).sort(), ["closed:1/1", "draft:1/2", "merged:2/6", "none:0/1", "open:5/10"]);
+});
+
+test("facets: ghosts are the whole snapshot; the selection's share is its own", () => {
+  const fi = FX.fieldIndex(aix, "author"), c = FX.facetCounts(fi, FX.others(FX.queryMasks(aix, "kind:ticket"), "author"), FX.fromIds(aix, ["pr:acme/api#101", "pr:acme/web#202"]));
+  const by = Object.fromEntries(c.values.map((v) => [v.key, v]));
+  assert.deepEqual([by.alice.ghost, by.alice.coupled, by.alice.part, by.bob.part, by.carol.part], [10, 0, 1, 1, 0], "author applies only to PRs, which kind:ticket leaves none of");
+  const rows = FX.valueRows(aix, fi, c, FX.fieldState(L.parseQuery("", AREG), "author"));
+  assert.deepEqual(rows.map((r) => r.label), ["Alice (you)", "Bob", "carol", "unknown"], "configured people first, by display name, then others by count");
+  assert.equal(rows[0].person, "alice");
+  const sprint = FX.valueRows(aix, FX.fieldIndex(aix, "sprint"), FX.facetCounts(FX.fieldIndex(aix, "sprint"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("", AREG), "sprint"));
+  assert.ok(sprint.some((r) => r.key === "sprint 12") && !sprint.some((r) => r.key === "1234"), "a sprint's ID beside its name is listed once: " + sprint.map((r) => r.key));
+  assert.deepEqual(sprint.slice(-2).map((r) => r.kind), ["unknown", "none"], "unknown and none are their own rows");
+  const named = FX.valueRows(aix, FX.fieldIndex(aix, "sprint"), FX.facetCounts(FX.fieldIndex(aix, "sprint"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("sprint:1234", AREG), "sprint"));
+  assert.deepEqual(named.filter((r) => r.key === "1234").map((r) => r.ghost + ":" + r.sel), ["6:true"], "an ID the query names shows with its count");
+  const shown = FX.shownRows(FX.valueRows(aix, FX.fieldIndex(aix, "repo"), FX.facetCounts(FX.fieldIndex(aix, "repo"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("", AREG), "repo")), "WEB", 8);
+  assert.deepEqual(shown.rows.map((r) => r.label), ["acme/web", "unknown"], "the type-ahead finds values, case-insensitively");
+});
+
+test("facets: every gesture produces the gh-100 clause", () => {
+  const g = (expr, name, v, mode) => FX.gesture(expr, AREG, name, v, mode);
+  assert.equal(g("kind:pr", "repo", "acme/api", "only"), "kind:pr;repo:acme/api", "click: only this value");
+  assert.equal(g("kind:pr;repo:acme/api", "repo", "acme/api", "only"), "kind:pr", "click again clears");
+  assert.equal(g("repo:acme/api,acme/web;kind:pr", "repo", "acme/infra", "only"), "kind:pr;repo:acme/infra", "click replaces the field's clauses");
+  assert.equal(g("repo:acme/api;kind:pr", "repo", "acme/web", "or"), "repo:acme/api,acme/web;kind:pr", "Shift-click adds to the OR list");
+  assert.equal(g("repo:acme/api,acme/web", "repo", "acme/web", "or"), "repo:acme/api", "Shift-click removes from it");
+  assert.equal(g("repo:acme/api", "repo", "acme/api", "or"), "", "removing the last value drops the clause");
+  assert.equal(g("!repo:acme/web", "repo", "acme/web", "or"), "repo:acme/web", "Shift-click takes a value out of the exclusions");
+  assert.equal(g("kind:pr", "repo", "acme/web", "exclude"), "kind:pr;!repo:acme/web", "Alt-click excludes");
+  assert.equal(g("!repo:acme/web", "repo", "acme/api", "exclude"), "!repo:acme/web,acme/api", "Alt-click adds to the exclusions");
+  assert.equal(g("!repo:acme/web,acme/api", "repo", "acme/web", "exclude"), "!repo:acme/api", "Alt-click again includes it again");
+  assert.equal(g("repo:acme/api,acme/web", "repo", "acme/web", "exclude"), "repo:acme/api;!repo:acme/web", "excluding a chosen value unchooses it");
+  assert.equal(g("move_people:@me", "move_people", "bob", "or"), "move_people:@me,bob", "macros are kept as written");
+  assert.equal(g("", "ticket_status", "In Progress", "only"), "ticket_status:\"In Progress\"", "values are quoted when they must be");
+  assert.equal(g("mergeable:mergeable", "mergeable", "unknown", "or"), "mergeable:mergeable,unknown", "unknown joins a list");
+  assert.equal(FX.noneGesture("kind:ticket", AREG, "mismatch", "only"), "kind:ticket;!mismatch:*", "none: known and empty");
+  assert.equal(FX.noneGesture("kind:ticket;!mismatch:*", AREG, "mismatch", "only"), "kind:ticket", "again clears");
+  assert.equal(FX.noneGesture("mismatch:code_merged_ticket_open;kind:ticket", AREG, "mismatch", "exclude"), "kind:ticket;mismatch:*", "excluding none: any value");
+  for (const e of [g("kind:pr", "repo", "acme/web", "exclude"), g("repo:acme/api;kind:pr", "repo", "acme/web", "or"), FX.noneGesture("kind:ticket", AREG, "mismatch", "only")]) assert.ok(!L.parseQuery(e, AREG).error, e);
+  // Ranges: a histogram's bins, a slider's edges, a brush's days.
+  const size = FX.fieldIndex(aix, "size");
+  assert.deepEqual(size.bins.map((b) => b.label), ["0", "1", "3", "10", "30", "100", "300", "1k"], "log bins in 1-3-10 steps");
+  assert.deepEqual(FX.edgeRange(size, 4, 6), ["size:30..299"]);
+  assert.deepEqual(FX.edgeRange(size, 0, 3), ["size:..9"]);
+  assert.deepEqual(FX.edgeRange(size, 5, size.bins.length), ["size:100.."]);
+  assert.equal(FX.binExclusion(size, 3), "!size:10..29");
+  assert.deepEqual(FX.rangeTexts("points", 0.5, 2, true), ["points:>=0.5", "points:<2"], "fractions get exact bounds");
+  assert.deepEqual(FX.rangeEdges(size, FX.fieldState(L.parseQuery("size:30..299", AREG), "size")), { a: 4, b: 6, active: true }, "handles sit at the range's edges");
+  assert.deepEqual(FX.rangeEdges(size, FX.fieldState(L.parseQuery("size:>40", AREG), "size")), { a: 4, b: 8, active: true });
+  const age = FX.fieldIndex(aix, "age");
+  assert.deepEqual(age.bins.map((b) => b.text), ["0 days", "1 day", "2–3 days", "4–6 days", "7–13 days", "14–29 days", "30–59 days", "60–89 days", "≥ 90 days"], "durations: day bins on a log scale, the last open");
+  const pts = FX.numberBins({ type: "number", scale: "linear", unit: "points" }, [1, 2, 3, 5, 8]);
+  assert.deepEqual(pts.map((b) => b.lo), [0, 1, 2, 3, 4, 5, 6, 7, 8], "small integers: one bin each");
+  const lin = FX.numberBins({ type: "duration", scale: "linear" }, [0, 3, 40]);
+  assert.equal(lin[lin.length - 1].text, "≥ 14", "linear durations: a bin per day for two weeks, then open");
+  assert.equal(FX.setClauses("kind:pr;!when:2026-10-20;when:2026-10-21;prstate:open", AREG, "when", ["when:2026-10-16..2026-10-22"]), "kind:pr;!when:2026-10-20;when:2026-10-16..2026-10-22;prstate:open", "a brush replaces the positive clauses in place");
+  assert.equal(FX.setClauses("kind:pr;when:2026-10-21", AREG, "when", []), "kind:pr", "an empty brush clears");
+});
+
+test("facets: brushing from shipped replaces merged:-7d.. and finds a past week's merges by merge date", () => {
+  const shipped = "kind:pr;prstate:merged;merged:-7d..";
+  assert.equal(FX.timeTarget(L.parseQuery(shipped, AREG)), "merged");
+  assert.equal(FX.timeTarget(L.parseQuery("kind:pr;when:2026-10-01..", AREG)), "when");
+  assert.equal(FX.timeTarget(L.parseQuery("kind:pr", AREG)), "when");
+  const brushed = FX.setClauses(shipped, AREG, "merged", FX.dayTexts("merged", "2026-10-16", "2026-10-22"));
+  assert.equal(brushed, "kind:pr;prstate:merged;merged:2026-10-16..2026-10-22");
+  const rows = L.runQuery(brushed, aix).res.rows.slice().sort();
+  assert.deepEqual(rows, ["pr:acme/api#108", "pr:acme/web#204", "pr:acme/web#205"]);
+  const updatedLater = rows.filter((id) => aix.nodes[aix.byId.get(id)].pr.updated_at.slice(0, 10) > "2026-10-22");
+  assert.deepEqual(updatedLater, ["pr:acme/api#108", "pr:acme/web#205"], "merged that week, updated in a later one");
+  assert.deepEqual(L.runQuery("when:2026-10-16..2026-10-22;kind:pr;prstate:merged", aix).res.rows.slice().sort(), rows, "when is the merge date of a merged PR");
+  // The when chart counts merged PRs per merge day across the window, the
+  // merged clause being its own.
+  const fi = FX.fieldIndex(aix, "merged"), c = FX.facetCounts(fi, FX.others(FX.queryMasks(aix, brushed), "merged"), null);
+  assert.deepEqual(fi.days.filter((d, k) => c.bins[k].coupled).map((d, k) => d), ["2026-10-06", "2026-10-19", "2026-10-20", "2026-10-22", "2026-10-28", "2026-10-29"]);
+  const states = FX.dayStates(aix, fi, FX.fieldState(L.parseQuery(brushed, AREG), "merged"));
+  assert.deepEqual(fi.days.filter((d, k) => states[k].sel), ["2026-10-16", "2026-10-17", "2026-10-18", "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22"]);
+});
+
+test("facets: the previous period is compared only where the PR inventory covers it", () => {
+  const per = (expr, snap) => FX.periodText(FX.period(aix, expr, snap || AFIX));
+  assert.equal(FX.coverDay(aix, AFIX), "2026-10-02");
+  assert.equal(per("kind:pr;prstate:merged;merged:-7d.."), "2 merged · previous 3", "the last eight days against the eight before");
+  assert.equal(per("kind:pr;prstate:merged;merged:2026-10-16..2026-10-22"), "3 merged · previous 0");
+  assert.equal(per("when:2026-10-16..2026-10-22"), "3 merged · previous 0", "a when range counts the merged PRs among its rows");
+  assert.equal(per("when:2026-10-19"), "1 merged · previous 0", "a single day is a one-day period");
+  assert.equal(per("kind:pr;prstate:merged;merged:2026-10-03..2026-10-09"), "1 merged · previous 7 days not covered: merges are known from 2026-10-02");
+  assert.equal(per("kind:pr;merged:..2026-10-09"), "at least 1 merged · no previous period: the range has no start");
+  const noCover = JSON.parse(JSON.stringify(AFIX));
+  delete noCover.sources.github_inventory.covered_since;
+  assert.equal(per("kind:pr;prstate:merged;merged:2026-10-16..2026-10-22", noCover), "at least 3 merged · previous 7 days not known: the PR inventory does not say from when merges are known");
+  assert.equal(FX.period(aix, "kind:pr;repo:acme/api", AFIX), null, "no time range, no comparison");
+  assert.equal(FX.period(aix, "when:2026-10-16,2026-10-18", AFIX), null, "several separate days are no period");
+  assert.match(FX.periodTitle(FX.period(aix, "when:2026-10-16..2026-10-22", AFIX)), /2026-10-16 to 2026-10-22 \(7 days\), against the same query 2026-10-09 to 2026-10-15/);
+});
+
+test("facets: the attention summary counts are its saved filters' counts", () => {
+  const filters = [{ name: "my-move", expr: "move_people:@me" }, { name: "waiting-reviewers", expr: "kind:pr;move:reviewer" }, { name: "nobody", expr: "kind:pr;move:nobody" }];
+  const sum = FX.summary(aix, filters);
+  assert.deepEqual(sum.map((s) => s.label + "=" + s.count), ["your move=4", "waiting on reviewers=4", "nobody's move=2"], "the numbers TestAttentionSummaryCountsOnTheFixture asserts in Go");
+  sum.forEach((s) => assert.equal(s.count, L.runQuery(s.expr, aix).res.rows.length, s.name));
+  assert.deepEqual(sum.map((s) => s.accent), [true, false, false], "only your move takes the accent");
+  const noMe = L.queryIndex(Object.assign({}, AFIX, { people: [{ login: "alice" }] }), AREG);
+  const unknown = FX.summary(noMe, filters)[0];
+  assert.ok(unknown.count === null && /@me is unknown/.test(unknown.why), "no person marked me: unknown, never 0: " + JSON.stringify(unknown));
+  assert.match(FX.summary(aix, [{ name: "nobody", expr: "kind:pr;move:nobody", hidden: true, reason: "needs fields" }])[2].why, /needs fields/);
+});
+
+test("facets: the panel lists the configured facets, added ones, and every field the query names", () => {
+  assert.deepEqual(FX.facetNames(AREG, FX.DEFAULT_FACETS, [], null, "when"), FX.DEFAULT_FACETS);
+  assert.deepEqual(FX.facetNames(AREG, ["repo", "nope", "text"], ["size_bucket", "repo"], L.parseQuery("kind:ticket;!label:x;when:-7d..", AREG), "when"), ["repo", "size_bucket", "kind", "label"],
+    "unknown names and text are left out, the when chart's field too");
+  assert.equal(L.filterConfigLine("kind:pr;text:\"a \\\"b\\\"\"", "my-filter"), "my-filter = \"kind:pr;text:\\\"a \\\\\\\"b\\\\\\\"\\\"\"", "Copy as config writes a TOML basic string");
+  assert.equal(L.filterConfigLine("text:a\tb"), "my-filter = \"text:a\\u0009b\"");
+});
+
+// Coupled counts for 12 facets on the analysis fixture scaled to 2,000
+// nodes (scaleAnalysisFixture in analysis_fixture_test.go, in brief).
+function scaleFixture(base, min) {
+  const copies = Math.ceil(min / base.nodes.length), out = Object.assign({}, base, { nodes: [], edges: [] });
+  out.counts = { days: base.counts.days, activity: {}, pr_states: {}, agents: {} };
+  for (let k = 0; k < copies; k++) {
+    const sfx = k ? "~" + k : "", c = JSON.parse(JSON.stringify(base));
+    c.nodes.forEach((nd) => { nd.id += sfx; if (nd.effort) nd.effort.key += sfx; out.nodes.push(nd); });
+    c.edges.forEach((e) => out.edges.push({ source: e.source + sfx, target: e.target + sfx, kind: e.kind }));
+    Object.keys(c.counts.activity).forEach((id) => { out.counts.activity[id + sfx] = c.counts.activity[id]; });
+  }
+  return out;
+}
+test("facets: coupled counts for 12 facets at 2,000 nodes (timing logged)", () => {
+  const big = scaleFixture(AFIX, 2000), bix = L.queryIndex(big, AREG);
+  let t0 = process.hrtime.bigint();
+  FX.DEFAULT_FACETS.forEach((name) => FX.fieldIndex(bix, name));
+  const indexMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  const exprs = ["kind:pr;prstate:open,draft;!ci:failing;repo:acme/api,acme/web", "move:reviewer;size:30..299;age:..13", "kind:pr;prstate:open,draft;!ci:failing;repo:acme/api,acme/web;author:alice"];
+  let total = 0, runs = 0, bars = 0;
+  for (let i = 0; i < 12; i++) {
+    const expr = exprs[i % exprs.length] + (i >= 3 ? ";!text:zz" + i : ""); // new expressions: no cached masks
+    t0 = process.hrtime.bigint();
+    const qm = FX.queryMasks(bix, expr);
+    FX.DEFAULT_FACETS.forEach((name) => { const c = FX.facetCounts(FX.fieldIndex(bix, name), FX.others(qm, name), null); bars += c.values.length + c.bins.length; });
+    if (i >= 2) { total += Number(process.hrtime.bigint() - t0) / 1e6; runs++; }
+  }
+  assert.ok(bars > 0);
+  perfLine += "; facets: " + bix.nodes.length + " nodes, 12 facet indexes " + indexMs.toFixed(1) + " ms once, coupled counts for 12 facets " + (total / runs).toFixed(2) + " ms per query change";
+});
+// ---------- end gh-102 ----------
+
 console.log("ok " + n + " (" + vectorCases + " shared query vectors) " + perfLine);

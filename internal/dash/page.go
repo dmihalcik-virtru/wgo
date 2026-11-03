@@ -39,6 +39,10 @@ type liveBoot struct {
 	Me      string        `json:"me,omitempty"`
 	People  []QueryPerson `json:"people,omitempty"`
 	Extract string        `json:"extract,omitempty"`
+	// Facets are the facet panel's fields in order and FacetNotes what
+	// [dash] facets named that could not be one (gh-102, ResolveFacets).
+	Facets     []string `json:"facets,omitempty"`
+	FacetNotes []string `json:"facet_notes,omitempty"`
 }
 
 // liveAddon is one live page addon (spec/gh-100.md, requirement 27):
@@ -69,6 +73,8 @@ type liveAddon struct {
 // gh-105 append theirs.
 var liveAddons = []liveAddon{
 	{Script: "web/live-table.js", Style: "web/live-table.css"}, // gh-101: the analysis table, replacing the built-in one
+	// gh-102: linked filters, the attention summary and the overview charts.
+	{Script: "web/live-facets.js", Style: "web/live-facets.css"},
 }
 
 // liveAddonFiles returns the addons' scripts and stylesheets, in order.
