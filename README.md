@@ -1069,9 +1069,11 @@ clauses joined by `;`, all of which must hold. Each clause is
 
 Fields cover local work (`kind`, `text`, `effort`, `repo`, `activity`,
 `when`, …), PRs (`author`, `requested_from`, `reviewer`, `merged`, `age`,
-`mergeable`, `check_failing`, …) and Jira tickets (`status_category`,
-`sprint`, `sprint_state`, `points`, `epic`, …); a misspelt field lists them
-all. `@me` and `@people` stand for the configured people. A clause never
+`mergeable`, `check_failing`, …), Jira tickets (`status_category`,
+`sprint`, `sprint_state`, `points`, `epic`, …) and the
+[attention facts](#attention-facts) (`move`, `move_people`, `waiting_on`,
+`reason`, `waiting`, `ci`, `size`, `size_bucket`, `stale`, `mismatch`,
+`linked_prs`); a misspelt field lists them all. `@me` and `@people` stand for the configured people. A clause never
 matches a node whose value is unknown, negated or not; add `unknown` to a
 list to include those. `kind:` clauses choose which matches are rows.
 
@@ -1090,10 +1092,24 @@ A malformed query fails with the column, the fix and a corrected command.
 `GET /api/extract?q=…&cols=…&group=…&layout=…` serves the same Markdown as
 `--md`, byte for byte.
 
-Saved filters are built in (`my-move`, `review-inbox`, `shipped`, …) or
-set under `[dash.filters]`, where they override built-ins of the same name.
-A built-in stays hidden until the fields it needs exist; `--json --query`
-lists each filter with the reason it is hidden.
+Saved filters are built in or set under `[dash.filters]`, where they
+override built-ins of the same name. `--preset NAME` runs one, and the
+page's **Saved filters** menu lists them. The built-ins:
+
+| Name | Query | Answers |
+|------|-------|---------|
+| `my-move` | `move_people:@me` | my PRs to act on, and reviews asked of me, through a team too |
+| `waiting-reviewers` | `kind:pr;move:reviewer` | PRs waiting on a reviewer |
+| `push-reviewers` | `kind:pr;move:reviewer,nobody;ci:green,systemic_only` | PRs worth a nudge: reviewers' or nobody's move, and CI not at fault |
+| `nobody` | `kind:pr;move:nobody` | ready PRs with no reviewer and no approval |
+| `review-inbox` | `kind:pr;requested_from:@me` | reviews asked of me |
+| `shipped` | `kind:pr;prstate:merged;merged:-7d..` | what merged in the last week |
+| `close-candidates` | `kind:pr;prstate:open,draft;updated_ago:>=90` | open PRs untouched for 90 days |
+| `jira-out-of-sync` | `kind:ticket;mismatch:*` | tickets whose Jira status disagrees with their PRs |
+| `sprint` | `kind:ticket;sprint_state:active` | the active sprint's tickets |
+
+A filter that does not parse, or needs a field not registered yet, is
+hidden; `--json --query` lists each filter with the reason it is hidden.
 
 ```toml
 [dash.filters]
@@ -1245,6 +1261,18 @@ seconds by default). The closed-recent set changes only when a PR merges
 or closes, so it stays fresh six times as long (1800 seconds by default).
 A value outside 60 to 86400 stops `wgo dash` with an error naming it.
 
+`[dash.facts]` sets the thresholds of the [attention facts](#attention-facts):
+
+```toml
+[dash.facts]
+stale_days = 30           # an open PR not updated this long is stale (1 to 3650)
+systemic_ratio = 0.6      # a check failing on this share of a repository's open PRs fails everywhere (above 0, at most 1)
+systemic_min_prs = 3      # ...if it failed on at least this many of them (2 to 1000)
+```
+
+A value out of range, `0` included, stops `wgo dash` with an error naming
+the key, its range and its default.
+
 `ticket_prefixes` lists the Jira project keys whose ticket IDs count when
 they appear in a PR's title or body, so `SHA-256`, `AES-256`, `P-384` or
 `UTF-8` are never read as tickets. Without it, the projects in `[jira]`
@@ -1362,6 +1390,63 @@ wgo dash --json --refresh | jq '(.snapshot.people[] | select(.me) | .login) as $
   | [.snapshot.nodes[] | select(.kind == "pr" and .pr.state == "open" and .pr.author == $me)] | length'
 gh search prs --author @me --state open --limit 1000 --json number | jq length
 ```
+
+### Attention facts
+
+At the end of each collection, wgo derives the facts you would otherwise
+work out by hand, each with a one-line evidence string built from its
+inputs. There is no score: you rank by the facts you can see. The detail
+panel shows them for a selected PR or ticket, and the graph's tooltip sums
+them up.
+
+**Whose move** a PR is (`move`) comes from the first of these rules that
+holds; `reason` lists every one that holds, in this order:
+
+| Rule | move | reason |
+|------|------|--------|
+| merged or closed | `none` | `closed` |
+| draft | `author` | `draft` |
+| a reviewer's latest review requests changes, and they were not asked again since | `author` | `changes_requested` |
+| merge conflicts | `author` | `conflicts` |
+| a check fails that does not fail everywhere (below) | `author` | `ci_failing` |
+| approved | `author` | `approved_unmerged` |
+| a review request is outstanding | `reviewer` | `awaiting_review`, and `team_only` when only teams are asked |
+| none of these | `nobody` | `no_reviewer` |
+
+`ci_systemic_only`, `ci_pending`, `no_ticket` and `stale` are listed too,
+but never decide the move. `move_people` holds the move: the author, or the
+reviewers asked, plus each person you follow who is asked through a team,
+so `move_people:@me` is your move. `waiting` counts the days since the wait
+began: since the earliest outstanding request (a later request never resets
+it), since the PR was ready when nobody is asked, or since the review
+requesting changes. A request of unknown time may have started the wait
+earlier, and the page then says "or earlier"; with no request time known,
+the wait is unknown.
+
+**Fails everywhere.** For each repository, a check that failed on at least
+`systemic_ratio` of the open PRs that ran it, and on at least
+`systemic_min_prs` of them, fails everywhere (`check_stats` in the JSON).
+The count covers only the PRs the dashboard sees, those of the people you
+follow, and the evidence says so. A PR whose only failures are such checks
+has `ci: systemic_only`, and CI does not make it the author's move. A PR
+with more than 100 checks lists only some, so a check missing from it is
+counted as unknown there, not as not run.
+
+**Jira vs code** (`mismatch`), for Jira tickets and their linked PRs
+(`linked_prs`):
+
+| Mismatch | Holds when |
+|----------|------------|
+| `code_merged_ticket_open` | every linked PR is merged or closed, at least one merged, and the ticket is not done |
+| `ticket_done_code_open` | the ticket is done and a linked PR is open |
+| `in_progress_no_code` | in progress, in an active sprint, with no linked PR or workspace |
+| `in_progress_idle` | in progress, with linked PRs or workspaces but no activity on them for `stale_days` |
+| `unassigned_in_sprint` | in an active sprint with no assignee |
+
+A fact whose inputs are unknown (GitHub has not computed mergeability yet,
+a PR known only through a bookmark, a ticket cached before its status
+category) is `unknown` and names the missing input under `uncertain`. It is
+never shown as false or zero.
 
 ## wgo:// links with `wgo setup url-handler`
 

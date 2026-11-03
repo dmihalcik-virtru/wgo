@@ -201,6 +201,51 @@
     if (s || e) out += " · " + (s || "?") + " to " + (e || "?");
     return out;
   };
+  // ---------- derived facts (gh-99), details on demand ----------
+  function factWords(code) { return String(code || "").replace(/_/g, " "); }
+  var CI_FACT_TEXT = { green: "green", failing: "failing", systemic_only: "only checks that fail on most open PRs fail", pending: "pending", none: "no checks", unknown: "unknown" };
+  // prFactsRows lists a PR's derived facts for the detail panel as
+  // [label, text] rows: whose move it is and who holds it, every reason
+  // with its evidence, the wait, CI, size, and the inputs that were not
+  // known. me (the operator's login) shows as "you"; fmt formats a
+  // timestamp. Empty when the snapshot predates the facts.
+  L.prFactsRows = function (pr, me, fmt) {
+    var f = pr && pr.facts;
+    if (!f) return [];
+    fmt = fmt || String;
+    var lme = String(me || "").toLowerCase(), rows = [];
+    var who = (f.move_people || []).map(function (p) { return lme && String(p).toLowerCase() === lme ? p + " (you)" : p; });
+    rows.push(["Whose move", (f.move || "unknown") + (who.length ? " — " + who.join(", ") : "")]);
+    (f.reasons || []).forEach(function (r) { rows.push([factWords(r.code), r.evidence || ""]); });
+    if (f.waiting_since) rows.push(["Waiting since", fmt(f.waiting_since) + (f.waiting_lower_bound ? " or earlier" : "") + (f.waiting_on && f.waiting_on.length ? " on " + f.waiting_on.join(", ") : "")]);
+    rows.push(["CI", CI_FACT_TEXT[f.ci] || "unknown"]);
+    rows.push(["Size", typeof f.size === "number" ? f.size + " lines changed (" + (f.size_bucket || "?") + ")" : "unknown"]);
+    if (f.uncertain && f.uncertain.length) rows.push(["Not known", f.uncertain.join(", ")]);
+    return rows;
+  };
+  // ticketFactsRows lists a ticket's derived facts: its linked PRs, each
+  // place Jira and the code disagree with its evidence, and the inputs that
+  // were not known. A GitHub issue has no Jira status to compare.
+  L.ticketFactsRows = function (ti) {
+    var f = ti && ti.facts;
+    if (!f) return [];
+    var linked = (f.linked_prs || []).map(function (l) { return l.ref + " " + l.state; });
+    var rows = [["Linked PRs", linked.length ? linked.join(", ") : "none in the snapshot"]];
+    if (Array.isArray(f.mismatches)) {
+      if (!f.mismatches.length) rows.push(["Jira vs code", "no mismatch"]);
+      f.mismatches.forEach(function (m) { rows.push(["Mismatch: " + factWords(m.code), m.evidence || ""]); });
+    } else if (ti.system === "jira") rows.push(["Jira vs code", "unknown"]);
+    if (f.uncertain && f.uncertain.length) rows.push(["Not known", f.uncertain.join(", ")]);
+    return rows;
+  };
+  // factsTip is a node's facts in one line for the graph tooltip: a PR's
+  // move and reasons, or a ticket's mismatches.
+  L.factsTip = function (n) {
+    var f = n && n.pr && n.pr.facts, t = n && n.ticket && n.ticket.facts;
+    if (f) return "move: " + (f.move || "unknown") + ((f.reasons || []).length ? " · " + f.reasons.map(function (r) { return factWords(r.code); }).join(", ") : "");
+    if (t && t.mismatches && t.mismatches.length) return "Jira vs code: " + t.mismatches.map(function (m) { return factWords(m.code); }).join(", ");
+    return "";
+  };
   // sprintGroupText is the line a sprint group's card adds for its sprint:
   // its state and dates, and its goal unless the effort's description (which
   // assemble copies from the goal) already shows it.
@@ -1929,6 +1974,7 @@
         kv(detailBox, "Title", p.title); kv(detailBox, "State", L.prBucket(p)); kv(detailBox, "Checks", L.ciText(p)); kv(detailBox, "Review", L.reviewText(p));
         kv(detailBox, "Requested reviewers", p.reviewers_known ? ((p.requested_reviewers || []).join(", ") || "none requested") : "unknown");
         kv(detailBox, "Data", L.fresh(p.freshness).label); kv(detailBox, "Updated", p.updated_at ? fmtTime(p.updated_at) : "");
+        L.prFactsRows(p, store.qi && store.qi.env.me, fmtTime).forEach(function (r) { kv(detailBox, r[0], r[1]); });
       } else if (n.ticket) {
         var t = n.ticket;
         kv(detailBox, "System", t.system); kv(detailBox, "Status", t.status || "unknown"); kv(detailBox, "Title", t.title); kv(detailBox, "Assignee", t.assignee);
@@ -1936,6 +1982,7 @@
         kv(detailBox, "Status category", tfd.category); kv(detailBox, "Story points", tfd.points);
         kv(detailBox, "Sprints", (t.sprints || []).map(function (s) { return (s.name || "sprint " + s.id) + (s.state ? " (" + s.state + ")" : ""); }).join(", "));
         kv(detailBox, "Data", L.fresh(t.freshness).label); if (t.error) el("div", "err", t.error, detailBox);
+        L.ticketFactsRows(t).forEach(function (r) { kv(detailBox, r[0], r[1]); });
       } else if (n.sprint) {
         var sp = n.sprint;
         kv(detailBox, "Sprint", L.sprintText(sp)); kv(detailBox, "Goal", sp.goal); kv(detailBox, "Board", sp.board);
@@ -2217,6 +2264,7 @@
     el("b", null, n.d.label, tip);
     el("div", "dim", (KINDS.filter(function (K) { return K.k === n.d.kind; })[0] || { label: n.d.kind }).label, tip);
     var st = L.stateText(n.d); if (st) el("div", null, st, tip);
+    var ft = L.factsTip(n.d); if (ft) el("div", null, ft, tip);
     el("div", "dim", "data: " + L.dataText(n.d), tip);
     tip.hidden = false;
     tip.style.left = clamp(px + 14, 4, Math.max(4, W - tip.offsetWidth - 4)) + "px";
