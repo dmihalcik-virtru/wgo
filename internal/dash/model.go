@@ -231,8 +231,10 @@ type PRInfo struct {
 	IsDraft        bool   `json:"is_draft,omitempty"`
 	ReviewDecision string `json:"review_decision,omitempty"`
 	Checks         string `json:"checks,omitempty"`
-	// RequestedReviewers is meaningful only when ReviewersKnown.
-	RequestedReviewers []string  `json:"requested_reviewers,omitempty"`
+	// RequestedReviewers lists the outstanding review requests when
+	// ReviewersKnown: non-nil, so none encodes as [] and reads as "none
+	// requested". It is nil (omitted) while unknown.
+	RequestedReviewers []string  `json:"requested_reviewers,omitzero"`
 	ReviewersKnown     bool      `json:"reviewers_known"`
 	UpdatedAt          time.Time `json:"updated_at,omitzero"`
 	// Freshness is the worse of the freshness of the sources that found

@@ -9,6 +9,8 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -193,6 +195,62 @@ func TestInventoryMergeTakesStateFromTheNewerSource(t *testing.T) {
 			t.Fatalf("involvement %+v, want %+v", p.Involvement, want)
 		}
 	})
+}
+
+// TestKnownEmptyReviewersEncodeAsEmpty: "no review requested" is [] in the
+// JSON, on the bookmark path and the inventory path alike, while unknown
+// reviewers are omitted; a query can only tell them apart that way.
+func TestKnownEmptyReviewersEncodeAsEmpty(t *testing.T) {
+	a := inventoryAsm(t)
+	a.ws(asmMain, "feat-bm")
+	a.ws("/w/acme/widgets-old", "feat-old")
+	if err := prcache.Write(asmOrigin, asmMain, "feat-bm", []models.PRRef{{Number: 1, State: "OPEN", URL: "u"}}); err != nil {
+		t.Fatal(err)
+	}
+	// An entry from before gh-70 recorded reviewers: they are unknown.
+	if err := prcache.Write(asmOrigin, asmMain, "feat-old", []models.PRRef{{Number: 2, State: "OPEN", URL: "u"}}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(os.Getenv("HOME"), ".wgo", "cache", "pr", "acme-widgets")
+	old, err := os.ReadFile(filepath.Join(dir, "feat-old.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "feat-old.json"), []byte(strings.Replace(string(old), `"schema": 2`, `"schema": 1`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/open-authored": {openPR(3, "alice", "feat-inv")}})
+	s, _ := a.build()
+	encoded := func(n int) string {
+		b, err := json.Marshal(s.Node(prNodeID(asmSlug, n)).PR)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for _, n := range []int{1, 3} {
+		if got := encoded(n); !strings.Contains(got, `"requested_reviewers":[]`) || !strings.Contains(got, `"reviewers_known":true`) {
+			t.Errorf("#%d: known, none requested, should encode []: %s", n, got)
+		}
+	}
+	if got := encoded(3); !strings.Contains(got, `"review_requests":[]`) || !strings.Contains(got, `"reviews":[]`) {
+		t.Errorf("#3: reported empty lists lost: %s", got)
+	}
+	if got := encoded(2); strings.Contains(got, "requested_reviewers") || !strings.Contains(got, `"reviewers_known":false`) {
+		t.Errorf("#2: unknown reviewers should be omitted: %s", got)
+	}
+	// And they survive a round trip through a persisted snapshot.
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Snapshot
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if p := back.Node(prNodeID(asmSlug, 1)).PR; p.RequestedReviewers == nil {
+		t.Error("known-empty reviewers decode as unknown")
+	}
 }
 
 // TestInventoryAuthorIsNotAReviewer: replying to a thread on your own PR is

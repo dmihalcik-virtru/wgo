@@ -348,8 +348,11 @@ func setPRBase(p *PRInfo, f github.PRFacts) {
 	p.URL, p.Title, p.State, p.IsDraft = f.URL, f.Title, f.State, f.IsDraft
 	p.ReviewDecision, p.Checks, p.UpdatedAt = f.ReviewDecision, f.Checks, f.UpdatedAt
 	p.RequestedReviewers, p.ReviewersKnown = nil, f.ReviewRequests != nil
-	for _, r := range f.ReviewRequests {
-		p.RequestedReviewers = append(p.RequestedReviewers, r.Reviewer)
+	if p.ReviewersKnown {
+		p.RequestedReviewers = make([]string, 0, len(f.ReviewRequests))
+		for _, r := range f.ReviewRequests {
+			p.RequestedReviewers = append(p.RequestedReviewers, r.Reviewer)
+		}
 	}
 }
 
