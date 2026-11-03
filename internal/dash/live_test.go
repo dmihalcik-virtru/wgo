@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/issuecache"
 	"github.com/virtru/wgo/internal/jiracache"
 	"github.com/virtru/wgo/models"
@@ -262,6 +263,12 @@ func (b *blockingFetchers) FetchIssue(k issuecache.Key) (issuecache.Info, error)
 	b.calls.Add(1)
 	<-b.release
 	return issuecache.Info{Number: k.Number, State: "open", Title: "dash"}, nil
+}
+
+// PRTimeline answers at once, without counting: a PR's history is fetched
+// only in a round after its PR lookup (gh-104).
+func (b *blockingFetchers) PRTimeline(_ context.Context, repo string, number int) (*github.PRTimeline, error) {
+	return &github.PRTimeline{Repo: repo, Number: number, State: "open", Events: []github.TimelineEvent{}}, nil
 }
 
 func TestColdCacheNeverFetchesSynchronously(t *testing.T) {

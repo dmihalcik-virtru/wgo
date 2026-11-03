@@ -1710,8 +1710,17 @@
   }
 
   // ---------- header, freshness, since last look ----------
-  var SOURCE_LABEL = { jj: "jj (local)", plan: "Plan", agents: "Agents", github_prs: "GitHub PRs", github_issues: "GitHub issues", jira: "Jira",
-    github_inventory: "GitHub PR inventory", jira_sprints: "Jira sprints" };
+  var SOURCE_LABEL = {
+    jj: "jj (local)",
+    plan: "Plan",
+    agents: "Agents",
+    github_prs: "GitHub PRs",
+    github_issues: "GitHub issues",
+    jira: "Jira",
+    github_inventory: "GitHub PR inventory",
+    jira_sprints: "Jira sprints",
+    github_timelines: "GitHub PR timelines"
+  };
   function renderHeader() {
     var p = store.payload, snap = store.snap;
     chipsEl.textContent = ""; warnsEl.textContent = "";
