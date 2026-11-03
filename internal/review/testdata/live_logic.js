@@ -128,6 +128,50 @@ test("ticket facts: category and points only when known", () => {
   assert.deepEqual(L.ticketFacts(null), { category: "", points: "" });
 });
 
+test("derived facts: details on demand, unknown spelled out (gh-99)", () => {
+  const node = (id) => VECTORS.snapshot.nodes.find((x) => x.id === id);
+  const team = L.prFactsRows(node("pr:acme/web#12").pr, "alice", (t) => t.slice(0, 10));
+  assert.deepEqual(team, [
+    ["Whose move", "reviewer — team:web, alice (you)"],
+    ["awaiting review", "ready since Oct 14; review requested from team:web only; alice through a team"],
+    ["team only", "every outstanding request is a team: team:web"],
+    ["Waiting since", "2026-10-14 on team:web"],
+    ["CI", "green"],
+    ["Size", "unknown"],
+    ["Not known", "additions, deletions, requested_at:team:web"],
+  ]);
+  const lower = L.prFactsRows({ facts: { move: "reviewer", reasons: [], waiting_since: "2026-10-14T10:00:00Z", waiting_lower_bound: true, ci: "systemic_only", size: 0, size_bucket: "xs" } });
+  assert.deepEqual(lower.slice(1), [["Waiting since", "2026-10-14T10:00:00Z or earlier"], ["CI", "only checks that fail across the repository fail"], ["Size", "0 lines changed (xs)"]]);
+  // With check_stats, the CI row gives the counts, never "most".
+  const sysPR = { repo: "acme/api", check_details: [{ name: "vendor-hsm-tests", state: "failure" }, { name: "build", state: "success" }], facts: { move: "reviewer", ci: "systemic_only" } };
+  const stats = { "acme/api": [{ name: "build", runs: 3, failures: 0, systemic: false }, { name: "vendor-hsm-tests", runs: 3, failures: 1, systemic: true }] };
+  assert.deepEqual(L.prFactsRows(sysPR, "", String, stats)[1], ["CI", "only checks failing across the repository fail: vendor-hsm-tests fails on 1 of 3 open PRs in acme/api"]);
+  assert.deepEqual(L.ticketFactsRows({ system: "jira", facts: { mismatches: [], linked_prs: [{ id: "pr:acme/api#7", ref: "acme/api#7" }] } })[0], ["Linked PRs", "acme/api#7 state unknown"]);
+  assert.deepEqual(L.prFactsRows({ facts: {} })[0], ["Whose move", "unknown"]);
+  assert.deepEqual(L.prFactsRows({ state: "open" }), [], "a snapshot from before gh-99 has no fact rows");
+  assert.deepEqual(L.ticketFactsRows(node("ticket:jira:TEAM-99").ticket), [["Linked PRs", "none in the snapshot"], ["Mismatch: unassigned in sprint", "in Sprint 12 with no assignee"]]);
+  assert.deepEqual(L.ticketFactsRows(node("ticket:jira:TEAM-123").ticket), [["Linked PRs", "acme/api#38 merged, acme/api#41 open, acme/api#42 draft"], ["Jira vs code", "no mismatch"]]);
+  assert.deepEqual(L.ticketFactsRows({ system: "jira", facts: { linked_prs: [], uncertain: ["status_category"] } }), [["Linked PRs", "none in the snapshot"], ["Jira vs code", "unknown"], ["Not known", "status_category"]]);
+  assert.deepEqual(L.ticketFactsRows(node("ticket:gh:acme/web#5").ticket), [["Linked PRs", "acme/web#12 open"]], "a GitHub issue has no Jira comparison");
+  assert.equal(L.factsTip(node("pr:acme/api#42")), "move: author · draft, ci pending, stale");
+  assert.equal(L.factsTip(node("ticket:jira:TEAM-99")), "Jira vs code: unassigned in sprint");
+  assert.equal(L.factsTip(node("ticket:jira:TEAM-123")), "");
+  assert.equal(L.factsTip(node("pr:acme/api#38")), "");
+});
+
+test("the effort list's CI badge follows the derived facts (gh-99)", () => {
+  // A failure every open PR shares is neutral and says so; an own failure
+  // keeps the failure accent; without facts the rollup shows.
+  assert.deepEqual(L.ciBadge({ checks: "failure", facts: { ci: "systemic_only" } }), { text: "~ CI fails everywhere", cls: "ci-systemic" });
+  assert.deepEqual(L.ciBadge({ checks: "failure", facts: { ci: "failing" } }), { text: "CI failure", cls: "s-bad" });
+  assert.deepEqual(L.ciBadge({ checks: "failure" }), { text: "CI failure", cls: "s-bad" });
+  assert.deepEqual(L.ciBadge({ checks: "failure", facts: { ci: "unknown" } }), { text: "CI failure", cls: "s-bad" }, "unknown facts fall back on the rollup");
+  assert.deepEqual(L.ciBadge({ checks: "pending", facts: { ci: "pending" } }), { text: "CI pending", cls: "s-warn" });
+  assert.deepEqual(L.ciBadge({ checks: "success", facts: { ci: "green" } }), { text: "CI success", cls: "s-good" });
+  assert.deepEqual(L.ciBadge({ checks: "none", facts: { ci: "none" } }), { text: "no CI checks", cls: "" });
+  assert.deepEqual(L.ciBadge({}), { text: "CI not reported", cls: "f-unknown" });
+});
+
 test("sprints: state and dates, and their group's state text", () => {
   assert.equal(L.sprintText({ state: "active", start: "2026-10-20T08:00:00Z", end: "2026-11-03T08:00:00Z" }), "active sprint · 2026-10-20 to 2026-11-03");
   assert.equal(L.sprintText({ state: "future", start: "2026-11-03T08:00:00Z" }), "future sprint · 2026-11-03 to ?");
@@ -286,7 +330,7 @@ test("Resume is labelled with the configured tool", () => {
 
 // ---------- query language: the vectors shared with internal/dash ----------
 const BASE = L.registry(FIELDS);
-const VREG = L.registry(FIELDS, VECTORS.fields);
+const VREG = L.registry({ fields: FIELDS.fields, planned: Object.assign({}, FIELDS.planned, VECTORS.planned) }, VECTORS.fields);
 test("the evaluator knows every node kind the registry does", () => {
   assert.deepEqual(L.QUERY_KINDS, BASE.field("kind").values);
 });
@@ -315,11 +359,10 @@ VECTORS.cases.forEach((c) => {
   });
 });
 
-test("the vector registry knows every catalogue field; the base one only today's", () => {
-  assert.equal(BASE.field("move"), null);
-  assert.equal(BASE.planned.get("move"), "gh-99");
-  assert.ok(VREG.field("move"));
-  assert.equal(VREG.planned.has("move"), false);
+test("the registry knows every catalogue field; the vectors add a planned one", () => {
+  assert.ok(BASE.field("move") && BASE.field("linked_prs"));
+  assert.equal(BASE.planned.size, 0);
+  assert.equal(VREG.planned.get("example_planned"), "gh-0");
   assert.deepEqual(BASE.names.slice(0, 3), ["kind", "text", "effort"]);
 });
 

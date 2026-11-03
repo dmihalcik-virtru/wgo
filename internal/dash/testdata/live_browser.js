@@ -212,6 +212,18 @@ async function runChecks() {
   const legend = await evaluate("Array.from(document.querySelectorAll('.legend li')).map(li => li.textContent)");
   check(legend.includes("Sprint (a time box) (2)"), "sprint legend entry: " + legend.join(" | "));
 
+  // 5c. Details on demand (gh-99): a PR's move, reasons with evidence and
+  // wait, and a ticket's mismatch with its evidence, in the detail panel.
+  await evaluate("window.__wgoStore.select(['pr:acme/web#12', 'ticket:jira:TEAM-99'], false)");
+  await sleep(200);
+  const detail = await evaluate("document.querySelector('.detail').textContent");
+  check(detail.includes("Whose move: reviewer — team:web, alice (you)") && detail.includes("awaiting review: ready since Oct 14; review requested from team:web only; alice through a team") &&
+    detail.includes("Waiting since:") && detail.includes("Mismatch: unassigned in sprint: in Sprint 12 with no assignee"), "facts in the detail panel: " + detail);
+  // The effort list's CI badge follows the facts: #41's own failure keeps
+  // the failure style.
+  const badge = await evaluate("(() => { const b = Array.from(document.querySelectorAll('.efforts li')).find(li => li.querySelector('button') && li.querySelector('button').textContent === 'acme/api#41'); const s = b && Array.from(b.querySelectorAll('.state')).find(x => x.textContent.startsWith('CI') || x.textContent.includes('CI ')); return s ? s.className + '|' + s.textContent : '' })()");
+  check(badge === "state s-bad|CI failure", "acme/api#41 CI badge: " + badge);
+
   // 6. Nothing was refused by the CSP and nothing threw.
   // The browser's own favicon request is the only 404 the page may cause.
   const problems = events.filter((e) => (e.method === "Log.entryAdded" && e.params.entry.level === "error" && !/\/favicon\.ico$/.test(e.params.entry.url || "")) || e.method === "Runtime.exceptionThrown")

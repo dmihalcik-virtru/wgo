@@ -65,6 +65,9 @@ body.live #app { min-height: 560px; }
 .state.s-bad { border-color: var(--s-critical); }
 .state.s-warn { border-color: var(--s-warn); }
 .state.f-unknown, .state.f-stale, .state.f-error { border-style: dashed; color: var(--ink2); }
+/* A failure every open PR in the repository shares (gh-99): neutral, a
+   double outline and a "~", never the failure accent. */
+.state.ci-systemic { color: var(--ink2); outline: 1px solid var(--axis); outline-offset: 1px; }
 .liveness-uncertain { font-style: italic; }
 .conflict { color: var(--ink); }
 .conflict::before { content: "⚠ "; color: var(--s-serious); }

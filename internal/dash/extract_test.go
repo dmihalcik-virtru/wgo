@@ -147,12 +147,16 @@ func TestExtractArgErrors(t *testing.T) {
 		{ExtractArgs{Group: "team"}, `unknown group "team"; use effort, repo or none`},
 		{ExtractArgs{Layout: "csv"}, `unknown layout "csv"`},
 		{ExtractArgs{Cols: []string{"prstat"}}, `unknown column "prstat"; did you mean prstate?`},
-		{ExtractArgs{Cols: []string{"move"}}, "column move is not available yet: it arrives with gh-99"},
 	} {
 		_, err := Extract(v, Fields(), nil, tc.args)
 		if !errors.Is(err, ErrExtractArgs) || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%+v: err = %v, want %q", tc.args, err, tc.want)
 		}
+	}
+	planned := mustRegistry(Fields().List(), map[string]string{"example_planned": "gh-0"})
+	if _, err := Extract(v, planned, nil, ExtractArgs{Cols: []string{"example_planned"}}); !errors.Is(err, ErrExtractArgs) ||
+		!strings.Contains(err.Error(), "column example_planned is not available yet: it arrives with gh-0") {
+		t.Errorf("a planned column: %v", err)
 	}
 	noRepo := mustRegistry([]Field{{Name: "kind", Type: FieldEnum, Kinds: queryKinds, Paths: []string{"kind"}}}, nil)
 	if _, err := Extract(v, noRepo, nil, ExtractArgs{Group: "repo"}); !errors.Is(err, ErrExtractArgs) || !strings.Contains(err.Error(), "group repo needs the repo field") {
@@ -258,7 +262,7 @@ func TestWriteQueryJSONLimitsToTheVisibleSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if err := v.WriteQueryJSON(&buf, time.Now(), res, MergeFilters(nil, Fields())); err != nil {
+	if err := v.WriteQueryJSON(&buf, time.Now(), res, MergeFilters(map[string]string{"broken": "prstat:x"}, Fields())); err != nil {
 		t.Fatal(err)
 	}
 	var out struct {
@@ -285,7 +289,7 @@ func TestWriteQueryJSONLimitsToTheVisibleSet(t *testing.T) {
 	if len(out.Snapshot.Nodes) != 6 || len(out.Snapshot.Edges) != 6 || len(out.Snapshot.People) != 2 || out.Snapshot.Counts == nil {
 		t.Errorf("limited snapshot: %d nodes, %d edges, people %v", len(out.Snapshot.Nodes), len(out.Snapshot.Edges), out.Snapshot.People)
 	}
-	if f := out.Query.Filters; len(f) != len(builtinFilters) || !f[0].Hidden || !strings.Contains(f[0].Reason, "gh-99") {
+	if f := out.Query.Filters; len(f) != len(builtinFilters)+1 || f[0].Hidden || !f[len(f)-1].Hidden || !strings.Contains(f[len(f)-1].Reason, "does not parse") {
 		t.Errorf("filters report why they are hidden: %+v", f)
 	}
 	// A query with only kind clauses does not filter: the snapshot is whole.

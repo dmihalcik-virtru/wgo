@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,15 +14,17 @@ import (
 	"time"
 )
 
-// updateFields rewrites testdata/fields.json, the registry the JS tests load:
+// updateFields rewrites testdata/fields.json, the registry the JS tests load,
+// and the derived facts stored in the analysis fixture:
 //
-//	go test ./internal/dash -run TestFieldRegistryGolden -update
-var updateFields = flag.Bool("update", false, "rewrite testdata/fields.json")
+//	go test ./internal/dash -run 'TestFieldRegistryGolden|TestAnalysisFixtureFacts' -update
+var updateFields = flag.Bool("update", false, "rewrite testdata/fields.json and the analysis fixture's facts")
 
 // queryVectors is testdata/query_vectors.json, shared with live.js's tests.
 type queryVectors struct {
-	Snapshot json.RawMessage `json:"snapshot"`
-	Fields   []Field         `json:"fields"`
+	Snapshot json.RawMessage   `json:"snapshot"`
+	Fields   []Field           `json:"fields"`
+	Planned  map[string]string `json:"planned"`
 	Cases    []struct {
 		Name   string         `json:"name"`
 		Query  string         `json:"query"`
@@ -50,7 +53,9 @@ func loadVectors(t testing.TB) (queryVectors, *Registry) {
 	if err := json.Unmarshal(b, &v); err != nil {
 		t.Fatal(err)
 	}
-	reg, err := Fields().With(v.Fields...)
+	planned := maps.Clone(Fields().planned)
+	maps.Copy(planned, v.Planned)
+	reg, err := NewRegistry(append(Fields().List(), v.Fields...), planned)
 	if err != nil {
 		t.Fatalf("vector fields: %v", err)
 	}
@@ -219,13 +224,31 @@ func TestQuerySpecExamplesParse(t *testing.T) {
 	}
 }
 
-func TestBuiltinFiltersHiddenUntilTheirFieldsLand(t *testing.T) {
+// TestBuiltinFiltersAreVisible: with gh-99's fields registered, every
+// built-in runs; one whose fields are not registered yet would be hidden and
+// say which spec brings them.
+func TestBuiltinFiltersAreVisible(t *testing.T) {
 	merged := MergeFilters(nil, Fields())
 	if len(merged) != len(builtinFilters) {
 		t.Fatalf("got %d filters", len(merged))
 	}
-	// gh-97 and gh-98 have registered their fields; gh-99's are still
-	// planned.
+	for _, f := range merged {
+		if f.Hidden {
+			t.Errorf("%s hidden: %s", f.Name, f.Reason)
+		}
+	}
+	// Without gh-99's fields, as before it landed.
+	var fs []Field
+	planned := map[string]string{}
+	for _, f := range Fields().List() {
+		if slices.ContainsFunc(f.Paths, func(p string) bool { return strings.HasPrefix(p, "pr.facts.") || strings.HasPrefix(p, "ticket.facts.") }) {
+			planned[f.Name] = "gh-99"
+			continue
+		}
+		fs = append(fs, f)
+	}
+	before := mustRegistry(fs, planned)
+	merged = MergeFilters(nil, before)
 	visible := []string{"review-inbox", "shipped", "close-candidates", "sprint"}
 	for _, f := range merged {
 		switch {
@@ -240,14 +263,8 @@ func TestBuiltinFiltersHiddenUntilTheirFieldsLand(t *testing.T) {
 	if f, _ := LookupFilter(merged, "push-reviewers"); f.Reason != "needs fields not registered yet: move, ci (arrives with gh-99)" {
 		t.Errorf("push-reviewers reason = %q", f.Reason)
 	}
-	if f, _ := LookupFilter(merged, "jira-out-of-sync"); f.Reason != "needs fields not registered yet: mismatch (arrives with gh-99)" {
-		t.Errorf("jira-out-of-sync reason = %q", f.Reason)
-	}
-	_, full := loadVectors(t)
-	for _, f := range MergeFilters(nil, full) {
-		if f.Hidden {
-			t.Errorf("%s hidden with every catalogue field registered: %s", f.Name, f.Reason)
-		}
+	if len(planned) != 11 {
+		t.Errorf("gh-99 registers %d fields, want 11: %v", len(planned), planned)
 	}
 }
 
@@ -511,5 +528,44 @@ func TestBuiltinFiltersOnTheAnalysisFixture(t *testing.T) {
 	}
 	if _, err := v.Query("prstate:open;status_category:done"); err == nil || !strings.Contains(err.Error(), "apply to no common node kind") {
 		t.Errorf("prstate with status_category: %v", err)
+	}
+}
+
+// TestFixtureTeamRequestIsMyMoveAndInMyInbox is gh-100's acceptance
+// criterion on the analysis fixture: a team-only review request for the
+// authenticated person (alice, on acme/api#104) matches both my-move and
+// review-inbox, and the other gh-99 built-ins find their PRs and tickets.
+func TestFixtureTeamRequestIsMyMoveAndInMyInbox(t *testing.T) {
+	v, err := LoadFixture(analysisFixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(name string) []string {
+		t.Helper()
+		f, ok := BuiltinFilter(name)
+		if !ok {
+			t.Fatalf("no built-in %s", name)
+		}
+		res, err := v.Query(f.Expr)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return res.Rows
+	}
+	for _, name := range []string{"my-move", "review-inbox"} {
+		if rows := run(name); !slices.Contains(rows, "pr:acme/api#104") {
+			t.Errorf("%s rows %v lack the team-only request acme/api#104", name, rows)
+		}
+	}
+	for name, want := range map[string][]string{
+		"my-move":           {"pr:acme/api#103", "pr:acme/api#104", "pr:acme/infra#301", "pr:acme/web#202"},
+		"waiting-reviewers": {"pr:acme/api#101", "pr:acme/api#102", "pr:acme/api#104", "pr:acme/web#202"},
+		"push-reviewers":    {"pr:acme/api#101", "pr:acme/api#102", "pr:acme/api#104", "pr:acme/web#201", "pr:acme/web#207"},
+		"nobody":            {"pr:acme/web#201", "pr:acme/web#207"},
+		"jira-out-of-sync":  {"ticket:jira:TEAM-102", "ticket:jira:TEAM-103", "ticket:jira:TEAM-105", "ticket:jira:TEAM-106", "ticket:jira:TEAM-107"},
+	} {
+		if rows := run(name); !slices.Equal(slices.Sorted(slices.Values(rows)), want) {
+			t.Errorf("%s rows %v, want %v", name, rows, want)
+		}
 	}
 }

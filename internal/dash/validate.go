@@ -113,6 +113,7 @@ func (s *Snapshot) Validate() error {
 		}
 	}
 	v.checkPeople(s.People)
+	v.checkFacts(s, isKind)
 
 	// Cross-references.
 	for _, n := range s.Nodes {

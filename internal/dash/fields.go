@@ -93,8 +93,7 @@ func kindNames(ks []NodeKind) []string {
 }
 
 // fieldRegistry is the canonical registry: the fields this snapshot can
-// answer today. gh-99 appends its fields here when it lands (see
-// plannedFields).
+// answer, the whole catalogue of spec/gh-100.md requirement 3.
 var fieldRegistry = []Field{
 	{Name: "kind", Label: "Kind", Type: FieldEnum, Kinds: queryKinds, Paths: []string{"kind"}, Values: kindNames(queryKinds)},
 	{Name: "text", Label: "Text (label, title, ID)", Type: FieldText, Kinds: queryKinds, Paths: []string{"label", "pr.title", "ticket.title", "id"}},
@@ -167,6 +166,21 @@ var fieldRegistry = []Field{
 	{Name: "component", Label: "Components", Type: FieldSet, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.components"}},
 	{Name: "label", Label: "Labels", Type: FieldSet, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.labels"}},
 	{Name: "resolved", Label: "Resolved", Type: FieldDate, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.resolved_at"}, Unit: "day", Scale: "linear"},
+
+	// Derived attention facts (gh-99). move_people holds both a PR's
+	// author and the people asked to review it, through a team too, so
+	// move_people:@me is "my move".
+	{Name: "move", Label: "Whose move", Type: FieldEnum, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.move"}, Values: moveValues},
+	{Name: "move_people", Label: "Move held by", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.move_people"}},
+	{Name: "waiting_on", Label: "Waiting on", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.waiting_on"}},
+	{Name: "reason", Label: "Reasons", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.reasons.code"}, Values: reasonCodes},
+	{Name: "waiting", Label: "Waiting", Type: FieldDuration, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.waiting_since"}, Derive: DeriveDaysSince, Unit: "days", Scale: "log"},
+	{Name: "ci", Label: "CI", Type: FieldEnum, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.ci"}, Values: ciValues},
+	{Name: "size", Label: "Size (lines changed)", Type: FieldNumber, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.size"}, Unit: "lines", Scale: "log"},
+	{Name: "size_bucket", Label: "Size bucket", Type: FieldEnum, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.size_bucket"}, Values: sizeBuckets},
+	{Name: "stale", Label: "Stale", Type: FieldBool, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.stale"}},
+	{Name: "mismatch", Label: "Jira mismatch", Type: FieldSet, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.facts.mismatches.code"}, Values: mismatchCodes},
+	{Name: "linked_prs", Label: "Linked PRs", Type: FieldSet, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.facts.linked_prs.state"}, Values: linkedPRStates},
 }
 
 // plannedFields names the fields of the epic's catalogue (spec/gh-100.md,
@@ -174,11 +188,9 @@ var fieldRegistry = []Field{
 // query naming one gets "not available yet" instead of "unknown field", and
 // a saved filter using one is hidden with that reason. A registered field
 // takes precedence over its entry here.
-var plannedFields = map[string]string{
-	"move": "gh-99", "move_people": "gh-99", "waiting_on": "gh-99", "reason": "gh-99", "waiting": "gh-99",
-	"ci": "gh-99", "size": "gh-99", "size_bucket": "gh-99", "stale": "gh-99", "mismatch": "gh-99",
-	"linked_prs": "gh-99",
-}
+// Every catalogue field is registered now; the mechanism stays for fields
+// later specs plan.
+var plannedFields = map[string]string{}
 
 // Registry is a set of query fields by name.
 type Registry struct {

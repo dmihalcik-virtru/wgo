@@ -1,6 +1,7 @@
 {
  "description": "Shared query vectors for wgo dash (spec/gh-100.md). internal/dash/query_test.go runs them in Go and internal/review/testdata/live_logic.js runs them in node; both must pass. Expectations list node IDs sorted; 'visible' is 'all' when the query does not filter the graph. 'error' must appear in the message, 'pos' is the 1-based column and 'fixed' the suggested expression. A case with 'base': true uses the canonical registry alone; 'env' replaces snapshot fields before indexing; 'preset' names the built-in saved filter whose expression 'query' must equal.",
- "fields_note": "fields are test-only registrations of the catalogue fields gh-99 registers when it lands (paths follow its spec's JSON shapes), plus requested_count to exercise the count derive. They replace registry fields of the same name for these vectors; drop an entry once the real registry carries it.",
+ "fields_note": "fields are test-only registrations that replace or add to the registry for these vectors: requested_count exercises the count derive. planned names a test-only planned field, since every catalogue field is registered now. The snapshot's facts (gh-99) are hand-written in ComputeFacts' JSON shape to exercise the query language; their values are invented, not derived (stale ignores stale_days, and pr:acme/api#38 and pr:acme/web#9 have no facts, like a snapshot from before gh-99).",
+ "planned": {"example_planned": "gh-0"},
  "snapshot": {
   "schema": 1,
   "generation": 7,
@@ -230,7 +231,17 @@
       }
      ],
      "facts": {
-      "stale": false
+      "move": "author",
+      "reasons": [
+       {"code": "ci_failing", "evidence": "vendor-hsm-tests fails"},
+       {"code": "awaiting_review", "evidence": "ready since Oct 6; review requested from bob"}
+      ],
+      "move_people": ["alice"],
+      "ci": "failing",
+      "size": 128,
+      "size_bucket": "m",
+      "stale": false,
+      "uncertain": ["reviews", "review_decision", "requested_at:bob"]
      },
      "created_at": "2026-10-05T10:00:00-04:00",
      "ready_at": "2026-10-06T09:00:00-04:00",
@@ -260,7 +271,16 @@
      "author": "alice",
      "mergeable": "unknown",
      "facts": {
-      "stale": true
+      "move": "author",
+      "reasons": [
+       {"code": "draft", "evidence": "draft"},
+       {"code": "ci_pending", "evidence": "CI pending"},
+       {"code": "stale", "evidence": "not updated since Oct 18 (stale after 2 days)"}
+      ],
+      "move_people": ["alice"],
+      "ci": "pending",
+      "stale": true,
+      "uncertain": ["additions", "deletions", "requested_reviewers", "mergeable"]
      },
      "ticket_keys": ["TEAM-123"],
      "sources": ["bookmark"]
@@ -312,7 +332,7 @@
      "freshness": "fresh",
      "bookmark_id": "bm-0000000000000004",
      "author": "bob",
-     "mergeable": "conflicting",
+     "mergeable": "mergeable",
      "review_requests": [
       {
        "reviewer": "team:web",
@@ -337,8 +357,16 @@
      ],
      "facts": {
       "move": "reviewer",
+      "reasons": [
+       {"code": "awaiting_review", "evidence": "ready since Oct 14; review requested from team:web only; alice through a team"},
+       {"code": "team_only", "evidence": "every outstanding request is a team: team:web"}
+      ],
       "move_people": ["team:web", "alice"],
-      "stale": false
+      "waiting_since": "2026-10-14T10:00:00-04:00",
+      "waiting_on": ["team:web"],
+      "ci": "green",
+      "stale": false,
+      "uncertain": ["additions", "deletions", "requested_at:team:web"]
      }
     }
    },
@@ -386,7 +414,15 @@
      },
      "team": "Platform",
      "components": ["api"],
-     "labels": ["backend"]
+     "labels": ["backend"],
+     "facts": {
+      "mismatches": [],
+      "linked_prs": [
+       {"id": "pr:acme/api#38", "ref": "acme/api#38", "state": "merged"},
+       {"id": "pr:acme/api#41", "ref": "acme/api#41", "state": "open"},
+       {"id": "pr:acme/api#42", "ref": "acme/api#42", "state": "draft"}
+      ]
+     }
     }
    },
    {
@@ -411,7 +447,11 @@
        "name": "Sprint 10",
        "state": "closed"
       }
-     ]
+     ],
+     "facts": {
+      "mismatches": [],
+      "linked_prs": []
+     }
     }
    },
    {
@@ -422,7 +462,12 @@
      "key": "gh-5",
      "system": "github",
      "url": "https://github.com/acme/web/issues/5",
-     "freshness": "unknown"
+     "freshness": "unknown",
+     "facts": {
+      "linked_prs": [
+       {"id": "pr:acme/web#12", "ref": "acme/web#12", "state": "open"}
+      ]
+     }
     }
    },
    {
@@ -435,7 +480,6 @@
      "status": "To Do",
      "title": "Widget docs",
      "url": "https://example.atlassian.net/browse/TEAM-99",
-     "assignee": "Bob",
      "freshness": "fresh",
      "status_category": "todo",
      "updated_at": "2026-10-02T09:00:00-04:00",
@@ -446,7 +490,13 @@
        "state": "active"
       }
      ],
-     "story_points_known": true
+     "story_points_known": true,
+     "facts": {
+      "mismatches": [
+       {"code": "unassigned_in_sprint", "evidence": "in Sprint 12 with no assignee"}
+      ],
+      "linked_prs": []
+     }
     }
    },
    {
@@ -686,92 +736,6 @@
   ]
  },
  "fields": [
-  {
-   "name": "move",
-   "label": "Whose move",
-   "type": "enum",
-   "kinds": ["pr"],
-   "paths": ["pr.facts.move"],
-   "values": ["author", "reviewer", "nobody", "none", "unknown"]
-  },
-  {
-   "name": "move_people",
-   "label": "Move held by",
-   "type": "set",
-   "kinds": ["pr"],
-   "paths": ["pr.facts.move_people"]
-  },
-  {
-   "name": "waiting_on",
-   "label": "Waiting on",
-   "type": "set",
-   "kinds": ["pr"],
-   "paths": ["pr.facts.waiting_on"]
-  },
-  {
-   "name": "reason",
-   "label": "Reasons",
-   "type": "set",
-   "kinds": ["pr"],
-   "paths": ["pr.facts.reasons"]
-  },
-  {
-   "name": "waiting",
-   "label": "Waiting",
-   "type": "duration",
-   "kinds": ["pr"],
-   "paths": ["pr.facts.waiting_since"],
-   "derive": "days_since",
-   "unit": "days",
-   "scale": "log"
-  },
-  {
-   "name": "ci",
-   "label": "CI",
-   "type": "enum",
-   "kinds": ["pr"],
-   "paths": ["pr.facts.ci"],
-   "values": ["green", "failing", "systemic_only", "pending", "none", "unknown"]
-  },
-  {
-   "name": "size",
-   "label": "Size",
-   "type": "number",
-   "kinds": ["pr"],
-   "paths": ["pr.facts.size"],
-   "unit": "lines",
-   "scale": "log"
-  },
-  {
-   "name": "size_bucket",
-   "label": "Size bucket",
-   "type": "enum",
-   "kinds": ["pr"],
-   "paths": ["pr.facts.size_bucket"],
-   "values": ["xs", "s", "m", "l", "xl"]
-  },
-  {
-   "name": "stale",
-   "label": "Stale",
-   "type": "bool",
-   "kinds": ["pr"],
-   "paths": ["pr.facts.stale"]
-  },
-  {
-   "name": "mismatch",
-   "label": "Jira mismatch",
-   "type": "set",
-   "kinds": ["ticket"],
-   "paths": ["ticket.facts.mismatches"]
-  },
-  {
-   "name": "linked_prs",
-   "label": "Linked PRs",
-   "type": "set",
-   "kinds": ["ticket"],
-   "paths": ["ticket.facts.linked_prs.state"],
-   "values": ["draft", "open", "approved", "merged", "closed"]
-  },
   {
    "name": "requested_count",
    "label": "Requested reviewers (test-only count)",
@@ -1426,8 +1390,8 @@
    "name": "assignee unknown",
    "query": "assignee:unknown",
    "expect": {
-    "matches": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-7"],
-    "rows": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-7"]
+    "matches": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99"],
+    "rows": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99"]
    }
   },
   {
@@ -1439,11 +1403,11 @@
    }
   },
   {
-   "name": "my-move: a team-only request for @me",
+   "name": "my-move: my own PRs and a team-only request for @me",
    "query": "move_people:@me",
    "expect": {
-    "matches": ["pr:acme/web#12"],
-    "rows": ["pr:acme/web#12"]
+    "matches": ["pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12"]
    },
    "preset": "my-move"
   },
@@ -1665,16 +1629,16 @@
    "name": "closed enum with unknown included",
    "query": "mergeable:mergeable,unknown",
    "expect": {
-    "matches": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#9"],
-    "rows": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#9"]
+    "matches": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"]
    }
   },
   {
    "name": "negated closed enum skips literal and missing unknowns",
    "query": "!mergeable:conflicting",
    "expect": {
-    "matches": ["pr:acme/api#41"],
-    "rows": ["pr:acme/api#41"]
+    "matches": ["pr:acme/api#41", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/web#12"]
    }
   },
   {
@@ -1694,8 +1658,8 @@
    }
   },
   {
-   "name": "a field with no data matches nothing",
-   "query": "ci:green,systemic_only",
+   "name": "a value no node has matches nothing",
+   "query": "ci:systemic_only",
    "expect": {
     "matches": [],
     "rows": []
@@ -1939,11 +1903,166 @@
    "pos": 10
   },
   {
+   "name": "move",
+   "query": "move:author",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/api#42"],
+    "rows": ["pr:acme/api#41", "pr:acme/api#42"]
+   }
+  },
+  {
+   "name": "PRs without facts have an unknown move",
+   "query": "move:unknown",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/web#9"],
+    "rows": ["pr:acme/api#38", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "waiting-reviewers",
+   "query": "kind:pr;move:reviewer",
+   "preset": "waiting-reviewers",
+   "expect": {
+    "matches": ["pr:acme/web#12"],
+    "rows": ["pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "push-reviewers",
+   "query": "kind:pr;move:reviewer,nobody;ci:green,systemic_only",
+   "preset": "push-reviewers",
+   "expect": {
+    "matches": ["pr:acme/web#12"],
+    "rows": ["pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "nobody",
+   "query": "kind:pr;move:nobody",
+   "preset": "nobody",
+   "expect": {
+    "matches": [],
+    "rows": []
+   }
+  },
+  {
+   "name": "waiting on a team",
+   "query": "waiting_on:team:web",
+   "expect": {
+    "matches": ["pr:acme/web#12"],
+    "rows": ["pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "reason codes are read from reason objects",
+   "query": "reason:team_only,draft",
+   "expect": {
+    "matches": ["pr:acme/api#42", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#42", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "negated reason skips PRs without facts",
+   "query": "!reason:draft",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "waiting derives days from waiting_since",
+   "query": "waiting:>=6",
+   "expect": {
+    "matches": ["pr:acme/web#12"],
+    "rows": ["pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "waiting below a bound",
+   "query": "waiting:<6",
+   "expect": {
+    "matches": [],
+    "rows": []
+   }
+  },
+  {
+   "name": "waiting is unknown without waiting_since",
+   "query": "waiting:unknown",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#9"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#9"]
+   }
+  },
+  {
+   "name": "ci",
+   "query": "ci:failing,pending",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/api#42"],
+    "rows": ["pr:acme/api#41", "pr:acme/api#42"]
+   }
+  },
+  {
+   "name": "size range",
+   "query": "size:100..200",
+   "expect": {
+    "matches": ["pr:acme/api#41"],
+    "rows": ["pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "size unknown is not zero",
+   "query": "size:<1",
+   "expect": {
+    "matches": [],
+    "rows": []
+   }
+  },
+  {
+   "name": "size bucket",
+   "query": "size_bucket:m,l",
+   "expect": {
+    "matches": ["pr:acme/api#41"],
+    "rows": ["pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "jira-out-of-sync",
+   "query": "kind:ticket;mismatch:*",
+   "preset": "jira-out-of-sync",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-99"],
+    "rows": ["ticket:jira:TEAM-99"]
+   }
+  },
+  {
+   "name": "negated mismatch skips tickets with no Jira comparison",
+   "query": "!mismatch:unassigned_in_sprint",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-123", "ticket:jira:TEAM-7"],
+    "rows": ["ticket:jira:TEAM-123", "ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "linked PR states",
+   "query": "linked_prs:draft",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-123"],
+    "rows": ["ticket:jira:TEAM-123"]
+   }
+  },
+  {
+   "name": "no linked PR is known, not unknown",
+   "query": "!linked_prs:*",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-7", "ticket:jira:TEAM-99"],
+    "rows": ["ticket:jira:TEAM-7", "ticket:jira:TEAM-99"]
+   }
+  },
+  {
    "name": "a planned field is not available yet",
-   "query": "waiting:>3",
-   "error": "field waiting at column 1 is not available yet: it arrives with gh-99. Fields: kind,",
-   "pos": 1,
-   "base": true
+   "query": "example_planned:>3",
+   "error": "field example_planned at column 1 is not available yet: it arrives with gh-0. Fields: kind,",
+   "pos": 1
   }
  ]
 }
