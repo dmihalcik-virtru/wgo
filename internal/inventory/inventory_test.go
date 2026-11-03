@@ -194,6 +194,78 @@ func TestManagedUserLogins(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestDroppedOpenPRsAreCarried: PRs an open-authored refresh no longer finds
+// are kept until closed-recent has been fetched since.
+func TestDroppedOpenPRsAreCarried(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	pr := func(n int) github.PRFacts { return github.PRFacts{Repo: "acme/api", Number: n, State: "open"} }
+	refresh := func(k Key, prs ...github.PRFacts) Result {
+		t.Helper()
+		res, err := Refresh(context.Background(), &fakeFetcher{res: result(prs...)}, k, since)
+		require.NoError(t, err)
+		time.Sleep(2 * time.Millisecond) // keep fetch times apart
+		return res
+	}
+	closed := Key{Login: "alice", Set: ClosedRecent}
+	refresh(closed)
+	first := refresh(alice, pr(1), pr(2), pr(3))
+	assert.Empty(t, first.Dropped)
+
+	second := refresh(alice, pr(1))
+	require.Len(t, second.Dropped, 2)
+	assert.True(t, second.FetchedAt.Equal(second.DroppedAt))
+	assert.True(t, first.FetchedAt.Equal(second.DroppedFetchedAt), "dropped PRs are as last fetched")
+	r := Read(alice, time.Hour, since, time.Now())
+	assert.Len(t, r.Dropped, 2)
+
+	// Still unaccounted for: closed-recent was not refetched.
+	third := refresh(alice, pr(1), pr(3))
+	require.Len(t, third.Dropped, 1, "#3 is open again; #2 is carried")
+	assert.Equal(t, 2, third.Dropped[0].Number)
+	assert.True(t, second.DroppedAt.Equal(third.DroppedAt), "nothing newly dropped")
+
+	refresh(closed, pr(2))
+	assert.Empty(t, refresh(alice, pr(1), pr(3)).Dropped, "closed-recent caught up")
+}
+
+func TestFailureBackoff(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	boom := errors.New("HTTP 502")
+	var last Result
+	for i := 1; i <= 8; i++ {
+		_, _ = Refresh(context.Background(), &fakeFetcher{err: boom}, alice, since)
+		last = Read(alice, time.Hour, since, time.Now())
+		want := min(time.Minute<<(i-1), 30*time.Minute)
+		assert.Equal(t, i, last.Failures)
+		assert.True(t, last.LastAttemptAt.Add(want).Equal(last.NotBefore()), "after %d failures", i)
+	}
+	rl := &github.RateLimitError{ResetAt: time.Now().Add(2 * time.Hour), Message: "secondary rate limit"}
+	_, _ = Refresh(context.Background(), &fakeFetcher{err: rl}, alice, since)
+	assert.WithinDuration(t, rl.ResetAt, Read(alice, time.Hour, since, time.Now()).NotBefore(), time.Second, "Retry-After wins when later")
+
+	_, err := Refresh(context.Background(), &fakeFetcher{res: result()}, alice, since)
+	require.NoError(t, err)
+	r := Read(alice, time.Hour, since, time.Now())
+	assert.Zero(t, r.Failures)
+	assert.True(t, r.NotBefore().IsZero(), "a success clears the back-off")
+}
+
+func TestKeepLeaseRenews(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	require.True(t, LockRefresh(alice, time.Hour))
+	path, _ := entryPath(alice)
+	lock := path[:len(path)-len(".json")] + ".lock"
+	old := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(lock, old, old))
+	stop := KeepLease(alice, 5*time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+	stop()
+	fi, err := os.Stat(lock)
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now(), fi.ModTime(), time.Second, "the lease was renewed")
+	assert.False(t, LockRefresh(alice, time.Minute), "a renewed lease is held")
+}
+
 func TestBadKeysAreRejected(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	f := &fakeFetcher{res: result()}

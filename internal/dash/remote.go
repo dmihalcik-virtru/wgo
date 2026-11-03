@@ -346,8 +346,22 @@ func (r *Refresher) run(j Job) error {
 			return issuecache.Refresh(r.f.Issue, j.Issue).Err
 		}
 	case JobInventory:
-		if r.opts.IgnoreLeases || inventory.LockRefresh(j.Inventory, r.opts.Backoff) {
+		if r.opts.IgnoreLeases {
 			_, err := inventory.Refresh(r.ctx, r.f.Inventory, j.Inventory, j.Since)
+			r.refreshStaleIdentity()
+			return err
+		}
+		// A set that keeps failing (often on a late page, or rate limited)
+		// waits out its back-off instead of refetching every lease window.
+		if time.Now().Before(inventory.Read(j.Inventory, 0, j.Since, time.Now()).NotBefore()) {
+			return nil
+		}
+		if inventory.LockRefresh(j.Inventory, r.opts.Backoff) {
+			// Pages and retries can outlast the lease window; keep it held
+			// so another wgo process does not fetch the set too.
+			stop := inventory.KeepLease(j.Inventory, r.opts.Backoff/3)
+			_, err := inventory.Refresh(r.ctx, r.f.Inventory, j.Inventory, j.Since)
+			stop()
 			r.refreshStaleIdentity()
 			return err
 		}
