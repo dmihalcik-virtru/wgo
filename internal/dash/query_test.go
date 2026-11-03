@@ -550,8 +550,9 @@ func TestBuiltinFiltersOnTheAnalysisFixture(t *testing.T) {
 		{"review-inbox", "pr:acme/api#104 pr:acme/api#105 pr:acme/web#202"},
 		{"shipped", "pr:acme/api#107 pr:acme/infra#303"},
 		{"close-candidates", "pr:acme/api#105"},
-		// TEAM-108 is in the future Sprint 13 only.
-		{"sprint", "ticket:jira:TEAM-101 ticket:jira:TEAM-102 ticket:jira:TEAM-103 ticket:jira:TEAM-104 ticket:jira:TEAM-105 ticket:jira:TEAM-106"},
+		// TEAM-108 is in the future Sprint 13 only; TEAM-107 in the
+		// parallel Web Sprint 4.
+		{"sprint", "ticket:jira:TEAM-101 ticket:jira:TEAM-102 ticket:jira:TEAM-103 ticket:jira:TEAM-104 ticket:jira:TEAM-105 ticket:jira:TEAM-106 ticket:jira:TEAM-107"},
 	} {
 		f, _ := BuiltinFilter(tc.name)
 		res, err := v.Query(f.Expr)

@@ -836,7 +836,11 @@ test("facets: ghosts are the whole snapshot; the selection's share is its own", 
   assert.equal(rows[0].person, "alice");
   const sprint = FX.valueRows(aix, FX.fieldIndex(aix, "sprint"), FX.facetCounts(FX.fieldIndex(aix, "sprint"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("", AREG), "sprint"));
   assert.ok(sprint.some((r) => r.key === "sprint 12") && !sprint.some((r) => r.key === "1234"), "a sprint's ID beside its name is listed once: " + sprint.map((r) => r.key));
-  assert.deepEqual(sprint.slice(-2).map((r) => r.kind), ["unknown", "none"], "unknown and none are their own rows");
+  // (gh-105 put the fixture's one ticket in no sprint into Web Sprint 4;
+  // components still have an unknown and a none.)
+  const comp = FX.valueRows(aix, FX.fieldIndex(aix, "component"), FX.facetCounts(FX.fieldIndex(aix, "component"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("", AREG), "component"));
+  assert.deepEqual(comp.slice(-2).map((r) => r.kind), ["unknown", "none"], "unknown and none are their own rows");
+  assert.equal(sprint[sprint.length - 1].kind, "unknown", "a sprint unknown is its own row");
   const named = FX.valueRows(aix, FX.fieldIndex(aix, "sprint"), FX.facetCounts(FX.fieldIndex(aix, "sprint"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("sprint:1234", AREG), "sprint"));
   assert.deepEqual(named.filter((r) => r.key === "1234").map((r) => r.ghost + ":" + r.sel), ["6:true"], "an ID the query names shows with its count");
   const shown = FX.shownRows(FX.valueRows(aix, FX.fieldIndex(aix, "repo"), FX.facetCounts(FX.fieldIndex(aix, "repo"), FX.full(aix.nodes.length), null), FX.fieldState(L.parseQuery("", AREG), "repo")), "WEB", 8);
