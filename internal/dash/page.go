@@ -44,7 +44,9 @@ type liveBoot struct {
 // liveAddons are the scripts under internal/review/web/ that the live page
 // inlines after live.js, in order; each registers views or panels through
 // window.WGOLive before the page starts. gh-101 to gh-105 append theirs.
-var liveAddons = []string{}
+var liveAddons = []string{
+	"web/live-table.js", // gh-101: the analysis table, replacing the built-in one
+}
 
 // page is a rendered explorer page with its Content-Security-Policy. The
 // bootstrap element is held apart (prefix, suffix) so a page can be re-served

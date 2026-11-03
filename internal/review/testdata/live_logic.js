@@ -1,7 +1,7 @@
 // Exercises the pure logic of web/live.js (window.WGOLive / module.exports)
 // under node. Run by TestLiveJSLogic:
 //
-//	node live_logic.js <live.js> <dash fields.json> <dash query_vectors.json>
+//	node live_logic.js <live.js> <dash fields.json> <dash query_vectors.json> <live-table.js> <dash table_vectors.json>
 //
 // Prints "ok <n> ..." on success; any failure exits non-zero with a message.
 "use strict";
@@ -10,6 +10,8 @@ const fs = require("node:fs");
 const L = require(process.argv[2]);
 const FIELDS = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 const VECTORS = JSON.parse(fs.readFileSync(process.argv[4], "utf8"));
+const T = require(process.argv[5])(L); // the analysis table's pure logic (gh-101)
+const TV = JSON.parse(fs.readFileSync(process.argv[6], "utf8"));
 
 let n = 0;
 function test(name, fn) {
@@ -464,6 +466,191 @@ test("valueText never prints blank for unknown or empty", () => {
   assert.equal(L.valueText(ix, "checks", "ws-0000000000000001"), "", "a field that does not apply is blank, not unknown");
 });
 
+// ---------- the analysis table (web/live-table.js, spec/gh-101.md) ----------
+// TV is internal/dash/testdata/table_vectors.json: a snapshot with gh-99's
+// facts and check_stats per its contract, and the fields gh-99 registers.
+const TREG = L.registry(FIELDS, TV.fields);
+// PRE99 is the registry before gh-99 registered its fields.
+const GH99 = ["move", "move_people", "waiting_on", "reason", "waiting", "ci", "size", "size_bucket", "stale", "mismatch", "linked_prs"];
+const PRE99 = L.registry({ fields: FIELDS.fields.filter((f) => !GH99.includes(f.name)) });
+const tix = L.queryIndex(TV.snapshot, TREG);
+const tnode = (id) => tix.nodes[tix.byId.get(id)];
+const PR = (n) => tnode(n).pr;
+
+test("table: default columns follow the rows' kinds and skip fields not registered yet", () => {
+  assert.deepEqual(T.defaultColumns(TREG, ["pr"]), ["repo", "author", "move", "waiting", "age", "size", "ci", "reviewer", "ticket"]);
+  assert.deepEqual(T.defaultColumns(BASE, ["pr"]), T.defaultColumns(TREG, ["pr"]), "gh-99's fields are registered");
+  assert.deepEqual(T.defaultColumns(PRE99, ["pr"]), ["repo", "author", "age", "reviewer", "ticket"], "before gh-99: no move, waiting, size or CI");
+  assert.deepEqual(T.defaultColumns(TREG, ["ticket"]), ["ticket_status", "assignee", "points", "sprint", "linked_prs", "mismatch"]);
+  assert.deepEqual(T.defaultColumns(PRE99, ["ticket"]), ["ticket_status", "assignee", "points", "sprint"]);
+  for (const kinds of [["pr", "ticket"], ["effort", "workspace", "pr"], []]) {
+    assert.deepEqual(T.defaultColumns(TREG, kinds), ["kind", "effort", "state", "data", "last_activity"], "mixed: today's six with name");
+  }
+});
+
+test("table: cols= round-trips, the defaults stay out of the URL, unknown names drop", () => {
+  assert.deepEqual(T.columns(PRE99, "repo, move,nope,repo,name,text", ["pr"]), { cols: ["repo"], custom: true }, "a field not registered yet is dropped");
+  assert.deepEqual(T.columns(TREG, "", ["ticket"]), { cols: T.defaultColumns(TREG, ["ticket"]), custom: false });
+  assert.equal(T.colsValue(TREG, T.defaultColumns(TREG, ["pr"]), ["pr"]), "");
+  assert.equal(T.colsValue(TREG, ["ci", "repo"], ["pr"]), "ci,repo");
+  assert.equal(T.colsValue(TREG, [], ["pr"]), "name", "no columns but the name is not the defaults");
+  assert.deepEqual(T.columns(TREG, "name", ["pr"]), { cols: [], custom: true });
+  const cols = ["a", "b", "c"];
+  assert.deepEqual(T.moveColumn(cols, "b", -1), ["b", "a", "c"]);
+  assert.deepEqual(T.moveColumn(cols, "b", 1), ["a", "c", "b"]);
+  assert.deepEqual(T.moveColumn(cols, "a", -1), cols, "the first column cannot move left");
+  assert.deepEqual(T.moveColumn(cols, "c", 1), cols);
+  assert.deepEqual(T.addColumn(cols, "d"), ["a", "b", "c", "d"]);
+  assert.deepEqual(T.addColumn(cols, "a"), cols);
+  assert.deepEqual(T.removeColumn(cols, "b"), ["a", "c"]);
+  assert.deepEqual(cols, ["a", "b", "c"], "column edits return new lists");
+  const avail = T.available(BASE, ["ticket"]);
+  assert.deepEqual(avail.slice(0, 3), ["state", "data", "last_activity"], "the table's own columns first");
+  assert.ok(avail.includes("points") && avail.includes("effort") && !avail.includes("author") && !avail.includes("text") && !avail.includes("name"));
+  assert.ok(T.available(BASE, []).includes("author"), "with no rows every field is offered");
+});
+
+test("table: header clicks sort, reverse, add, reverse and remove keys", () => {
+  assert.deepEqual(T.parseSort("-waiting, size,,-waiting"), [{ key: "waiting", desc: true }, { key: "size", desc: false }]);
+  assert.equal(T.formatSort(T.parseSort("-waiting,size")), "-waiting,size");
+  let s = T.nextSort([], "waiting", false, true);
+  assert.equal(T.formatSort(s), "-waiting", "durations start longest first");
+  s = T.nextSort(s, "size", true, true); assert.equal(T.formatSort(s), "-waiting,-size", "Shift+click adds a key");
+  s = T.nextSort(s, "size", true, true); assert.equal(T.formatSort(s), "-waiting,size", "and reverses it");
+  s = T.nextSort(s, "repo", true, false); assert.equal(T.formatSort(s), "-waiting,size,repo", "a tertiary key");
+  s = T.nextSort(s, "size", true, true); assert.equal(T.formatSort(s), "-waiting,repo", "the third Shift+click removes it");
+  s = T.nextSort(s, "waiting", false, true); assert.equal(T.formatSort(s), "waiting,repo", "a plain click on the first key reverses it");
+  s = T.nextSort(s, "author", false, false); assert.equal(T.formatSort(s), "author", "a plain click elsewhere sorts by that alone");
+  assert.equal(T.defaultDesc(TREG, "age"), true);
+  assert.equal(T.defaultDesc(TREG, "last_activity"), true);
+  assert.equal(T.defaultDesc(TREG, "author"), false);
+});
+
+TV.sorts.forEach((c) => {
+  test("table vector: " + c.name, () => {
+    const r = L.runQuery(c.query, tix);
+    assert.ok(!r.error, r.error && r.error.error);
+    assert.deepEqual(T.sortRows(tix, r.res.rowIdx, T.parseSort(c.sort)).map((i) => tix.ids[i]), c.order);
+  });
+});
+
+test("table: unknown sorts last in both directions, before rows the field does not apply to", () => {
+  const C = T.CLASS, known = (n) => ({ c: C.known, r: 0, n });
+  for (const desc of [false, true]) {
+    assert.ok(T.compareValues(known(1), { c: C.unknown }, desc) < 0, "known before unknown, desc " + desc);
+    assert.ok(T.compareValues({ c: C.empty }, { c: C.unknown }, desc) < 0, "none before unknown");
+    assert.ok(T.compareValues({ c: C.unknown }, { c: C.na }, desc) < 0, "unknown before n/a");
+    assert.equal(T.compareValues({ c: C.unknown }, { c: C.unknown }, desc), 0);
+  }
+  assert.ok(T.compareValues(known(1), known(2), false) < 0);
+  assert.ok(T.compareValues(known(1), known(2), true) > 0);
+  assert.deepEqual(T.sortValue(tix, "waiting", tix.byId.get("pr:acme/api#2")), { c: C.known, r: 0, n: 10 });
+  assert.equal(T.sortValue(tix, "waiting", tix.byId.get("pr:acme/api#5")).c, C.unknown, "no facts: unknown");
+  assert.equal(T.sortValue(tix, "waiting", tix.byId.get("pr:acme/api#1")).c, C.na, "an author move waits on no one");
+  assert.equal(T.sortValue(tix, "waiting", tix.byId.get("pr:acme/web#4")).c, C.na, "a closed PR waits on no one");
+  assert.equal(T.sortValue(tix, "waiting", tix.byId.get("ws-1")).c, C.na);
+  assert.equal(T.sortValue(tix, "ci", tix.byId.get("pr:acme/api#2")).r, 2, "systemic_only is the third CI value");
+  assert.equal(T.sortValue(tix, "last_activity", tix.byId.get("ws-1")).c, C.known);
+  assert.equal(T.sortValue(tix, "last_activity", tix.byId.get("pr:acme/api#5")).c, C.unknown, "a PR with no update time");
+  assert.equal(T.sortValue(tix, "last_activity", tix.byId.get("effort:api")).c, C.na);
+  assert.equal(T.sortValue(tix, "name", tix.byId.get("effort:api")).s, "api work,effort:api", "name sorts as text: label, title, ID");
+  const prsTickets = L.runQuery("kind:pr,ticket", tix).res.rowIdx;
+  assert.deepEqual(T.sortRows(tix, prsTickets, T.parseSort("-name")), T.sortRows(tix, prsTickets, T.parseSort("-text")), "the extract sorts name as text");
+  assert.equal(T.sortValue(tix, "nope", tix.byId.get("pr:acme/api#2")).c, C.na, "a column with no field (a stale cols=) is n/a");
+});
+
+test("table: CI marks put failures first, systemic hollow, skipped out, at most 20", () => {
+  const stats = TV.snapshot.check_stats;
+  const many = T.ciMarks(PR("pr:acme/api#5"), stats);
+  assert.equal(many.label, "3 failing (2 fail everywhere), 25 passing");
+  assert.equal(many.marks.length, 20);
+  assert.equal(many.more, 8);
+  assert.deepEqual(many.marks.slice(0, 4).map((m) => m.kind + ":" + m.name), ["fail:unit-tests", "systemic:flaky-e2e", "systemic:vendor-hsm-tests", "pass:check-00"]);
+  assert.ok(!many.marks.some((m) => m.name === "docs"), "skipped checks are left out");
+  const one = T.ciMarks(PR("pr:acme/api#1"), stats);
+  assert.deepEqual(one.marks.map((m) => m.kind + ":" + m.name), ["fail:unit-tests", "systemic:vendor-hsm-tests", "pending:lint", "pass:build", "pass:e2e"]);
+  assert.equal(one.label, "2 failing (1 fails everywhere), 1 pending, 2 passing", "a neutral check passes");
+  assert.equal(T.ciMarks(PR("pr:acme/api#1"), null).label, "2 failing, 1 pending, 2 passing", "without check_stats nothing is systemic");
+  assert.equal(T.ciMarks(PR("pr:acme/api#1"), { "acme/web": stats["acme/api"] }).counts.systemic, 0, "systemic is per repository");
+  assert.equal(T.ciMarks(PR("pr:acme/web#4"), stats), null, "checks not read are unknown, not none");
+  assert.equal(T.ciMarks({ repo: "acme/api", check_details: [] }, stats).label, "no checks reported");
+  assert.match(T.ciMarks({ repo: "acme/api", check_details: [], checks_truncated: true }, stats).label, /more checks than were read$/);
+});
+
+test("table: one review glyph per reviewer, an outstanding request first-class", () => {
+  const rv = (id) => T.reviewMarks(PR(id));
+  assert.deepEqual(rv("pr:acme/api#1").marks.map((m) => T.REVIEW[m.state].glyph + m.who), ["○bob", "✓carol"]);
+  assert.equal(rv("pr:acme/api#1").label, "Reviews: bob review requested, carol approved");
+  const two = rv("pr:acme/api#2");
+  assert.deepEqual(two.marks.map((m) => T.REVIEW[m.state].glyph + m.who), ["✕carol", "○alice", "○team:web"]);
+  assert.match(two.label, /alice review requested \(again, after commented\)/);
+  assert.equal(rv("pr:acme/api#5"), null, "requests and reviews unknown");
+  assert.deepEqual(rv("pr:acme/web#3").marks, []);
+  const onlyReviews = T.reviewMarks({ reviews: [{ author: "bob", state: "COMMENTED" }, { author: "dan", state: "DISMISSED" }] });
+  assert.deepEqual(onlyReviews.marks.map((m) => T.REVIEW[m.state].glyph + m.who), ["…bob"]);
+  assert.equal(onlyReviews.requestsKnown, false);
+  assert.match(onlyReviews.label, /requested reviewers unknown$/);
+});
+
+test("table: the move is a word, 'you' and accented only when move_people holds @me", () => {
+  assert.equal(tix.env.me, "alice");
+  assert.deepEqual(T.moveWord(PR("pr:acme/api#2").facts, "alice"), { word: "you", move: "reviewer", mine: true, unknown: false }, "a review requested from me");
+  assert.deepEqual(T.moveWord(PR("pr:acme/api#2").facts, "ALICE").mine, true);
+  assert.deepEqual(T.moveWord(PR("pr:acme/web#3").facts, "alice"), { word: "author", move: "author", mine: false, unknown: false });
+  assert.deepEqual(T.moveWord(PR("pr:acme/web#6").facts, "alice").word, "nobody");
+  assert.equal(T.moveWord(PR("pr:acme/api#5").facts, "alice").word, "unknown", "no facts: unknown, never nobody");
+  assert.equal(T.moveWord({ move: "reviewer", move_people: ["alice"] }, "").mine, false, "no @me, no accent");
+  assert.match(T.moveTitle(PR("pr:acme/api#2").facts), /^Held by team:web, alice\nawaiting review: ready since Oct 20/);
+  assert.match(T.moveTitle(undefined), /unknown/);
+});
+
+test("table: Waiting does not apply to author and none moves, unless changes were requested", () => {
+  assert.equal(T.waitingNA({ move: "none" }), true);
+  assert.equal(T.waitingNA({ move: "author", reasons: [{ code: "draft" }, { code: "ci_failing" }] }), true);
+  assert.equal(T.waitingNA({ move: "author", reasons: [{ code: "changes_requested" }] }), false, "rule 3 waits on the author since the blocking review");
+  assert.equal(T.waitingNA({ move: "author" }), true);
+  for (const m of ["reviewer", "nobody", "unknown", undefined]) assert.equal(T.waitingNA({ move: m }), false, String(m));
+  assert.equal(T.waitingNA(undefined), false, "no facts: unknown, not n/a");
+});
+
+test("table: bars are linear from zero on the column's scale; size is log", () => {
+  assert.equal(T.barFraction(5, 10, false), 0.5);
+  assert.equal(T.barFraction(0, 10, false), 0);
+  assert.equal(T.barFraction(3, 0, false), 0);
+  assert.equal(T.barFraction(-1, 10, false), 0);
+  assert.equal(T.barFraction(20, 10, false), 1);
+  assert.ok(Math.abs(T.barFraction(9, 99, true) - 0.5) < 1e-12, "log(1+9)/log(1+99)");
+  assert.equal(T.daysText(10.7, false), "10d");
+  assert.equal(T.daysText(10, true), "≥10d");
+  assert.equal(T.daysLabel("Waiting", 1, true), "Waiting: at least 1 day");
+  assert.equal(T.sizeText(PR("pr:acme/api#1"), 150), "+120 −30");
+  assert.equal(T.sizeText({}, 150), "150 lines");
+  assert.equal(T.sizeLabel(PR("pr:acme/api#1"), 150), "size 150 lines (120 added, 30 deleted); bar on a log scale");
+});
+
+test("table: a kind clause drops context rows; otherwise they are listed unless hidden", () => {
+  const r = L.runQuery("move:reviewer", tix).res;
+  assert.deepEqual(r.rows, ["pr:acme/api#2"]);
+  const shown = T.tableRows(tix, r, false, true);
+  assert.deepEqual(shown.kinds, ["pr"], "defaults come from the rows, not the context");
+  assert.ok(shown.contextCount > 0 && shown.rows.length === 1 + shown.contextCount);
+  assert.ok(shown.context.has(tix.byId.get("effort:api")) && !shown.context.has(tix.byId.get("pr:acme/api#2")));
+  assert.deepEqual(T.tableRows(tix, r, false, false).rows.map((i) => tix.ids[i]), ["pr:acme/api#2"], "context hidden");
+  const k = L.runQuery("kind:pr;move:reviewer", tix).res;
+  assert.equal(T.tableRows(tix, k, true, true).contextCount, 0, "kind: keeps only rows");
+  assert.equal(T.tableRows(tix, null, false, true).rows.length, tix.nodes.length, "no query: every node");
+  assert.deepEqual(T.kindClauseKinds(L.parseQuery("kind:pr,ticket;!kind:ticket", TREG)), ["pr"]);
+  assert.equal(T.kindClauseKinds(L.parseQuery("repo:acme/api", TREG)), null);
+});
+
+test("table: column info names the scales", () => {
+  assert.match(T.colInfo(TREG, "size").title, /log scale/);
+  assert.match(T.colInfo(TREG, "waiting").title, /linear from zero/);
+  assert.equal(T.colInfo(TREG, "reviewer").label, "Reviews");
+  assert.equal(T.colInfo(TREG, "state").local, true);
+  assert.ok(T.numeric(T.colInfo(TREG, "points")) && !T.numeric(T.colInfo(TREG, "author")));
+});
+
 // ---------- performance (requirement 28): logged, not asserted ----------
 // genSnapshot mirrors genSnapshot in internal/dash/query_test.go.
 function genSnapshot(n) {
@@ -519,6 +706,12 @@ test("12 clauses over 2,000 nodes (timing logged)", () => {
   const evalMs = Number(process.hrtime.bigint() - t0) / 1e6 / runs;
   assert.ok(res.matches.length > 0);
   perfLine = "perf: " + ix.nodes.length + " nodes, index " + indexMs.toFixed(2) + " ms once, 12 clauses " + evalMs.toFixed(3) + " ms per evaluation (" + res.matches.length + " matches)";
+  // gh-101: the table's sort over every node by two keys.
+  const all = ix.nodes.map((nd, i) => i), sort = T.parseSort("-updated_ago,repo");
+  for (let i = 0; i < 3; i++) T.sortRows(ix, all, sort);
+  t0 = process.hrtime.bigint();
+  for (let i = 0; i < 10; i++) T.sortRows(ix, all, sort);
+  perfLine += "; table sort of " + all.length + " rows by 2 keys " + (Number(process.hrtime.bigint() - t0) / 1e6 / 10).toFixed(2) + " ms";
 });
 
 console.log("ok " + n + " (" + vectorCases + " shared query vectors) " + perfLine);

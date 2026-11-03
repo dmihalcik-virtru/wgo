@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -36,9 +37,12 @@ func (noAck) Acknowledge(uint64) error { return nil }
 // TestLivePageInBrowser drives the live page in headless Chrome
 // (testdata/live_browser.js): the URL round-trip and history model, chart
 // clicks as clauses, the query bar, an addon view and panel with their
-// ctx (setState, getState, subscribe, destroy, a token-free boot), and
-// Copy as Markdown under the page's CSP, with no console errors; then it
-// times filter changes on a 2,000-node snapshot. It needs node and Chrome,
+// ctx (setState, getState, subscribe, destroy, a token-free boot), the
+// analysis table (gh-101: keyboard column chooser, sort kept across a
+// reload, kind: rows, the context toggle, row keys and hover), and Copy as
+// Markdown under the page's CSP, with no console errors; then it times
+// filter changes on a 2,000-node snapshot, and the table on the analysis
+// fixture scaled to 2,000 nodes. It needs node and Chrome,
 // so it runs only when WGO_BROWSER_TESTS is set; WGO_CHROME names the
 // browser and WGO_SHOTS a directory for light and dark screenshots.
 func TestLivePageInBrowser(t *testing.T) {
@@ -57,9 +61,19 @@ func TestLivePageInBrowser(t *testing.T) {
 		t.Fatalf("no Chrome at %s; set WGO_CHROME", chrome)
 	}
 	v, _ := vectorFixture(t)
+	// The page inlines the real addons, then the probe; AddonFS replaces the
+	// embedded files, so it carries the real ones too.
+	addons := fstest.MapFS{"web/live-probe.js": {Data: []byte(probeAddon)}}
+	for _, name := range liveAddons {
+		b, err := os.ReadFile(filepath.Join("..", "review", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		addons[name] = &fstest.MapFile{Data: b}
+	}
 	// Ack makes the page carry an action token, which addons must not see.
-	srv := newServerOpts(t, HandlerOptions{Source: StaticSource{V: v}, Ack: noAck{}, Addons: []string{"web/live-probe.js"},
-		AddonFS: fstest.MapFS{"web/live-probe.js": {Data: []byte(probeAddon)}}})
+	srv := newServerOpts(t, HandlerOptions{Source: StaticSource{V: v}, Ack: noAck{}, Addons: append(slices.Clone(liveAddons), "web/live-probe.js"),
+		AddonFS: addons})
 	// A 2,000-node snapshot for the re-render timing.
 	var big Snapshot
 	raw := genSnapshot(2000)
@@ -71,7 +85,18 @@ func TestLivePageInBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	perf := newServerOpts(t, HandlerOptions{Source: StaticSource{V: bigView}})
-	args := []string{filepath.Join("testdata", "live_browser.js"), chrome, srv.URL + "/", "--perf=" + perf.URL + "/"}
+	// The analysis fixture scaled to 2,000 nodes, for the table's timing.
+	scaled := scaleAnalysisFixture(t, loadAnalysisFixture(t), 2000)
+	scaledRaw, err := json.Marshal(scaled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scaledView, err := newViewJSON(scaled, scaledRaw, computeDelta(nil, scaled), false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := newServerOpts(t, HandlerOptions{Source: StaticSource{V: scaledView}})
+	args := []string{filepath.Join("testdata", "live_browser.js"), chrome, srv.URL + "/", "--perf=" + perf.URL + "/", "--perf-table=" + table.URL + "/"}
 	if dir := os.Getenv("WGO_SHOTS"); dir != "" {
 		args = append(args, "--shots="+dir)
 	}
