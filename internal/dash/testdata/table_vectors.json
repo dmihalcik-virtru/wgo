@@ -1,0 +1,1061 @@
+{
+ "comment": "Shared by internal/dash/sort_test.go and internal/review/testdata/live_logic.js (live-table.js): the analysis table's sort and graphics (spec/gh-101.md). The fields are gh-99's, per its facts contract, until gh-99 registers them.",
+ "fields": [
+  {
+   "name": "move",
+   "label": "Whose move",
+   "type": "enum",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.move"
+   ],
+   "values": [
+    "author",
+    "reviewer",
+    "nobody",
+    "none",
+    "unknown"
+   ]
+  },
+  {
+   "name": "move_people",
+   "label": "Move held by",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.move_people"
+   ]
+  },
+  {
+   "name": "waiting_on",
+   "label": "Waiting on",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.waiting_on"
+   ]
+  },
+  {
+   "name": "reason",
+   "label": "Reasons",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.reasons.code"
+   ]
+  },
+  {
+   "name": "waiting",
+   "label": "Waiting",
+   "type": "duration",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.waiting_since"
+   ],
+   "derive": "days_since",
+   "unit": "days",
+   "scale": "log"
+  },
+  {
+   "name": "ci",
+   "label": "CI",
+   "type": "enum",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.ci"
+   ],
+   "values": [
+    "green",
+    "failing",
+    "systemic_only",
+    "pending",
+    "none",
+    "unknown"
+   ]
+  },
+  {
+   "name": "size",
+   "label": "Size",
+   "type": "number",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.size"
+   ],
+   "unit": "lines",
+   "scale": "log"
+  },
+  {
+   "name": "size_bucket",
+   "label": "Size bucket",
+   "type": "enum",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.size_bucket"
+   ],
+   "values": [
+    "xs",
+    "s",
+    "m",
+    "l",
+    "xl"
+   ]
+  },
+  {
+   "name": "stale",
+   "label": "Stale",
+   "type": "bool",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.stale"
+   ]
+  },
+  {
+   "name": "mismatch",
+   "label": "Jira mismatch",
+   "type": "set",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.facts.mismatches.code"
+   ]
+  },
+  {
+   "name": "linked_prs",
+   "label": "Linked PRs",
+   "type": "set",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.facts.linked_prs.state"
+   ],
+   "values": [
+    "draft",
+    "open",
+    "approved",
+    "merged",
+    "closed"
+   ]
+  }
+ ],
+ "snapshot": {
+  "schema": 1,
+  "generation": 3,
+  "generated_at": "2026-10-30T16:00:00Z",
+  "timezone": "UTC",
+  "days": 14,
+  "sources": {},
+  "people": [
+   {
+    "login": "alice",
+    "name": "Alice",
+    "me": true
+   },
+   {
+    "login": "bob",
+    "name": "Bob"
+   }
+  ],
+  "check_stats": {
+   "acme/api": [
+    {
+     "name": "vendor-hsm-tests",
+     "runs": 6,
+     "failures": 5,
+     "systemic": true,
+     "evidence": "fails on 5 of 6 open PRs by the configured people in acme/api"
+    },
+    {
+     "name": "flaky-e2e",
+     "runs": 4,
+     "failures": 3,
+     "systemic": true,
+     "evidence": "fails on 3 of 4 open PRs by the configured people in acme/api"
+    },
+    {
+     "name": "unit-tests",
+     "runs": 6,
+     "failures": 2,
+     "systemic": false,
+     "evidence": "fails on 2 of 6 open PRs by the configured people in acme/api"
+    }
+   ]
+  },
+  "nodes": [
+   {
+    "id": "effort:api",
+    "kind": "effort",
+    "label": "API work",
+    "effort": {
+     "key": "api",
+     "group": "effort"
+    }
+   },
+   {
+    "id": "effort:web",
+    "kind": "effort",
+    "label": "Web",
+    "effort": {
+     "key": "web",
+     "group": "effort"
+    }
+   },
+   {
+    "id": "ws-1",
+    "kind": "workspace",
+    "label": "api/token-refresh",
+    "workspace": {
+     "repo_slug": "acme/api",
+     "bookmark": "TEAM-1-token-refresh",
+     "last_activity": "2026-10-30T12:00:00Z"
+    }
+   },
+   {
+    "id": "bm-1",
+    "kind": "bookmark",
+    "label": "TEAM-1-token-refresh",
+    "bookmark": {
+     "repo_slug": "acme/api",
+     "pr_lookup": "fresh",
+     "pr_count": 1
+    }
+   },
+   {
+    "id": "pr:acme/api#1",
+    "kind": "pr",
+    "label": "acme/api#1",
+    "pr": {
+     "number": 1,
+     "repo": "acme/api",
+     "url": "https://github.com/acme/api/pull/1",
+     "title": "Refresh tokens before expiry",
+     "state": "open",
+     "author": "alice",
+     "created_at": "2026-10-10T09:00:00Z",
+     "ready_at": "2026-10-11T09:00:00Z",
+     "updated_at": "2026-10-29T14:00:00Z",
+     "additions": 120,
+     "deletions": 30,
+     "changed_files": 4,
+     "checks": "failure",
+     "reviewers_known": true,
+     "requested_reviewers": [
+      "bob"
+     ],
+     "review_requests": [
+      {
+       "reviewer": "bob",
+       "kind": "user",
+       "requested_at": "2026-10-26T10:00:00Z"
+      }
+     ],
+     "reviews": [
+      {
+       "author": "carol",
+       "state": "APPROVED",
+       "submitted_at": "2026-10-27T10:00:00Z"
+      }
+     ],
+     "check_details": [
+      {
+       "name": "build",
+       "state": "success",
+       "url": "https://github.com/acme/api/actions/runs/77691"
+      },
+      {
+       "name": "unit-tests",
+       "state": "failure",
+       "url": "https://github.com/acme/api/actions/runs/7527"
+      },
+      {
+       "name": "vendor-hsm-tests",
+       "state": "failure",
+       "url": "https://github.com/acme/api/actions/runs/91091"
+      },
+      {
+       "name": "lint",
+       "state": "pending",
+       "url": "https://github.com/acme/api/actions/runs/24783"
+      },
+      {
+       "name": "docs",
+       "state": "skipped",
+       "url": "https://github.com/acme/api/actions/runs/26957"
+      },
+      {
+       "name": "e2e",
+       "state": "neutral",
+       "url": "https://github.com/acme/api/actions/runs/64326"
+      }
+     ],
+     "ticket_keys": [
+      "TEAM-1"
+     ],
+     "freshness": "fresh",
+     "bookmark_id": "bm-1",
+     "facts": {
+      "move": "author",
+      "reasons": [
+       {
+        "code": "ci_failing",
+        "evidence": "unit-tests fails on this PR only"
+       },
+       {
+        "code": "awaiting_review",
+        "evidence": "review requested from bob on Oct 26"
+       }
+      ],
+      "move_people": [
+       "alice"
+      ],
+      "ci": "failing",
+      "size": 150,
+      "size_bucket": "m",
+      "stale": false
+     }
+    }
+   },
+   {
+    "id": "pr:acme/api#2",
+    "kind": "pr",
+    "label": "acme/api#2",
+    "pr": {
+     "number": 2,
+     "repo": "acme/api",
+     "url": "https://github.com/acme/api/pull/2",
+     "title": "Rotate the signing keys",
+     "state": "open",
+     "author": "bob",
+     "created_at": "2026-10-15T12:00:00Z",
+     "ready_at": "2026-10-20T09:00:00Z",
+     "updated_at": "2026-10-25T09:00:00Z",
+     "additions": 3500,
+     "deletions": 500,
+     "checks": "failure",
+     "reviewers_known": true,
+     "requested_reviewers": [
+      "team:web",
+      "alice"
+     ],
+     "review_requests": [
+      {
+       "reviewer": "team:web",
+       "kind": "team",
+       "requested_at": "2026-10-20T09:00:00Z"
+      },
+      {
+       "reviewer": "alice",
+       "kind": "user"
+      }
+     ],
+     "reviews": [
+      {
+       "author": "carol",
+       "state": "CHANGES_REQUESTED",
+       "submitted_at": "2026-10-18T10:00:00Z"
+      },
+      {
+       "author": "alice",
+       "state": "COMMENTED",
+       "submitted_at": "2026-10-19T10:00:00Z"
+      }
+     ],
+     "check_details": [
+      {
+       "name": "vendor-hsm-tests",
+       "state": "failure",
+       "url": "https://github.com/acme/api/actions/runs/91091"
+      },
+      {
+       "name": "build",
+       "state": "success",
+       "url": "https://github.com/acme/api/actions/runs/77691"
+      }
+     ],
+     "ticket_keys": [
+      "TEAM-2"
+     ],
+     "freshness": "fresh",
+     "facts": {
+      "move": "reviewer",
+      "reasons": [
+       {
+        "code": "awaiting_review",
+        "evidence": "ready since Oct 20; review requested from team:web and alice"
+       },
+       {
+        "code": "ci_systemic_only",
+        "evidence": "vendor-hsm-tests fails on 5 of 6 open PRs by the configured people in acme/api"
+       }
+      ],
+      "move_people": [
+       "team:web",
+       "alice"
+      ],
+      "waiting_since": "2026-10-20T09:00:00Z",
+      "waiting_lower_bound": true,
+      "waiting_on": [
+       "team:web",
+       "alice"
+      ],
+      "ci": "systemic_only",
+      "size": 4000,
+      "size_bucket": "xl",
+      "stale": false,
+      "uncertain": [
+       "requested_at:alice"
+      ]
+     }
+    }
+   },
+   {
+    "id": "pr:acme/web#3",
+    "kind": "pr",
+    "label": "acme/web#3",
+    "pr": {
+     "number": 3,
+     "repo": "acme/web",
+     "url": "https://github.com/acme/web/pull/3",
+     "title": "Theme tokens (WIP)",
+     "state": "open",
+     "is_draft": true,
+     "author": "carol",
+     "created_at": "2026-10-28T08:00:00Z",
+     "updated_at": "2026-10-30T08:00:00Z",
+     "additions": 6,
+     "deletions": 2,
+     "checks": "pending",
+     "reviewers_known": true,
+     "requested_reviewers": [],
+     "review_requests": [],
+     "reviews": [],
+     "check_details": [
+      {
+       "name": "build",
+       "state": "pending",
+       "url": "https://github.com/acme/api/actions/runs/77691"
+      }
+     ],
+     "ticket_keys": [],
+     "freshness": "fresh",
+     "facts": {
+      "move": "author",
+      "reasons": [
+       {
+        "code": "draft",
+        "evidence": "draft since Oct 28"
+       },
+       {
+        "code": "ci_pending",
+        "evidence": "build is pending"
+       },
+       {
+        "code": "no_ticket",
+        "evidence": "no ticket key in the branch, title or body"
+       }
+      ],
+      "move_people": [
+       "carol"
+      ],
+      "ci": "pending",
+      "size": 8,
+      "size_bucket": "xs",
+      "stale": false
+     }
+    }
+   },
+   {
+    "id": "pr:acme/web#4",
+    "kind": "pr",
+    "label": "acme/web#4",
+    "pr": {
+     "number": 4,
+     "repo": "acme/web",
+     "url": "https://github.com/acme/web/pull/4",
+     "title": "Cache static assets",
+     "state": "merged",
+     "author": "dave",
+     "merged_at": "2026-10-22T10:00:00Z",
+     "updated_at": "2026-10-22T10:00:00Z",
+     "reviewers_known": true,
+     "requested_reviewers": [],
+     "freshness": "stale",
+     "facts": {
+      "move": "none",
+      "reasons": [
+       {
+        "code": "closed",
+        "evidence": "merged Oct 22"
+       }
+      ],
+      "move_people": [],
+      "ci": "green"
+     }
+    }
+   },
+   {
+    "id": "pr:acme/api#5",
+    "kind": "pr",
+    "label": "acme/api#5",
+    "pr": {
+     "number": 5,
+     "repo": "acme/api",
+     "url": "https://github.com/acme/api/pull/5",
+     "title": "Bump the HSM vendor library",
+     "state": "open",
+     "created_at": "2026-09-01T00:00:00Z",
+     "reviewers_known": false,
+     "check_details": [
+      {
+       "name": "check-00",
+       "state": "success"
+      },
+      {
+       "name": "check-01",
+       "state": "success"
+      },
+      {
+       "name": "check-02",
+       "state": "success"
+      },
+      {
+       "name": "check-03",
+       "state": "success"
+      },
+      {
+       "name": "check-04",
+       "state": "success"
+      },
+      {
+       "name": "check-05",
+       "state": "success"
+      },
+      {
+       "name": "check-06",
+       "state": "success"
+      },
+      {
+       "name": "check-07",
+       "state": "success"
+      },
+      {
+       "name": "check-08",
+       "state": "success"
+      },
+      {
+       "name": "check-09",
+       "state": "success"
+      },
+      {
+       "name": "check-10",
+       "state": "success"
+      },
+      {
+       "name": "check-11",
+       "state": "success"
+      },
+      {
+       "name": "check-12",
+       "state": "success"
+      },
+      {
+       "name": "check-13",
+       "state": "success"
+      },
+      {
+       "name": "check-14",
+       "state": "success"
+      },
+      {
+       "name": "check-15",
+       "state": "success"
+      },
+      {
+       "name": "check-16",
+       "state": "success"
+      },
+      {
+       "name": "check-17",
+       "state": "success"
+      },
+      {
+       "name": "check-18",
+       "state": "success"
+      },
+      {
+       "name": "check-19",
+       "state": "success"
+      },
+      {
+       "name": "check-20",
+       "state": "success"
+      },
+      {
+       "name": "check-21",
+       "state": "success"
+      },
+      {
+       "name": "check-22",
+       "state": "success"
+      },
+      {
+       "name": "check-23",
+       "state": "success"
+      },
+      {
+       "name": "check-24",
+       "state": "success"
+      },
+      {
+       "name": "unit-tests",
+       "state": "failure"
+      },
+      {
+       "name": "vendor-hsm-tests",
+       "state": "failure"
+      },
+      {
+       "name": "flaky-e2e",
+       "state": "failure"
+      },
+      {
+       "name": "docs",
+       "state": "skipped"
+      }
+     ],
+     "checks_truncated": false,
+     "freshness": "fresh"
+    }
+   },
+   {
+    "id": "pr:acme/web#6",
+    "kind": "pr",
+    "label": "acme/web#6",
+    "pr": {
+     "number": 6,
+     "repo": "acme/web",
+     "url": "https://github.com/acme/web/pull/6",
+     "title": "Lazy-load the settings page",
+     "state": "open",
+     "author": "dave",
+     "created_at": "2026-10-24T12:00:00Z",
+     "ready_at": "2026-10-24T12:00:00Z",
+     "updated_at": "2026-10-24T12:00:00Z",
+     "additions": 30,
+     "deletions": 10,
+     "checks": "success",
+     "reviewers_known": true,
+     "requested_reviewers": [],
+     "review_requests": [],
+     "reviews": [],
+     "check_details": [
+      {
+       "name": "build",
+       "state": "success"
+      }
+     ],
+     "ticket_keys": [
+      "TEAM-3"
+     ],
+     "freshness": "fresh",
+     "facts": {
+      "move": "nobody",
+      "reasons": [
+       {
+        "code": "no_reviewer",
+        "evidence": "ready since Oct 24; no review requested"
+       }
+      ],
+      "move_people": [],
+      "waiting_since": "2026-10-24T12:00:00Z",
+      "ci": "green",
+      "size": 40,
+      "size_bucket": "s",
+      "stale": false
+     }
+    }
+   },
+   {
+    "id": "ticket:jira:TEAM-1",
+    "kind": "ticket",
+    "label": "TEAM-1",
+    "ticket": {
+     "key": "TEAM-1",
+     "system": "jira",
+     "status": "In Progress",
+     "status_category": "in_progress",
+     "title": "Token refresh",
+     "assignee": "Alice",
+     "story_points": 3,
+     "story_points_known": true,
+     "sprints": [
+      {
+       "id": 12,
+       "name": "Sprint 12",
+       "state": "active"
+      }
+     ],
+     "freshness": "fresh",
+     "facts": {
+      "mismatches": [],
+      "linked_prs": [
+       {
+        "id": "pr:acme/api#1",
+        "ref": "acme/api#1",
+        "state": "open"
+       }
+      ]
+     }
+    }
+   },
+   {
+    "id": "ticket:jira:TEAM-2",
+    "kind": "ticket",
+    "label": "TEAM-2",
+    "ticket": {
+     "key": "TEAM-2",
+     "system": "jira",
+     "status": "Done",
+     "status_category": "done",
+     "title": "Key rotation",
+     "story_points_known": true,
+     "sprints": [],
+     "freshness": "fresh",
+     "facts": {
+      "mismatches": [
+       {
+        "code": "ticket_done_code_open",
+        "evidence": "ticket Done; PR acme/api#2 open"
+       }
+      ],
+      "linked_prs": [
+       {
+        "id": "pr:acme/api#2",
+        "ref": "acme/api#2",
+        "state": "open"
+       }
+      ]
+     }
+    }
+   },
+   {
+    "id": "ticket:jira:TEAM-3",
+    "kind": "ticket",
+    "label": "TEAM-3",
+    "ticket": {
+     "key": "TEAM-3",
+     "system": "jira",
+     "status": "To Do",
+     "title": "Audit log export",
+     "freshness": "unknown"
+    }
+   },
+   {
+    "id": "agent:a-1",
+    "kind": "agent",
+    "label": "claude",
+    "agent": {
+     "tool": "claude",
+     "status": "working",
+     "liveness": "active",
+     "last_activity": "2026-10-30T15:00:00Z"
+    }
+   },
+   {
+    "id": "sprint:12",
+    "kind": "sprint",
+    "label": "Sprint 12",
+    "sprint": {
+     "id": 12,
+     "name": "Sprint 12",
+     "state": "active",
+     "freshness": "fresh"
+    }
+   }
+  ],
+  "edges": [
+   {
+    "source": "effort:api",
+    "target": "ws-1",
+    "kind": "contains"
+   },
+   {
+    "source": "ws-1",
+    "target": "bm-1",
+    "kind": "on"
+   },
+   {
+    "source": "bm-1",
+    "target": "pr:acme/api#1",
+    "kind": "pr"
+   },
+   {
+    "source": "pr:acme/api#1",
+    "target": "ticket:jira:TEAM-1",
+    "kind": "ticket"
+   },
+   {
+    "source": "effort:api",
+    "target": "pr:acme/api#2",
+    "kind": "tracks"
+   },
+   {
+    "source": "pr:acme/api#2",
+    "target": "ticket:jira:TEAM-2",
+    "kind": "ticket"
+   },
+   {
+    "source": "effort:web",
+    "target": "pr:acme/web#3",
+    "kind": "tracks"
+   },
+   {
+    "source": "effort:web",
+    "target": "pr:acme/web#4",
+    "kind": "tracks"
+   },
+   {
+    "source": "effort:api",
+    "target": "pr:acme/api#5",
+    "kind": "tracks"
+   },
+   {
+    "source": "effort:api",
+    "target": "ticket:jira:TEAM-3",
+    "kind": "tracks"
+   },
+   {
+    "source": "effort:api",
+    "target": "agent:a-1",
+    "kind": "runs"
+   },
+   {
+    "source": "ticket:jira:TEAM-1",
+    "target": "sprint:12",
+    "kind": "in_sprint"
+   },
+   {
+    "source": "effort:web",
+    "target": "pr:acme/web#6",
+    "kind": "tracks"
+   },
+   {
+    "source": "pr:acme/web#6",
+    "target": "ticket:jira:TEAM-3",
+    "kind": "ticket"
+   }
+  ],
+  "counts": {
+   "days": [],
+   "activity": {}
+  }
+ },
+ "sorts": [
+  {
+   "name": "default order: kind, then label",
+   "query": "kind:pr,ticket",
+   "sort": "",
+   "order": [
+    "pr:acme/api#1",
+    "pr:acme/api#2",
+    "pr:acme/api#5",
+    "pr:acme/web#3",
+    "pr:acme/web#4",
+    "pr:acme/web#6",
+    "ticket:jira:TEAM-1",
+    "ticket:jira:TEAM-2",
+    "ticket:jira:TEAM-3"
+   ]
+  },
+  {
+   "name": "waiting descending: unknown, then PRs waiting on no one, last",
+   "query": "kind:pr",
+   "sort": "-waiting",
+   "order": [
+    "pr:acme/api#2",
+    "pr:acme/web#6",
+    "pr:acme/api#5",
+    "pr:acme/api#1",
+    "pr:acme/web#3",
+    "pr:acme/web#4"
+   ]
+  },
+  {
+   "name": "waiting ascending: unknown and not-waiting still last",
+   "query": "kind:pr",
+   "sort": "waiting",
+   "order": [
+    "pr:acme/web#6",
+    "pr:acme/api#2",
+    "pr:acme/api#5",
+    "pr:acme/api#1",
+    "pr:acme/web#3",
+    "pr:acme/web#4"
+   ]
+  },
+  {
+   "name": "size descending on its log field, unknown last",
+   "query": "kind:pr",
+   "sort": "-size",
+   "order": [
+    "pr:acme/api#2",
+    "pr:acme/api#1",
+    "pr:acme/web#6",
+    "pr:acme/web#3",
+    "pr:acme/api#5",
+    "pr:acme/web#4"
+   ]
+  },
+  {
+   "name": "a closed enum sorts by its values' order",
+   "query": "kind:pr",
+   "sort": "ci",
+   "order": [
+    "pr:acme/web#4",
+    "pr:acme/web#6",
+    "pr:acme/api#1",
+    "pr:acme/api#2",
+    "pr:acme/web#3",
+    "pr:acme/api#5"
+   ]
+  },
+  {
+   "name": "a closed enum reversed keeps unknown last",
+   "query": "kind:pr",
+   "sort": "-ci",
+   "order": [
+    "pr:acme/web#3",
+    "pr:acme/api#2",
+    "pr:acme/api#1",
+    "pr:acme/web#4",
+    "pr:acme/web#6",
+    "pr:acme/api#5"
+   ]
+  },
+  {
+   "name": "secondary key breaks ties; unknown last within the tie",
+   "query": "kind:pr",
+   "sort": "move,-waiting",
+   "order": [
+    "pr:acme/api#1",
+    "pr:acme/web#3",
+    "pr:acme/api#2",
+    "pr:acme/web#6",
+    "pr:acme/web#4",
+    "pr:acme/api#5"
+   ]
+  },
+  {
+   "name": "text enum without values sorts by text, unknown last",
+   "query": "kind:pr",
+   "sort": "-author",
+   "order": [
+    "pr:acme/web#4",
+    "pr:acme/web#6",
+    "pr:acme/web#3",
+    "pr:acme/api#2",
+    "pr:acme/api#1",
+    "pr:acme/api#5"
+   ]
+  },
+  {
+   "name": "known-empty sorts after values and before unknown, both ways",
+   "query": "kind:ticket",
+   "sort": "points",
+   "order": [
+    "ticket:jira:TEAM-1",
+    "ticket:jira:TEAM-2",
+    "ticket:jira:TEAM-3"
+   ]
+  },
+  {
+   "name": "known-empty and unknown stay last descending",
+   "query": "kind:ticket",
+   "sort": "-points",
+   "order": [
+    "ticket:jira:TEAM-1",
+    "ticket:jira:TEAM-2",
+    "ticket:jira:TEAM-3"
+   ]
+  },
+  {
+   "name": "efforts sort by label, not key",
+   "query": "kind:pr",
+   "sort": "-effort,age",
+   "order": [
+    "pr:acme/web#3",
+    "pr:acme/web#6",
+    "pr:acme/web#4",
+    "pr:acme/api#2",
+    "pr:acme/api#1",
+    "pr:acme/api#5"
+   ]
+  },
+  {
+   "name": "rows a field does not apply to sort after its unknowns",
+   "query": "effort:api",
+   "sort": "-age",
+   "order": [
+    "pr:acme/api#5",
+    "pr:acme/api#1",
+    "pr:acme/api#2",
+    "effort:api",
+    "ws-1",
+    "agent:a-1",
+    "sprint:12",
+    "ticket:jira:TEAM-1",
+    "bm-1",
+    "ticket:jira:TEAM-2",
+    "ticket:jira:TEAM-3"
+   ]
+  },
+  {
+   "name": "a set sorts by its joined values",
+   "query": "kind:pr",
+   "sort": "reviewer",
+   "order": [
+    "pr:acme/api#1",
+    "pr:acme/api#2",
+    "pr:acme/web#3",
+    "pr:acme/web#4",
+    "pr:acme/web#6",
+    "pr:acme/api#5"
+   ]
+  },
+  {
+   "name": "text (the table's name column) sorts by label, title and ID",
+   "query": "kind:pr,ticket",
+   "sort": "-text",
+   "order": [
+    "ticket:jira:TEAM-3",
+    "ticket:jira:TEAM-2",
+    "ticket:jira:TEAM-1",
+    "pr:acme/web#6",
+    "pr:acme/web#4",
+    "pr:acme/web#3",
+    "pr:acme/api#5",
+    "pr:acme/api#2",
+    "pr:acme/api#1"
+   ]
+  }
+ ]
+}

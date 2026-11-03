@@ -26,6 +26,11 @@ type ExtractArgs struct {
 	// View is rows (the default). gh-105 adds sprint, with Sprint naming one.
 	View   string
 	Sprint string
+	// Sort orders the rows by query fields, each optionally prefixed with
+	// "-" for descending, as the analysis table writes sort= (gh-101).
+	// Unknown values sort last in both directions. Empty is the default
+	// order: kind, label, ID.
+	Sort []string
 }
 
 // ErrExtractArgs marks an extract request that cannot be served as asked:
@@ -122,7 +127,7 @@ func CheckExtractArgs(reg *Registry, args ExtractArgs) error {
 		}
 		return extractArgsError("unknown column %q. Fields: %s", c, strings.Join(reg.Names(), ", "))
 	}
-	return nil
+	return checkSort(reg, args.Sort)
 }
 
 // renderRows is the rows view: an optional heading, sections, one bullet
@@ -137,16 +142,7 @@ func renderRows(x *extractInput) (string, error) {
 		b.WriteString("## " + mdText(title) + "\n\n")
 	}
 	rows := slices.Clone(x.res.rowIdx)
-	sort.SliceStable(rows, func(a, z int) bool {
-		i, j := rows[a], rows[z]
-		if ki, kj := kindRank(x.ix.kinds[i]), kindRank(x.ix.kinds[j]); ki != kj {
-			return ki < kj
-		}
-		if li, lj := strings.ToLower(x.label(i)), strings.ToLower(x.label(j)); li != lj {
-			return li < lj
-		}
-		return x.ix.ids[i] < x.ix.ids[j]
-	})
+	x.ix.sortRows(rows, ParseSort(x.args.Sort))
 	if len(rows) == 0 {
 		b.WriteString("No rows match.\n\n")
 	}
@@ -298,12 +294,13 @@ func (x *extractInput) sections(rows []int) []section {
 }
 
 // valueText is a field's value on node i as text: "unknown" when unknown,
-// "none" when known and empty, and "" when the field does not apply.
+// "none" when known and empty, and "" when the field does not apply (as
+// waiting does not to a PR that waits on no one; see waitingNA).
 func (x *extractInput) valueText(name string, i int) string {
 	v := x.ix.values[name][i]
 	f, _ := x.ix.reg.Field(name)
 	switch {
-	case v.na:
+	case v.na, v.unknown && name == "waiting" && x.ix.waitingNA(i):
 		return ""
 	case v.unknown:
 		return "unknown"
@@ -372,6 +369,9 @@ func (x *extractInput) writeFooter(b *strings.Builder) {
 		b.WriteString("Query: none (every node)\n\n")
 	} else {
 		b.WriteString("Query: " + mdCode(x.args.Query) + "\n\n")
+	}
+	if len(x.args.Sort) > 0 {
+		b.WriteString("Sort: " + mdCode(strings.Join(x.args.Sort, ",")) + " (unknown values last)\n\n")
 	}
 	var parts []string
 	for _, name := range slices.Sorted(maps.Keys(s.Sources)) {
