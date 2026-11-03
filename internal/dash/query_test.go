@@ -224,16 +224,24 @@ func TestBuiltinFiltersHiddenUntilTheirFieldsLand(t *testing.T) {
 	if len(merged) != len(builtinFilters) {
 		t.Fatalf("got %d filters", len(merged))
 	}
+	// gh-97 and gh-98 have registered their fields; gh-99's are still
+	// planned.
+	visible := []string{"review-inbox", "shipped", "close-candidates", "sprint"}
 	for _, f := range merged {
-		if !f.Hidden || !strings.Contains(f.Reason, "not registered yet") || !strings.Contains(f.Reason, "arrives with gh-9") {
+		switch {
+		case slices.Contains(visible, f.Name):
+			if f.Hidden {
+				t.Errorf("%s hidden: %s", f.Name, f.Reason)
+			}
+		case !f.Hidden || !strings.Contains(f.Reason, "not registered yet") || !strings.Contains(f.Reason, "arrives with gh-99"):
 			t.Errorf("%s: hidden=%v reason=%q", f.Name, f.Hidden, f.Reason)
 		}
 	}
 	if f, _ := LookupFilter(merged, "push-reviewers"); f.Reason != "needs fields not registered yet: move, ci (arrives with gh-99)" {
 		t.Errorf("push-reviewers reason = %q", f.Reason)
 	}
-	if f, _ := LookupFilter(merged, "shipped"); f.Reason != "needs fields not registered yet: merged (arrives with gh-97)" {
-		t.Errorf("shipped reason = %q", f.Reason)
+	if f, _ := LookupFilter(merged, "jira-out-of-sync"); f.Reason != "needs fields not registered yet: mismatch (arrives with gh-99)" {
+		t.Errorf("jira-out-of-sync reason = %q", f.Reason)
 	}
 	_, full := loadVectors(t)
 	for _, f := range MergeFilters(nil, full) {
@@ -431,3 +439,63 @@ func TestQueryPerformance(t *testing.T) {
 // perfQuery is the 12-clause query both evaluators time; live_logic.js has
 // the same string.
 const perfQuery = "kind:pr;prstate:open,draft,merged;!checks:pending;freshness:fresh,stale;repo:*;effort:*;activity:*;!text:zzz;review:none,approved;!prstate:closed;text:change;!repo:acme/repo-19"
+
+// TestBuiltinFiltersOnTheAnalysisFixture runs the built-ins that gh-97 and
+// gh-98's fields make visible over the sanitized analysis fixture, as
+// wgo dash --fixture would (alice is me; generated 2026-10-30 16:00 UTC).
+func TestBuiltinFiltersOnTheAnalysisFixture(t *testing.T) {
+	v, err := LoadFixture(analysisFixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, expr string }{
+		// A team-only request (#104, team:web) reaches alice through her
+		// review_requested involvement, beside the direct requests.
+		{"review-inbox", "pr:acme/api#104 pr:acme/api#105 pr:acme/web#202"},
+		{"shipped", "pr:acme/api#107 pr:acme/infra#303"},
+		{"close-candidates", "pr:acme/api#105"},
+		// TEAM-108 is in the future Sprint 13 only.
+		{"sprint", "ticket:jira:TEAM-101 ticket:jira:TEAM-102 ticket:jira:TEAM-103 ticket:jira:TEAM-104 ticket:jira:TEAM-105 ticket:jira:TEAM-106"},
+	} {
+		f, _ := BuiltinFilter(tc.name)
+		res, err := v.Query(f.Expr)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := strings.Join(slices.Sorted(slices.Values(res.Rows)), " "); got != tc.expr {
+			t.Errorf("%s rows = %s\nwant %s", tc.name, got, tc.expr)
+		}
+	}
+	// A merged PR counts in the week it merged, not the week it was last
+	// updated: #108 merged on 2026-10-19 and #205 on 2026-10-22, and both
+	// were updated the week after.
+	for _, tc := range []struct {
+		expr string
+		in   bool
+	}{
+		{"kind:pr;when:2026-10-19..2026-10-25", true},
+		{"kind:pr;when:2026-10-26..2026-11-01", false},
+	} {
+		res, err := v.Query(tc.expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"pr:acme/api#108", "pr:acme/web#205"} {
+			if slices.Contains(res.Rows, id) != tc.in {
+				t.Errorf("%s: %s in rows = %v, want %v", tc.expr, id, !tc.in, tc.in)
+			}
+		}
+	}
+	// A ticket's repository comes from the PRs and bookmarks that lead to
+	// it; a ticket field and a PR field together are an error.
+	res, err := v.Query("repo:acme/api;status_category:done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(res.Rows, " "); got != "ticket:jira:TEAM-102" {
+		t.Errorf("done tickets in acme/api = %s", got)
+	}
+	if _, err := v.Query("prstate:open;status_category:done"); err == nil || !strings.Contains(err.Error(), "apply to no common node kind") {
+		t.Errorf("prstate with status_category: %v", err)
+	}
+}

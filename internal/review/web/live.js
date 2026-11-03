@@ -397,7 +397,9 @@
   // are joined by ";" (AND); a clause is [!]name:operand, the operand "*", a
   // range (a..b, >=a, <b) or a list (a,b: OR). Positions are 1-based columns
   // in code points.
-  var QUERY_KINDS = ["effort", "workspace", "bookmark", "pr", "ticket", "agent"];
+  // QUERY_KINDS mirrors queryKinds in fields.go: every node kind, in display
+  // order.
+  var QUERY_KINDS = ["effort", "workspace", "bookmark", "pr", "ticket", "agent", "sprint"];
   L.QUERY_KINDS = QUERY_KINDS;
   var TOKEN_CHAR = /^[A-Za-z0-9\-_.\/@#+:]$/, NUMBER_RE = /^-?[0-9]+(\.[0-9]+)?$/, DURATION_RE = /^[0-9]+(\.[0-9]+)?[dw]?$/;
   var DATE_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, RELATIVE_RE = /^[+-][0-9]+[dw]$/;

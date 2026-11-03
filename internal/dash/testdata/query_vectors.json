@@ -1,6 +1,6 @@
 {
  "description": "Shared query vectors for wgo dash (spec/gh-100.md). internal/dash/query_test.go runs them in Go and internal/review/testdata/live_logic.js runs them in node; both must pass. Expectations list node IDs sorted; 'visible' is 'all' when the query does not filter the graph. 'error' must appear in the message, 'pos' is the 1-based column and 'fixed' the suggested expression. A case with 'base': true uses the canonical registry alone; 'env' replaces snapshot fields before indexing; 'preset' names the built-in saved filter whose expression 'query' must equal.",
- "fields_note": "fields are test-only registrations of the catalogue fields gh-97, gh-98 and gh-99 register when they land (paths follow those specs' JSON shapes), plus requested_count to exercise the count derive. They replace registry fields of the same name for these vectors; drop an entry once the real registry carries it.",
+ "fields_note": "fields are test-only registrations of the catalogue fields gh-99 registers when it lands (paths follow its spec's JSON shapes), plus requested_count to exercise the count derive. They replace registry fields of the same name for these vectors; drop an entry once the real registry carries it.",
  "snapshot": {
   "schema": 1,
   "generation": 7,
@@ -31,6 +31,10 @@
     "state": "fresh",
     "fresh": 4,
     "error": 1
+   },
+   "jira_sprints": {
+    "state": "fresh",
+    "fresh": 2
    }
   },
   "nodes": [
@@ -226,7 +230,14 @@
      ],
      "facts": {
       "stale": false
-     }
+     },
+     "created_at": "2026-10-05T10:00:00-04:00",
+     "ready_at": "2026-10-06T09:00:00-04:00",
+     "additions": 120,
+     "deletions": 8,
+     "changed_files": 4,
+     "ticket_keys": ["TEAM-123"],
+     "sources": ["bookmark", "inventory"]
     }
    },
    {
@@ -249,7 +260,9 @@
      "mergeable": "unknown",
      "facts": {
       "stale": true
-     }
+     },
+     "ticket_keys": ["TEAM-123"],
+     "sources": ["bookmark"]
     }
    },
    {
@@ -270,7 +283,14 @@
      "merged_at": "2026-10-07T16:00:00-04:00",
      "freshness": "stale",
      "bookmark_id": "bm-0000000000000001",
-     "author": "alice"
+     "author": "alice",
+     "reviews": [
+      {
+       "author": "bob",
+       "state": "APPROVED",
+       "submitted_at": "2026-10-06T15:00:00-04:00"
+      }
+     ]
     }
    },
    {
@@ -355,7 +375,17 @@
      "status_category": "in_progress",
      "story_points": 5,
      "updated_at": "2026-10-17T09:00:00-04:00",
-     "story_points_known": true
+     "story_points_known": true,
+     "type": "Story",
+     "priority": "High",
+     "parent": {
+      "key": "TEAM-100",
+      "summary": "Widget platform",
+      "type": "Epic"
+     },
+     "team": "Platform",
+     "components": ["api"],
+     "labels": ["backend"]
     }
    },
    {
@@ -373,7 +403,14 @@
      "story_points": 3,
      "resolved_at": "2026-10-12T00:30:00-04:00",
      "updated_at": "2026-10-19T09:00:00-04:00",
-     "story_points_known": true
+     "story_points_known": true,
+     "sprints": [
+      {
+       "id": 1220,
+       "name": "Sprint 10",
+       "state": "closed"
+      }
+     ]
     }
    },
    {
@@ -407,7 +444,8 @@
        "name": "Sprint 12",
        "state": "active"
       }
-     ]
+     ],
+     "story_points_known": true
     }
    },
    {
@@ -440,6 +478,37 @@
      "workspace_id": "ws-0000000000000002",
      "last_activity": "2026-10-18T10:00:00-04:00",
      "effort_id": "effort:ungrouped"
+    }
+   },
+   {
+    "id": "sprint:1234",
+    "kind": "sprint",
+    "label": "Sprint 12",
+    "sprint": {
+     "id": 1234,
+     "name": "Sprint 12",
+     "state": "active",
+     "start": "2026-10-12T08:00:00-04:00",
+     "end": "2026-10-26T08:00:00-04:00",
+     "goal": "Ship the widget API",
+     "board": 42,
+     "freshness": "fresh",
+     "fetched_at": "2026-10-20T14:50:00-04:00"
+    }
+   },
+   {
+    "id": "sprint:1235",
+    "kind": "sprint",
+    "label": "Sprint 13",
+    "sprint": {
+     "id": 1235,
+     "name": "Sprint 13",
+     "state": "future",
+     "start": "2026-10-26T08:00:00-04:00",
+     "end": "2026-11-09T08:00:00-05:00",
+     "board": 42,
+     "freshness": "fresh",
+     "fetched_at": "2026-10-20T14:50:00-04:00"
     }
    }
   ],
@@ -545,6 +614,11 @@
     "kind": "tracks"
    },
    {
+    "source": "ticket:jira:TEAM-99",
+    "target": "sprint:1234",
+    "kind": "in_sprint"
+   },
+   {
     "source": "effort:api-widgets",
     "target": "agent:claude-1",
     "kind": "runs"
@@ -611,239 +685,6 @@
   ]
  },
  "fields": [
-  {
-   "name": "author",
-   "label": "Author",
-   "type": "enum",
-   "kinds": ["pr"],
-   "paths": ["pr.author"]
-  },
-  {
-   "name": "requested_from",
-   "label": "Review requested from",
-   "type": "set",
-   "kinds": ["pr"],
-   "paths": ["pr[reviewers_known=true].requested_reviewers", "pr.review_requests.reviewer", "pr.involvement[role=review_requested].person"]
-  },
-  {
-   "name": "reviewed_by",
-   "label": "Reviewed by",
-   "type": "set",
-   "kinds": ["pr"],
-   "paths": ["pr.reviews.author"]
-  },
-  {
-   "name": "reviewer",
-   "label": "Reviewer",
-   "type": "set",
-   "kinds": ["pr"],
-   "paths": ["pr[reviewers_known=true].requested_reviewers", "pr.review_requests.reviewer", "pr.involvement[role=review_requested].person", "pr.reviews.author"]
-  },
-  {
-   "name": "created",
-   "label": "Created",
-   "type": "date",
-   "kinds": ["pr"],
-   "paths": ["pr.created_at"],
-   "unit": "day",
-   "scale": "linear"
-  },
-  {
-   "name": "merged",
-   "label": "Merged",
-   "type": "date",
-   "kinds": ["pr"],
-   "paths": ["pr.merged_at"],
-   "unit": "day",
-   "scale": "linear"
-  },
-  {
-   "name": "closed",
-   "label": "Closed",
-   "type": "date",
-   "kinds": ["pr"],
-   "paths": ["pr.closed_at"],
-   "unit": "day",
-   "scale": "linear"
-  },
-  {
-   "name": "updated",
-   "label": "Updated",
-   "type": "date",
-   "kinds": ["pr"],
-   "paths": ["pr.updated_at"],
-   "unit": "day",
-   "scale": "linear"
-  },
-  {
-   "name": "ready",
-   "label": "Ready for review",
-   "type": "date",
-   "kinds": ["pr"],
-   "paths": ["pr.ready_at"],
-   "unit": "day",
-   "scale": "linear"
-  },
-  {
-   "name": "age",
-   "label": "Age",
-   "type": "duration",
-   "kinds": ["pr"],
-   "paths": ["pr.created_at"],
-   "derive": "days_since",
-   "unit": "days",
-   "scale": "log"
-  },
-  {
-   "name": "updated_ago",
-   "label": "Since update",
-   "type": "duration",
-   "kinds": ["pr"],
-   "paths": ["pr.updated_at"],
-   "derive": "days_since",
-   "unit": "days",
-   "scale": "log"
-  },
-  {
-   "name": "additions",
-   "label": "Additions",
-   "type": "number",
-   "kinds": ["pr"],
-   "paths": ["pr.additions"],
-   "unit": "lines",
-   "scale": "log"
-  },
-  {
-   "name": "deletions",
-   "label": "Deletions",
-   "type": "number",
-   "kinds": ["pr"],
-   "paths": ["pr.deletions"],
-   "unit": "lines",
-   "scale": "log"
-  },
-  {
-   "name": "files",
-   "label": "Files changed",
-   "type": "number",
-   "kinds": ["pr"],
-   "paths": ["pr.changed_files"],
-   "unit": "files",
-   "scale": "log"
-  },
-  {
-   "name": "mergeable",
-   "label": "Mergeable",
-   "type": "enum",
-   "kinds": ["pr"],
-   "paths": ["pr.mergeable"],
-   "values": ["mergeable", "conflicting", "unknown"]
-  },
-  {
-   "name": "check_failing",
-   "label": "Failing checks",
-   "type": "set",
-   "kinds": ["pr"],
-   "paths": ["pr.check_details[state=failure].name"]
-  },
-  {
-   "name": "ticket",
-   "label": "Tickets",
-   "type": "set",
-   "kinds": ["pr"],
-   "paths": ["pr.ticket_keys"]
-  },
-  {
-   "name": "source",
-   "label": "Found through",
-   "type": "set",
-   "kinds": ["pr"],
-   "paths": ["pr.sources"],
-   "values": ["bookmark", "inventory"]
-  },
-  {
-   "name": "status_category",
-   "label": "Status category",
-   "type": "enum",
-   "kinds": ["ticket"],
-   "paths": ["ticket.status_category"],
-   "values": ["todo", "in_progress", "done"]
-  },
-  {
-   "name": "sprint",
-   "label": "Sprint",
-   "type": "set",
-   "kinds": ["ticket"],
-   "paths": ["ticket.sprints.id", "ticket.sprints.name"]
-  },
-  {
-   "name": "sprint_state",
-   "label": "Sprint state",
-   "type": "set",
-   "kinds": ["ticket"],
-   "paths": ["ticket.sprints.state"],
-   "values": ["active", "future", "closed"]
-  },
-  {
-   "name": "points",
-   "label": "Story points",
-   "type": "number",
-   "kinds": ["ticket"],
-   "paths": ["ticket.story_points"],
-   "unit": "points",
-   "scale": "linear"
-  },
-  {
-   "name": "epic",
-   "label": "Epic",
-   "type": "enum",
-   "kinds": ["ticket"],
-   "paths": ["ticket.parent.key"]
-  },
-  {
-   "name": "team",
-   "label": "Team",
-   "type": "enum",
-   "kinds": ["ticket"],
-   "paths": ["ticket.team"]
-  },
-  {
-   "name": "type",
-   "label": "Type",
-   "type": "enum",
-   "kinds": ["ticket"],
-   "paths": ["ticket.type"]
-  },
-  {
-   "name": "priority",
-   "label": "Priority",
-   "type": "enum",
-   "kinds": ["ticket"],
-   "paths": ["ticket.priority"]
-  },
-  {
-   "name": "component",
-   "label": "Components",
-   "type": "set",
-   "kinds": ["ticket"],
-   "paths": ["ticket.components"]
-  },
-  {
-   "name": "label",
-   "label": "Labels",
-   "type": "set",
-   "kinds": ["ticket"],
-   "paths": ["ticket.labels"]
-  },
-  {
-   "name": "resolved",
-   "label": "Resolved",
-   "type": "date",
-   "kinds": ["ticket"],
-   "paths": ["ticket.resolved_at"],
-   "unit": "day",
-   "scale": "linear"
-  },
   {
    "name": "move",
    "label": "Whose move",
@@ -931,17 +772,6 @@
    "values": ["draft", "open", "approved", "merged", "closed"]
   },
   {
-   "name": "when",
-   "label": "When",
-   "type": "date",
-   "kinds": ["effort", "workspace", "pr", "ticket"],
-   "paths": ["pr[state=merged].merged_at", "pr[state=closed].closed_at", "pr[state=open].updated_at", "ticket.resolved_at", "ticket[!resolved_at].updated_at"],
-   "derive": "activity_days",
-   "derive_kinds": ["effort", "workspace"],
-   "unit": "day",
-   "scale": "linear"
-  },
-  {
    "name": "requested_count",
    "label": "Requested reviewers (test-only count)",
    "type": "number",
@@ -957,8 +787,8 @@
    "name": "empty query matches everything and filters nothing",
    "query": "",
    "expect": {
-    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
-    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "sprint:1234", "sprint:1235", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "sprint:1234", "sprint:1235", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
     "visible": "all"
    }
   },
@@ -966,7 +796,7 @@
    "name": "kind restricts rows, not matches",
    "query": "kind:pr",
    "expect": {
-    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "sprint:1234", "sprint:1235", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
     "rows": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"],
     "visible": "all"
    }
@@ -1174,11 +1004,11 @@
    }
   },
   {
-   "name": "every node here is in an effort, so !effort:* matches none",
+   "name": "a node in no effort has a known empty effort set",
    "query": "!effort:*",
    "expect": {
-    "matches": [],
-    "rows": []
+    "matches": ["sprint:1235"],
+    "rows": ["sprint:1235"]
    }
   },
   {
@@ -1249,8 +1079,8 @@
    "name": "no activity is known, not unknown",
    "query": "!activity:*",
    "expect": {
-    "matches": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000004", "effort:sprint:1234", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-99", "ws-0000000000000002", "ws-0000000000000004", "ws-0000000000000005"],
-    "rows": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000004", "effort:sprint:1234", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-99", "ws-0000000000000002", "ws-0000000000000004", "ws-0000000000000005"]
+    "matches": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000004", "effort:sprint:1234", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "sprint:1234", "sprint:1235", "ticket:gh:acme/web#5", "ticket:jira:TEAM-99", "ws-0000000000000002", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000004", "effort:sprint:1234", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "sprint:1234", "sprint:1235", "ticket:gh:acme/web#5", "ticket:jira:TEAM-99", "ws-0000000000000002", "ws-0000000000000004", "ws-0000000000000005"]
    }
   },
   {
@@ -1289,8 +1119,8 @@
    "name": "negated text",
    "query": "!text:widget",
    "expect": {
-    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
-    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"]
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "sprint:1234", "sprint:1235", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "sprint:1234", "sprint:1235", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"]
    }
   },
   {
@@ -1350,6 +1180,148 @@
    }
   },
   {
+   "name": "author macro",
+   "query": "author:@me",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42"]
+   }
+  },
+  {
+   "name": "reviewer is requested or reviewed",
+   "query": "reviewer:bob",
+   "expect": {
+    "matches": ["pr:acme/api#38", "pr:acme/api#41"],
+    "rows": ["pr:acme/api#38", "pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "reviewed_by reads the latest reviews",
+   "query": "reviewed_by:bob",
+   "expect": {
+    "matches": ["pr:acme/api#38"],
+    "rows": ["pr:acme/api#38"]
+   }
+  },
+  {
+   "name": "age, size, files and ready together",
+   "query": "age:>=14;additions:>100;files:..5;ready:2026-10-06",
+   "expect": {
+    "matches": ["pr:acme/api#41"],
+    "rows": ["pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "PR tickets from branch, title and body",
+   "query": "ticket:team-123",
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/api#42"],
+    "rows": ["pr:acme/api#41", "pr:acme/api#42"]
+   }
+  },
+  {
+   "name": "found through the inventory",
+   "query": "source:inventory",
+   "expect": {
+    "matches": ["pr:acme/api#41"],
+    "rows": ["pr:acme/api#41"]
+   }
+  },
+  {
+   "name": "negated source skips PRs with unknown sources",
+   "query": "!source:inventory",
+   "expect": {
+    "matches": ["pr:acme/api#42"],
+    "rows": ["pr:acme/api#42"]
+   }
+  },
+  {
+   "name": "close-candidates: open PRs untouched for 90 days",
+   "query": "kind:pr;prstate:open,draft;updated_ago:>=90",
+   "preset": "close-candidates",
+   "env": {
+    "generated_at": "2027-01-20T12:00:00-05:00"
+   },
+   "expect": {
+    "matches": ["pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12"],
+    "rows": ["pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12"]
+   }
+  },
+  {
+   "name": "when for a ticket is its resolution day, else its update day",
+   "query": "kind:ticket;when:2026-10-12..2026-10-17",
+   "expect": {
+    "matches": ["effort:api-widgets", "pr:acme/web#12", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ws-0000000000000001"],
+    "rows": ["ticket:jira:TEAM-123", "ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "a resolved ticket is not in its update week",
+   "query": "kind:ticket;when:2026-10-18..2026-10-24",
+   "expect": {
+    "matches": ["effort:api-widgets", "pr:acme/api#41", "pr:acme/api#42", "ws-0000000000000001"],
+    "rows": []
+   }
+  },
+  {
+   "name": "epic, type, priority, team, components and labels",
+   "query": "epic:TEAM-100;type:story;priority:high;team:platform;component:api;label:backend",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-123"],
+    "rows": ["ticket:jira:TEAM-123"]
+   }
+  },
+  {
+   "name": "points are known empty for an unestimated ticket",
+   "query": "kind:ticket;!points:*",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-99"],
+    "rows": ["ticket:jira:TEAM-99"]
+   }
+  },
+  {
+   "name": "sprint by ID or name",
+   "query": "sprint:1234,\"Sprint 13\"",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-99"],
+    "rows": ["ticket:jira:TEAM-99"]
+   }
+  },
+  {
+   "name": "sprint state of a past sprint",
+   "query": "sprint_state:closed",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-7"],
+    "rows": ["ticket:jira:TEAM-7"]
+   }
+  },
+  {
+   "name": "sprint: tickets in an active sprint",
+   "query": "kind:ticket;sprint_state:active",
+   "preset": "sprint",
+   "expect": {
+    "matches": ["ticket:jira:TEAM-99"],
+    "rows": ["ticket:jira:TEAM-99"],
+    "visible": ["effort:sprint:1234", "sprint:1234", "ticket:jira:TEAM-99"]
+   }
+  },
+  {
+   "name": "sprint nodes are rows of kind sprint",
+   "query": "kind:sprint;text:\"sprint 1\"",
+   "expect": {
+    "matches": ["effort:sprint:1234", "sprint:1234", "sprint:1235"],
+    "rows": ["sprint:1234", "sprint:1235"]
+   }
+  },
+  {
+   "name": "a sprint is in the efforts of its tickets",
+   "query": "kind:sprint;effort:sprint:1234",
+   "expect": {
+    "matches": ["effort:sprint:1234", "sprint:1234", "ticket:jira:TEAM-99"],
+    "rows": ["sprint:1234"]
+   }
+  },
+  {
    "name": "two kinds of row",
    "query": "kind:pr,ticket;repo:acme/api",
    "expect": {
@@ -1361,8 +1333,8 @@
    "name": "negated kind",
    "query": "!kind:pr",
    "expect": {
-    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
-    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "sprint:1234", "sprint:1235", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "sprint:1234", "sprint:1235", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
     "visible": "all"
    }
   },
@@ -1585,16 +1557,16 @@
    "name": "number unknown",
    "query": "points:unknown",
    "expect": {
-    "matches": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-99"],
-    "rows": ["ticket:gh:acme/web#5", "ticket:jira:TEAM-99"]
+    "matches": ["ticket:gh:acme/web#5"],
+    "rows": ["ticket:gh:acme/web#5"]
    }
   },
   {
    "name": "negated number",
    "query": "!points:5",
    "expect": {
-    "matches": ["ticket:jira:TEAM-7"],
-    "rows": ["ticket:jira:TEAM-7"]
+    "matches": ["ticket:jira:TEAM-7", "ticket:jira:TEAM-99"],
+    "rows": ["ticket:jira:TEAM-7", "ticket:jira:TEAM-99"]
    }
   },
   {
@@ -1740,7 +1712,7 @@
   {
    "name": "unknown kind",
    "query": "kind:robot",
-   "error": "\"robot\" is not a value of kind at column 6; allowed: effort, workspace, bookmark, pr, ticket, agent, unknown",
+   "error": "\"robot\" is not a value of kind at column 6; allowed: effort, workspace, bookmark, pr, ticket, agent, sprint, unknown",
    "pos": 6
   },
   {

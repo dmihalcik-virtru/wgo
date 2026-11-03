@@ -241,6 +241,9 @@ test("Resume is labelled with the configured tool", () => {
 // ---------- query language: the vectors shared with internal/dash ----------
 const BASE = L.registry(FIELDS);
 const VREG = L.registry(FIELDS, VECTORS.fields);
+test("the evaluator knows every node kind the registry does", () => {
+  assert.deepEqual(L.QUERY_KINDS, BASE.field("kind").values);
+});
 let vectorCases = 0;
 VECTORS.cases.forEach((c) => {
   test("vector: " + c.name, () => {
@@ -364,7 +367,9 @@ test("valueText never prints blank for unknown or empty", () => {
   const ix = L.queryIndex(VECTORS.snapshot, VREG);
   assert.equal(L.valueText(ix, "checks", "pr:acme/web#9"), "unknown");
   assert.equal(L.valueText(ix, "effort", "ticket:jira:TEAM-99"), "sprint:1234");
-  assert.equal(L.valueText(ix, "activity", "ticket:jira:TEAM-99"), "none");
+  assert.equal(L.valueText(ix, "effort", "sprint:1235"), "none");
+  assert.equal(L.valueText(ix, "points", "ticket:jira:TEAM-99"), "none", "unestimated");
+  assert.equal(L.valueText(ix, "points", "ticket:gh:acme/web#5"), "unknown");
   assert.equal(L.valueText(ix, "ticket_status", "ticket:jira:TEAM-123"), "In Progress");
   assert.equal(L.valueText(ix, "updated_ago", "pr:acme/api#41"), "1d");
   assert.equal(L.valueText(ix, "checks", "ws-0000000000000001"), "", "a field that does not apply is blank, not unknown");

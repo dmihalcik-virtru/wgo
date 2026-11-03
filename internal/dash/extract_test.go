@@ -44,9 +44,9 @@ func TestExtractRowsBullets(t *testing.T) {
 		"### Ungrouped\n\n" +
 		"- [acme/web#12](https://github.com/acme/web/pull/12) — Theme tokens for the web app · checks: success · review: none · repo: acme/web\n\n" +
 		"---\n\n" +
-		"Snapshot 2026-10-20 15:00 -04:00 · generation 7 · 3 of 24 nodes\n\n" +
+		"Snapshot 2026-10-20 15:00 -04:00 · generation 7 · 3 of 26 nodes\n\n" +
 		"Query: `kind:pr;prstate:open,draft`\n\n" +
-		"Sources: agents fresh (2 fresh) · github_issues unknown (1 unknown) · github_prs stale (3 fresh, 2 stale, oldest fetch 2026-10-20 09:00 -04:00) · jira stale (2 fresh, 1 stale) · jj fresh (4 fresh, 1 unavailable)\n"
+		"Sources: agents fresh (2 fresh) · github_issues unknown (1 unknown) · github_prs stale (3 fresh, 2 stale, oldest fetch 2026-10-20 09:00 -04:00) · jira stale (2 fresh, 1 stale) · jira_sprints fresh (2 fresh) · jj fresh (4 fresh, 1 unavailable)\n"
 	if md != want {
 		t.Fatalf("extract:\n%s\nwant:\n%s", md, want)
 	}
@@ -64,7 +64,7 @@ func TestExtractUnknownsGroupsAndTable(t *testing.T) {
 		"### acme/web\n\n| Item | Title | checks | effort |\n| --- | --- | --- | --- |\n",
 		"| [acme/web#9](https://github.com/acme/web/pull/9) | Old spike | unknown | ungrouped |\n", // unknown, never blank
 		"Query: `kind:pr;repo:acme/web`",
-		"2 of 24 nodes",
+		"2 of 26 nodes",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("extract lacks %q:\n%s", want, md)
@@ -84,7 +84,7 @@ func TestExtractUnknownsGroupsAndTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.HasPrefix(md, "##") || strings.Contains(md, "###") || !strings.Contains(md, "Query: none (every node)") || !strings.Contains(md, "24 of 24 nodes") {
+	if strings.HasPrefix(md, "##") || strings.Contains(md, "###") || !strings.Contains(md, "Query: none (every node)") || !strings.Contains(md, "26 of 26 nodes") {
 		t.Errorf("empty query, no groups:\n%s", md)
 	}
 	md, err = Extract(v, Fields(), filters, ExtractArgs{Query: "text:nothing-matches-this"})
@@ -98,14 +98,22 @@ func TestExtractUnknownsGroupsAndTable(t *testing.T) {
 
 func TestExtractNoEffortSectionAndEscaping(t *testing.T) {
 	v, _ := vectorFixture(t)
-	// Every ticket hangs off a PR, a bookmark or a group effort that
-	// tracks it, so none is in no effort; the sprint group is a section.
-	md, err := Extract(v, Fields(), nil, ExtractArgs{Query: "kind:ticket;!effort:*"})
+	// A future sprint none of whose tickets are followed is in no effort.
+	// Every ticket hangs off a PR, a bookmark or a group effort that tracks
+	// it, so none is; a sprint group is a section of its own.
+	md, err := Extract(v, Fields(), nil, ExtractArgs{Query: "kind:sprint;!effort:*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(md, "### No effort\n\n- Sprint 13\n") {
+		t.Errorf("no-effort section:\n%s", md)
+	}
+	md, err = Extract(v, Fields(), nil, ExtractArgs{Query: "kind:ticket;!effort:*"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(md, "No rows match.\n") {
-		t.Errorf("no-effort query:\n%s", md)
+		t.Errorf("no-effort tickets:\n%s", md)
 	}
 	md, err = Extract(v, Fields(), nil, ExtractArgs{Query: "kind:ticket;effort:sprint:1234"})
 	if err != nil {
@@ -205,7 +213,7 @@ func TestExtractRouteMatchesExtract(t *testing.T) {
 
 func TestLoadFixture(t *testing.T) {
 	v, path := vectorFixture(t)
-	if v.Snapshot.Generation != 7 || v.Loaded || len(v.Snapshot.Nodes) != 24 {
+	if v.Snapshot.Generation != 7 || v.Loaded || len(v.Snapshot.Nodes) != 26 {
 		t.Fatalf("fixture view: gen %d loaded %v nodes %d", v.Snapshot.Generation, v.Loaded, len(v.Snapshot.Nodes))
 	}
 	if env := v.Env(); env.Me != "alice" || len(env.People) != 2 {
@@ -284,7 +292,7 @@ func TestWriteQueryJSONLimitsToTheVisibleSet(t *testing.T) {
 	all, _ := v.Query("kind:pr")
 	buf.Reset()
 	_ = v.WriteQueryJSON(&buf, time.Now(), all, nil)
-	if err := json.Unmarshal(buf.Bytes(), &out); err != nil || len(out.Snapshot.Nodes) != 24 || len(out.Query.Rows) != 5 {
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil || len(out.Snapshot.Nodes) != 26 || len(out.Query.Rows) != 5 {
 		t.Errorf("kind-only query: %d nodes, %d rows, %v", len(out.Snapshot.Nodes), len(out.Query.Rows), err)
 	}
 }

@@ -82,7 +82,7 @@ type Field struct {
 
 // queryKinds lists every node kind, in display order. A field that applies
 // to "all" kinds lists these.
-var queryKinds = []NodeKind{KindEffort, KindWorkspace, KindBookmark, KindPR, KindTicket, KindAgent}
+var queryKinds = []NodeKind{KindEffort, KindWorkspace, KindBookmark, KindPR, KindTicket, KindAgent, KindSprint}
 
 func kindNames(ks []NodeKind) []string {
 	out := make([]string, len(ks))
@@ -93,8 +93,8 @@ func kindNames(ks []NodeKind) []string {
 }
 
 // fieldRegistry is the canonical registry: the fields this snapshot can
-// answer today. gh-97, gh-98 and gh-99 append their fields here as they
-// land (see plannedFields).
+// answer today. gh-99 appends its fields here when it lands (see
+// plannedFields).
 var fieldRegistry = []Field{
 	{Name: "kind", Label: "Kind", Type: FieldEnum, Kinds: queryKinds, Paths: []string{"kind"}, Values: kindNames(queryKinds)},
 	{Name: "text", Label: "Text (label, title, ID)", Type: FieldText, Kinds: queryKinds, Paths: []string{"label", "pr.title", "ticket.title", "id"}},
@@ -114,9 +114,59 @@ var fieldRegistry = []Field{
 		Values: []string{"active", "live", "uncertain"}},
 	{Name: "ticket_status", Label: "Ticket status", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.status"}},
 	{Name: "assignee", Label: "Assignee", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.assignee"}},
-	// gh-97 and gh-98 add the PR (merged_at if merged, closed_at if closed,
-	// else updated_at) and ticket (resolved_at, else updated_at) paths.
-	{Name: "when", Label: "When", Type: FieldDate, Kinds: []NodeKind{KindEffort, KindWorkspace}, Derive: DeriveActivityDays, Unit: "day", Scale: "linear"},
+	// when is local activity for efforts and workspaces; for a PR, merged_at
+	// if merged, closed_at if closed, else updated_at (gh-97); for a ticket,
+	// resolved_at if resolved, else updated_at (gh-98).
+	{Name: "when", Label: "When", Type: FieldDate, Kinds: []NodeKind{KindEffort, KindWorkspace, KindPR, KindTicket},
+		Paths: []string{"pr[state=merged].merged_at", "pr[state=closed].closed_at", "pr[state=open].updated_at",
+			"ticket.resolved_at", "ticket[!resolved_at].updated_at"},
+		Derive: DeriveActivityDays, DeriveKinds: []NodeKind{KindEffort, KindWorkspace}, Unit: "day", Scale: "linear"},
+
+	// PR facts (gh-97). A review request through a team is also a request
+	// to each configured person in it, whom involvement names while the
+	// request is outstanding: review-inbox finds team-only requests.
+	{Name: "author", Label: "Author", Type: FieldEnum, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.author"}},
+	{Name: "requested_from", Label: "Review requested from", Type: FieldSet, Kinds: []NodeKind{KindPR},
+		Paths: []string{"pr[reviewers_known=true].requested_reviewers", "pr.review_requests.reviewer", "pr.involvement[role=review_requested].person"}},
+	{Name: "reviewed_by", Label: "Reviewed by", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.reviews.author"}},
+	{Name: "reviewer", Label: "Reviewer (requested or reviewed)", Type: FieldSet, Kinds: []NodeKind{KindPR},
+		Paths: []string{"pr[reviewers_known=true].requested_reviewers", "pr.review_requests.reviewer", "pr.involvement[role=review_requested].person", "pr.reviews.author"}},
+	{Name: "created", Label: "Created", Type: FieldDate, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.created_at"}, Unit: "day", Scale: "linear"},
+	{Name: "merged", Label: "Merged", Type: FieldDate, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.merged_at"}, Unit: "day", Scale: "linear"},
+	{Name: "closed", Label: "Closed", Type: FieldDate, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.closed_at"}, Unit: "day", Scale: "linear"},
+	{Name: "updated", Label: "Updated", Type: FieldDate, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.updated_at"}, Unit: "day", Scale: "linear"},
+	{Name: "ready", Label: "Ready for review", Type: FieldDate, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.ready_at"}, Unit: "day", Scale: "linear"},
+	{Name: "age", Label: "Age", Type: FieldDuration, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.created_at"}, Derive: DeriveDaysSince, Unit: "days", Scale: "log"},
+	{Name: "updated_ago", Label: "Since update", Type: FieldDuration, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.updated_at"}, Derive: DeriveDaysSince, Unit: "days", Scale: "log"},
+	{Name: "additions", Label: "Additions", Type: FieldNumber, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.additions"}, Unit: "lines", Scale: "log"},
+	{Name: "deletions", Label: "Deletions", Type: FieldNumber, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.deletions"}, Unit: "lines", Scale: "log"},
+	{Name: "files", Label: "Files changed", Type: FieldNumber, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.changed_files"}, Unit: "files", Scale: "log"},
+	{Name: "mergeable", Label: "Mergeable", Type: FieldEnum, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.mergeable"},
+		Values: []string{MergeMergeable, MergeConflicting, MergeUnknown}},
+	{Name: "check_failing", Label: "Failing checks", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.check_details[state=failure].name"}},
+	{Name: "ticket", Label: "Tickets", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.ticket_keys"}},
+	{Name: "source", Label: "Found through", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.sources"},
+		Values: []string{PRSourceBookmark, PRSourceInventory}},
+
+	// Ticket facts (gh-98).
+	{Name: "status_category", Label: "Status category", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.status_category"},
+		Values: []string{StatusToDo, StatusInProgress, StatusDone}},
+	{Name: "sprint", Label: "Sprint (ID or name)", Type: FieldSet, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.sprints.id", "ticket.sprints.name"}},
+	{Name: "sprint_state", Label: "Sprint state", Type: FieldSet, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.sprints.state"},
+		Values: []string{SprintActive, SprintFuture, SprintClosed}},
+	// Story points are unknown unless the field was read
+	// (story_points_known); a ticket read without points is unestimated,
+	// known and empty. The second path selects such a ticket, and its
+	// boolean is not a number, so it adds no value.
+	{Name: "points", Label: "Story points", Type: FieldNumber, Kinds: []NodeKind{KindTicket}, Unit: "points", Scale: "linear",
+		Paths: []string{"ticket[story_points_known=true].story_points", "ticket[story_points_known=true][!story_points].story_points_known"}},
+	{Name: "epic", Label: "Epic (parent)", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.parent.key"}},
+	{Name: "team", Label: "Team", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.team"}},
+	{Name: "type", Label: "Type", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.type"}},
+	{Name: "priority", Label: "Priority", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.priority"}},
+	{Name: "component", Label: "Components", Type: FieldSet, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.components"}},
+	{Name: "label", Label: "Labels", Type: FieldSet, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.labels"}},
+	{Name: "resolved", Label: "Resolved", Type: FieldDate, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.resolved_at"}, Unit: "day", Scale: "linear"},
 }
 
 // plannedFields names the fields of the epic's catalogue (spec/gh-100.md,
@@ -125,13 +175,6 @@ var fieldRegistry = []Field{
 // a saved filter using one is hidden with that reason. A registered field
 // takes precedence over its entry here.
 var plannedFields = map[string]string{
-	"author": "gh-97", "requested_from": "gh-97", "reviewed_by": "gh-97", "reviewer": "gh-97",
-	"created": "gh-97", "merged": "gh-97", "closed": "gh-97", "updated": "gh-97", "ready": "gh-97",
-	"age": "gh-97", "updated_ago": "gh-97", "additions": "gh-97", "deletions": "gh-97", "files": "gh-97",
-	"mergeable": "gh-97", "check_failing": "gh-97", "ticket": "gh-97", "source": "gh-97",
-	"status_category": "gh-98", "sprint": "gh-98", "sprint_state": "gh-98", "points": "gh-98",
-	"epic": "gh-98", "team": "gh-98", "type": "gh-98", "priority": "gh-98", "component": "gh-98",
-	"label": "gh-98", "resolved": "gh-98",
 	"move": "gh-99", "move_people": "gh-99", "waiting_on": "gh-99", "reason": "gh-99", "waiting": "gh-99",
 	"ci": "gh-99", "size": "gh-99", "size_bucket": "gh-99", "stale": "gh-99", "mismatch": "gh-99",
 	"linked_prs": "gh-99",
