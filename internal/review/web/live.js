@@ -1303,6 +1303,27 @@
     return (name || "my-filter") + " = \"" + v + "\"";
   };
 
+  // moveWord is a PR's whose-move word (gh-99): "you" when the move is the
+  // operator's (move_people holds @me), with mine to earn the accent.
+  L.moveWord = function (facts, me) {
+    var m = facts && typeof facts.move === "string" ? facts.move : "";
+    if (!m || m === "unknown") return { word: "unknown", move: "unknown", mine: false, unknown: true };
+    var meL = String(me || "").toLowerCase(), people = facts && Array.isArray(facts.move_people) ? facts.move_people : [];
+    var mine = !!meL && people.some(function (p) { return String(p).toLowerCase() === meL; });
+    return { word: mine ? "you" : m, move: m, mine: mine, unknown: false };
+  };
+  // moveTitle is the details behind the word: who holds the move, every
+  // reason with its evidence, and what is uncertain. The analysis table
+  // and the sprint view show it on demand.
+  L.moveTitle = function (facts) {
+    if (!facts) return "Whose move is unknown: no derived facts for this PR";
+    var lines = [];
+    if (Array.isArray(facts.move_people) && facts.move_people.length) lines.push("Held by " + facts.move_people.join(", "));
+    (Array.isArray(facts.reasons) ? facts.reasons : []).forEach(function (r) { if (r && r.code) lines.push(String(r.code).replace(/_/g, " ") + (r.evidence ? ": " + r.evidence : "")); });
+    if (Array.isArray(facts.uncertain) && facts.uncertain.length) lines.push("Uncertain: " + facts.uncertain.join(", "));
+    return lines.join("\n");
+  };
+
   // ---------- extension seams (requirement 26) ----------
   // Views and overview panels register here; addon scripts inlined after
   // live.js (review.Page.Addons) call WGOLive.registerView/registerPanel
