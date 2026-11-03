@@ -128,6 +128,32 @@ test("ticket facts: category and points only when known", () => {
   assert.deepEqual(L.ticketFacts(null), { category: "", points: "" });
 });
 
+test("derived facts: details on demand, unknown spelled out (gh-99)", () => {
+  const node = (id) => VECTORS.snapshot.nodes.find((x) => x.id === id);
+  const team = L.prFactsRows(node("pr:acme/web#12").pr, "alice", (t) => t.slice(0, 10));
+  assert.deepEqual(team, [
+    ["Whose move", "reviewer — team:web, alice (you)"],
+    ["awaiting review", "ready since Oct 14; review requested from team:web only; alice through a team"],
+    ["team only", "every outstanding request is a team: team:web"],
+    ["Waiting since", "2026-10-14 on team:web"],
+    ["CI", "green"],
+    ["Size", "unknown"],
+    ["Not known", "additions, deletions, requested_at:team:web"],
+  ]);
+  const lower = L.prFactsRows({ facts: { move: "reviewer", reasons: [], waiting_since: "2026-10-14T10:00:00Z", waiting_lower_bound: true, ci: "systemic_only", size: 0, size_bucket: "xs" } });
+  assert.deepEqual(lower.slice(1), [["Waiting since", "2026-10-14T10:00:00Z or earlier"], ["CI", "only checks that fail on most open PRs fail"], ["Size", "0 lines changed (xs)"]]);
+  assert.deepEqual(L.prFactsRows({ facts: {} })[0], ["Whose move", "unknown"]);
+  assert.deepEqual(L.prFactsRows({ state: "open" }), [], "a snapshot from before gh-99 has no fact rows");
+  assert.deepEqual(L.ticketFactsRows(node("ticket:jira:TEAM-99").ticket), [["Linked PRs", "none in the snapshot"], ["Mismatch: unassigned in sprint", "in Sprint 12 with no assignee"]]);
+  assert.deepEqual(L.ticketFactsRows(node("ticket:jira:TEAM-123").ticket), [["Linked PRs", "acme/api#38 merged, acme/api#41 open, acme/api#42 draft"], ["Jira vs code", "no mismatch"]]);
+  assert.deepEqual(L.ticketFactsRows({ system: "jira", facts: { linked_prs: [], uncertain: ["status_category"] } }), [["Linked PRs", "none in the snapshot"], ["Jira vs code", "unknown"], ["Not known", "status_category"]]);
+  assert.deepEqual(L.ticketFactsRows(node("ticket:gh:acme/web#5").ticket), [["Linked PRs", "acme/web#12 open"]], "a GitHub issue has no Jira comparison");
+  assert.equal(L.factsTip(node("pr:acme/api#42")), "move: author · draft, ci pending, stale");
+  assert.equal(L.factsTip(node("ticket:jira:TEAM-99")), "Jira vs code: unassigned in sprint");
+  assert.equal(L.factsTip(node("ticket:jira:TEAM-123")), "");
+  assert.equal(L.factsTip(node("pr:acme/api#38")), "");
+});
+
 test("sprints: state and dates, and their group's state text", () => {
   assert.equal(L.sprintText({ state: "active", start: "2026-10-20T08:00:00Z", end: "2026-11-03T08:00:00Z" }), "active sprint · 2026-10-20 to 2026-11-03");
   assert.equal(L.sprintText({ state: "future", start: "2026-11-03T08:00:00Z" }), "future sprint · 2026-11-03 to ?");
