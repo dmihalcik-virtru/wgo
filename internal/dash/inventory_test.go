@@ -331,6 +331,71 @@ func TestInventoryMergedNeedsClosedRecent(t *testing.T) {
 	}
 }
 
+// TestInventoryCoveredSince: github_inventory says from when merges are
+// known (gh-102's previous-period comparison): the latest closed-recent
+// window start, each part carrying its own, and nothing while a person's
+// set has no data or lags their open-authored set.
+func TestInventoryCoveredSince(t *testing.T) {
+	a := inventoryAsm(t)
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/closed-recent": {}})
+	s, _ := a.build()
+	st := s.Sources[SourceGitHubInventory]
+	if !st.CoveredSince.IsZero() {
+		t.Fatalf("covered since %v while bob's closed-recent has no data", st.CoveredSince)
+	}
+	if p := st.Parts[2]; p.Name != "alice/closed-recent" || !p.Since.Equal(a.since()) {
+		t.Fatalf("alice's closed-recent part %+v, want since %v", p, a.since())
+	}
+	if p := st.Parts[5]; p.Name != "bob/closed-recent" || !p.Since.IsZero() {
+		t.Fatalf("bob's closed-recent part %+v: no data, no window", p)
+	}
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"bob/closed-recent": {}})
+	if s, _ = a.build(); !s.Sources[SourceGitHubInventory].CoveredSince.Equal(a.since()) {
+		t.Fatalf("covered since %v, want %v", s.Sources[SourceGitHubInventory].CoveredSince, a.since())
+	}
+	// bob's set covering a shorter window bounds what is known.
+	later := a.since().AddDate(0, 0, 10)
+	seedInventory(t, later, map[string][]github.PRFacts{"bob/closed-recent": {}})
+	if s, _ = a.build(); !s.Sources[SourceGitHubInventory].CoveredSince.Equal(later) {
+		t.Fatalf("covered since %v, want bob's later window start %v", s.Sources[SourceGitHubInventory].CoveredSince, later)
+	}
+	// A PR leaving alice's open-authored set after her closed-recent fetch
+	// leaves her merges since then unknown.
+	time.Sleep(10 * time.Millisecond)
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/open-authored": {openPR(1, "alice", "a")}})
+	time.Sleep(10 * time.Millisecond)
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/open-authored": {}})
+	a.ls.at = time.Now()
+	if s, _ = a.build(); !s.Sources[SourceGitHubInventory].CoveredSince.IsZero() {
+		t.Fatalf("covered since %v while alice's closed-recent lags", s.Sources[SourceGitHubInventory].CoveredSince)
+	}
+	a.c.cfg.People, a.c.cfg.Identity = nil, nil
+	if s, _ = a.build(); !s.Sources[SourceGitHubInventory].CoveredSince.IsZero() {
+		t.Fatal("covered since set with nobody followed")
+	}
+}
+
+// TestInventoryCoveredSinceNeedsWholeSearches: a closed-recent search GitHub
+// cut short may lack merges anywhere in its window, so nothing is covered.
+func TestInventoryCoveredSinceNeedsWholeSearches(t *testing.T) {
+	a := inventoryAsm(t)
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/closed-recent": {}, "bob/closed-recent": {}})
+	if s, _ := a.build(); !s.Sources[SourceGitHubInventory].CoveredSince.Equal(a.since()) {
+		t.Fatal("whole searches should cover the window")
+	}
+	if _, err := inventory.Refresh(context.Background(), &truncatingInventory{}, inventory.Key{Login: "bob", Set: inventory.ClosedRecent}, a.since()); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := a.build()
+	st := s.Sources[SourceGitHubInventory]
+	if p := st.Parts[5]; p.Name != "bob/closed-recent" || !p.Truncated {
+		t.Fatalf("bob's closed-recent part %+v, want truncated", p)
+	}
+	if !st.CoveredSince.IsZero() {
+		t.Fatalf("covered since %v from a truncated closed-recent search", st.CoveredSince)
+	}
+}
+
 // TestInventoryPRMergedBetweenRefreshes: a PR that leaves open-authored
 // stays in the snapshot, stale, and closed-recent is due at once, until
 // closed-recent shows it merged.

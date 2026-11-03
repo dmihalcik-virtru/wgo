@@ -1111,7 +1111,7 @@ Markdown as `--md`, byte for byte.
 
 Saved filters are built in or set under `[dash.filters]`, where they
 override built-ins of the same name. `--preset NAME` runs one, and the
-page's **Saved filters** menu lists them. The built-ins:
+page's **Saved filters** chips list them. The built-ins:
 
 | Name | Query | Answers |
 |------|-------|---------|
@@ -1132,6 +1132,54 @@ hidden; `--json --query` lists each filter with the reason it is hidden.
 [dash.filters]
 api-prs = "kind:pr;repo:acme/api;!prstate:merged,closed"
 ```
+
+### Linked filters
+
+The **Filters** panel left of the views lists facets: whose move, CI, PR
+state, repository, author, reviewer, waiting, age, size, ticket status,
+sprint and Jira mismatch. Each is a small chart that is also a filter. Its
+light grey bars count the whole snapshot; its dark bars count what the
+*other* filters leave, so a near miss shows before you widen a filter. A
+selection shows as a thin blue bar inside every facet. Unknown values have
+a row of their own. Long lists show the top 8 and a box to find the rest;
+author and reviewer list the people you follow first. Facets with no
+known value are hidden, and **More filters…** adds any other field.
+
+| Pointer | Keyboard | Effect |
+|---|---|---|
+| click | Enter or Space | only this value (`repo:acme/api`); again clears |
+| Shift- or ⌘-click | Shift+Enter | add or remove the value (`repo:acme/api,acme/web`) |
+| Alt-click | Alt+Enter | exclude it (`!repo:acme/web`) |
+| drag a histogram's handles, or across days | arrows, Shift+arrows | set a range (`size:30..299`, `when:2026-10-16..2026-10-22`) |
+
+A chosen value is outlined and marked `✓`, an excluded one struck through
+and marked `✕`. Each facet shows its clauses and a **Clear** button, and
+**Clear all** empties the query. A drag updates the page as you go and
+is one step for Back.
+
+The overview starts with **Attention**: how many PRs are your move, wait
+on reviewers, or are nobody's move. Each count links to its saved filter
+and equals that filter's row count. Beside it, the **When** chart counts
+items per day. Drag across it to set `when:a..b`; **Clear** removes it.
+Days before the local activity window (`[dash] days`) are hatched, since
+local work there is not recorded, and each other day's tooltip gives its
+local change count. Under `shipped` the chart counts merges per day, and a
+drag replaces `merged:-7d..`, so any week answers "what shipped then". With a time range set, Attention and **PRs by state**
+compare it with the period of equal length before it ("3 merged · previous
+0"). When the PR inventory does not cover that period, they say so instead
+of showing a partial count. The agent sessions chart shows only when there
+are sessions. **Copy as config** copies a `[dash.filters]` line for the
+current query; the page never writes your config.
+
+`[dash] facets` sets the panel's facets and their order:
+
+```toml
+[dash]
+facets = ["move", "repo", "reviewer", "size", "mismatch"]
+```
+
+A name that is not a field is reported on stderr and in the panel, and
+left out.
 
 ### Actions
 

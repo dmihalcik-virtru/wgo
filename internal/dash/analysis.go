@@ -158,6 +158,9 @@ type SourcePart struct {
 	// Truncated is set when a remote limit cut the unit's results short.
 	Truncated bool   `json:"truncated,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Since, on a closed-recent part, is the start of the window it
+	// covers: the person's PRs merged or closed since then are in it.
+	Since time.Time `json:"since,omitzero"`
 }
 
 // groupRank orders effort groups for display: named efforts, ticket groups,
