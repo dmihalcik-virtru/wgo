@@ -61,9 +61,11 @@ type PRTimeline struct {
 	// Reviews are the approvals and change requests, in order: the view's
 	// ticks.
 	Reviews []TimelineReview `json:"reviews,omitempty"`
-	// Blocking are the standing change requests at the end: reviewers whose
-	// latest opinion is CHANGES_REQUESTED with neither a request for them
-	// nor a ready-for-review event since (gh-99 rule 3).
+	// Blocking are the change requests that still block the PR at the end,
+	// as GitHub's review decision counts them (gh-99 rule 3): reviewers
+	// whose latest opinionated review is CHANGES_REQUESTED and who are not
+	// asked again now. A ready-for-review event, or a request removed
+	// again, ends a changes_requested segment but not this.
 	Blocking []TimelineReview `json:"blocking,omitempty"`
 }
 
@@ -145,7 +147,11 @@ func BuildTimeline(t *github.PRTimeline) *PRTimeline {
 		}
 		b.at(at, st)
 	}
-	out.Blocking = slices.Clone(st.blocking)
+	for _, r := range st.opinions {
+		if r.State == ReviewChangesRequested && indexOf(st.outstanding, r.Reviewer) < 0 {
+			out.Blocking = append(out.Blocking, r)
+		}
+	}
 	// A reviewer requested only while the PR was a draft never waited.
 	out.Lanes = slices.DeleteFunc(out.Lanes, func(l ReviewerLane) bool { return len(l.Waits) == 0 })
 	return out
@@ -168,11 +174,15 @@ func openedAsDraft(t *github.PRTimeline, evs []github.TimelineEvent) bool {
 type tlState struct {
 	open, merged, draft bool
 	// outstanding holds the open review requests in request order, each
-	// with the time it was made; blocking the standing change requests and
-	// approvals each reviewer's standing approval, in order.
+	// with the time it was made; blocking the change requests that hold up
+	// the display segment (until a request for that reviewer or a ready
+	// event) and approvals each reviewer's standing approval, in order.
+	// opinions is each reviewer's latest opinionated review, approval or
+	// change request, as GitHub's review decision reads them.
 	outstanding []TimelineReview
 	blocking    []TimelineReview
 	approvals   []TimelineReview
+	opinions    []TimelineReview
 }
 
 func indexOf(list []TimelineReview, who string) int {
@@ -213,20 +223,40 @@ func (st *tlState) apply(e github.TimelineEvent, author string, out *PRTimeline)
 		for _, team := range e.Teams {
 			st.outstanding = without(st.outstanding, team)
 		}
+		r := TimelineReview{Reviewer: e.Reviewer, State: e.State, At: e.At}
 		switch e.State {
 		case ReviewChangesRequested:
 			st.approvals = without(st.approvals, e.Reviewer)
-			st.blocking = append(without(st.blocking, e.Reviewer), TimelineReview{Reviewer: e.Reviewer, State: e.State, At: e.At})
-			out.Reviews = append(out.Reviews, TimelineReview{Reviewer: e.Reviewer, State: e.State, At: e.At})
+			st.blocking = append(without(st.blocking, e.Reviewer), r)
+			st.opinions = append(without(st.opinions, e.Reviewer), r)
+			out.Reviews = append(out.Reviews, r)
 		case ReviewApproved:
 			st.blocking = without(st.blocking, e.Reviewer)
-			st.approvals = append(without(st.approvals, e.Reviewer), TimelineReview{Reviewer: e.Reviewer, State: e.State, At: e.At})
-			out.Reviews = append(out.Reviews, TimelineReview{Reviewer: e.Reviewer, State: e.State, At: e.At})
+			st.approvals = append(without(st.approvals, e.Reviewer), r)
+			st.opinions = append(without(st.opinions, e.Reviewer), r)
+			out.Reviews = append(out.Reviews, r)
 		case ReviewDismissed:
-			// GitHub reports the dismissed review's state, at the time it
-			// was submitted: whatever it said no longer stands.
+			// A dismissal GitHub did not report as its own event: the
+			// review reads DISMISSED at the time it was submitted, and
+			// whatever it said no longer stands.
 			st.blocking = without(st.blocking, e.Reviewer)
 			st.approvals = without(st.approvals, e.Reviewer)
+			st.opinions = without(st.opinions, e.Reviewer)
+		}
+	case github.TimelineReviewDismissed:
+		// The review (an approval or a change request, e.State) stood until
+		// now. GitHub asks the reviewer again, so they are waited on from
+		// the dismissal.
+		if e.Reviewer == "" || strings.EqualFold(e.Reviewer, author) {
+			return
+		}
+		if i := indexOf(st.opinions, e.Reviewer); i >= 0 && (e.State == "" || st.opinions[i].State == e.State) {
+			st.opinions = without(st.opinions, e.Reviewer)
+			st.approvals = without(st.approvals, e.Reviewer)
+			st.blocking = without(st.blocking, e.Reviewer)
+		}
+		if indexOf(st.outstanding, e.Reviewer) < 0 {
+			st.outstanding = append(st.outstanding, TimelineReview{Reviewer: e.Reviewer, At: e.At})
 		}
 	case github.TimelineMerged:
 		st.open, st.merged = false, true

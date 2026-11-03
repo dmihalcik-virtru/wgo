@@ -647,6 +647,7 @@ func prFacts(p *PRInfo, ticketEdge bool, stats map[string]CheckStat, people []Pe
 	// gh-104: a fresh, complete review history decides rule 3 and when the
 	// wait began; without one, gh-99's approximation stands.
 	ws := timelineWait(p)
+	waitWhy := ws.why
 	blocking, r3 := changesRequested(p, ws.tl, users, outKnown, &unc)
 
 	r4 := triFalse
@@ -727,16 +728,18 @@ func prFacts(p *PRInfo, ticketEdge bool, stats map[string]CheckStat, people []Pe
 				f.MovePeople = append(f.MovePeople, login)
 			}
 		}
-		if f.WaitingSource = WaitingEstimated; ws.ok {
-			f.WaitingSince, f.WaitingSource = ws.start, WaitingFromTimeline
+		start, why := ws.reviewerStart(out)
+		if f.WaitingSource, waitWhy = WaitingEstimated, why; !start.IsZero() {
+			f.WaitingSince, f.WaitingSource = start, WaitingFromTimeline
 		} else {
 			f.WaitingSince, f.WaitingLowerBound = reviewerWait(p, out, &unc)
 		}
 	case MoveNobody:
 		f.MovePeople = []string{}
-		switch f.WaitingSource = WaitingEstimated; {
-		case ws.ok:
-			f.WaitingSince, f.WaitingSource = ws.start, WaitingFromTimeline
+		start, why := ws.unattendedStart()
+		switch f.WaitingSource, waitWhy = WaitingEstimated, why; {
+		case !start.IsZero():
+			f.WaitingSince, f.WaitingSource = start, WaitingFromTimeline
 		case p.ReadyAt.IsZero():
 			unc.add("ready_at")
 		default:
@@ -758,12 +761,14 @@ func prFacts(p *PRInfo, ticketEdge bool, stats map[string]CheckStat, people []Pe
 		}
 	}
 	// The deciding reason says what its wait was read from (gh-104).
-	if f.WaitingSource != "" {
-		if decided == ReasonChangesRequested {
-			f.Reasons[0].Evidence += ws.rule3Note()
-		} else {
-			f.Reasons[0].Evidence += ws.waitNote(now)
-		}
+	switch {
+	case f.WaitingSource == "":
+	case decided == ReasonChangesRequested:
+		f.Reasons[0].Evidence += ws.rule3Note()
+	case f.WaitingSource == WaitingFromTimeline:
+		f.Reasons[0].Evidence += "; waiting since " + evidenceDay(f.WaitingSince, now) + " by its timeline"
+	default:
+		f.Reasons[0].Evidence += "; wait estimated: " + waitWhy
 	}
 
 	stale := triUnknown
@@ -833,16 +838,13 @@ func changesRequested(p *PRInfo, tl *PRTimeline, users []ReviewRequest, outKnown
 	return nil, triFalse
 }
 
-// waitSource is what a PR's review history (gh-104) says about its wait.
+// waitSource is a PR's review history (gh-104) as far as the facts may use
+// it.
 type waitSource struct {
 	// tl is the PR's timeline when the facts may use it: fresh (fetched for
 	// the PR's current updated_at) and complete. why says why not.
 	tl  *PRTimeline
 	why string
-	// ok is set when the current segment is waiting or unattended, which
-	// began at start: waiting_since.
-	ok    bool
-	start time.Time
 }
 
 func timelineWait(p *PRInfo) waitSource {
@@ -857,21 +859,45 @@ func timelineWait(p *PRInfo) waitSource {
 	case t.Truncated || len(t.Segments) == 0:
 		return waitSource{why: "the PR's timeline is incomplete"}
 	}
-	w := waitSource{tl: t}
-	if last := t.last(); last.State == SegmentWaiting || last.State == SegmentUnattended {
-		w.ok, w.start = true, last.Start
-	} else {
-		w.why = "the PR's timeline shows it " + strings.ReplaceAll(last.State, "_", " ") + " now"
-	}
-	return w
+	return waitSource{tl: t}
 }
 
-// waitNote is the evidence clause saying where the wait's start came from.
-func (w waitSource) waitNote(now time.Time) string {
-	if w.ok {
-		return "; waiting since " + evidenceDay(w.start, now) + " by its timeline"
+// reviewerStart is when the reviewer move's wait began by the timeline: the
+// earliest start of the waits still open on the outstanding reviewers'
+// lanes (gh-99 requirement 7: a wait that ended does not count, and a
+// later request does not reset an older one). It is zero, with why, when
+// the timeline cannot say: unusable, or an outstanding reviewer has no
+// open wait on it.
+func (w waitSource) reviewerStart(out []ReviewRequest) (time.Time, string) {
+	if w.tl == nil {
+		return time.Time{}, w.why
 	}
-	return "; wait estimated: " + w.why
+	var start time.Time
+	for _, r := range out {
+		i := slices.IndexFunc(w.tl.Lanes, func(l ReviewerLane) bool { return strings.EqualFold(l.Reviewer, r.Reviewer) })
+		if i < 0 || len(w.tl.Lanes[i].Waits) == 0 || !w.tl.Lanes[i].Waits[len(w.tl.Lanes[i].Waits)-1].End.IsZero() {
+			return time.Time{}, "the PR's timeline shows no open request for " + r.Reviewer
+		}
+		if s := w.tl.Lanes[i].Waits[len(w.tl.Lanes[i].Waits)-1].Start; start.IsZero() || s.Before(start) {
+			start = s
+		}
+	}
+	if start.IsZero() {
+		return time.Time{}, "the PR's timeline shows no open request"
+	}
+	return start, ""
+}
+
+// unattendedStart is when the nobody move's wait began by the timeline: the
+// start of the current unattended segment; zero, with why, otherwise.
+func (w waitSource) unattendedStart() (time.Time, string) {
+	if w.tl == nil {
+		return time.Time{}, w.why
+	}
+	if last := w.tl.last(); last.State != SegmentUnattended {
+		return time.Time{}, "the PR's timeline shows it " + strings.ReplaceAll(last.State, "_", " ") + " now"
+	}
+	return w.tl.last().Start, ""
 }
 
 // rule3Note is the evidence clause saying what decided rule 3.

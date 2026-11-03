@@ -117,9 +117,24 @@ func TestBuildTimeline(t *testing.T) {
 			evRequest(0, "bob"), evReview(2, "bob", ReviewChangesRequested), evRequest(4, "carol"),
 		}, segs: "waiting[bob]0-2 changes_requested[bob]2-", lanes: "bob:0-2 carol:4-",
 			reviews: "bob changes_requested@2", block: "bob changes_requested@2"},
-		{name: "a ready event ends the change request", events: []github.TimelineEvent{
+		{name: "a ready event ends the change request's segment, not its block", events: []github.TimelineEvent{
 			evRequest(0, "bob"), evReview(2, "bob", ReviewChangesRequested), evDraft(3), evReady(7),
-		}, segs: "waiting[bob]0-2 changes_requested[bob]2-3 draft3-7 unattended7-", lanes: "bob:0-2", reviews: "bob changes_requested@2"},
+		}, segs: "waiting[bob]0-2 changes_requested[bob]2-3 draft3-7 unattended7-", lanes: "bob:0-2", reviews: "bob changes_requested@2", block: "bob changes_requested@2"},
+		{name: "a re-request removed again still leaves the block", events: []github.TimelineEvent{
+			evRequest(0, "bob"), evReview(2, "bob", ReviewChangesRequested), evRequest(4, "bob"), evUnrequest(6, "bob"),
+		}, segs: "waiting[bob]0-2 changes_requested[bob]2-4 waiting[bob]4-6 unattended6-", lanes: "bob:0-2,4-6", reviews: "bob changes_requested@2", block: "bob changes_requested@2"},
+		{name: "a later approval ends the block", events: []github.TimelineEvent{
+			evRequest(0, "bob"), evReview(2, "bob", ReviewChangesRequested), evReview(4, "bob", ReviewApproved),
+		}, segs: "waiting[bob]0-2 changes_requested[bob]2-4 approved[bob]4-", lanes: "bob:0-2", reviews: "bob changes_requested@2 bob approved@4"},
+		{name: "a dismissed approval: its tick, then a wait from the dismissal", events: []github.TimelineEvent{
+			evRequest(0, "bob"), evReview(2, "bob", ReviewApproved), {Type: github.TimelineReviewDismissed, At: hr(5), Reviewer: "bob", State: ReviewApproved},
+		}, segs: "waiting[bob]0-2 approved[bob]2-5 waiting[bob]5-", lanes: "bob:0-2,5-", reviews: "bob approved@2"},
+		{name: "a dismissed change request ends the block", events: []github.TimelineEvent{
+			evRequest(0, "bob"), evReview(2, "bob", ReviewChangesRequested), {Type: github.TimelineReviewDismissed, At: hr(5), Reviewer: "bob", State: ReviewChangesRequested},
+		}, segs: "waiting[bob]0-2 changes_requested[bob]2-5 waiting[bob]5-", lanes: "bob:0-2,5-", reviews: "bob changes_requested@2"},
+		{name: "a request swapped for another in the same second is one wait", events: []github.TimelineEvent{
+			evRequest(1, "bob"), evUnrequest(4, "bob"), evRequest(4, "carol"),
+		}, segs: "unattended0-1 waiting[bob,carol]1-", lanes: "bob:1-4 carol:4-"},
 		{name: "a removed request", events: []github.TimelineEvent{evRequest(1, "bob"), evUnrequest(4, "bob")},
 			segs: "unattended0-1 waiting[bob]1-4 unattended4-", lanes: "bob:1-4"},
 		{name: "overlapping waits form one segment with every reviewer", events: []github.TimelineEvent{
@@ -239,7 +254,7 @@ func TestWaitingSinceFromTheTimeline(t *testing.T) {
 	}{
 		{"approximation without a timeline", func(p *PRInfo) {}, day(26, 10), true, WaitingEstimated,
 			"ready since Oct 21; review requested from bob Oct 26 and team:web; wait estimated: no PR timeline yet", []string{"requested_at:team:web"}},
-		{"the current waiting segment of a fresh timeline", func(p *PRInfo) { p.Timeline = timelineOf(p, day(21, 9), events...) },
+		{"the earliest wait still open on a fresh timeline", func(p *PRInfo) { p.Timeline = timelineOf(p, day(21, 9), events...) },
 			day(21, 9), false, WaitingFromTimeline, "ready since Oct 21; review requested from bob Oct 26 and team:web; waiting since Oct 21 by its timeline", nil},
 		{"a timeline the PR has changed since", func(p *PRInfo) {
 			p.Timeline = timelineOf(p, day(21, 9), events...)
@@ -251,7 +266,7 @@ func TestWaitingSinceFromTheTimeline(t *testing.T) {
 		}, day(26, 10), true, WaitingEstimated, "ready since Oct 21; review requested from bob Oct 26 and team:web; wait estimated: the PR's timeline is incomplete", []string{"requested_at:team:web"}},
 		{"a timeline that shows no wait now", func(p *PRInfo) {
 			p.Timeline = timelineOf(p, day(21, 9), reqEvent(day(22, 9), "bob"), reviewEvent(day(23, 9), "bob", ReviewApproved))
-		}, day(26, 10), true, WaitingEstimated, "ready since Oct 21; review requested from bob Oct 26 and team:web; wait estimated: the PR's timeline shows it approved now", []string{"requested_at:team:web"}},
+		}, day(26, 10), true, WaitingEstimated, "ready since Oct 21; review requested from bob Oct 26 and team:web; wait estimated: the PR's timeline shows no open request for bob", []string{"requested_at:team:web"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := awaiting()
@@ -267,6 +282,25 @@ func TestWaitingSinceFromTheTimeline(t *testing.T) {
 				t.Errorf("uncertain %v, want %v", f.Uncertain, tc.unc)
 			}
 		})
+	}
+
+	// A wait that ended does not count: bob was asked on Oct 21 and has
+	// commented; alice, asked on Oct 28, is waited on since then, though the
+	// waiting segment began with bob.
+	p0 := readyPR()
+	withRequests(p0, requestUser("alice", day(28, 9)))
+	p0.Timeline = timelineOf(p0, day(21, 9), reqEvent(day(21, 9), "bob"), reqEvent(day(28, 9), "alice"), reviewEvent(day(29, 9), "bob", ReviewCommented))
+	if f := prFacts(p0, false, systemicStats, factPeople, DefaultFactThresholds(), factsNow); !f.WaitingSince.Equal(day(28, 9)) || f.WaitingSource != WaitingFromTimeline ||
+		!slices.Equal(f.WaitingOn, []string{"alice"}) || f.Reasons[0].Evidence != "ready since Oct 21; review requested from alice Oct 28; waiting since Oct 28 by its timeline" {
+		t.Errorf("an ended wait counted: %+v", f)
+	}
+	// Bob's request swapped for carol's in the same second: carol's wait
+	// starts then.
+	withRequests(p0, requestUser("carol", day(25, 10)))
+	p0.Timeline = timelineOf(p0, day(21, 9), reqEvent(day(22, 9), "bob"),
+		github.TimelineEvent{Type: github.TimelineReviewRequestRemoved, At: day(25, 10), Reviewer: "bob"}, reqEvent(day(25, 10), "carol"))
+	if f := prFacts(p0, false, systemicStats, factPeople, DefaultFactThresholds(), factsNow); !f.WaitingSince.Equal(day(25, 10)) || f.WaitingSource != WaitingFromTimeline {
+		t.Errorf("a same-second swap: %+v", f)
 	}
 
 	// Nobody requested: the unattended segment's start, not ready_at.
@@ -297,9 +331,10 @@ func TestRule3FromTheTimeline(t *testing.T) {
 		return prFacts(p, false, systemicStats, factPeople, DefaultFactThresholds(), factsNow)
 	}
 
-	// Bob requested changes; the author drafted and marked it ready again,
-	// which ends the change request by the timeline though bob's latest
-	// review still reads CHANGES_REQUESTED.
+	// Bob requested changes; the author drafted and marked it ready again.
+	// That ends the changes_requested segment, but bob's latest review still
+	// reads CHANGES_REQUESTED and GitHub still blocks the merge: rule 3
+	// holds, by the timeline too.
 	p := readyPR()
 	cr(p)
 	if f := run(p); f.Move != MoveAuthor || f.Reasons[0].Code != ReasonChangesRequested || f.WaitingSource != WaitingEstimated ||
@@ -308,8 +343,20 @@ func TestRule3FromTheTimeline(t *testing.T) {
 	}
 	p.Timeline = timelineOf(p, day(21, 9), reqEvent(day(21, 9), "bob"), reviewEvent(day(24, 16), "bob", ReviewChangesRequested),
 		github.TimelineEvent{Type: github.TimelineDraft, At: day(25, 9)}, github.TimelineEvent{Type: github.TimelineReady, At: day(27, 9)})
-	if f := run(p); f.Move != MoveNobody || slices.Contains(codes(f.Reasons), ReasonChangesRequested) || !f.WaitingSince.Equal(day(27, 9)) || f.WaitingSource != WaitingFromTimeline {
+	if f := run(p); f.Move != MoveAuthor || f.Reasons[0].Code != ReasonChangesRequested || !f.WaitingSince.Equal(day(24, 16)) || f.WaitingSource != WaitingFromTimeline ||
+		f.Reasons[0].Evidence != "changes requested by bob Oct 24; not re-requested since, by its timeline" {
 		t.Fatalf("a ready event after the change request: %+v", f)
+	}
+	// Nor does a re-request that was removed again.
+	p.Timeline = timelineOf(p, day(21, 9), reqEvent(day(21, 9), "bob"), reviewEvent(day(24, 16), "bob", ReviewChangesRequested),
+		reqEvent(day(26, 9), "bob"), github.TimelineEvent{Type: github.TimelineReviewRequestRemoved, At: day(26, 12), Reviewer: "bob"})
+	if f := run(p); f.Move != MoveAuthor || f.Reasons[0].Code != ReasonChangesRequested || !f.WaitingSince.Equal(day(24, 16)) {
+		t.Fatalf("a re-request removed again: %+v", f)
+	}
+	// A later approval does.
+	p.Timeline = timelineOf(p, day(21, 9), reqEvent(day(21, 9), "bob"), reviewEvent(day(24, 16), "bob", ReviewChangesRequested), reviewEvent(day(26, 9), "bob", ReviewApproved))
+	if f := run(p); slices.Contains(codes(f.Reasons), ReasonChangesRequested) {
+		t.Fatalf("an approval after the change request: %+v", f)
 	}
 
 	// The reviews are unknown (a bookmark's lookup), so the approximation

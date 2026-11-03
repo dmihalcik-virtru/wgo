@@ -1610,7 +1610,7 @@ PR row of the query, in the table's sort order, on one time axis with a
 | draft | hatched | opened as a draft, or converted to one | marked ready |
 | waiting | solid grey, listing everyone asked | a review request | that reviewer reviews (or someone reviews on a team's behalf), or the request is removed |
 | changes requested | outlined | a review requesting changes | that reviewer is asked again, or the PR is marked ready again |
-| approved | light | an approval | |
+| approved | light | an approval | it is dismissed (the reviewer is then waited on again) |
 | unattended | dashed | ready, with nobody asked and no approval | |
 | merged / closed | a cap at the end | | |
 
@@ -1626,7 +1626,8 @@ lane per reviewer. A PR whose history has not been fetched yet shows one
 thin bar from its creation, labelled so.
 
 Histories are read from GitHub's GraphQL timeline (ready, draft, review
-requested and removed, reviews, merged, closed, reopened), 100 events per
+requested and removed, reviews and their dismissals, merged, closed,
+reopened), 100 events per
 page, by the background refresh only: at most 50 PRs per refresh, open PRs
 first, then those merged or closed in the closed-recent window, one after
 another. A PR's history is fetched again only when GitHub reports a newer
@@ -1638,9 +1639,12 @@ many of the PRs followed have a history ("120 of 195 PRs have a cached
 history") and how old the oldest is.
 
 With a history fetched for the PR's current `updated_at`, the attention
-facts use it: `waiting` counts from the start of the current waiting or
-unattended stretch, exactly rather than "or earlier", and "changes
-requested, not asked again" is read from the events. `waiting_source` is
+facts use it: `waiting` counts exactly, rather than "or earlier", from the
+earliest request still open, or from the start of the current unattended
+stretch when nobody is asked; and "changes requested, not asked again" is
+read from the events as GitHub blocks on it: until the reviewer is asked
+again and that request is still open, or they approve. Marking the PR ready
+again ends the changes-requested stretch on the timeline, but not this. `waiting_source` is
 `timeline` then, and `estimate` when the request times above decided; the
 deciding reason's evidence says which.
 
