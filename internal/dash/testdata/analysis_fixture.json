@@ -13,11 +13,12 @@
       "parts": [
         {"name": "alice/open-authored", "state": "fresh", "fetched_at": "2026-10-30T15:57:00Z"},
         {"name": "alice/review-requested", "state": "fresh", "fetched_at": "2026-10-30T15:57:00Z"},
-        {"name": "alice/closed-recent", "state": "stale", "fetched_at": "2026-10-30T14:40:00Z", "error": "GitHub GraphQL search: HTTP 502 on page 2 after 3 retries"},
+        {"name": "alice/closed-recent", "state": "stale", "fetched_at": "2026-10-30T14:40:00Z", "error": "GitHub GraphQL search: HTTP 502 on page 2 after 3 retries", "since": "2026-10-02T00:00:00Z"},
         {"name": "bob/open-authored", "state": "fresh", "fetched_at": "2026-10-30T15:56:00Z"},
         {"name": "bob/review-requested", "state": "fresh", "fetched_at": "2026-10-30T15:56:00Z"},
-        {"name": "bob/closed-recent", "state": "fresh", "fetched_at": "2026-10-30T15:30:00Z"}
-      ]
+        {"name": "bob/closed-recent", "state": "fresh", "fetched_at": "2026-10-30T15:30:00Z", "since": "2026-10-02T00:00:00Z"}
+      ],
+      "covered_since": "2026-10-02T00:00:00Z"
     },
     "github_issues": {"state": "fresh", "fresh": 1, "oldest_fetch": "2026-10-30T15:50:00Z"},
     "github_prs": {"state": "unknown", "fresh": 3, "unknown": 1, "oldest_fetch": "2026-10-30T15:58:00Z"},

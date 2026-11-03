@@ -118,6 +118,13 @@ type SourceStatus struct {
 	// one per (person, inventory set) for github_inventory, one per board
 	// or sprint for jira_sprints. The counts above then count parts.
 	Parts []SourcePart `json:"parts,omitempty"`
+	// CoveredSince, on github_inventory, is when every followed person's
+	// merged and closed PRs are known from: the latest start of their
+	// closed-recent windows (gh-102 compares a period with the one before
+	// it only inside it). Omitted while nobody is followed, or while a
+	// followed person's closed-recent set has no data or lags their
+	// open-authored set: then no period is known to be complete.
+	CoveredSince time.Time `json:"covered_since,omitzero"`
 }
 
 // Node is a snapshot node. Exactly one of the kind-specific fields is set.

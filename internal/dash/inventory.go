@@ -80,6 +80,9 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 	y, m, d := ls.at.Date()
 	countsStart := time.Date(y, m, d, 0, 0, 0, 0, ls.at.Location()).AddDate(0, 0, -(ls.days - 1))
 	mergedKnown := len(people) > 0
+	// covered and coveredSince make github_inventory's CoveredSince: the
+	// latest closed-recent window start, while every one has data.
+	covered, coveredSince := len(people) > 0, time.Time{}
 	found := map[string]*invPR{}
 	for _, person := range people {
 		// PRs that left the person's open-authored set since closed-recent
@@ -107,6 +110,14 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 				mergedKnown = false
 			}
 			part := SourcePart{Name: k.String(), State: f, FetchedAt: res.FetchedAt, Truncated: res.Truncated}
+			if set == inventory.ClosedRecent {
+				part.Since = res.Since
+				if !f.hasData() || due || res.Since.IsZero() {
+					covered = false
+				} else if res.Since.After(coveredSince) {
+					coveredSince = res.Since
+				}
+			}
 			if res.Err != nil {
 				part.Error = res.Err.Error()
 			}
@@ -156,6 +167,9 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 		}
 	case len(people) == 0:
 		st.State, st.Detail = Unknown, noPeopleDetail
+	}
+	if covered {
+		st.CoveredSince = coveredSince
 	}
 	if len(found) == 0 {
 		return st, diags, mergedKnown
