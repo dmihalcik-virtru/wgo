@@ -364,7 +364,8 @@ type timelineCandidate struct {
 // than their updated_at, open ones first and the most recently updated
 // first, are queued as one job, unless GitHub cannot be asked, a rate limit
 // paused the timelines, or a PR is backing off after failures. A PR outside
-// that set still shows a history already cached. It only reads caches.
+// that set still shows a history already cached. Once a day it also queues
+// pruning, with every PR seen. It only reads caches.
 func (c *Collector) addTimelines(b *builder, ls *localState, addJob func(Job)) SourceStatus {
 	since := inventory.ClosedSince(ls.at, ls.days)
 	canAsk := c.cfg.GitHubUnavailable == ""
@@ -372,6 +373,7 @@ func (c *Collector) addTimelines(b *builder, ls *localState, addJob func(Job)) S
 	paused := ls.at.Before(pausedUntil)
 	var tally remoteTally
 	var need []timelineCandidate
+	var seen []TimelineRequest
 	have := 0
 	var ids []string
 	for id, n := range b.nodes {
@@ -386,6 +388,7 @@ func (c *Collector) addTimelines(b *builder, ls *localState, addJob func(Job)) S
 		if p.Repo == "" || p.Number <= 0 {
 			continue
 		}
+		seen = append(seen, TimelineRequest{Key: k})
 		res := inventory.ReadTimeline(k)
 		f := Unknown
 		switch {
@@ -434,6 +437,11 @@ func (c *Collector) addTimelines(b *builder, ls *localState, addJob func(Job)) S
 			j.Timelines = append(j.Timelines, TimelineRequest{Key: cand.key, UpdatedAt: cand.p.UpdatedAt})
 		}
 		addJob(j)
+	}
+	// Once a day, histories of PRs not seen for long are dropped; the PRs
+	// seen now are recorded as seen.
+	if canAsk && len(seen) > 0 && inventory.TimelinePruneDue(ls.at, timelinePruneEvery) {
+		addJob(Job{Kind: JobTimelinePrune, Timelines: seen})
 	}
 	st := tally.status()
 	total := st.Fresh + st.Stale + st.Unknown + st.Error

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"sort"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/inventory"
 	"github.com/virtru/wgo/internal/issuecache"
 	"github.com/virtru/wgo/internal/jiracache"
@@ -35,6 +37,9 @@ const (
 	// JobTimelines fetches the review histories of up to
 	// MaxTimelinesPerCycle PRs, one after another (gh-104).
 	JobTimelines JobKind = "timelines"
+	// JobTimelinePrune drops cached histories of PRs the dash has not seen
+	// for inventory.TimelineMaxUnseen; Timelines lists the PRs seen now.
+	JobTimelinePrune JobKind = "timeline-prune"
 )
 
 // Job is one remote cache entry to refresh.
@@ -83,6 +88,8 @@ func (j Job) key() string {
 		// pending joins it, so at most one is ever in flight, and a
 		// waited-for refresh's follow-up rounds queue no second one.
 		return "timelines"
+	case JobTimelinePrune:
+		return "timeline-prune"
 	default:
 		return "issue\x00" + j.Issue.String()
 	}
@@ -120,6 +127,8 @@ func (j Job) describe() string {
 		return "jira sprints of board " + strconv.Itoa(j.Board)
 	case JobTimelines:
 		return fmt.Sprintf("timelines of %d %s", len(j.Timelines), plural(len(j.Timelines), "PR", "PRs"))
+	case JobTimelinePrune:
+		return "pruning PR timelines"
 	default:
 		return "issue " + j.Issue.String()
 	}
@@ -326,6 +335,8 @@ func (r *Refresher) supports(j Job) bool {
 		return r.f.Sprints != nil
 	case JobTimelines:
 		return r.f.Timelines != nil
+	case JobTimelinePrune:
+		return true // local cache upkeep: no fetcher needed
 	}
 	return false
 }
@@ -420,19 +431,55 @@ func (r *Refresher) run(j Job) error {
 		}
 	case JobTimelines:
 		return r.runTimelines(j.Timelines)
+	case JobTimelinePrune:
+		if r.opts.IgnoreLeases || inventory.LockTimelinePrune(timelinePruneEvery) {
+			seen := make([]inventory.TimelineKey, len(j.Timelines))
+			for i, t := range j.Timelines {
+				seen[i] = t.Key
+			}
+			n, err := inventory.PruneTimelines(seen, time.Now(), inventory.TimelineMaxUnseen)
+			if n > 0 {
+				logf("dash: pruned %d PR timelines not seen for %v", n, inventory.TimelineMaxUnseen)
+			}
+			return err
+		}
 	}
 	return nil
+}
+
+// timelinePruneEvery is how often cached PR timelines are pruned.
+const timelinePruneEvery = 24 * time.Hour
+
+// maxTransientTimelineFailures stops a timeline batch after this many fetches
+// in a row failed with a server error or a timeout, each after its own
+// retries: GitHub is struggling, and the rest can wait for a later cycle.
+const maxTransientTimelineFailures = 3
+
+// transientFailure reports whether err is a server error or a timeout.
+func transientFailure(err error) bool {
+	var apiErr *github.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode >= 500
+	}
+	var ne net.Error
+	return (errors.As(err, &ne) && ne.Timeout()) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // runTimelines fetches each PR's history in turn, serially as GitHub asks of
 // API clients. A PR already fetched for its updated_at is skipped; without
 // IgnoreLeases, so is one backing off after failures or whose lease another
-// refresher holds. A rate limit, or Close, stops the batch: the rest wait
-// for a later cycle.
+// refresher holds. A rate limit, maxTransientTimelineFailures server errors
+// or timeouts in a row, or Close, stops the batch: the rest wait for a later
+// cycle.
 func (r *Refresher) runTimelines(reqs []TimelineRequest) error {
 	var failed []string
+	transient, stopped := 0, ""
 	for _, req := range reqs {
 		if r.ctx.Err() != nil || time.Now().Before(inventory.TimelinesPausedUntil()) {
+			break
+		}
+		if transient >= maxTransientTimelineFailures {
+			stopped = fmt.Sprintf("; stopped after %d server errors or timeouts in a row", transient)
 			break
 		}
 		prior := inventory.ReadTimeline(req.Key)
@@ -442,8 +489,17 @@ func (r *Refresher) runTimelines(reqs []TimelineRequest) error {
 		if !r.opts.IgnoreLeases && (time.Now().Before(prior.NotBefore()) || !inventory.LockTimelineRefresh(req.Key, r.opts.Backoff)) {
 			continue
 		}
-		if _, err := inventory.RefreshTimeline(r.ctx, r.f.Timelines, req.Key); err != nil && r.ctx.Err() == nil {
+		_, err := inventory.RefreshTimeline(r.ctx, r.f.Timelines, req.Key)
+		switch {
+		case err == nil:
+			transient = 0
+		case r.ctx.Err() == nil:
 			failed = append(failed, err.Error())
+			if transientFailure(err) {
+				transient++
+			} else {
+				transient = 0
+			}
 		}
 	}
 	if len(failed) == 0 {
@@ -455,7 +511,7 @@ func (r *Refresher) runTimelines(reqs []TimelineRequest) error {
 		more = fmt.Sprintf("; and %d more", n-maxListed)
 		failed = failed[:maxListed]
 	}
-	return fmt.Errorf("%d of %d failed (%s%s)", n, len(reqs), strings.Join(failed, "; "), more)
+	return fmt.Errorf("%d of %d failed (%s%s)%s", n, len(reqs), strings.Join(failed, "; "), more, stopped)
 }
 
 // refreshStaleIdentity re-reads the authenticated login once its cache has

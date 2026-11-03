@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,4 +128,48 @@ func TestTimelineKeysAreSafePaths(t *testing.T) {
 	}
 	assert.True(t, LockTimelineRefresh(pr7, time.Minute))
 	assert.False(t, LockTimelineRefresh(pr7, time.Minute), "the lease is held")
+}
+
+// TestPruneTimelines: a PR's cached timeline, and its lease, go once the dash
+// has not seen the PR for TimelineMaxUnseen: by the seen record, or by the
+// entry's age for a PR never recorded.
+func TestPruneTimelines(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	now := time.Now()
+	f := &fakeTimelines{tl: &github.PRTimeline{State: "open", UpdatedAt: now, Events: []github.TimelineEvent{}}}
+	key := func(n int) TimelineKey { return TimelineKey{Repo: "acme/api", Number: n} }
+	for n := 1; n <= 5; n++ {
+		_, err := RefreshTimeline(context.Background(), f, key(n))
+		require.NoError(t, err)
+	}
+	require.True(t, LockTimelineRefresh(key(2), time.Minute))
+	path := func(n int) string { p, err := timelinePath(key(n)); require.NoError(t, err); return p }
+	old := now.Add(-TimelineMaxUnseen - 30*time.Minute)
+	// 2 and 3 were seen, 2 long ago; 4 and 5 never were, 4's entry is old.
+	_, err := PruneTimelines([]TimelineKey{key(2), key(3)}, old, TimelineMaxUnseen)
+	require.NoError(t, err)
+	_, err = PruneTimelines([]TimelineKey{key(3)}, now.Add(-time.Hour), TimelineMaxUnseen)
+	require.NoError(t, err)
+	require.NoError(t, os.Chtimes(path(4), old, old))
+
+	n, err := PruneTimelines([]TimelineKey{key(1)}, now, TimelineMaxUnseen)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	for k, gone := range map[int]bool{1: false, 2: true, 3: false, 4: true, 5: false} {
+		_, err := os.Stat(path(k))
+		assert.Equal(t, gone, errors.Is(err, os.ErrNotExist), "PR %d's timeline", k)
+	}
+	_, err = os.Stat(strings.TrimSuffix(path(2), ".json") + ".lock")
+	assert.True(t, errors.Is(err, os.ErrNotExist), "the pruned PR's lease goes too")
+	assert.NotNil(t, ReadTimeline(key(3)).Timeline)
+
+	// The record keeps only PRs still cached, and a later pruning keeps 1
+	// by it.
+	n, err = PruneTimelines(nil, now.Add(TimelineMaxUnseen-time.Hour), TimelineMaxUnseen)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "1 and 3 were seen within the window")
+	assert.True(t, TimelinePruneDue(now, time.Hour))
+	require.True(t, LockTimelinePrune(time.Hour))
+	assert.False(t, TimelinePruneDue(now, time.Hour))
+	assert.False(t, LockTimelinePrune(time.Hour))
 }
