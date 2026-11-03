@@ -30,6 +30,19 @@ const probeAddon = `(function () {
     destroy: function () { P.panelDestroyed++; } });
 })();`
 
+// browserSuite is an addon's suite in testdata/live_browser.js (its header
+// describes them): TestLivePageInBrowser serves a page with the handler
+// options options returns and passes its URL as --<flag>=<URL>, which the
+// suite the addon's block registered under that flag drives. Each addon's
+// _test.go file appends its own to browserSuites in an init function.
+type browserSuite struct {
+	flag    string
+	options func(t testing.TB) HandlerOptions
+}
+
+// browserSuites are the addons' browser suites, in the order they run.
+var browserSuites []browserSuite
+
 type noAck struct{}
 
 func (noAck) Acknowledge(uint64) error { return nil }
@@ -42,10 +55,8 @@ func (noAck) Acknowledge(uint64) error { return nil }
 // reload, kind: rows, the context toggle, row keys and hover), and Copy as
 // Markdown under the page's CSP, with no console errors; then it times
 // filter changes on a 2,000-node snapshot, and the table on the analysis
-// fixture scaled to 2,000 nodes; and the linked filters (gh-102) on the
-// analysis fixture — facet gestures by pointer and keyboard, the brushable
-// when chart, the attention summary, saved filter chips — and their latency
-// on the scaled fixture. It needs node and Chrome,
+// fixture scaled to 2,000 nodes; then every addon's suite in browserSuites
+// (gh-102's linked filters on the analysis fixture). It needs node and Chrome,
 // so it runs only when WGO_BROWSER_TESTS is set; WGO_CHROME names the
 // browser and WGO_SHOTS a directory for light and dark screenshots.
 func TestLivePageInBrowser(t *testing.T) {
@@ -100,13 +111,10 @@ func TestLivePageInBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	table := newServerOpts(t, HandlerOptions{Source: StaticSource{V: scaledView}})
-	// The analysis fixture as it is, for the linked filters (gh-102).
-	fixture, err := LoadFixture(analysisFixturePath)
-	if err != nil {
-		t.Fatal(err)
+	args := []string{filepath.Join("testdata", "live_browser.js"), chrome, srv.URL + "/", "--perf=" + perf.URL + "/", "--perf-table=" + table.URL + "/"}
+	for _, s := range browserSuites {
+		args = append(args, "--"+s.flag+"="+newServerOpts(t, s.options(t)).URL+"/")
 	}
-	facets := newServerOpts(t, HandlerOptions{Source: StaticSource{V: fixture}})
-	args := []string{filepath.Join("testdata", "live_browser.js"), chrome, srv.URL + "/", "--perf=" + perf.URL + "/", "--perf-table=" + table.URL + "/", "--facets=" + facets.URL + "/"}
 	if dir := os.Getenv("WGO_SHOTS"); dir != "" {
 		args = append(args, "--shots="+dir)
 	}

@@ -9,6 +9,18 @@ import (
 	"testing"
 )
 
+// The linked filters' browser suite (gh-102) drives the analysis fixture as
+// it is.
+func init() {
+	browserSuites = append(browserSuites, browserSuite{flag: "facets", options: func(t testing.TB) HandlerOptions {
+		v, err := LoadFixture(analysisFixturePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return HandlerOptions{Source: StaticSource{V: v}}
+	}})
+}
+
 func TestResolveFacets(t *testing.T) {
 	reg := Fields()
 	got, notes := ResolveFacets(nil, reg)
