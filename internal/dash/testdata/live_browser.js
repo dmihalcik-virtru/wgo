@@ -244,6 +244,7 @@ async function runChecks() {
   await send("Page.navigate", { url: pageURL + "#view=table&q=kind:pr" });
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('table.atable tbody tr[data-i]')", "the table");
   check((await heads()).join() === "Name,Repository,Author,Move,Waiting,Age,Size,CI,Reviews,Tickets", "PR default columns: " + (await heads()));
+  check((await evaluate("getComputedStyle(document.querySelector('thead th')).position + ' ' + getComputedStyle(document.querySelector('.atable-scroll')).overflowY")) === "sticky auto", "the addon's own stylesheet (live-table.css) applies under the CSP");
   const prRows = await rowNames();
   check(prRows.length === 5 && prRows.every((n) => /^acme\/(api|web)#\d+$/.test(n)), "kind:pr lists only the PRs: " + prRows);
   check((await evaluate("document.querySelectorAll('table.atable tbody tr.ctx').length")) === 0, "kind:pr shows no context rows");

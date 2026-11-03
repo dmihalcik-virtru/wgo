@@ -215,18 +215,6 @@
       var kinds = L.QUERY_KINDS.filter(function (k) { return seen[k]; });
       return { rows: showContext ? rows.concat(context) : rows, context: new Set(context), contextCount: context.length, kinds: kinds };
     };
-    // kindClauseKinds is the kinds a parsed query's kind: clauses allow, or
-    // null without one: the default columns of a query with no rows yet.
-    T.kindClauseKinds = function (q) {
-      var out = null;
-      ((q && q.clauses) || []).forEach(function (c) {
-        if (c.name !== "kind" || c.op !== "list") return;
-        var vals = c.vals.map(function (v) { return v.text.toLowerCase(); });
-        var set = L.QUERY_KINDS.filter(function (k) { return (vals.indexOf(k) >= 0) !== c.neg; });
-        out = out ? out.filter(function (k) { return set.indexOf(k) >= 0; }) : set;
-      });
-      return out;
-    };
 
     // ---------- word-sized graphics (requirements 7 to 11) ----------
     // barFraction is a bar's length as a fraction of its column's: linear
@@ -426,11 +414,12 @@
 
   // model computes the rows, columns, sort and column scales for ctx.
   function model(ctx) {
-    var ix = ctx.queryIndex, reg = ctx.registry, q = L.parseQuery(ctx.getState("q"), reg);
-    var hasKind = !q.error && q.clauses.some(function (c) { return c.name === "kind"; });
+    // ctx.query.rowKinds says whether a kind: clause chooses the rows, and
+    // which kinds it allows: the default columns of a query with no rows.
+    var ix = ctx.queryIndex, reg = ctx.registry, res = ctx.query, hasKind = !!res && res.rowKinds != null;
     var showCtx = ctx.getState("ctx") !== "hide";
-    var tr = T.tableRows(ix, ctx.query, hasKind, showCtx);
-    var kinds = tr.kinds.length ? tr.kinds : T.kindClauseKinds(q.error ? null : q) || [];
+    var tr = T.tableRows(ix, res, hasKind, showCtx);
+    var kinds = tr.kinds.length ? tr.kinds : hasKind ? res.rowKinds : [];
     var cs = T.columns(reg, ctx.getState("cols"), kinds);
     var sort = T.parseSort(ctx.getState("sort")).filter(function (s) { return s.key === "name" || T.isColumn(reg, s.key); });
     var m = { ix: ix, reg: reg, kinds: kinds, cols: cs.cols, custom: cs.custom, sort: sort, hasKind: hasKind, showCtx: showCtx,

@@ -64,7 +64,8 @@ func TestLivePageInBrowser(t *testing.T) {
 	// The page inlines the real addons, then the probe; AddonFS replaces the
 	// embedded files, so it carries the real ones too.
 	addons := fstest.MapFS{"web/live-probe.js": {Data: []byte(probeAddon)}}
-	for _, name := range liveAddons {
+	scripts, styles := liveAddonFiles(liveAddons)
+	for _, name := range append(slices.Clone(scripts), styles...) {
 		b, err := os.ReadFile(filepath.Join("..", "review", name))
 		if err != nil {
 			t.Fatal(err)
@@ -72,8 +73,8 @@ func TestLivePageInBrowser(t *testing.T) {
 		addons[name] = &fstest.MapFile{Data: b}
 	}
 	// Ack makes the page carry an action token, which addons must not see.
-	srv := newServerOpts(t, HandlerOptions{Source: StaticSource{V: v}, Ack: noAck{}, Addons: append(slices.Clone(liveAddons), "web/live-probe.js"),
-		AddonFS: addons})
+	srv := newServerOpts(t, HandlerOptions{Source: StaticSource{V: v}, Ack: noAck{}, Addons: append(scripts, "web/live-probe.js"),
+		AddonStyles: styles, AddonFS: addons})
 	// A 2,000-node snapshot for the re-render timing.
 	var big Snapshot
 	raw := genSnapshot(2000)
