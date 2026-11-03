@@ -5,8 +5,11 @@
  *
  * The filtering, selection and sorting logic is a set of small pure functions on
  * window.WGOLive (also module.exports under Node) so it can be exercised without
- * a canvas. One store holds the selection and the filter; the efforts list, the
- * graph, the table and the small multiples all render from it. */
+ * a canvas. One store holds the selection and the query (spec/gh-100.md); the
+ * efforts list, the views and the overview panels all render from it, and the
+ * URL hash mirrors it so every state is a link and back/forward is history.
+ * Views and panels register on WGOLive; addon scripts inlined after this one
+ * register theirs before the page starts. */
 (function () {
   "use strict";
 
@@ -66,6 +69,9 @@
     return bm.pr_count > 0 || hasPRs ? "" : "none";
   };
 
+  // seeds, visible and toggleFilter are the pre-query single {by, value}
+  // filter. The page now filters with the query language (below); chart
+  // clicks become clauses through toggleClause.
   // seeds lists the nodes a small-multiple filter selects.
   L.seeds = function (snap, idx, f) {
     if (!f) return [];
@@ -1095,6 +1101,8 @@
   var d3 = window.d3force;
   var reduceMotion = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
   var API = BOOT.api || "/api/snapshot", LINKS_API = BOOT.links || "", POLL = Math.max(1000, BOOT.poll_ms || 5000);
+  var EXTRACT_API = BOOT.extract || "", REG = L.registry(BOOT.fields || {});
+  var FILTERS = (BOOT.filters || []).filter(function (f) { return f && !f.hidden; });
 
   function el(tag, cls, text, parent) {
     var e = document.createElement(tag);
@@ -1129,19 +1137,47 @@
   function fmtTime(iso) { var t = Date.parse(iso); return isFinite(t) && iso ? new Date(t).toLocaleString() : "unknown"; }
 
   // ---------- store ----------
+  // query is the applied expression (always valid); qres its result over
+  // qi, the snapshot's query index; vis the visible set (null: no filter).
+  // A query that does not parse is never applied: queryError holds it.
   var store = {
-    payload: null, snap: null, idx: L.index(null), rows: [], links: null, linksError: "",
-    selection: new Set(), filter: null, vis: null, hover: null,
-    view: "graph", fetchedAt: 0, error: "", focusMissing: "",
+    payload: null, snap: null, idx: L.index(null), qi: null, rows: [], links: null, linksError: "",
+    selection: new Set(), query: "", qres: null, queryError: null, qHasKind: false, vis: null, hover: null,
+    view: "graph", sort: { key: "kind", dir: 1 }, cols: [], fetchedAt: 0, error: "", focusMissing: "",
     busy: new Set(), actionResult: null, ackResult: null,
     subs: [],
-    subscribe: function (fn) { this.subs.push(fn); },
-    notify: function (reason) { for (var i = 0; i < this.subs.length; i++) this.subs[i](reason); },
-    select: function (ids, add) { this.selection = L.select(this.selection, ids, add); this.notify("selection"); },
-    clear: function () { if (this.selection.size) { this.selection = new Set(); this.notify("selection"); } },
-    setFilter: function (f) { this.filter = f; this.vis = L.visible(this.snap, this.idx, f); this.notify("filter"); },
-    isVisible: function (id) { return !this.vis || this.vis.has(id); }
+    // subscribe calls fn(reason) on every change; it returns an unsubscribe.
+    subscribe: function (fn) { var subs = this.subs; subs.push(fn); return function () { var i = subs.indexOf(fn); if (i >= 0) subs.splice(i, 1); }; },
+    notify: function (reason) { var subs = this.subs.slice(); for (var i = 0; i < subs.length; i++) subs[i](reason); },
+    // select changes the selection; how is "push" (a click: a history
+    // entry, the default) or "replace" (keyboard walking, search).
+    select: function (ids, add, how) { this.selection = L.select(this.selection, ids, add); writeHash(how !== "replace"); this.notify("selection"); },
+    clear: function () { if (this.selection.size) { this.selection = new Set(); writeHash(true); this.notify("selection"); } },
+    // setQuery applies expr and returns null, or returns the parse error and
+    // changes nothing. commit pushes a history entry; otherwise the URL is
+    // replaced (typing, dragging).
+    setQuery: function (expr, opts) {
+      expr = expr == null ? "" : String(expr).trim();
+      var q = L.parseQuery(expr, REG);
+      if (q.error) return q.error;
+      this.query = expr; this.queryError = null;
+      recomputeQuery();
+      writeHash(!!(opts && opts.commit));
+      this.notify("query");
+      return null;
+    },
+    isVisible: function (id) { return !this.vis || this.vis.has(id); },
+    isRow: function (id) { return !this.qres || this.qres.rowSet.has(id); }
   };
+  // recomputeQuery evaluates the applied query over the current snapshot.
+  function recomputeQuery() {
+    store.qres = null; store.vis = null; store.qHasKind = false;
+    if (!store.qi || !store.query) return;
+    var r = L.runQuery(store.query, store.qi);
+    if (r.error) { store.queryError = { expr: store.query, error: r.error }; return; }
+    store.qres = r.res; store.vis = r.res.vis;
+    store.qHasKind = r.q.clauses.some(function (c) { return c.name === "kind"; });
+  }
 
   // ---------- skeleton ----------
   root.textContent = "";
@@ -1157,15 +1193,23 @@
   var search = el("input", null, null, bar);
   search.type = "search"; search.placeholder = "Search (press /)"; search.setAttribute("aria-label", "Search efforts, workspaces, PRs, tickets and agents");
   var tabs = el("div", "view-tabs", null, bar); tabs.setAttribute("role", "group"); tabs.setAttribute("aria-label", "View");
-  var graphBtn = button(tabs, "Graph", null, function () { setView("graph"); });
-  var tableBtn = button(tabs, "Table", null, function () { setView("table"); });
-  var filterChip = button(bar, "", "filterchip", function () { store.setFilter(null); });
-  filterChip.hidden = true;
+  // The query bar: the current query as editable text. Enter applies, Esc
+  // reverts; a query that does not parse is shown with its fix, not applied.
+  var qbox = el("div", "qbar", null, bar);
+  var qinput = el("input", "query", null, qbox);
+  qinput.type = "text"; qinput.spellcheck = false; qinput.autocomplete = "off";
+  qinput.placeholder = "Filter, e.g. kind:pr;prstate:open,draft (Enter applies, Esc reverts)";
+  qinput.setAttribute("aria-label", "Query: clauses joined by ; such as kind:pr;prstate:open. Enter applies, Escape reverts.");
+  var qclear = button(qbox, "✕", "qclear", function () { applyQueryText("", true); }, "Clear the query");
+  var presetSel = el("select", "presets", null, bar); presetSel.setAttribute("aria-label", "Saved filters");
+  var copyBtn = button(bar, "Copy as Markdown", null, function () { copyMarkdown(); });
+  copyBtn.title = "Copy the current rows as Markdown, with links, the query and data freshness";
   var fitBtn = button(bar, "Fit to view", null, function () { robustFit(); });
   var statusEl = el("span", "status", "", bar); statusEl.setAttribute("role", "status"); statusEl.setAttribute("aria-live", "polite");
+  var qmsg = el("div", "qmsg", null, bar); qmsg.hidden = true; qmsg.setAttribute("role", "alert");
+  var copyOut = el("div", "copyout", null, bar); copyOut.hidden = true;
 
   var mults = el("div", "multiples", null, root);
-  var multDays = el("div", "mult", null, mults), multPR = el("div", "mult", null, mults), multAg = el("div", "mult", null, mults);
 
   var main = el("div", "lv-main", null, root);
   var effortsEl = el("div", "efforts", null, main); effortsEl.setAttribute("aria-label", "Efforts");
@@ -1181,10 +1225,63 @@
   var legendBox = el("div", null, null, side);
   var ctx = canvas.getContext("2d");
 
-  function setView(v) {
-    store.view = v;
-    graphBtn.setAttribute("aria-pressed", String(v === "graph"));
-    tableBtn.setAttribute("aria-pressed", String(v === "table"));
+  // ---------- views ----------
+  // Views come from the registry; the graph and the table register like
+  // any addon. Each view draws into its own container in the stage.
+  var viewBoxes = new Map(), activeView = null;
+  function viewSpec(id) { return L.views.filter(function (v) { return v.id === id; })[0] || L.views[0]; }
+  function viewBox(spec) {
+    if (spec.id === "graph" && spec.builtin) return canvas;
+    if (spec.id === "table" && spec.builtin) return tableWrap;
+    var b = viewBoxes.get(spec.id);
+    if (!b) { b = el("div", "viewwrap", null, stage); b.hidden = true; b.setAttribute("aria-label", spec.label || spec.id); viewBoxes.set(spec.id, b); }
+    return b;
+  }
+  // viewCtx is what a view's or panel's render(ctx) gets: the store, the
+  // gestures, the theme and the DOM helpers, and its own container.
+  function viewCtx(spec, reason, container) {
+    return {
+      store: store, L: L, registry: REG, boot: BOOT, reason: reason, container: container || viewBox(spec),
+      snapshot: store.snap, index: store.idx, queryIndex: store.qi, query: store.qres, selection: store.selection,
+      setQuery: function (expr, opts) { return store.setQuery(expr, opts); },
+      select: function (ids, add, how) { store.select(ids, add, how); },
+      subscribe: function (fn) { return store.subscribe(fn); },
+      theme: theme, dom: { el: el, svgEl: svgEl, button: button, link: link, clamp: clamp, plural: plural }
+    };
+  }
+  function viewFailed(spec, e) {
+    store.error = "The " + (spec.label || spec.id) + " view failed: " + ((e && e.message) || e);
+    renderBanner();
+    if (window.console) console.error("wgo dash:", e);
+  }
+  // showView makes store.view's view the visible one and renders it.
+  function showView(reason) {
+    var spec = viewSpec(store.view);
+    if (!spec) return;
+    if (activeView && activeView !== spec && activeView.destroy) {
+      try { activeView.destroy(viewCtx(activeView, "destroy")); } catch (e) { viewFailed(activeView, e); }
+    }
+    activeView = spec;
+    store.view = spec.id;
+    L.views.forEach(function (v) {
+      var b = viewBox(v), on = v === spec && !!store.snap;
+      if (b === canvas) canvas.style.visibility = on ? "" : "hidden"; else b.hidden = !on;
+    });
+    if (!store.snap) return;
+    try { spec.render(viewCtx(spec, reason || "view")); } catch (e) { viewFailed(spec, e); }
+  }
+  function renderTabs() {
+    tabs.textContent = "";
+    L.viewTabs(L.views, store.view).forEach(function (t) {
+      var b = button(tabs, t.label, null, function () { setView(t.id, true); });
+      b.setAttribute("aria-pressed", String(t.pressed));
+      if (t.title) b.title = t.title;
+    });
+  }
+  function setView(v, commit) {
+    store.view = viewSpec(v) ? viewSpec(v).id : "graph";
+    renderTabs();
+    writeHash(!!commit);
     store.notify("view");
   }
 
@@ -1392,7 +1489,7 @@
     var gs = [];
     items.forEach(function (it, i) {
       var x = i * slot + (slot - bw) / 2, h = (base - top) * it.n / max;
-      var on = L.sameFilter(store.filter, { by: opts.by, value: it.key });
+      var on = L.clauseActive(store.query, REG, opts.field, it.key);
       var g = svgEl("g", { "class": "mbar" + (on ? " on" : ""), tabindex: i === 0 ? 0 : -1, role: "button", "aria-pressed": String(on), "aria-label": it.title }, svg);
       svgEl("title", {}, g).textContent = it.title;
       svgEl("rect", { "class": "hit", x: i * slot, y: 0, width: slot, height: H }, g);
@@ -1402,7 +1499,7 @@
       }
       if (opts.values && it.n > 0) { var vt = svgEl("text", { x: x + bw / 2, y: base - h - 2, "text-anchor": "middle" }, g); vt.textContent = String(it.n); }
       if (opts.label(i)) { var lt = svgEl("text", { x: i * slot + slot / 2, y: H - 3, "text-anchor": "middle" }, g); lt.textContent = it.label; }
-      function choose() { store.setFilter(L.toggleFilter(store.filter, { by: opts.by, value: it.key })); }
+      function choose() { store.setQuery(L.toggleClause(store.query, REG, opts.field, it.key), { commit: true }); }
       g.addEventListener("click", choose);
       g.addEventListener("keydown", function (ev) {
         if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); choose(); }
@@ -1416,46 +1513,57 @@
     });
     return svg;
   }
+  // ---------- overview panels ----------
+  // The three small multiples register as panels; an addon can add more or
+  // replace one by id. Chart clicks set query clauses (requirement 10).
+  var panelBoxes = new Map();
+  function effortKeyOf(id) { var n = store.idx.byId.get(id); return (n && n.effort && n.effort.key) || id.replace(/^effort:/, ""); }
+  function panelCtx(p, box) { return viewCtx(p, "panel", box); }
   function renderMultiples() {
-    // Bars show totals; the inner accent bar is the selected efforts' share.
-    var counts = store.snap ? store.snap.counts || {} : {};
-    var selE = store.selection.size ? L.selectionEfforts(store.idx, store.selection) : null;
     var active = document.activeElement, activeLabel = active && active.closest && active.closest(".mult") ? active.getAttribute("aria-label") : null;
-
-    var days = counts.days || [], tot = L.dayTotals(counts, null), part = selE ? L.dayTotals(counts, selE) : [];
-    multHeader(multDays, "Local activity per day", "(changes, last " + plural(days.length, "day") + ")");
-    if (!days.length) el("p", "empty", store.snap ? "No activity window." : "Waiting for data…", multDays);
-    else barChart(multDays, days.map(function (d, i) {
-      return { key: d, label: d.slice(5), n: tot[i], part: part[i] || 0, title: d + ": " + plural(tot[i], "change") + (selE ? ", " + (part[i] || 0) + " in the selection" : "") };
-    }), { by: "day", aria: "Local changes per day. Choose a day to filter.", values: false, label: function (i) { return i === 0 || i === days.length - 1 || i % 7 === 0; } });
-
-    var prt = L.prTotals(counts, null), prp = selE ? L.prTotals(counts, selE) : [];
-    multHeader(multPR, "PRs by state", "(bookmarks with unknown lookups count as unknown, not none)");
-    if (!store.snap) el("p", "empty", "Waiting for data…", multPR);
-    else barChart(multPR, prt.map(function (it, i) {
-      return { key: it.state, label: it.state, n: it.n, part: prp[i] ? prp[i].n : 0, title: it.state + ": " + it.n + (selE ? ", " + (prp[i] ? prp[i].n : 0) + " in the selection" : "") };
-    }), { by: "prstate", aria: "PRs by state. Choose a state to filter.", values: true, label: function () { return true; } });
-
-    var ag = L.agentTotals(counts, store.idx.byId);
-    multHeader(multAg, "Agent sessions by effort");
-    if (!ag.length) el("p", "empty", store.snap ? "No agent sessions recorded." : "Waiting for data…", multAg);
-    else barChart(multAg, ag.slice(0, 12).map(function (a) {
-      var by = Object.keys(a.by).sort().map(function (k) { return a.by[k] + " " + k; }).join(", ");
-      return { key: a.effort, label: a.label.length > 10 ? a.label.slice(0, 9) + "…" : a.label, n: a.total, part: selE && selE.has(a.effort) ? a.total : 0, title: a.label + ": " + plural(a.total, "session") + " (" + by + ")" };
-    }), { by: "effort", aria: "Agent sessions per effort. Choose an effort to filter.", values: true, label: function () { return true; } });
-
+    var ids = L.panels.map(function (p) { return p.id; });
+    panelBoxes.forEach(function (b, id) { if (ids.indexOf(id) < 0) { b.remove(); panelBoxes.delete(id); } });
+    L.panels.forEach(function (p) {
+      var box = panelBoxes.get(p.id);
+      if (!box) { box = el("div", "mult", null, mults); panelBoxes.set(p.id, box); }
+      mults.appendChild(box); // keeps registry order
+      try { p.render(panelCtx(p, box)); } catch (e) { viewFailed(p, e); }
+    });
     if (activeLabel) {
       var again = Array.prototype.filter.call(mults.querySelectorAll(".mbar"), function (g) { return g.getAttribute("aria-label") === activeLabel; })[0];
       if (again) { again.setAttribute("tabindex", "0"); again.focus(); }
     }
   }
-  function filterText(f) {
-    if (!f) return "";
-    if (f.by === "day") return "Filter: activity on " + f.value;
-    if (f.by === "prstate") return "Filter: PRs " + f.value;
-    var n = store.idx.byId.get(f.value);
-    return "Filter: effort " + (n ? n.label : f.value);
-  }
+  function selectionEfforts() { return store.selection.size ? L.selectionEfforts(store.idx, store.selection) : null; }
+  L.registerPanel({ id: "activity", label: "Local activity per day", builtin: true, render: function (ctx) {
+    // Bars show totals; the inner accent bar is the selected efforts' share.
+    var box = ctx.container, counts = store.snap ? store.snap.counts || {} : {}, selE = selectionEfforts();
+    var days = counts.days || [], tot = L.dayTotals(counts, null), part = selE ? L.dayTotals(counts, selE) : [];
+    multHeader(box, "Local activity per day", "(changes, last " + plural(days.length, "day") + ")");
+    if (!days.length) el("p", "empty", store.snap ? "No activity window." : "Waiting for data…", box);
+    else barChart(box, days.map(function (d, i) {
+      return { key: d, label: d.slice(5), n: tot[i], part: part[i] || 0, title: d + ": " + plural(tot[i], "change") + (selE ? ", " + (part[i] || 0) + " in the selection" : "") };
+    }), { field: "activity", aria: "Local changes per day. Choose a day to filter with activity:<day>.", values: false, label: function (i) { return i === 0 || i === days.length - 1 || i % 7 === 0; } });
+  } });
+  L.registerPanel({ id: "prstate", label: "PRs by state", builtin: true, render: function (ctx) {
+    var box = ctx.container, counts = store.snap ? store.snap.counts || {} : {}, selE = selectionEfforts();
+    var prt = L.prTotals(counts, null), prp = selE ? L.prTotals(counts, selE) : [];
+    multHeader(box, "PRs by state", "(bookmarks with unknown lookups count as unknown, not none)");
+    if (!store.snap) el("p", "empty", "Waiting for data…", box);
+    else barChart(box, prt.map(function (it, i) {
+      return { key: it.state, label: it.state, n: it.n, part: prp[i] ? prp[i].n : 0, title: it.state + ": " + it.n + (selE ? ", " + (prp[i] ? prp[i].n : 0) + " in the selection" : "") };
+    }), { field: "prstate", aria: "PRs by state. Choose a state to filter with prstate:<state>.", values: true, label: function () { return true; } });
+  } });
+  L.registerPanel({ id: "agents", label: "Agent sessions by effort", builtin: true, render: function (ctx) {
+    var box = ctx.container, counts = store.snap ? store.snap.counts || {} : {}, selE = selectionEfforts();
+    var ag = L.agentTotals(counts, store.idx.byId);
+    multHeader(box, "Agent sessions by effort");
+    if (!ag.length) el("p", "empty", store.snap ? "No agent sessions recorded." : "Waiting for data…", box);
+    else barChart(box, ag.slice(0, 12).map(function (a) {
+      var by = Object.keys(a.by).sort().map(function (k) { return a.by[k] + " " + k; }).join(", ");
+      return { key: effortKeyOf(a.effort), label: a.label.length > 10 ? a.label.slice(0, 9) + "…" : a.label, n: a.total, part: selE && selE.has(a.effort) ? a.total : 0, title: a.label + ": " + plural(a.total, "session") + " (" + by + ")" };
+    }), { field: "effort", aria: "Agent sessions per effort. Choose an effort to filter with effort:<key>.", values: true, label: function () { return true; } });
+  } });
 
   // ---------- efforts list ----------
   function stateBadge(parent, text, cls) { return el("span", "state " + (cls || ""), text, parent); }
@@ -1516,7 +1624,7 @@
     idx.byId.forEach(function (n) { if (n.kind === "effort" && store.isVisible(n.id)) efforts.push(n); });
     efforts.sort(L.effortOrder);
     el("h2", "sr", "Efforts", effortsEl);
-    if (!efforts.length) { el("p", "empty", store.filter ? "Nothing matches the filter." : "No efforts or workspaces discovered.", effortsEl); return; }
+    if (!efforts.length) { el("p", "empty", store.vis ? "Nothing matches the query." : "No efforts or workspaces discovered.", effortsEl); return; }
     var selE = L.selectionEfforts(idx, store.selection);
     efforts.forEach(function (e) {
       var info = e.effort || {};
@@ -1670,26 +1778,38 @@
   }
 
   // ---------- table ----------
-  var sortKey = "kind", sortDir = 1, tableRows = [], focusRow = -1;
+  // The built-in table view: six fixed columns plus any registry fields the
+  // URL's cols names. With a query, nodes kept only as context (visible but
+  // not rows) are dimmed, or left out when a kind: clause chooses the rows.
+  // gh-101 replaces it with an addon.
+  var tableRows = [], focusRow = -1;
   var COLS = [["label", "Name"], ["kind", "Kind"], ["effort", "Effort"], ["state", "State"], ["data", "Data"], ["activity", "Last activity"]];
+  function sortedTableRows() {
+    var rows = L.filterRows(store.rows, store.vis);
+    if (store.qres && store.qHasKind) rows = rows.filter(function (r) { return store.qres.rowSet.has(r.id); });
+    return L.sortRows(rows, store.sort.key, store.sort.dir);
+  }
   function renderTable() {
-    var show = store.view === "table" && !!store.snap;
-    tableWrap.hidden = !show; canvas.style.visibility = show || !store.snap ? "hidden" : "";
-    if (!show) return;
+    if (store.view !== "table" || !store.snap) return;
     var hadFocus = tableWrap.contains(document.activeElement) && document.activeElement.tagName === "TR";
     tableWrap.textContent = "";
     var tbl = el("table", "live", null, tableWrap); tbl.setAttribute("role", "grid");
-    el("caption", "sr", "Nodes in the current filter. Use the arrow keys to move, Enter or Space to select, Shift+Enter to add.", tbl);
+    el("caption", "sr", "Nodes in the current query. Use the arrow keys to move, Enter or Space to select, Shift+Enter to add.", tbl);
     var thead = el("thead", null, null, tbl), tr = el("tr", null, null, thead);
     COLS.forEach(function (c) {
-      var th = el("th", null, null, tr); th.scope = "col";
-      th.setAttribute("aria-sort", sortKey === c[0] ? (sortDir > 0 ? "ascending" : "descending") : "none");
-      button(th, c[1] + (sortKey === c[0] ? (sortDir > 0 ? " ▲" : " ▼") : ""), null, function () {
-        if (sortKey === c[0]) sortDir = -sortDir; else { sortKey = c[0]; sortDir = c[0] === "activity" ? -1 : 1; }
+      var th = el("th", null, null, tr), on = store.sort.key === c[0], dir = store.sort.dir;
+      th.scope = "col";
+      th.setAttribute("aria-sort", on ? (dir > 0 ? "ascending" : "descending") : "none");
+      button(th, c[1] + (on ? (dir > 0 ? " ▲" : " ▼") : ""), null, function () {
+        store.sort = on ? { key: c[0], dir: -dir } : { key: c[0], dir: c[0] === "activity" ? -1 : 1 };
+        writeHash(true);
         renderTable();
       });
     });
-    tableRows = L.sortRows(L.filterRows(store.rows, store.vis), sortKey, sortDir);
+    var extra = store.cols.filter(function (name) { return REG.field(name) && !COLS.some(function (c) { return c[0] === name; }); });
+    extra.forEach(function (name) { var th = el("th", null, REG.field(name).label, tr); th.scope = "col"; th.title = "Query field " + name; });
+    var ctxRows = !!store.qres && !store.qHasKind;
+    tableRows = sortedTableRows();
     var tb = el("tbody", null, null, tbl), frag = document.createDocumentFragment(), now = Date.now();
     if (focusRow >= tableRows.length) focusRow = tableRows.length - 1;
     if (focusRow < 0 && tableRows.length) {
@@ -1697,15 +1817,18 @@
       focusRow = firstSel >= 0 ? firstSel : 0;
     }
     tableRows.forEach(function (r, i) {
-      var sel = store.selection.has(r.id), row = el("tr", sel ? "sel" : null, null, frag);
+      var sel = store.selection.has(r.id), context = ctxRows && !store.qres.rowSet.has(r.id);
+      var row = el("tr", (sel ? "sel" : "") + (context ? " ctx" : "") || null, null, frag);
       row.setAttribute("aria-selected", String(sel)); row.tabIndex = i === focusRow ? 0 : -1; row.dataset.i = String(i);
+      if (context) row.title = "Context: shown because a match leads to it or from it";
       var n = store.idx.byId.get(r.id), url = n && ((n.pr && n.pr.url) || (n.ticket && n.ticket.url));
       link(el("td", null, null, row), r.label, url);
       el("td", null, r.kind, row); el("td", null, r.effort, row); el("td", null, r.state, row); el("td", null, r.data, row);
       el("td", null, r.activity ? L.relTime(r.activity, now) : "", row);
+      extra.forEach(function (name) { el("td", null, store.qi ? L.valueText(store.qi, name, r.id) : "", row); });
     });
     tb.appendChild(frag);
-    if (!tableRows.length) { var er = el("tr", null, null, tb); var td = el("td", "empty", store.filter ? "Nothing matches the filter." : "No nodes.", er); td.colSpan = COLS.length; }
+    if (!tableRows.length) { var er = el("tr", null, null, tb); var td = el("td", "empty", store.vis ? "Nothing matches the query." : "No nodes.", er); td.colSpan = COLS.length + extra.length; }
     tb.addEventListener("click", function (ev) {
       if (ev.target.closest("a")) return;
       var row = ev.target.closest("tr"); if (!row || row.dataset.i == null) return;
@@ -1721,7 +1844,7 @@
       focusRow = nx;
       var rows = tb.querySelectorAll("tr");
       rows[cur].tabIndex = -1; rows[nx].tabIndex = 0; rows[nx].focus();
-      if (!ev.shiftKey) store.select([tableRows[nx].id], false);
+      if (!ev.shiftKey) store.select([tableRows[nx].id], false, "replace");
     });
     if (hadFocus) { var f = tb.querySelectorAll("tr")[focusRow]; if (f) f.focus(); }
   }
@@ -1826,7 +1949,7 @@
     if (!view || store.view !== "graph") return;
     if (!view.nodes.length) {
       ctx.fillStyle = theme["--ink2"]; ctx.font = "13px system-ui, sans-serif"; ctx.textBaseline = "middle";
-      ctx.fillText(store.filter ? "Nothing matches the filter." : "No nodes in this snapshot.", 16, 20);
+      ctx.fillText(store.vis ? "Nothing matches the query." : "No nodes in this snapshot.", 16, 20);
       return;
     }
     var nb = neighbourhood(), sel = store.selection, k = T.k;
@@ -1926,19 +2049,19 @@
   canvas.addEventListener("keydown", function (ev) {
     // Keyboard selection on the canvas: arrows walk the visible nodes in table order.
     if (!view || !view.nodes.length) return;
-    var order = L.sortRows(L.filterRows(store.rows, store.vis), sortKey, sortDir).map(function (r) { return r.id; });
+    var order = sortedTableRows().map(function (r) { return r.id; });
     var cur = order.indexOf(Array.from(store.selection)[0]);
     var key = ev.key === "ArrowRight" ? "ArrowDown" : ev.key === "ArrowLeft" ? "ArrowUp" : ev.key;
     var nx = L.nextIndex(order.length, cur, key);
     if (nx < 0) return;
     ev.preventDefault();
-    store.select([order[nx]], false); revealEffort(order[nx]);
+    store.select([order[nx]], false, "replace"); revealEffort(order[nx]);
   });
   document.addEventListener("keydown", function (ev) {
     var tag = ((document.activeElement || {}).tagName || "");
     if (ev.key === "Escape") {
       if (document.activeElement === search && search.value) { search.value = ""; statusEl.textContent = ""; }
-      if (store.selection.size) store.clear(); else if (store.filter) store.setFilter(null);
+      if (store.selection.size) store.clear(); else if (store.query) applyQueryText("", true);
     } else if (ev.key === "/" && !/^(INPUT|TEXTAREA)$/.test(tag)) { ev.preventDefault(); search.focus(); }
   });
 
@@ -1949,29 +2072,173 @@
     var m = L.search(L.filterRows(store.rows, store.vis), q);
     statusEl.textContent = m.length ? plural(m.length, "match") + (m.length > 60 ? " (selecting the first 60)" : "") : "no matches in the current filter";
     if (!m.length) return;
-    store.select(m.slice(0, 60), false); revealEffort(m[0]);
+    store.select(m.slice(0, 60), false, "replace"); revealEffort(m[0]);
   }
   search.addEventListener("input", function () { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 200); });
   search.addEventListener("keydown", function (ev) { if (ev.key === "Enter") { clearTimeout(searchTimer); runSearch(); } });
 
+  // ---------- built-in views ----------
+  L.registerView({ id: "graph", label: "Graph", question: "How do efforts, workspaces, PRs, tickets and agents connect?", builtin: true,
+    render: function (ctx) { if (ctx.reason === "view") resize(); dirty = true; } });
+  L.registerView({ id: "table", label: "Table", question: "Which nodes does the query keep, and in what state?", builtin: true,
+    render: function () { renderTable(); } });
+
+  // ---------- query bar ----------
+  var qDirty = false; // the text differs from the applied query
+  function presetFor(expr) { return FILTERS.filter(function (f) { return f.expr === expr; })[0]; }
+  function renderQueryBar() {
+    if (!qDirty && document.activeElement !== qinput) qinput.value = store.queryError ? store.queryError.expr : store.query;
+    qinput.setAttribute("aria-invalid", String(!!store.queryError));
+    qclear.hidden = !store.query && !qinput.value;
+    qmsg.textContent = "";
+    var err = store.queryError;
+    if (err) {
+      var line = el("span", "qerr", err.error.error, qmsg);
+      line.setAttribute("title", "Column " + err.error.pos);
+      if (err.error.fixed) {
+        qmsg.appendChild(document.createTextNode(" "));
+        button(qmsg, "Use " + err.error.fixed, "linkish", function () { applyQueryText(err.error.fixed, true); }, "Apply the suggested query " + err.error.fixed);
+      }
+    } else if (store.qres) {
+      var n = store.qres.rows.length, m = store.qres.matches.length, total = store.idx.byId.size;
+      el("span", "qinfo", plural(n, "row") + (m !== n ? " of " + m.toLocaleString() + (m === 1 ? " match" : " matches") : "") + " · " + plural(total, "node") + " in the snapshot", qmsg);
+      store.qres.warnings.forEach(function (w) { el("span", "qwarn", w, qmsg); });
+    }
+    qmsg.hidden = !qmsg.childNodes.length;
+    presetSel.hidden = !FILTERS.length;
+    if (FILTERS.length) {
+      presetSel.textContent = "";
+      var cur = presetFor(store.query);
+      var first = el("option", null, cur ? "Saved filter" : "Saved filters…", presetSel); first.value = "";
+      FILTERS.forEach(function (f) { var o = el("option", null, f.name, presetSel); o.value = f.name; o.title = f.expr; });
+      presetSel.value = cur ? cur.name : "";
+    }
+  }
+  // applyQueryText applies text as the query, or shows why it cannot be.
+  function applyQueryText(text, commit) {
+    var err = store.setQuery(text, { commit: commit });
+    if (err) { store.queryError = { expr: text, error: err }; qDirty = true; renderQueryBar(); return false; }
+    qDirty = false;
+    renderQueryBar();
+    return true;
+  }
+  qinput.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") { ev.preventDefault(); applyQueryText(qinput.value, true); }
+    else if (ev.key === "Escape") {
+      ev.preventDefault(); ev.stopPropagation();
+      qDirty = false; store.queryError = null; qinput.value = store.query; renderQueryBar();
+    }
+  });
+  qinput.addEventListener("input", function () {
+    qDirty = true;
+    if (store.queryError) { store.queryError = null; renderQueryBar(); }
+    qclear.hidden = !store.query && !qinput.value;
+  });
+  presetSel.addEventListener("change", function () {
+    var f = FILTERS.filter(function (x) { return x.name === presetSel.value; })[0];
+    if (f) applyQueryText(f.expr, true);
+  });
+
+  // ---------- copy as Markdown (requirement 25) ----------
+  // The extract comes from GET /api/extract for the current state. Safari
+  // only lets a clipboard write start inside the click, so the write is
+  // handed a promise of the text (ClipboardItem); where that is missing the
+  // text is written once fetched, and if the clipboard refuses, it is shown
+  // selected in a text area to copy by hand. All of it stays within the CSP:
+  // a same-origin fetch, no inline handlers.
+  function copyMarkdown() {
+    if (!EXTRACT_API) { statusEl.textContent = "This wgo dash server has no Markdown extract."; return; }
+    var spec = viewSpec(store.view), extra = null;
+    if (spec && spec.extract) { try { extra = spec.extract(viewCtx(spec, "extract")); } catch (e) { viewFailed(spec, e); return; } }
+    var url = L.extractURL(EXTRACT_API, Object.assign({ q: store.query, cols: store.cols, view: "rows" }, extra || {}));
+    var text = fetch(url, { cache: "no-store", credentials: "same-origin" }).then(function (r) {
+      return r.text().then(function (t) {
+        if (!r.ok) { var e = new Error(t || "HTTP " + r.status); e.status = r.status; e.detail = t.trim(); throw e; }
+        return t;
+      });
+    });
+    var cb = navigator.clipboard, wrote;
+    copyOut.hidden = true;
+    statusEl.textContent = "Copying…";
+    if (cb && cb.write && window.ClipboardItem) {
+      try {
+        wrote = cb.write([new ClipboardItem({ "text/plain": text.then(function (t) { return new Blob([t], { type: "text/plain" }); }) })]);
+      } catch (e) { wrote = Promise.reject(e); }
+    } else if (cb && cb.writeText) {
+      wrote = text.then(function (t) { return cb.writeText(t); });
+    } else {
+      wrote = Promise.reject(new Error("no clipboard access"));
+    }
+    wrote.then(function () { return text; }).then(function (t) {
+      statusEl.textContent = "Copied the Markdown (" + plural(t.split("\n").length, "line") + ").";
+    }, function () {
+      text.then(showCopyFallback, function (e) { statusEl.textContent = "Copy as Markdown failed: " + L.actionError(e); });
+    });
+  }
+  function showCopyFallback(t) {
+    copyOut.textContent = "";
+    copyOut.hidden = false;
+    el("div", "meta", "The clipboard is not available here: the Markdown is selected below; press ⌘C (Ctrl+C) to copy it.", copyOut);
+    var ta = el("textarea", null, null, copyOut);
+    ta.readOnly = true; ta.value = t; ta.rows = Math.min(14, t.split("\n").length + 1); ta.setAttribute("aria-label", "Markdown extract");
+    button(copyOut, "Close", null, function () { copyOut.hidden = true; });
+    ta.focus(); ta.select();
+    statusEl.textContent = "Select-and-copy: the Markdown is in the box below the bar.";
+  }
+
+  // ---------- URL state (requirements 12 and 13) ----------
+  // The hash mirrors view, query, sort, columns and selection. A committed
+  // change pushes a history entry; walking, typing and data updates replace
+  // the current one. Back and forward re-apply the hash.
+  var started = false, lastHash = null;
+  function sortSpec() { return store.sort.key === "kind" && store.sort.dir === 1 ? "" : (store.sort.dir < 0 ? "-" : "") + store.sort.key; }
+  function writeHash(push) {
+    if (!started) return;
+    var h = L.buildHash(L.parseHash(location.hash), { view: store.view, q: store.query, sort: sortSpec(), cols: store.cols, sel: Array.from(store.selection) });
+    if (h === (location.hash === "#" ? "" : location.hash)) return;
+    lastHash = h;
+    history[push ? "pushState" : "replaceState"](null, "", h || location.pathname + location.search);
+  }
+  function applyHash() {
+    var st = L.hashState(L.parseHash(location.hash));
+    lastHash = location.hash;
+    store.view = viewSpec(st.view || "graph").id;
+    var desc = st.sort.charAt(0) === "-", key = desc ? st.sort.slice(1) : st.sort;
+    store.sort = COLS.some(function (c) { return c[0] === key; }) ? { key: key, dir: desc ? -1 : 1 } : { key: "kind", dir: 1 };
+    store.cols = st.cols;
+    store.selection = new Set(st.sel);
+    if (store.snap) store.selection = L.prune(store.selection, store.idx.byId);
+    var q = L.parseQuery(st.q, REG);
+    if (q.error) { store.query = ""; store.queryError = { expr: st.q, error: q.error }; } else { store.query = st.q.trim(); store.queryError = null; }
+    qDirty = false;
+    recomputeQuery();
+  }
+  function onHistory() {
+    if (location.hash === lastHash) return;
+    applyHash();
+    renderTabs();
+    renderAll(true);
+  }
+  window.addEventListener("popstate", onHistory);
+  window.addEventListener("hashchange", onHistory);
+
   // ---------- wiring ----------
   function renderAll(fit) {
     loadingEl.hidden = !!store.snap;
-    filterChip.hidden = !store.filter; filterChip.textContent = store.filter ? filterText(store.filter) + " ✕" : "";
-    filterChip.setAttribute("aria-label", store.filter ? filterText(store.filter) + ". Clear filter" : "");
-    renderHeader(); renderBanner(); renderSince(); renderMultiples(); renderEfforts(); renderDetail(); renderTable(); buildLegend();
+    renderQueryBar(); renderHeader(); renderBanner(); renderSince(); renderMultiples(); renderEfforts(); renderDetail(); buildLegend();
     startSim(fit);
+    showView("data");
   }
   store.subscribe(function (reason) {
     if (reason === "data") renderAll(false);
-    else if (reason === "filter") { renderAll(true); }
-    else if (reason === "selection") { renderMultiples(); renderEfforts(); renderDetail(); renderTable(); dirty = true; }
-    else if (reason === "view") { renderTable(); dirty = true; if (store.view === "graph") { resize(); } }
+    else if (reason === "query") { renderAll(true); }
+    else if (reason === "selection") { renderMultiples(); renderEfforts(); renderDetail(); showView("selection"); dirty = true; }
+    else if (reason === "view") { showView("view"); dirty = true; }
     else if (reason === "status") { renderHeader(); renderBanner(); }
   });
   if (window.matchMedia) {
     var mq = matchMedia("(prefers-color-scheme: dark)");
-    if (mq.addEventListener) mq.addEventListener("change", function () { readTheme(); buildLegend(); renderMultiples(); dirty = true; });
+    if (mq.addEventListener) mq.addEventListener("change", function () { readTheme(); buildLegend(); renderMultiples(); showView("theme"); dirty = true; });
   }
 
   // ---------- actions ----------
@@ -2065,14 +2332,17 @@
     try {
       store.snap = p.snapshot;
       store.idx = L.index(store.snap);
+      store.qi = L.queryIndex(store.snap, REG);
       store.rows = L.rows(store.snap, store.idx);
+      var selBefore = store.selection.size;
       store.selection = L.prune(store.selection, store.idx.byId);
-      if (store.filter) store.vis = L.visible(store.snap, store.idx, store.filter);
+      recomputeQuery();
       if (focusPending) {
         if (store.idx.byId.has(focusPending)) { store.selection = new Set([focusPending]); store.focusMissing = ""; }
         else store.focusMissing = (BOOT.entity || focusPending) + " is not part of any active effort.";
         focusPending = "";
       }
+      if (store.selection.size !== selBefore || first) writeHash(false);
       store.notify("data");
       if (first) { robustFit(); if (store.selection.size) revealEffort(Array.from(store.selection)[0]); }
     } catch (e) {
@@ -2114,11 +2384,19 @@
     }).catch(fault) // a rendering fault: applyPayload has put it in the banner
       .then(pollLinks).then(done, function (e) { fault(e); done(); });
   }
-  setInterval(function () { if (store.snap) renderHeader(); }, 5000);
-  setView(/(^|[#&])view=table(&|$)/.test(location.hash) ? "table" : "graph");
-  resize();
-  buildLegend();
-  renderAll(true);
-  poll();
+  // start runs once every inline script has run, so the views and panels
+  // that addon scripts register are all in place (requirement 27).
+  function start() {
+    started = true;
+    L.onRegister = function (what) { if (what === "view") { renderTabs(); showView("view"); } else renderMultiples(); };
+    applyHash();
+    renderTabs();
+    setInterval(function () { if (store.snap) renderHeader(); }, 5000);
+    resize();
+    buildLegend();
+    renderAll(true);
+    poll();
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
   window.__wgoStore = store; // handle for debugging and browser tests
 })();

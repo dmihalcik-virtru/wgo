@@ -1057,6 +1057,45 @@ To open a workspace from a `wgo://open?ws=<id>` link outside the dashboard,
 install the optional [macOS URL handler](#wgo-links-with-wgo-setup-url-handler).
 The dashboard does not need it.
 
+### Queries and Markdown extracts
+
+One query language filters the page, the CLI and saved filters. A query is
+clauses joined by `;`, all of which must hold. Each clause is
+`[!]field:value`, where the value is one of:
+
+- a value, or a comma-separated list (any of them): `prstate:open,draft`
+- `*`, any known value: `repo:*`
+- a range: `activity:2026-10-01..2026-10-07`, `activity:-7d..`, `>=30`
+
+`@me` and `@people` stand for the configured people. A clause never
+matches a node whose value is unknown, negated or not; add `unknown` to a
+list to include those. `kind:` clauses choose which matches are rows.
+
+The page keeps the query, view, sort, columns and selection in its address,
+so every state is a link and Back undoes the last change. Chart bars add or
+remove a clause. **Copy as Markdown** copies the current rows.
+
+```
+wgo dash --query 'kind:pr;prstate:open'           # open the page at this query
+wgo dash --json --query 'repo:acme/api;kind:pr'   # adds "query": {expr, matches, rows}
+wgo dash --md --query 'kind:pr' --cols prstate,checks --group repo
+wgo dash --md --preset shipped --layout table     # a saved filter as a Markdown table
+```
+
+A malformed query fails with the column, the fix and a corrected command.
+`GET /api/extract?q=…&cols=…&group=…&layout=…` serves the same Markdown as
+`--md`, byte for byte.
+
+Saved filters are built in (`my-move`, `review-inbox`, `shipped`, …) or
+set under `[dash.filters]`, where they override built-ins of the same name.
+A built-in stays hidden until the fields it needs exist; `--json --query`
+lists each filter with the reason it is hidden.
+
+```toml
+[dash.filters]
+api-prs = "kind:pr;repo:acme/api;!prstate:merged,closed"
+```
+
 ### Actions
 
 Select a workspace to get these buttons:
@@ -1505,6 +1544,7 @@ delete them to forget your answers.
 | `wgo status --sort activity` | Sort repos by last commit time |
 | `wgo dash` | Live web dashboard of all ongoing work, with workspace actions ([details](#live-dashboard-with-wgo-dash)) |
 | `wgo dash --json` | One dashboard snapshot as JSON |
+| `wgo dash --md --query EXPR` | The query's rows as Markdown with links and provenance ([details](#queries-and-markdown-extracts)) |
 | `wgo setup url-handler` | Optional macOS `wgo://` link handler; `--uninstall` removes it ([details](#wgo-links-with-wgo-setup-url-handler)) |
 | `wgo open <wgo://open?ws=ID>` | Open a terminal tab for a `wgo://` workspace link |
 | `wgo today` | Morning review: commits, PRs, branches, tasks |
