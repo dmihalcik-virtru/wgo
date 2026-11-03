@@ -22,13 +22,11 @@ Not in the points: 1 unestimated (TEAM-104) · 1 with points unknown (TEAM-106)
 
 - [TEAM-102](https://example.atlassian.net/browse/TEAM-102) — Rate-limit the token endpoints: ticket Done; PR acme/api#102 open · PRs: [acme/api#102](https://github.com/acme/api/pull/102) open
 
-**in progress no code** (1)
-
-- [TEAM-105](https://example.atlassian.net/browse/TEAM-105) — Load-test the token endpoint: ticket In Progress in Sprint 12; no linked PR or workspace in the snapshot
-
 **unassigned in sprint** (1)
 
 - [TEAM-106](https://example.atlassian.net/browse/TEAM-106) — Add rate-limit dashboards: in Sprint 12 with no assignee
+
+Not checked: TEAM-105 (github_inventory unknown)
 
 ---
 

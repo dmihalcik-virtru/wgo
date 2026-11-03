@@ -92,7 +92,7 @@ func TestSprintExtractShowsTheSprint(t *testing.T) {
 		"Not in the points: 1 unestimated (TEAM-104) · 1 with points unknown (TEAM-106)\n",
 		"**code merged ticket open** (1)\n\n- [TEAM-103](https://example.atlassian.net/browse/TEAM-103)",
 		"**ticket done code open** (1)\n\n- [TEAM-102](https://example.atlassian.net/browse/TEAM-102) — Rate-limit the token endpoints: ticket Done; PR acme/api#102 open · PRs: [acme/api#102](https://github.com/acme/api/pull/102) open\n",
-		"**in progress no code** (1)\n\n- [TEAM-105]",
+		"Not checked: TEAM-105 (github_inventory unknown)",
 		"**unassigned in sprint** (1)\n\n- [TEAM-106]",
 		"· sprint 1234 on board 42, fetched 2026-10-30 15:52 +00:00 · the query shows 6 of 6 tickets\n",
 		"Query: none (the whole sprint)\n",
@@ -154,7 +154,7 @@ func TestSprintExtractUnderAQuery(t *testing.T) {
 		"- Done: 3 points · 1 ticket\n",
 		"The query shows 1 of 6 tickets: Done 3 points · 1 ticket; In Progress 0 points · 0 tickets; To Do 0 points · 0 tickets.\n",
 		"**ticket done code open** (1)",
-		"3 more tickets have mismatches the query does not show.\n",
+		"2 more tickets have mismatches the query does not show.\n",
 		"the query shows 1 of 6 tickets\n",
 	} {
 		if !strings.Contains(md, want) {

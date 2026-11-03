@@ -458,7 +458,6 @@
     el("span", "sv-lab", null, lr);
     var labels = el("div", "sv-plabels", null, lr);
     labels.setAttribute("role", "group"); labels.setAttribute("aria-label", "Story points by status category; each filters to its category");
-    el("span", "sv-val", null, lr);
     var btns = p.parts.map(function (part) {
       var b = cur.dom.button(labels, null, "plab " + part.key, null);
       var name = el("span", "nm", null, b);
@@ -470,12 +469,13 @@
       b.setAttribute("aria-label", part.label + ": " + S.num(part.points) + " story points, " + cur.dom.plural(part.tickets, "ticket") + ". Filter status_category:" + part.key);
       return b;
     });
-    // Each label sits under its segment when they fit on one line, and
-    // wraps in order otherwise; a resize places them again.
+    // Each label sits under its segment when they fit on one line (the row
+    // runs on under the value column), and wraps in order otherwise; a
+    // resize places them again.
     V.placeLabels = function () {
       labels.classList.remove("placed");
-      var total = labels.clientWidth;
-      var lefts = total ? S.labelLayout(p.parts.map(function (x) { return x.start * total; }), btns.map(function (b) { return b.offsetWidth; }), total, 8) : null;
+      var total = labels.clientWidth, bw = bar.clientWidth || total;
+      var lefts = total ? S.labelLayout(p.parts.map(function (x) { return x.start * bw; }), btns.map(function (b) { return b.offsetWidth; }), total, 8) : null;
       if (lefts) { labels.classList.add("placed"); btns.forEach(function (b, i) { b.style.left = lefts[i].toFixed(1) + "px"; }); }
     };
     V.placeLabels();
@@ -519,14 +519,16 @@
   }
 
   // ---------- table ----------
-  var COLS = ["Ticket", "Assignee", "Points", "Status", "Linked PRs", "Mismatches"];
+  // What the view asks about comes first: where Jira and the code disagree
+  // and the PRs, so a narrow view scrolls points and status out of sight.
+  var COLS = ["Ticket", "Assignee", "Mismatches", "Linked PRs", "Points", "Status"];
   function paintTable() {
     var m = V.m, el = cur.dom.el, wrap = el("div", "sv-scroll", null, V.root);
     var table = el("table", "sv-table", null, wrap);
     table.setAttribute("role", "grid");
     el("caption", "sr", "Tickets of the sprint by status category, then assignee. Arrow keys move between tickets, Enter or Space selects, Shift+Enter adds. Tickets outside the query are dimmed.", table);
     var hr = el("tr", null, null, el("thead", null, null, table));
-    COLS.forEach(function (c, i) { var th = el("th", i === 2 ? "num" : null, c, hr); th.scope = "col"; });
+    COLS.forEach(function (c) { var th = el("th", c === "Points" ? "num" : null, c, hr); th.scope = "col"; });
     V.rows = [];
     m.groups.forEach(function (g) {
       var rows = g.rows.filter(function (r) { return !m.hide || m.inside(r.node.id); });
@@ -566,14 +568,14 @@
     // Assignee, once per run; screen readers hear it on every row.
     var as = el("td", r.assignee.unknown ? "unk" : r.assignee.rank === 1 ? "muted" : null, null, tr);
     if (first) as.textContent = r.assignee.text; else el("span", "sr", r.assignee.text, as);
+    mismatchCell(el("td", "mm", null, tr), n);
+    prsCell(el("td", "prs", null, tr), n);
     // Points.
     var pts = S.pointsOf(t), pd = el("td", "num" + (pts.kind === "unknown" ? " unk" : pts.kind === "unestimated" ? " muted" : ""), pts.text, tr);
     if (pts.kind === "unknown") pd.title = "Story points unknown: the site's story points field was not read for this ticket";
     else if (pts.kind === "unestimated") pd.title = "Read from Jira: no estimate";
     // Status.
     el("td", t.status ? "st" : "st unk", t.status || "unknown", tr);
-    prsCell(el("td", "prs", null, tr), n);
-    mismatchCell(el("td", "mm", null, tr), n);
     return tr;
   }
   function prsCell(td, n) {

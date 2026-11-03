@@ -26,7 +26,8 @@
 
 /* The bars: a label column, a shared track width, a value column. */
 .sv-bars { margin: 10px 0 6px; max-width: 760px; }
-.sv-row { display: grid; grid-template-columns: 52px minmax(160px, 1fr) 96px; align-items: center; column-gap: 10px; }
+.sv-row { display: grid; grid-template-columns: 44px minmax(120px, 1fr) max-content; align-items: center; column-gap: 10px; }
+.sv-row.sv-labels .sv-plabels { grid-column: 2 / 4; }
 .sv-lab { color: var(--ink2); font-size: 12px; }
 .sv-val { color: var(--ink2); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sv-time { position: relative; height: 4px; background: var(--grid); border-radius: 2px; margin: 8px 0; }
@@ -72,7 +73,8 @@ table.sv-table tr.grp th { padding-top: 12px; font-size: 13px; font-weight: 600;
 table.sv-table tr.grp .sub { font-weight: 400; color: var(--ink2); font-size: 12px; }
 table.sv-table tr.first td { border-top: 1px solid var(--axis); }
 table.sv-table tr.grp + tr.first td { border-top: 0; }
-table.sv-table td.nm { min-width: 14em; }
+table.sv-table td.nm { min-width: 10em; }
+table.sv-table td.nm > a { white-space: nowrap; }
 table.sv-table td.st { white-space: nowrap; }
 table.sv-table td.nm .ttl { margin-left: 6px; color: var(--ink2); }
 table.sv-table td.unk { color: var(--ink2); font-style: italic; }

@@ -1247,9 +1247,9 @@ says which and how to fix it.
   tickets whose points were never read ("1 with points unknown"); neither
   counts as zero.
 - **Tickets.** Grouped by status category, then assignee: key and summary,
-  assignee, points, status, linked PRs (`◇` draft, `○` open and awaiting
-  review, `✓` approved, `●` merged, `✕` closed; hover for whose move it
-  is), and [mismatches](#attention-facts) marked `!`.
+  assignee, [mismatches](#attention-facts) marked `!`, linked PRs (`◇`
+  draft, `○` open and awaiting review, `✓` approved, `●` merged, `✕`
+  closed; hover for whose move it is), points and status.
 - **Filtering.** Clicking a points label or bar part applies
   `status_category:<c>`; clicking a mismatch applies `mismatch:<code>`.
   Tickets outside the query are dimmed, so the sprint stays whole;

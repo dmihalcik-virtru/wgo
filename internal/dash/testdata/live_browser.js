@@ -1176,6 +1176,9 @@ async function sprintChecks(sprintURL) {
   await send("Page.navigate", { url: "about:blank" });
   await send("Page.navigate", { url: sprintURL + "#view=sprint" });
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('.sv-head')", "the sprint view");
+  // Earlier suites fill Chrome's 50-entry session history, beyond which
+  // Back can leave the page; start this one's afresh.
+  await send("Page.resetNavigationHistory");
   const q = () => evaluate("window.__wgoStore.query");
   const text = (sel) => evaluate("(() => { const e = document.querySelector(" + JSON.stringify(sel) + "); return e ? e.textContent : null })()");
   const rowsOf = () => evaluate("Array.from(document.querySelectorAll('.sv-table tr[data-id]')).map(tr => (tr.querySelector('td.nm a') || tr.querySelector('td.nm')).textContent.split(' ')[0] + (tr.classList.contains('out') ? ':out' : '') + (tr.classList.contains('sel') ? ':sel' : ''))");
@@ -1190,7 +1193,7 @@ async function sprintChecks(sprintURL) {
   check((await evaluate("getComputedStyle(document.querySelector('.sv-pts')).display")) === "flex", "the addon's stylesheet (live-sprint.css) applies under the CSP");
   const labels = await evaluate("Array.from(document.querySelectorAll('.sv-plabels .plab')).map(b => b.textContent)");
   check(labels.join("|") === "Done3 pts · 1 ticket|In Progress15 pts · 3 tickets|To Do0 pts · 2 tickets", "direct labels: " + labels.join("|"));
-  const placed = await evaluate("(() => { const bar = document.querySelector('.sv-pts').getBoundingClientRect(), segs = Array.from(document.querySelectorAll('.sv-pts .seg')).map(s => s.getBoundingClientRect()), ls = Array.from(document.querySelectorAll('.plab')).map(b => b.getBoundingClientRect()); return { placed: document.querySelector('.sv-plabels').classList.contains('placed'), ip: ls[1].left >= segs[1].left - 1 && ls[1].left < segs[1].right, overlap: ls[0].right > ls[1].left || ls[1].right > ls[2].left, inside: ls[2].right <= bar.right + 1 } })()");
+  const placed = await evaluate("(() => { const bar = document.querySelector('.sv-pts').getBoundingClientRect(), segs = Array.from(document.querySelectorAll('.sv-pts .seg')).map(s => s.getBoundingClientRect()), ls = Array.from(document.querySelectorAll('.plab')).map(b => b.getBoundingClientRect()); return { placed: document.querySelector('.sv-plabels').classList.contains('placed'), ip: ls[1].left >= segs[1].left - 1 && ls[1].left < segs[1].right, overlap: ls[0].right > ls[1].left || ls[1].right > ls[2].left, inside: ls[2].right <= document.querySelector('.sv-plabels').getBoundingClientRect().right + 1 } })()");
   check(placed.placed && placed.ip && !placed.overlap && placed.inside, "labels sit under their segments without overlapping: " + JSON.stringify(placed));
   check((await text(".sv-apart")) === "Not in the points: 1 unestimated · 1 with points unknown", "unestimated counted apart from unknown: " + (await text(".sv-apart")));
   check((await rowsOf()).join() === "TEAM-102,TEAM-101,TEAM-103,TEAM-105,TEAM-104,TEAM-106", "grouped by category, then assignee: " + (await rowsOf()));
@@ -1205,13 +1208,16 @@ async function sprintChecks(sprintURL) {
   check((await text(".sv-goal")) === "no sprint goal" && (await evaluate("document.querySelector('.sv-goal').classList.contains('none')")), "a sprint without a goal says so");
   // The fixture's in_progress_idle mismatch sits on TEAM-107 here.
   check((await click(".sv-table tr[data-id='ticket:jira:TEAM-107'] .mmb[data-code='in_progress_idle']")) === "mismatch:in_progress_idle", "the idle mismatch filters");
-  await evaluate("window.__wgoStore.setQuery('', { commit: true })");
-  for (let i = 0; i < 3; i++) { await evaluate("history.back()"); await sleep(300); }
-  check(!(await evaluate("location.hash")).includes("sprint=") && (await text(".sv-head h2")) === "Sprint 12", "Back returns to the default sprint");
+  // Back steps through both.
+  await evaluate("history.back()"); await sleep(300);
+  check((await q()) === "" && (await evaluate("location.hash")).includes("sprint=1240"), "Back undoes the mismatch click: " + (await evaluate("location.hash")));
+  await evaluate("history.back()"); await sleep(300);
+  check(!(await evaluate("location.hash")).includes("sprint=") && (await text(".sv-head h2")) === "Sprint 12", "Back returns to the default sprint: " + (await evaluate("location.hash")));
 
-  // Every gh-99 mismatch appears on its ticket and filters when clicked;
+  // Every known gh-99 mismatch appears on its ticket and filters when clicked;
   // tickets outside the query are dimmed, not hidden; a second click clears.
-  for (const [ticket, code] of [["TEAM-102", "ticket_done_code_open"], ["TEAM-103", "code_merged_ticket_open"], ["TEAM-105", "in_progress_no_code"], ["TEAM-106", "unassigned_in_sprint"]]) {
+  check((await evaluate("document.querySelector(\".sv-table tr[data-id='ticket:jira:TEAM-105'] td.unk\").title")).includes("github_inventory"), "incomplete inventory is shown as unknown on TEAM-105");
+  for (const [ticket, code] of [["TEAM-102", "ticket_done_code_open"], ["TEAM-103", "code_merged_ticket_open"], ["TEAM-106", "unassigned_in_sprint"]]) {
     const sel = ".sv-table tr[data-id='ticket:jira:" + ticket + "'] .mmb[data-code='" + code + "']";
     check((await evaluate("document.querySelectorAll(" + JSON.stringify(sel) + ").length")) === 1, code + " on " + ticket);
     check((await click(sel)) === "mismatch:" + code, code + " applies mismatch:" + code);
@@ -1267,19 +1273,21 @@ async function sprintChecks(sprintURL) {
   await key("ArrowDown"); await key("ArrowDown", true);
   await key("Enter", true);
   check((await evaluate("Array.from(window.__wgoStore.selection).sort().join()")) === "ticket:jira:TEAM-103,ticket:jira:TEAM-105", "Shift+ArrowDown moves without selecting; Shift+Enter adds");
+  await key("ArrowUp");
+  check((await active()) === "row:ticket:jira:TEAM-103", "ArrowUp returns to a row with a known mismatch");
   await key("Tab");
-  check((await active()) === "link:ticket:jira:TEAM-105", "Tab enters the focused row's links: " + (await active()));
+  check((await active()) === "link:ticket:jira:TEAM-103", "Tab enters the focused row's links: " + (await active()));
   await key("Tab");
-  check((await active()) === "mm:ticket:jira:TEAM-105:in_progress_no_code", "and its mismatch: " + (await active()));
+  check((await active()) === "mm:ticket:jira:TEAM-103:code_merged_ticket_open", "and its mismatch: " + (await active()));
   await key("Enter");
-  check((await q()) === "status_category:in_progress;mismatch:in_progress_no_code" && (await active()) === "mm:ticket:jira:TEAM-105:in_progress_no_code", "Enter on a mismatch adds its clause; the focus stays: " + (await q()) + " " + (await active()));
+  check((await q()) === "status_category:in_progress;mismatch:code_merged_ticket_open" && (await active()) === "mm:ticket:jira:TEAM-103:code_merged_ticket_open", "Enter on a mismatch adds its clause; the focus stays: " + (await q()) + " " + (await active()));
 
   // Copy as Markdown asks /api/extract for the sprint summary.
   await send("Runtime.evaluate", { expression: "Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Copy as Markdown').click()", userGesture: true });
   await waitFor("document.querySelector('.status').textContent.startsWith('Copied') || document.querySelector('.status').textContent.includes('failed') || !document.querySelector('.copyout').hidden", "the sprint copy");
   const clip = await evaluate("navigator.clipboard.readText()", { userGesture: true });
-  const served = await evaluate("fetch('/api/extract?view=sprint&sprint=1234&q=' + encodeURIComponent('status_category:in_progress;mismatch:in_progress_no_code')).then(r => r.text())");
-  check(clip === served && clip.startsWith("## Sprint 12\n") && clip.includes("Query: `status_category:in_progress;mismatch:in_progress_no_code`") && clip.includes("· sprint 1234 on board 42"), "the copy is the sprint summary: " + clip.slice(0, 160));
+  const served = await evaluate("fetch('/api/extract?view=sprint&sprint=1234&q=' + encodeURIComponent('status_category:in_progress;mismatch:code_merged_ticket_open')).then(r => r.text())");
+  check(clip === served && clip.startsWith("## Sprint 12\n") && clip.includes("Query: `status_category:in_progress;mismatch:code_merged_ticket_open`") && clip.includes("· sprint 1234 on board 42"), "the copy is the sprint summary: " + clip.slice(0, 160));
   // Whose move is on the PR link itself, so the keyboard reaches it.
   const prLink = await evaluate("(() => { const a = document.querySelector(\".sv-table tr[data-id='ticket:jira:TEAM-102'] .pr a\"); return a ? [a.title, a.getAttribute('aria-label')] : [] })()");
   check(prLink.length === 2 && /\nWhose move: /.test(prLink[0]) && /\. Whose move: /.test(prLink[1]), "whose move on the PR link: " + JSON.stringify(prLink));
