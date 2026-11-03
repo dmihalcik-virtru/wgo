@@ -95,6 +95,10 @@ type Snapshot struct {
 	// (Counts.Days), when known; queries count days in it too, so a
 	// timestamp across a DST change lands on its own local day.
 	Timezone string `json:"timezone,omitempty"`
+	// CheckStats lists, per repository (lowercased owner/repo), how each
+	// check fared on the open PRs and whether it fails everywhere there
+	// (gh-99). Omitted when no open PR reports its checks.
+	CheckStats map[string][]CheckStat `json:"check_stats,omitempty"`
 }
 
 // SourceStatus is the freshness of one data source. For remote sources the
@@ -296,6 +300,9 @@ type PRInfo struct {
 	// FetchedAt is when the PR's data was fetched: the older fetch of its
 	// sources, as Freshness is the worse of theirs.
 	FetchedAt time.Time `json:"fetched_at,omitzero"`
+	// Facts are the derived attention facts (gh-99): whose move it is and
+	// why, CI, size and staleness. Set at the end of collection.
+	Facts *PRFacts `json:"facts,omitempty"`
 }
 
 // TicketInfo describes a Jira or GitHub issue ticket.
@@ -340,6 +347,9 @@ type TicketInfo struct {
 	UpdatedAt  time.Time `json:"updated_at,omitzero"`
 	// AssigneeID is the assignee's account ID, for matching people.
 	AssigneeID string `json:"assignee_id,omitempty"`
+	// Facts are the derived facts (gh-99): linked PRs and where Jira and
+	// the code disagree. Set at the end of collection.
+	Facts *TicketFacts `json:"facts,omitempty"`
 }
 
 // AgentInfo describes a gh-72 agent session, read only.

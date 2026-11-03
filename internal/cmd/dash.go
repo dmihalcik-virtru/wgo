@@ -260,6 +260,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	if err != nil {
 		return err
 	}
+	facts, _ := dashFactThresholds(cfg.Dash.Facts)
 	collector := dash.NewCollector(dash.Config{
 		JJ:          jj.NewCLI(),
 		Discover:    discovery.FromConfig(cfg).DiscoverAll,
@@ -286,6 +287,9 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		GitHubUnavailable:  githubUnavailable(),
 		// The board whose sprints the dash shows (gh-98).
 		JiraBoard: cfg.Jira.Board,
+		// Thresholds of the derived facts (gh-99), checked by
+		// applyDashConfig.
+		Facts: facts,
 	})
 	opts := dash.Options{Dir: filepath.Join(st.BaseDir(), "cache", "dash"), Collector: collector}
 	if serving {
@@ -527,7 +531,39 @@ func applyDashConfig(dc config.DashConfig, flagChanged func(name string) bool) e
 			return fmt.Errorf("[dash] ticket_prefixes in ~/.wgo/config.toml has %q, which is not a Jira project key; fix it to the letters before the dash of a ticket ID, such as \"TEAM\" for TEAM-123", p)
 		}
 	}
+	if _, err := dashFactThresholds(dc.Facts); err != nil {
+		return err
+	}
 	return dc.ValidatePeople()
+}
+
+// dashFactThresholds is [dash.facts], with the default for each key left
+// unset. A value out of range is an error naming the key, its range and the
+// default.
+func dashFactThresholds(fc config.DashFactsConfig) (dash.FactThresholds, error) {
+	th := dash.DefaultFactThresholds()
+	if v := fc.StaleDays; v != nil {
+		if *v < dash.MinStaleDays || *v > dash.MaxStaleDays {
+			return th, fmt.Errorf("[dash.facts] stale_days in ~/.wgo/config.toml must be between %d and %d days, got %d; fix it, or remove it to use the %d default",
+				dash.MinStaleDays, dash.MaxStaleDays, *v, dash.DefaultStaleDays)
+		}
+		th.StaleDays = *v
+	}
+	if v := fc.SystemicRatio; v != nil {
+		if !(*v > 0 && *v <= 1) {
+			return th, fmt.Errorf("[dash.facts] systemic_ratio in ~/.wgo/config.toml must be greater than 0 and at most 1 (the share of open PRs a check fails on), got %v; fix it, or remove it to use the %v default",
+				*v, dash.DefaultSystemicRatio)
+		}
+		th.SystemicRatio = *v
+	}
+	if v := fc.SystemicMinPRs; v != nil {
+		if *v < dash.MinSystemicMinPRs || *v > dash.MaxSystemicMinPRs {
+			return th, fmt.Errorf("[dash.facts] systemic_min_prs in ~/.wgo/config.toml must be between %d and %d PRs, got %d; fix it, or remove it to use the %d default",
+				dash.MinSystemicMinPRs, dash.MaxSystemicMinPRs, *v, dash.DefaultSystemicMinPRs)
+		}
+		th.SystemicMinPRs = *v
+	}
+	return th, nil
 }
 
 // Bounds of [dash] inventory_ttl_seconds. GitHub's search rate limits make

@@ -327,6 +327,24 @@ login = "bobby"
 	assert.NoError(t, Get().Dash.ValidatePeople())
 }
 
+// TestDashFacts verifies [dash.facts] decodes, an integer ratio included,
+// and that an unset key stays nil so the default applies.
+func TestDashFacts(t *testing.T) {
+	writeConfig(t, "[dash.facts]\nstale_days = 14\nsystemic_ratio = 1\n")
+	require.NoError(t, Init())
+	f := Get().Dash.Facts
+	require.NotNil(t, f.StaleDays)
+	require.NotNil(t, f.SystemicRatio)
+	assert.Equal(t, 14, *f.StaleDays)
+	assert.Equal(t, 1.0, *f.SystemicRatio)
+	assert.Nil(t, f.SystemicMinPRs)
+
+	writeConfig(t, "[dash.facts]\nsystemic_min_prs = 2.5\n")
+	err := Init()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "whole number")
+}
+
 func TestValidatePeople(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

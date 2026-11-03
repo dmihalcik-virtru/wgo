@@ -390,6 +390,11 @@ func TestApplyDashConfig(t *testing.T) {
 		{name: "inventory ttl negative", dc: config.DashConfig{InventoryTTLSeconds: -1}, flags: noDashFlags, wantErr: "[dash] inventory_ttl_seconds"},
 		{name: "ticket prefix with digits", dc: config.DashConfig{TicketPrefixes: []string{"TEAM", "AB2"}}, flags: noDashFlags, wantErr: "[dash] ticket_prefixes"},
 		{name: "ticket prefix with a dash", dc: config.DashConfig{TicketPrefixes: []string{"TEAM-123"}}, json: true, flags: noDashFlags, wantErr: "[dash] ticket_prefixes"},
+		{name: "facts at their bounds", dc: config.DashConfig{Facts: config.DashFactsConfig{StaleDays: ptr(3650), SystemicRatio: ptr(1.0), SystemicMinPRs: ptr(2)}}, flags: noDashFlags, wantPort: 1111, wantDays: 2},
+		{name: "stale_days zero", dc: config.DashConfig{Facts: config.DashFactsConfig{StaleDays: ptr(0)}}, json: true, flags: noDashFlags, wantErr: "[dash.facts] stale_days in ~/.wgo/config.toml must be between 1 and 3650 days, got 0"},
+		{name: "systemic_ratio zero", dc: config.DashConfig{Facts: config.DashFactsConfig{SystemicRatio: ptr(0.0)}}, flags: noDashFlags, wantErr: "[dash.facts] systemic_ratio in ~/.wgo/config.toml must be greater than 0 and at most 1"},
+		{name: "systemic_ratio as a percentage", dc: config.DashConfig{Facts: config.DashFactsConfig{SystemicRatio: ptr(60.0)}}, flags: noDashFlags, wantErr: "got 60"},
+		{name: "systemic_min_prs one", dc: config.DashConfig{Facts: config.DashFactsConfig{SystemicMinPRs: ptr(1)}}, flags: noDashFlags, wantErr: "[dash.facts] systemic_min_prs in ~/.wgo/config.toml must be between 2 and 1000 PRs, got 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			saveDashFlags(t)
@@ -408,6 +413,19 @@ func TestApplyDashConfig(t *testing.T) {
 				t.Fatalf("port %d days %d, want %d and %d", dashPort, dashDays, tc.wantPort, tc.wantDays)
 			}
 		})
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestDashFactThresholds(t *testing.T) {
+	th, err := dashFactThresholds(config.DashFactsConfig{})
+	if err != nil || th != dash.DefaultFactThresholds() {
+		t.Fatalf("unset: %+v, %v", th, err)
+	}
+	th, err = dashFactThresholds(config.DashFactsConfig{StaleDays: ptr(14), SystemicRatio: ptr(0.75)})
+	if err != nil || th != (dash.FactThresholds{StaleDays: 14, SystemicRatio: 0.75, SystemicMinPRs: dash.DefaultSystemicMinPRs}) {
+		t.Fatalf("set: %+v, %v", th, err)
 	}
 }
 

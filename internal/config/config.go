@@ -85,6 +85,9 @@ type DashConfig struct {
 	// filter (dash.MergeConfigFilters says why) instead of breaking every
 	// command.
 	Filters map[string]any `mapstructure:"filters"`
+	// Facts are the thresholds of the derived attention facts (gh-99), from
+	// [dash.facts].
+	Facts DashFactsConfig `mapstructure:"facts"`
 }
 
 // DashPerson is one [[dash.people]] entry.
@@ -95,6 +98,20 @@ type DashPerson struct {
 	Jira string `mapstructure:"jira"`
 	// Name is a display name. Optional.
 	Name string `mapstructure:"name"`
+}
+
+// DashFactsConfig is [dash.facts]. Each key is a pointer so that an unset
+// key (its default) differs from an explicit zero, which wgo dash rejects
+// along with any other out-of-range value.
+type DashFactsConfig struct {
+	// StaleDays is how long an open PR, or the code linked to an
+	// in-progress ticket, may go without an update before it is stale.
+	StaleDays *int `mapstructure:"stale_days"`
+	// SystemicRatio is the share of a repository's open PRs, among those
+	// that ran a check, on which it must fail to count as failing
+	// everywhere; SystemicMinPRs is how many of them it must fail on.
+	SystemicRatio  *float64 `mapstructure:"systemic_ratio"`
+	SystemicMinPRs *int     `mapstructure:"systemic_min_prs"`
 }
 
 // githubLoginRe matches a GitHub login: letters, digits and hyphens, plus the
@@ -650,6 +667,13 @@ gh_stack = "auto"
 # github = "alice"              # GitHub login (required)
 # jira = "alice@example.com"    # Jira account ID, email or currentUser() (optional)
 # name = "Alice"                # display name (optional)
+#
+# Thresholds of the derived facts: whose move a PR is, and which checks
+# fail on most open PRs in a repository rather than because of one PR.
+# [dash.facts]
+# stale_days = 30               # an open PR not updated this long is stale (1 to 3650)
+# systemic_ratio = 0.6          # a check failing on this share of a repo's open PRs fails everywhere (above 0, at most 1)
+# systemic_min_prs = 3          # ...and on at least this many of them (2 to 1000)
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)
