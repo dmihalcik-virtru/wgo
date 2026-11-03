@@ -1,6 +1,7 @@
 package dash
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/virtru/wgo/internal/inventory"
 	"github.com/virtru/wgo/internal/issuecache"
 	"github.com/virtru/wgo/internal/jiracache"
 	"github.com/virtru/wgo/internal/prcache"
@@ -22,6 +24,11 @@ const (
 	JobPR    JobKind = "pr"
 	JobJira  JobKind = "jira"
 	JobIssue JobKind = "issue"
+	// JobInventory fetches one person's PR inventory set (gh-97).
+	JobInventory JobKind = "inventory"
+	// JobIdentity looks up the authenticated GitHub login, which the
+	// inventory needs to know whose PRs to fetch.
+	JobIdentity JobKind = "identity"
 )
 
 // Job is one remote cache entry to refresh.
@@ -33,6 +40,10 @@ type Job struct {
 	Ticket string
 	// GitHub issue lookups.
 	Issue issuecache.Key
+	// Inventory lookups: the set, and the start of the closed-recent
+	// window. Since is not part of the key: a set is fetched once.
+	Inventory inventory.Key
+	Since     time.Time
 }
 
 func (j Job) key() string {
@@ -41,6 +52,10 @@ func (j Job) key() string {
 		return "pr\x00" + j.RemoteURL + "\x00" + j.RepoPath + "\x00" + j.Branch
 	case JobJira:
 		return "jira\x00" + j.Ticket
+	case JobInventory:
+		return "inventory\x00" + strings.ToLower(j.Inventory.String())
+	case JobIdentity:
+		return "identity"
 	default:
 		return "issue\x00" + j.Issue.String()
 	}
@@ -52,6 +67,8 @@ type Fetchers struct {
 	PR    prcache.Fetcher
 	Jira  jiracache.Fetcher
 	Issue issuecache.Fetcher
+	// Inventory runs inventory searches and identity lookups.
+	Inventory inventory.Fetcher
 	// Missing optionally says why a kind has no fetcher ("acli not on
 	// PATH"), so a skipped batch can explain itself.
 	Missing map[JobKind]string
@@ -64,6 +81,10 @@ func (j Job) describe() string {
 		return "pr " + j.Branch
 	case JobJira:
 		return "jira " + j.Ticket
+	case JobInventory:
+		return "inventory " + j.Inventory.String()
+	case JobIdentity:
+		return "GitHub identity"
 	default:
 		return "issue " + j.Issue.String()
 	}
@@ -91,6 +112,11 @@ type RefresherOptions struct {
 type Refresher struct {
 	f    Fetchers
 	opts RefresherOptions
+	// ctx is cancelled by Close, so the long fetches that can take it (an
+	// inventory set is many pages, each retried) stop instead of holding
+	// shutdown up.
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	queue chan *inflight
 	wg    sync.WaitGroup
@@ -138,6 +164,19 @@ type BatchResult struct {
 	Dropped int
 }
 
+// add folds another batch's result into r.
+func (r *BatchResult) add(o BatchResult) {
+	r.Jobs += o.Jobs
+	r.Dropped += o.Dropped
+	r.Failed = append(r.Failed, o.Failed...)
+	for k, n := range o.Skipped {
+		if r.Skipped == nil {
+			r.Skipped = map[JobKind]int{}
+		}
+		r.Skipped[k] += n
+	}
+}
+
 // Err summarises the failed and dropped jobs, or returns nil when every job
 // ran cleanly.
 func (r BatchResult) Err() error {
@@ -174,6 +213,7 @@ func NewRefresher(f Fetchers, opts RefresherOptions) *Refresher {
 		opts.Backoff = 30 * time.Second
 	}
 	r := &Refresher{f: f, opts: opts, queue: make(chan *inflight, opts.Queue), pending: map[string]*inflight{}}
+	r.ctx, r.cancel = context.WithCancel(context.Background())
 	for i := 0; i < opts.Workers; i++ {
 		r.wg.Add(1)
 		go r.work()
@@ -240,6 +280,8 @@ func (r *Refresher) supports(j Job) bool {
 		return r.f.Jira != nil
 	case JobIssue:
 		return r.f.Issue != nil
+	case JobInventory, JobIdentity:
+		return r.f.Inventory != nil
 	}
 	return false
 }
@@ -248,9 +290,10 @@ func (r *Refresher) supports(j Job) bool {
 var errRefresherClosed = errors.New("not run: the refresher was closed")
 
 // Close stops accepting jobs, fails the ones still queued without fetching
-// them, and waits for the running ones. A fetch cannot be cancelled, so
-// letting the queue drain would hold shutdown hostage to every pending
-// network call.
+// them, cancels the running fetches that take a context (inventory and
+// identity lookups), and waits for the running ones. The other fetches cannot
+// be cancelled, so letting the queue drain would hold shutdown hostage to
+// every pending network call.
 func (r *Refresher) Close() {
 	r.mu.Lock()
 	if r.closed {
@@ -260,6 +303,7 @@ func (r *Refresher) Close() {
 	r.closed = true
 	close(r.queue)
 	r.mu.Unlock()
+	r.cancel()
 	r.wg.Wait()
 }
 
@@ -301,8 +345,36 @@ func (r *Refresher) run(j Job) error {
 		if r.opts.IgnoreLeases || issuecache.LockRefresh(j.Issue, r.opts.Backoff) {
 			return issuecache.Refresh(r.f.Issue, j.Issue).Err
 		}
+	case JobInventory:
+		if r.opts.IgnoreLeases || inventory.LockRefresh(j.Inventory, r.opts.Backoff) {
+			_, err := inventory.Refresh(r.ctx, r.f.Inventory, j.Inventory, j.Since)
+			r.refreshStaleIdentity()
+			return err
+		}
+	case JobIdentity:
+		if r.opts.IgnoreLeases || inventory.LockIdentityRefresh(r.opts.Backoff) {
+			_, err := inventory.RefreshIdentity(r.ctx, r.f.Inventory)
+			return err
+		}
 	}
 	return nil
+}
+
+// refreshStaleIdentity re-reads the authenticated login once its cache has
+// aged past inventory.IdentityTTL. Collections queue JobIdentity only while
+// the login is unknown, so a known one is kept current from here, beside the
+// inventory refreshes that rely on it. A failure keeps the old login and is
+// only logged: the inventory job it rides on did not fail.
+func (r *Refresher) refreshStaleIdentity() {
+	if _, st := inventory.ReadIdentity(inventory.IdentityTTL, time.Now()); st == inventory.Fresh {
+		return
+	}
+	if !inventory.LockIdentityRefresh(r.opts.Backoff) {
+		return
+	}
+	if _, err := inventory.RefreshIdentity(r.ctx, r.f.Inventory); err != nil {
+		logf("dash: refresh GitHub identity: %v", err)
+	}
 }
 
 // skipSummary describes the jobs res skipped for want of a fetcher, or ""
@@ -323,6 +395,10 @@ func (r *Refresher) skipSummary(res BatchResult) string {
 			label = "GitHub issue"
 		case JobJira:
 			label = "Jira"
+		case JobInventory:
+			label = "GitHub PR inventory"
+		case JobIdentity:
+			label = "GitHub identity"
 		}
 		p := fmt.Sprintf("%d %s lookups skipped", res.Skipped[k], label)
 		if why := r.f.Missing[k]; why != "" {
