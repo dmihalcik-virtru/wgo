@@ -517,7 +517,17 @@ func newTicketCase(t *TicketInfo) *ticketCase {
 		t.Freshness = Fresh
 	}
 	id := jiraTicketID(t.Key)
-	return &ticketCase{s: &Snapshot{GeneratedAt: factsNow, Nodes: []Node{
+	return &ticketCase{s: &Snapshot{GeneratedAt: factsNow, People: factPeople, Sources: map[string]SourceStatus{
+		SourceJJ: {State: Fresh},
+		SourceGitHubInventory: {State: Fresh, Parts: []SourcePart{
+			{Name: "alice/open-authored", State: Fresh},
+			{Name: "alice/review-requested", State: Fresh},
+			{Name: "alice/closed-recent", State: Fresh},
+			{Name: "bob/open-authored", State: Fresh},
+			{Name: "bob/review-requested", State: Fresh},
+			{Name: "bob/closed-recent", State: Fresh},
+		}},
+	}, Nodes: []Node{
 		{ID: id, Kind: KindTicket, Label: t.Key, Ticket: t},
 		{ID: "sprint:12", Kind: KindSprint, Label: "Sprint 12", Sprint: &SprintInfo{ID: 12, Name: "Sprint 12", State: SprintActive}},
 	}}, id: id}
@@ -550,6 +560,30 @@ func (c *ticketCase) inSprint() *ticketCase {
 
 func (c *ticketCase) facts() *TicketFacts {
 	return ComputeFacts(c.s, factPeople, DefaultFactThresholds(), factsNow).Tickets[c.id]
+}
+
+func TestAbsentCodeNeedsCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*ticketCase)
+		want []string
+	}{
+		{"missing inventory", func(c *ticketCase) { delete(c.s.Sources, SourceGitHubInventory) }, []string{SourceGitHubInventory}},
+		{"incomplete inventory", func(c *ticketCase) { c.s.Sources[SourceGitHubInventory].Parts[3].Incomplete = true }, []string{SourceGitHubInventory}},
+		{"truncated inventory", func(c *ticketCase) { c.s.Sources[SourceGitHubInventory].Parts[4].Truncated = true }, []string{SourceGitHubInventory}},
+		{"stale inventory", func(c *ticketCase) { c.s.Sources[SourceGitHubInventory].Parts[0].State = Stale }, []string{SourceGitHubInventory}},
+		{"missing local work", func(c *ticketCase) { delete(c.s.Sources, SourceJJ) }, []string{SourceJJ}},
+		{"both missing", func(c *ticketCase) { c.s.Sources = nil }, []string{SourceJJ, SourceGitHubInventory}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTicketCase(&TicketInfo{Key: "TEAM-1", Status: "In Progress", StatusCategory: StatusInProgress, Assignee: "Alice", Sprints: activeSprint})
+			tc.edit(c)
+			f := c.facts()
+			if f.Mismatches != nil || !reflect.DeepEqual(f.Uncertain, tc.want) {
+				t.Fatalf("facts %+v, want no mismatch and uncertain %v", f, tc.want)
+			}
+		})
+	}
 }
 
 var activeSprint = []SprintRef{{ID: 12, Name: "Sprint 12", State: SprintActive}}
@@ -724,7 +758,8 @@ func TestFactsOnTheFixture(t *testing.T) {
 	if st := stat("acme/web", "docs-preview"); st.Unlisted != 1 {
 		t.Errorf("docs-preview: %+v", st)
 	}
-	// Each mismatch code holds on one fixture ticket and fails on another.
+	// The fixture's incomplete inventory must not claim missing code for
+	// TEAM-105. The fully covered ticket cases above exercise that code.
 	holds := map[string][]string{}
 	for _, n := range s.Nodes {
 		if n.Ticket != nil && n.Ticket.Facts != nil {
@@ -736,12 +771,14 @@ func TestFactsOnTheFixture(t *testing.T) {
 	want := map[string][]string{
 		MismatchCodeMergedTicketOpen: {"ticket:jira:TEAM-103"},
 		MismatchTicketDoneCodeOpen:   {"ticket:jira:TEAM-102"},
-		MismatchInProgressNoCode:     {"ticket:jira:TEAM-105"},
 		MismatchInProgressIdle:       {"ticket:jira:TEAM-107"},
 		MismatchUnassignedInSprint:   {"ticket:jira:TEAM-106"},
 	}
 	if !reflect.DeepEqual(holds, want) {
 		t.Errorf("mismatches on the fixture: %v, want %v", holds, want)
+	}
+	if f := s.Node("ticket:jira:TEAM-105").Ticket.Facts; f.Mismatches != nil || !slices.Equal(f.Uncertain, []string{SourceGitHubInventory}) {
+		t.Errorf("TEAM-105 should name incomplete inventory: %+v", f)
 	}
 	// TEAM-101 is in progress in the active sprint, assigned, with open and
 	// merged PRs and recent work: no code holds for it.
@@ -788,6 +825,8 @@ func TestEveryReasonAndMismatchHasEvidence(t *testing.T) {
 	p.Reviews = []Review{{Author: "bob", State: ReviewChangesRequested, SubmittedAt: day(24, 16)}}
 	p.ReviewDecision = ReviewChangesRequested
 	check("changes requested", prFacts(p, false, nil, factPeople, DefaultFactThresholds(), factsNow).Reasons)
+	noCode := newTicketCase(&TicketInfo{Key: "TEAM-1", Status: "In Progress", StatusCategory: StatusInProgress, Assignee: "Alice", Sprints: activeSprint})
+	check("covered ticket with no code", noCode.facts().Mismatches)
 	for _, c := range append(slices.Clone(reasonCodes), mismatchCodes...) {
 		if !seen[c] {
 			t.Errorf("no case produces %s", c)

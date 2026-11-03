@@ -1354,12 +1354,7 @@
         "created_at": "2026-10-15T09:30:00Z",
         "updated_at": "2026-10-23T09:00:00Z",
         "assignee_id": "acct-alice",
-        "facts": {
-          "mismatches": [
-            {"code": "in_progress_no_code", "evidence": "ticket In Progress in Sprint 12; no linked PR or workspace in the snapshot"}
-          ],
-          "linked_prs": []
-        }
+        "facts": {"linked_prs": [], "uncertain": ["github_inventory"]}
       }
     },
     {

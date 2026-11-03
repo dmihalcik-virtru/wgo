@@ -314,11 +314,29 @@ type factGraph struct {
 	bmWorkspaces map[string][]string
 	prBookmarks  map[string][]string
 	inSprint     map[string][]string
+	// Missing coverage prevents an absent edge from proving there is no
+	// tracked code for a ticket.
+	absenceUncertain []string
 }
 
 func newFactGraph(s *Snapshot) *factGraph {
 	g := &factGraph{byID: map[string]*Node{}, prTickets: map[string][]string{}, ticketSrc: map[string][]string{},
 		bmWorkspaces: map[string][]string{}, prBookmarks: map[string][]string{}, inSprint: map[string][]string{}}
+	if s.Sources[SourceJJ].State != Fresh {
+		g.absenceUncertain = append(g.absenceUncertain, SourceJJ)
+	}
+	covered := inventoryParts(s, func(p SourcePart) bool { return p.State == Fresh && !p.Truncated && !p.Incomplete })
+	inventoryComplete := len(s.People) > 0
+	for _, person := range s.People {
+		for _, set := range []string{InventoryOpenAuthored, InventoryReviewRequested, InventoryClosedRecent} {
+			if !covered[inventoryPart(person.Login, set)] {
+				inventoryComplete = false
+			}
+		}
+	}
+	if !inventoryComplete {
+		g.absenceUncertain = append(g.absenceUncertain, SourceGitHubInventory)
+	}
 	for i := range s.Nodes {
 		g.byID[s.Nodes[i].ID] = &s.Nodes[i]
 	}
@@ -876,9 +894,9 @@ func ticketFacts(id string, t *TicketInfo, g *factGraph, th FactThresholds, now 
 	}
 	category := func(c string) operand {
 		if t.StatusCategory == "" {
-			return operand{triUnknown, "status_category"}
+			return operand{triUnknown, []string{"status_category"}}
 		}
-		return operand{triOf(t.StatusCategory == c), ""}
+		return operand{t: triOf(t.StatusCategory == c)}
 	}
 
 	// Linked PRs' states.
@@ -896,7 +914,7 @@ func ticketFacts(id string, t *TicketInfo, g *factGraph, th FactThresholds, now 
 			open = append(open, n.Label+" "+st)
 		default:
 			// A PR of unknown state may be open, merged or closed.
-			unknown := operand{triUnknown, "state:" + n.Label}
+			unknown := operand{triUnknown, []string{"state:" + n.Label}}
 			if allClosed.t != triFalse {
 				allClosed = unknown
 			}
@@ -923,10 +941,13 @@ func ticketFacts(id string, t *TicketInfo, g *factGraph, th FactThresholds, now 
 		}
 	}
 	if active.t == triFalse && t.Sprints == nil {
-		active = operand{triUnknown, "sprints"}
+		active = operand{triUnknown, []string{"sprints"}}
 	}
 
 	hasCode := operand{t: triOf(len(prs) > 0 || len(workspaces) > 0)}
+	if hasCode.t == triFalse && len(g.absenceUncertain) > 0 {
+		hasCode = operand{triUnknown, g.absenceUncertain}
+	}
 
 	// Quiet: no activity on the linked PRs and workspaces for stale_days.
 	var latest time.Time
@@ -952,7 +973,7 @@ func ticketFacts(id string, t *TicketInfo, g *factGraph, th FactThresholds, now 
 	case !latest.IsZero() && latest.After(now.Add(-time.Duration(th.StaleDays)*24*time.Hour)):
 		quiet.t = triFalse
 	case unknownActivity:
-		quiet = operand{triUnknown, "activity"}
+		quiet = operand{triUnknown, []string{"activity"}}
 	}
 
 	// Unassigned: an empty assignee is known once Jira data was read.
@@ -960,7 +981,7 @@ func ticketFacts(id string, t *TicketInfo, g *factGraph, th FactThresholds, now 
 	if t.Assignee == "" && t.AssigneeID == "" {
 		unassigned.t = triTrue
 		if !t.Freshness.hasData() {
-			unassigned = operand{triUnknown, "assignee"}
+			unassigned = operand{triUnknown, []string{"assignee"}}
 		}
 	}
 
@@ -1007,7 +1028,7 @@ func ticketFacts(id string, t *TicketInfo, g *factGraph, th FactThresholds, now 
 // unknown.
 type operand struct {
 	t       tri
-	unknown string
+	unknown []string
 }
 
 func (o operand) not() operand { return operand{not3(o.t), o.unknown} }
@@ -1023,7 +1044,7 @@ func decide(unc *names, ops ...operand) tri {
 	if r == triUnknown {
 		for _, o := range ops {
 			if o.t == triUnknown {
-				unc.add(o.unknown)
+				unc.add(o.unknown...)
 			}
 		}
 	}

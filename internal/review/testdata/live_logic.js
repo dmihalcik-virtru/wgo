@@ -141,7 +141,12 @@ test("derived facts: details on demand, unknown spelled out (gh-99)", () => {
     ["Not known", "additions, deletions, requested_at:team:web"],
   ]);
   const lower = L.prFactsRows({ facts: { move: "reviewer", reasons: [], waiting_since: "2026-10-14T10:00:00Z", waiting_lower_bound: true, ci: "systemic_only", size: 0, size_bucket: "xs" } });
-  assert.deepEqual(lower.slice(1), [["Waiting since", "2026-10-14T10:00:00Z or earlier"], ["CI", "only checks that fail on most open PRs fail"], ["Size", "0 lines changed (xs)"]]);
+  assert.deepEqual(lower.slice(1), [["Waiting since", "2026-10-14T10:00:00Z or earlier"], ["CI", "only checks that fail across the repository fail"], ["Size", "0 lines changed (xs)"]]);
+  // With check_stats, the CI row gives the counts, never "most".
+  const sysPR = { repo: "acme/api", check_details: [{ name: "vendor-hsm-tests", state: "failure" }, { name: "build", state: "success" }], facts: { move: "reviewer", ci: "systemic_only" } };
+  const stats = { "acme/api": [{ name: "build", runs: 3, failures: 0, systemic: false }, { name: "vendor-hsm-tests", runs: 3, failures: 1, systemic: true }] };
+  assert.deepEqual(L.prFactsRows(sysPR, "", String, stats)[1], ["CI", "only checks failing across the repository fail: vendor-hsm-tests fails on 1 of 3 open PRs in acme/api"]);
+  assert.deepEqual(L.ticketFactsRows({ system: "jira", facts: { mismatches: [], linked_prs: [{ id: "pr:acme/api#7", ref: "acme/api#7" }] } })[0], ["Linked PRs", "acme/api#7 state unknown"]);
   assert.deepEqual(L.prFactsRows({ facts: {} })[0], ["Whose move", "unknown"]);
   assert.deepEqual(L.prFactsRows({ state: "open" }), [], "a snapshot from before gh-99 has no fact rows");
   assert.deepEqual(L.ticketFactsRows(node("ticket:jira:TEAM-99").ticket), [["Linked PRs", "none in the snapshot"], ["Mismatch: unassigned in sprint", "in Sprint 12 with no assignee"]]);
@@ -152,6 +157,19 @@ test("derived facts: details on demand, unknown spelled out (gh-99)", () => {
   assert.equal(L.factsTip(node("ticket:jira:TEAM-99")), "Jira vs code: unassigned in sprint");
   assert.equal(L.factsTip(node("ticket:jira:TEAM-123")), "");
   assert.equal(L.factsTip(node("pr:acme/api#38")), "");
+});
+
+test("the effort list's CI badge follows the derived facts (gh-99)", () => {
+  // A failure every open PR shares is neutral and says so; an own failure
+  // keeps the failure accent; without facts the rollup shows.
+  assert.deepEqual(L.ciBadge({ checks: "failure", facts: { ci: "systemic_only" } }), { text: "~ CI fails everywhere", cls: "ci-systemic" });
+  assert.deepEqual(L.ciBadge({ checks: "failure", facts: { ci: "failing" } }), { text: "CI failure", cls: "s-bad" });
+  assert.deepEqual(L.ciBadge({ checks: "failure" }), { text: "CI failure", cls: "s-bad" });
+  assert.deepEqual(L.ciBadge({ checks: "failure", facts: { ci: "unknown" } }), { text: "CI failure", cls: "s-bad" }, "unknown facts fall back on the rollup");
+  assert.deepEqual(L.ciBadge({ checks: "pending", facts: { ci: "pending" } }), { text: "CI pending", cls: "s-warn" });
+  assert.deepEqual(L.ciBadge({ checks: "success", facts: { ci: "green" } }), { text: "CI success", cls: "s-good" });
+  assert.deepEqual(L.ciBadge({ checks: "none", facts: { ci: "none" } }), { text: "no CI checks", cls: "" });
+  assert.deepEqual(L.ciBadge({}), { text: "CI not reported", cls: "f-unknown" });
 });
 
 test("sprints: state and dates, and their group's state text", () => {

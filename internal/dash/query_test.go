@@ -627,7 +627,7 @@ func TestFixtureTeamRequestIsMyMoveAndInMyInbox(t *testing.T) {
 		"waiting-reviewers": {"pr:acme/api#101", "pr:acme/api#102", "pr:acme/api#104", "pr:acme/web#202"},
 		"push-reviewers":    {"pr:acme/api#101", "pr:acme/api#102", "pr:acme/api#104", "pr:acme/web#201", "pr:acme/web#207"},
 		"nobody":            {"pr:acme/web#201", "pr:acme/web#207"},
-		"jira-out-of-sync":  {"ticket:jira:TEAM-102", "ticket:jira:TEAM-103", "ticket:jira:TEAM-105", "ticket:jira:TEAM-106", "ticket:jira:TEAM-107"},
+		"jira-out-of-sync":  {"ticket:jira:TEAM-102", "ticket:jira:TEAM-103", "ticket:jira:TEAM-106", "ticket:jira:TEAM-107"},
 	} {
 		if rows := run(name); !slices.Equal(slices.Sorted(slices.Values(rows)), want) {
 			t.Errorf("%s rows %v, want %v", name, rows, want)
