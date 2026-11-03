@@ -845,8 +845,8 @@ SHOT_SETS.gh103 = [
   ["scatter-dark.png", "dark", "#view=scatter&q=kind:pr&sel=pr:acme/web%23203"],
   ["scatter-age-median-light.png", "light", "#view=scatter&q=kind:pr&x=age&median=on"],
   ["scatter-age-median-dark.png", "dark", "#view=scatter&q=kind:pr&x=age&median=on"],
-  ["ci-light.png", "light", "#view=ci&q=kind:pr&sel=pr:acme/api%23101&check=vendor-hsm-tests"],
-  ["ci-dark.png", "dark", "#view=ci&q=kind:pr&sel=pr:acme/api%23101&check=vendor-hsm-tests"],
+  ["ci-light.png", "light", "#view=ci&q=kind:pr&sel=pr:acme/api%23101&check=pr:acme/api%23101%7Cvendor-hsm-tests"],
+  ["ci-dark.png", "dark", "#view=ci&q=kind:pr&sel=pr:acme/api%23101&check=pr:acme/api%23101%7Cvendor-hsm-tests"],
 ];
 for (const type of ["protanopia", "deuteranopia", "tritanopia", "achromatopsia"]) {
   for (const scheme of ["light", "dark"]) {
@@ -1034,8 +1034,27 @@ async function gh103Checks(analysisURL) {
   check((await evaluate("window.__wgoStore.query")) === "kind:pr", "again removes it");
   await clickCell("td[data-pr='pr:acme/api#101'][data-check='vendor-hsm-tests']"); await sleep(150);
   const det = await evaluate("({ sel: Array.from(window.__wgoStore.selection).join(), hash: decodeURIComponent(location.hash), text: document.querySelector('.detail .ckd') ? document.querySelector('.detail .ckd').textContent : '', href: document.querySelector('.detail .ckd a') ? document.querySelector('.detail .ckd a').href : '', ck: document.querySelectorAll('td.cg-cell.ck').length })");
-  check(det.sel === "pr:acme/api#101" && det.hash.includes("check=vendor-hsm-tests") && det.text === "Check vendor-hsm-tests: failure · details" && det.href.endsWith("/runs/7100004") && det.ck === 1,
+  check(det.sel === "pr:acme/api#101" && det.hash.includes("check=pr:acme/api#101|vendor-hsm-tests") && det.text === "Check vendor-hsm-tests: failure · details" && det.href.endsWith("/runs/7100004") && det.ck === 1,
     "a cell selects the PR and the detail panel links its check: " + JSON.stringify(det));
+  // The check belongs to that PR in the CI grid: another view hides it, and
+  // any selection the grid did not make (a scatter click, Esc) clears it.
+  const ckd = () => evaluate("document.querySelector('.detail .ckd') ? document.querySelector('.detail .ckd').textContent : ''");
+  const hashCheck = async () => /(^|&)check=/.test((await evaluate("location.hash")).slice(1));
+  await evaluate("window.__wgoStore.setState({ view: 'scatter', x: 'age' }, { commit: true })"); await sleep(250);
+  check((await ckd()) === "" && (await hashCheck()), "in another view the detail panel leaves the check out (the URL keeps it with its PR)");
+  const m208 = (await scMarkBoxes(".sc-marks .sc-mk[data-id='pr:acme/web#208']"))[0];
+  await mouse([[m208.x, m208.y]]);
+  check((await sortedSel()).join() === "pr:acme/web#208" && !(await hashCheck()) && (await ckd()) === "", "a scatter click on another PR drops the check: " + (await evaluate("location.hash")));
+  await evaluate("window.__wgoStore.setState({ view: 'ci', x: '' }, { commit: true })"); await sleep(200);
+  check((await ckd()) === "", "back in the grid with acme/web#208 selected: no stale check");
+  await clickCell("td[data-pr='pr:acme/api#101'][data-check='vendor-hsm-tests']"); await sleep(150);
+  check((await ckd()).startsWith("Check vendor-hsm-tests"), "the cell again");
+  await key("Escape");
+  check(!(await hashCheck()) && (await evaluate("window.__wgoStore.selection.size")) === 0, "Esc clears the selection and its check");
+  await gh103Nav(analysisURL, "#view=ci&q=kind:pr&sel=pr:acme/web%23208&check=pr:acme/api%23101%7Cvendor-hsm-tests", "!!document.querySelector('table.cg')");
+  check((await ckd()) === "", "a shared link whose check names another PR shows none");
+  await gh103Nav(analysisURL, "#view=ci&q=kind:pr&sel=pr:acme/api%23101&check=pr:acme/api%23101%7Cvendor-hsm-tests", "!!document.querySelector('table.cg')");
+  check((await ckd()) === "Check vendor-hsm-tests: failure · details" && (await evaluate("document.querySelectorAll('td.cg-cell.ck').length")) === 1, "a shared link to the PR and its check shows it");
   await clickCell("section[data-repo='acme/api'] th.cg-col[data-pr='pr:acme/api#103']"); await sleep(150);
   check((await sortedSel()).join() === "pr:acme/api#103" && !(await evaluate("location.hash")).includes("check="), "a column header selects the PR");
 
@@ -1056,7 +1075,7 @@ async function gh103Checks(analysisURL) {
   await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 }); await sleep(60);
   check((await at()) === "1,2:vendor-hsm-tests:pr:acme/api#101", "ArrowRight walks the cells: " + (await at()));
   await key("Enter");
-  check((await sortedSel()).join() === "pr:acme/api#101" && (await evaluate("location.hash")).includes("check=vendor-hsm-tests"), "Enter on a cell selects its PR and names its check");
+  check((await sortedSel()).join() === "pr:acme/api#101" && decodeURIComponent(await evaluate("location.hash")).includes("check=pr:acme/api#101|vendor-hsm-tests"), "Enter on a cell selects its PR and names its check");
   await key("ArrowUp");
   await key("Enter", true);
   check((await sortedSel()).length === 0, "Shift+Enter on the selected PR's header toggles it off: " + (await sortedSel()));

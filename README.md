@@ -1214,8 +1214,9 @@ more than 100 checks (its column is marked `+`). A check that
 6 PRs" and drawn as a neutral solid line, so a PR's own failures stand out
 in red. Click a check to filter with `check_failing:<name>` (again to
 remove it), a PR to select it, or a cell to select its PR and show that
-check's state and link in the detail panel (the address keeps the check as
-`check=`). The arrow keys move through a grid; Enter acts as a click.
+check's state and link in the detail panel (the address keeps it as
+`check=<PR>|<check>`; selecting anything else forgets it). The arrow keys
+move through a grid; Enter acts as a click.
 
 ### Actions
 

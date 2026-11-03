@@ -11,8 +11,9 @@
  * neutral, so it reads as a solid line while a PR's own failures stand out
  * as isolated red cells. State is never colour alone: each has its glyph.
  *
- * A cell click selects the PR and names the check in the URL (check=), which
- * the detail panel reads to show that check's state and link. A row header
+ * A cell click selects the PR and names the check in the URL (check=<PR
+ * id>|<name>, L.parseCheck), which the detail panel reads, while this view
+ * is shown, to give that check's state and link. A row header
  * applies check_failing:<name> (again removes it); a column header selects
  * the PR. A repository with more than 60 PRs shows the 60 with the most
  * failures and "+n more", which narrows the query to that repository. A
@@ -265,14 +266,14 @@
   // the active check_failing: rows, and keeps one tab stop per table.
   function paintMarks() {
     if (!V || !V.scroll) return;
-    var sel = cur.store.selection, hov = cur.store.hover, ck = cur.getState("check"), q = cur.getState("q");
+    var sel = cur.store.selection, hov = cur.store.hover, ck = L.parseCheck(cur.getState("check")), q = cur.getState("q");
     Array.prototype.forEach.call(V.scroll.querySelectorAll("[data-pr]"), function (c) {
       if (c.dataset.act) return;
       var on = sel.has(c.dataset.pr);
       c.classList.toggle("sel", on);
       c.classList.toggle("hov", c.dataset.pr === hov);
       if (c.tagName === "TH") c.setAttribute("aria-selected", String(on));
-      if (c.tagName === "TD") c.classList.toggle("ck", on && c.dataset.check === ck);
+      if (c.tagName === "TD") c.classList.toggle("ck", on && !!ck && c.dataset.pr === ck.pr && c.dataset.check === ck.name);
     });
     Array.prototype.forEach.call(V.scroll.querySelectorAll("th.cg-row"), function (th) {
       var on = L.clauseActive(q, cur.registry, "check_failing", th.dataset.check);
@@ -284,9 +285,11 @@
   }
 
   // ---------- actions ----------
+  // selectPR selects the PR (Shift toggles it in the selection) and names
+  // check, a cell's, on it in check=; a header names none.
   function selectPR(id, add, check) {
     var ids = add ? Array.from(L.select(cur.store.selection, [id], true)) : [id];
-    cur.setState({ sel: ids, check: check || "" }, { commit: true });
+    cur.setState({ sel: ids, check: check ? L.checkValue(id, check) : "" }, { commit: true });
   }
   function filterCheck(name) {
     var err = cur.setQuery(L.toggleClause(cur.getState("q"), cur.registry, "check_failing", name), { commit: true });

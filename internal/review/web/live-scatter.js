@@ -132,12 +132,26 @@
       if (vals.length < 2 && sc.log) vals = within(S.steps({ type: "number" }, lo, hi));
       return vals.map(function (v) { return { v: v, t: sc.fwd(v), label: S.tickText(f, v) }; });
     };
+    // tickText labels a gridline, rounded to hundredths: the linear steps of
+    // a narrow zoom add up in floating point (0.30000000000000004).
     S.tickText = function (f, v) {
-      if (f.type === "duration") return v === 0 ? "0" : v + "d";
-      return Math.abs(v) >= 1000 ? v.toLocaleString("en") : String(Math.round(v * 100) / 100);
+      var r = Math.round(v * 100) / 100;
+      if (f.type === "duration") return r === 0 ? "0" : r + "d";
+      return Math.abs(r) >= 1000 ? r.toLocaleString("en") : String(r);
     };
     // zoomDomain scales dom by factor about at (all transformed units).
     S.zoomDomain = function (dom, at, factor) { return [at + (dom[0] - at) * factor, at + (dom[1] - at) * factor]; };
+    // zoomWithin zooms the range cur by factor about at and keeps it inside
+    // base, the range that holds every mark: never wider (base itself) and
+    // never past either end (it slides back in), so no axis runs below its
+    // first gridline or past its last.
+    S.zoomWithin = function (base, cur, at, factor) {
+      var r = S.zoomDomain(cur, at, factor), span = r[1] - r[0];
+      if (span >= base[1] - base[0]) return base.slice();
+      if (r[0] < base[0]) r = [base[0], base[0] + span];
+      if (r[1] > base[1]) r = [base[1] - span, base[1]];
+      return r;
+    };
 
     // ---------- values and unknowns (requirement 5) ----------
     // value reads field f on node i of the query index: {k: "v", v, lower}
@@ -749,8 +763,9 @@
     // The transformed values under (x, y): layout's X and Y inverted.
     var tx = d.x[0] + (Math.max(g.px0, Math.min(g.px1, x)) - g.px0 - PAD) / (g.px1 - g.px0 - 2 * PAD) * (d.x[1] - d.x[0]);
     var ty = d.y[0] + (g.py1 - PAD - Math.max(g.py0, Math.min(g.py1, y))) / (g.py1 - g.py0 - 2 * PAD) * (d.y[1] - d.y[0]);
-    var nx = S.zoomDomain(d.x, tx, factor), ny = S.zoomDomain(d.y, ty, factor);
-    // Never wider than every mark, never narrower than a twentieth of it.
+    var nx = S.zoomWithin(m.dom.x, d.x, tx, factor), ny = S.zoomWithin(m.dom.y, d.y, ty, factor);
+    // Within every mark's range (zoomWithin), and never narrower than a
+    // twentieth of it.
     var spanX = m.dom.x[1] - m.dom.x[0], spanY = m.dom.y[1] - m.dom.y[0];
     if (nx[1] - nx[0] >= spanX && ny[1] - ny[0] >= spanY) { V.zoom = null; }
     else if (nx[1] - nx[0] < spanX / 20 || ny[1] - ny[0] < spanY / 20) return;
