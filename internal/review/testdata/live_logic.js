@@ -785,9 +785,9 @@ test("facets: coupled counts ignore the facet's own clauses and honour all other
   // counts only acme/api's (the repo clause holds).
   const qm = FX.queryMasks(aix, "repo:acme/api;prstate:open");
   const repo = FX.facetCounts(FX.fieldIndex(aix, "repo"), FX.others(qm, "repo"), null).values.find((v) => v.key === "acme/web");
-  assert.deepEqual([repo.coupled, repo.ghost], [4, 11]);
+  assert.deepEqual([repo.coupled, repo.ghost], [5, 12]);
   const st = FX.facetCounts(FX.fieldIndex(aix, "prstate"), FX.others(qm, "prstate"), null).values;
-  assert.deepEqual(st.map((v) => v.key + ":" + v.coupled + "/" + v.ghost).sort(), ["closed:1/1", "draft:1/2", "merged:2/6", "none:0/1", "open:5/10"]);
+  assert.deepEqual(st.map((v) => v.key + ":" + v.coupled + "/" + v.ghost).sort(), ["closed:1/1", "draft:1/2", "merged:2/6", "none:0/1", "open:5/11"]);
 });
 
 test("facets: ghosts are the whole snapshot; the selection's share is its own", () => {

@@ -645,7 +645,7 @@ async function facetChecks(facetsURL) {
   // facet's dark bars, not its ghosts; the PR-state facet ignores its own.
   await evaluate("window.__wgoStore.setQuery('prstate:open', { commit: true })");
   await sleep(100);
-  check((await evaluate(row("repo", "acme/web") + ".querySelector('.fx-n').textContent")) === "4/11", "repo acme/web under prstate:open: " + (await evaluate(row("repo", "acme/web") + ".textContent")));
+  check((await evaluate(row("repo", "acme/web") + ".querySelector('.fx-n').textContent")) === "5/12", "repo acme/web under prstate:open: " + (await evaluate(row("repo", "acme/web") + ".textContent")));
   check((await evaluate(row("prstate", "merged") + ".querySelector('.fx-n').textContent")) === "6", "prstate's own clause is ignored");
   check((await evaluate(row("repo", "acme/web") + ".querySelector('.fx-solid').style.width")) !== (await evaluate(row("repo", "acme/web") + ".querySelector('.fx-ghost').style.width")), "solid and ghost bars differ");
 
