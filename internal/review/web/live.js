@@ -203,13 +203,28 @@
   };
   // ---------- derived facts (gh-99), details on demand ----------
   function factWords(code) { return String(code || "").replace(/_/g, " "); }
-  var CI_FACT_TEXT = { green: "green", failing: "failing", systemic_only: "only checks that fail on most open PRs fail", pending: "pending", none: "no checks", unknown: "unknown" };
+  var CI_FACT_TEXT = { green: "green", failing: "failing", systemic_only: "only checks that fail across the repository fail", pending: "pending", none: "no checks", unknown: "unknown" };
+  // systemicText names the failing checks of pr that fail across its
+  // repository, with check_stats' counts: "vendor-hsm-tests fails on 5 of 6
+  // open PRs in acme/api"; "" when the stats do not say.
+  function systemicText(pr, checkStats) {
+    var repo = String(pr.repo || "").toLowerCase(), stats = (checkStats && checkStats[repo]) || [], parts = [];
+    (pr.check_details || []).forEach(function (c) {
+      if (c.state !== "failure") return;
+      var st = stats.filter(function (x) { return x.name === c.name && x.systemic; })[0];
+      if (st && parts.indexOf(st) < 0) parts.push(st);
+    });
+    if (!parts.length) return "";
+    return parts.map(function (st) { return st.name + " fails on " + st.failures + " of " + st.runs; }).join(", ") + " open PRs in " + repo;
+  }
   // prFactsRows lists a PR's derived facts for the detail panel as
   // [label, text] rows: whose move it is and who holds it, every reason
   // with its evidence, the wait, CI, size, and the inputs that were not
   // known. me (the operator's login) shows as "you"; fmt formats a
-  // timestamp. Empty when the snapshot predates the facts.
-  L.prFactsRows = function (pr, me, fmt) {
+  // timestamp; checkStats (the snapshot's check_stats) gives the counts of
+  // checks failing across the repository. Empty when the snapshot predates
+  // the facts.
+  L.prFactsRows = function (pr, me, fmt, checkStats) {
     var f = pr && pr.facts;
     if (!f) return [];
     fmt = fmt || String;
@@ -218,7 +233,8 @@
     rows.push(["Whose move", (f.move || "unknown") + (who.length ? " — " + who.join(", ") : "")]);
     (f.reasons || []).forEach(function (r) { rows.push([factWords(r.code), r.evidence || ""]); });
     if (f.waiting_since) rows.push(["Waiting since", fmt(f.waiting_since) + (f.waiting_lower_bound ? " or earlier" : "") + (f.waiting_on && f.waiting_on.length ? " on " + f.waiting_on.join(", ") : "")]);
-    rows.push(["CI", CI_FACT_TEXT[f.ci] || "unknown"]);
+    var sys = f.ci === "systemic_only" ? systemicText(pr, checkStats) : "";
+    rows.push(["CI", sys ? "only checks failing across the repository fail: " + sys : CI_FACT_TEXT[f.ci] || "unknown"]);
     rows.push(["Size", typeof f.size === "number" ? f.size + " lines changed (" + (f.size_bucket || "?") + ")" : "unknown"]);
     if (f.uncertain && f.uncertain.length) rows.push(["Not known", f.uncertain.join(", ")]);
     return rows;
@@ -229,7 +245,7 @@
   L.ticketFactsRows = function (ti) {
     var f = ti && ti.facts;
     if (!f) return [];
-    var linked = (f.linked_prs || []).map(function (l) { return l.ref + " " + l.state; });
+    var linked = (f.linked_prs || []).map(function (l) { return l.ref + " " + (l.state || "state unknown"); });
     var rows = [["Linked PRs", linked.length ? linked.join(", ") : "none in the snapshot"]];
     if (Array.isArray(f.mismatches)) {
       if (!f.mismatches.length) rows.push(["Jira vs code", "no mismatch"]);
@@ -237,6 +253,23 @@
     } else if (ti.system === "jira") rows.push(["Jira vs code", "unknown"]);
     if (f.uncertain && f.uncertain.length) rows.push(["Not known", f.uncertain.join(", ")]);
     return rows;
+  };
+  // ciBadge is a PR's CI badge in the effort list, {text, cls}. With the
+  // derived facts it follows their CI, so failures that every open PR in
+  // the repository shares read "~ CI fails everywhere" in a neutral style,
+  // never the failure accent, while a PR's own failure stays a failure.
+  // Without facts, or when they leave CI unknown, it shows the rollup.
+  L.ciBadge = function (pr) {
+    var c = String((pr && pr.checks) || "").toLowerCase();
+    var rollup = { text: L.ciText(pr), cls: /success|pass/.test(c) ? "s-good" : /fail|error/.test(c) ? "s-bad" : /pend|progress|queued/.test(c) ? "s-warn" : "f-unknown" };
+    switch (pr && pr.facts && pr.facts.ci) {
+      case "failing": return { text: "CI failure", cls: "s-bad" };
+      case "systemic_only": return { text: "~ CI fails everywhere", cls: "ci-systemic" };
+      case "pending": return { text: "CI pending", cls: "s-warn" };
+      case "green": return { text: "CI success", cls: "s-good" };
+      case "none": return { text: "no CI checks", cls: "" };
+    }
+    return rollup;
   };
   // factsTip is a node's facts in one line for the graph tooltip: a PR's
   // move and reasons, or a ticket's mismatches.
@@ -1801,13 +1834,6 @@
     if (b === "closed") return "s-bad";
     return "";
   }
-  function ciClass(pr) {
-    var c = String((pr && pr.checks) || "").toLowerCase();
-    if (/success|pass/.test(c)) return "s-good";
-    if (/fail|error/.test(c)) return "s-bad";
-    if (/pend|progress|queued/.test(c)) return "s-warn";
-    return "f-unknown";
-  }
   function freshBadge(parent, f) {
     var d = L.fresh(f);
     if (d.key === "fresh") return null;
@@ -1818,7 +1844,8 @@
     selButton(li, pr.label, pr.id);
     li.appendChild(document.createTextNode(" "));
     stateBadge(li, L.prBucket(p), prClass(p)); li.appendChild(document.createTextNode(" "));
-    stateBadge(li, L.ciText(p), ciClass(p)); li.appendChild(document.createTextNode(" "));
+    var ciB = L.ciBadge(p);
+    stateBadge(li, ciB.text, ciB.cls); li.appendChild(document.createTextNode(" "));
     stateBadge(li, L.reviewText(p)); li.appendChild(document.createTextNode(" "));
     freshBadge(li, p.freshness);
     if (p.reviewers_known && p.requested_reviewers && p.requested_reviewers.length) el("div", "meta", "review requested: " + p.requested_reviewers.join(", "), li);
@@ -1974,7 +2001,7 @@
         kv(detailBox, "Title", p.title); kv(detailBox, "State", L.prBucket(p)); kv(detailBox, "Checks", L.ciText(p)); kv(detailBox, "Review", L.reviewText(p));
         kv(detailBox, "Requested reviewers", p.reviewers_known ? ((p.requested_reviewers || []).join(", ") || "none requested") : "unknown");
         kv(detailBox, "Data", L.fresh(p.freshness).label); kv(detailBox, "Updated", p.updated_at ? fmtTime(p.updated_at) : "");
-        L.prFactsRows(p, store.qi && store.qi.env.me, fmtTime).forEach(function (r) { kv(detailBox, r[0], r[1]); });
+        L.prFactsRows(p, store.qi && store.qi.env.me, fmtTime, store.snap && store.snap.check_stats).forEach(function (r) { kv(detailBox, r[0], r[1]); });
       } else if (n.ticket) {
         var t = n.ticket;
         kv(detailBox, "System", t.system); kv(detailBox, "Status", t.status || "unknown"); kv(detailBox, "Title", t.title); kv(detailBox, "Assignee", t.assignee);
