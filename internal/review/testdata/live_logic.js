@@ -323,7 +323,7 @@ test("Resume is labelled with the configured tool", () => {
 
 // ---------- query language: the vectors shared with internal/dash ----------
 const BASE = L.registry(FIELDS);
-const VREG = L.registry(FIELDS, VECTORS.fields);
+const VREG = L.registry({ fields: FIELDS.fields, planned: Object.assign({}, FIELDS.planned, VECTORS.planned) }, VECTORS.fields);
 test("the evaluator knows every node kind the registry does", () => {
   assert.deepEqual(L.QUERY_KINDS, BASE.field("kind").values);
 });
@@ -352,11 +352,10 @@ VECTORS.cases.forEach((c) => {
   });
 });
 
-test("the vector registry knows every catalogue field; the base one only today's", () => {
-  assert.equal(BASE.field("move"), null);
-  assert.equal(BASE.planned.get("move"), "gh-99");
-  assert.ok(VREG.field("move"));
-  assert.equal(VREG.planned.has("move"), false);
+test("the registry knows every catalogue field; the vectors add a planned one", () => {
+  assert.ok(BASE.field("move") && BASE.field("linked_prs"));
+  assert.equal(BASE.planned.size, 0);
+  assert.equal(VREG.planned.get("example_planned"), "gh-0");
   assert.deepEqual(BASE.names.slice(0, 3), ["kind", "text", "effort"]);
 });
 
