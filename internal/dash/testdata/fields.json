@@ -607,19 +607,183 @@
    ],
    "unit": "day",
    "scale": "linear"
+  },
+  {
+   "name": "move",
+   "label": "Whose move",
+   "type": "enum",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.move"
+   ],
+   "values": [
+    "author",
+    "reviewer",
+    "nobody",
+    "none",
+    "unknown"
+   ]
+  },
+  {
+   "name": "move_people",
+   "label": "Move held by",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.move_people"
+   ]
+  },
+  {
+   "name": "waiting_on",
+   "label": "Waiting on",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.waiting_on"
+   ]
+  },
+  {
+   "name": "reason",
+   "label": "Reasons",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.reasons.code"
+   ],
+   "values": [
+    "closed",
+    "draft",
+    "changes_requested",
+    "conflicts",
+    "ci_failing",
+    "approved_unmerged",
+    "awaiting_review",
+    "no_reviewer",
+    "ci_systemic_only",
+    "ci_pending",
+    "no_ticket",
+    "stale",
+    "team_only"
+   ]
+  },
+  {
+   "name": "waiting",
+   "label": "Waiting",
+   "type": "duration",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.waiting_since"
+   ],
+   "derive": "days_since",
+   "unit": "days",
+   "scale": "log"
+  },
+  {
+   "name": "ci",
+   "label": "CI",
+   "type": "enum",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.ci"
+   ],
+   "values": [
+    "green",
+    "failing",
+    "systemic_only",
+    "pending",
+    "none",
+    "unknown"
+   ]
+  },
+  {
+   "name": "size",
+   "label": "Size (lines changed)",
+   "type": "number",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.size"
+   ],
+   "unit": "lines",
+   "scale": "log"
+  },
+  {
+   "name": "size_bucket",
+   "label": "Size bucket",
+   "type": "enum",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.size_bucket"
+   ],
+   "values": [
+    "xs",
+    "s",
+    "m",
+    "l",
+    "xl"
+   ]
+  },
+  {
+   "name": "stale",
+   "label": "Stale",
+   "type": "bool",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.stale"
+   ]
+  },
+  {
+   "name": "mismatch",
+   "label": "Jira mismatch",
+   "type": "set",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.facts.mismatches.code"
+   ],
+   "values": [
+    "code_merged_ticket_open",
+    "ticket_done_code_open",
+    "in_progress_no_code",
+    "in_progress_idle",
+    "unassigned_in_sprint"
+   ]
+  },
+  {
+   "name": "linked_prs",
+   "label": "Linked PRs",
+   "type": "set",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.facts.linked_prs.state"
+   ],
+   "values": [
+    "draft",
+    "open",
+    "approved",
+    "merged",
+    "closed"
+   ]
   }
- ],
- "planned": {
-  "ci": "gh-99",
-  "linked_prs": "gh-99",
-  "mismatch": "gh-99",
-  "move": "gh-99",
-  "move_people": "gh-99",
-  "reason": "gh-99",
-  "size": "gh-99",
-  "size_bucket": "gh-99",
-  "stale": "gh-99",
-  "waiting": "gh-99",
-  "waiting_on": "gh-99"
- }
+ ]
 }
