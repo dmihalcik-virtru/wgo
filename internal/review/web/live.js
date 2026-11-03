@@ -239,6 +239,16 @@
     if (f.uncertain && f.uncertain.length) rows.push(["Not known", f.uncertain.join(", ")]);
     return rows;
   };
+  // checkDetail is what the detail panel says of the check named by the
+  // URL's check= (gh-103: a CI grid cell click sets it): the check's state
+  // on the PR's head and its link, {text, url}; null with no name.
+  L.checkDetail = function (pr, name) {
+    if (!name) return null;
+    var d = pr && Array.isArray(pr.check_details) ? pr.check_details.filter(function (c) { return c && c.name === name; })[0] : null;
+    if (d) return { text: d.state || "state unknown", url: L.safeURL(d.url) };
+    if (!pr || !Array.isArray(pr.check_details)) return { text: "unknown: this PR's checks were not read", url: "" };
+    return { text: pr.checks_truncated ? "unknown: not among the checks read (the list is truncated)" : "did not run on this PR's head", url: "" };
+  };
   // ticketFactsRows lists a ticket's derived facts: its linked PRs, each
   // place Jira and the code disagree with its evidence, and the inputs that
   // were not known. A GitHub issue has no Jira status to compare.
@@ -2066,6 +2076,8 @@
         kv(detailBox, "Requested reviewers", p.reviewers_known ? ((p.requested_reviewers || []).join(", ") || "none requested") : "unknown");
         kv(detailBox, "Data", L.fresh(p.freshness).label); kv(detailBox, "Updated", p.updated_at ? fmtTime(p.updated_at) : "");
         L.prFactsRows(p, store.qi && store.qi.env.me, fmtTime, store.snap && store.snap.check_stats).forEach(function (r) { kv(detailBox, r[0], r[1]); });
+        var ckd = L.checkDetail(p, store.hashVals.check);
+        if (ckd) { var ckRow = el("div", "kv ckd", "Check " + store.hashVals.check + ": " + ckd.text + (ckd.url ? " · " : ""), detailBox); if (ckd.url) link(ckRow, "details", ckd.url); }
       } else if (n.ticket) {
         var t = n.ticket;
         kv(detailBox, "System", t.system); kv(detailBox, "Status", t.status || "unknown"); kv(detailBox, "Title", t.title); kv(detailBox, "Assignee", t.assignee);

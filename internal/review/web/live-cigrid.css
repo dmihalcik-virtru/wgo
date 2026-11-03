@@ -1,0 +1,48 @@
+/* wgo dash CI grid (live-cigrid.js, spec/gh-103.md). Inlined after style.css
+ * and live.css as the addon's own stylesheet, reusing their tokens. Cells
+ * touch side by side (rows keep a 2 px surface gap), so a check failing on
+ * many PRs reads as a solid bar. A PR's own failure is the critical red with
+ * a white ×; a failure of a check that fails everywhere is neutral ink with
+ * ×, on its row's subtle background; passing is a faint ✓, pending a dot.
+ * Every state has its glyph or text, so none is colour alone. */
+.viewwrap.cigrid-host { padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.viewwrap.cigrid-host[hidden] { display: none; }
+.cg-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 5px 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--ink2); }
+.cg-key { display: inline-flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11px; }
+.cg-key .cg-ki { display: inline-flex; align-items: center; gap: 3px; }
+.cg-status:empty { display: none; }
+.cg-scroll { flex: 1; min-height: 0; overflow: auto; padding: 4px 12px 16px; }
+.cg-repo { margin: 8px 0 14px; }
+.cg-repo h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+.cg-repo h3 .cg-sub { font-weight: 400; color: var(--ink2); font-size: 12px; }
+table.cg { width: auto; border-collapse: separate; border-spacing: 0 2px; font-size: 11px; }
+table.cg th, table.cg td { padding: 0; border: 0; position: static; background: var(--surface); }
+table.cg th.cg-corner { text-align: left; vertical-align: bottom; padding: 0 8px 2px 0; color: var(--ink2); font-weight: 600; }
+table.cg th.cg-col { height: 44px; width: 20px; min-width: 20px; vertical-align: bottom; text-align: center; font-weight: 400; color: var(--ink2); cursor: pointer; }
+table.cg th.cg-col .cg-pr { display: inline-block; writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; font-variant-numeric: tabular-nums; padding-bottom: 2px; }
+table.cg th.cg-col .cg-trunc { font-weight: 700; color: var(--ink); }
+table.cg th.cg-row { position: sticky; left: 0; z-index: 1; text-align: left; white-space: nowrap; padding: 0 10px 0 0; font-weight: 400; cursor: pointer; max-width: 30em; overflow: hidden; text-overflow: ellipsis; }
+table.cg th.cg-row .cg-systxt { margin-left: 6px; color: var(--ink2); font-style: italic; }
+table.cg th.cg-row.on .cg-name { font-weight: 700; text-decoration: underline; }
+table.cg tr.sys th, table.cg tr.sys td { background: color-mix(in srgb, var(--ink) 7%, var(--surface)); }
+table.cg td.cg-cell { width: 20px; min-width: 20px; height: 18px; line-height: 18px; text-align: center; cursor: pointer; color: var(--ink2); }
+table.cg td.cg-cell.failure { background: var(--s-critical); color: #fff; font-weight: 700; font-size: 12px; }
+table.cg tr.sys td.cg-cell.failure { background: var(--ink2); color: var(--surface); }
+table.cg td.cg-cell.success { color: var(--muted); font-size: 10px; }
+table.cg td.cg-cell.pending { font-weight: 700; color: var(--ink); }
+table.cg td.cg-cell.unknown { color: var(--muted); font-style: italic; }
+table.cg td.cg-cell.hov:not(.failure), table.cg th.cg-col.hov { background: color-mix(in srgb, var(--ink) 9%, var(--surface)); }
+table.cg td.cg-cell.sel, table.cg th.cg-col.sel { box-shadow: inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent); }
+table.cg th.cg-col.sel { color: var(--ink); font-weight: 700; }
+table.cg td.cg-cell.ck { outline: 2px solid var(--ink); outline-offset: -2px; }
+table.cg [data-r]:focus { outline: none; }
+table.cg [data-r]:focus-visible, table.cg td.cg-cell:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.cg-more, .cg-unread { margin: 4px 0 0; font-size: 12px; color: var(--ink2); }
+.cg-more button { font-size: 12px; padding: 1px 8px; }
+.cg-unread button.linkish { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font-size: 12px; }
+.cg-key .cg-sw { display: inline-block; width: 14px; height: 14px; line-height: 14px; text-align: center; font-size: 11px; color: var(--ink2); box-shadow: inset 0 0 0 1px var(--grid); }
+.cg-key .cg-sw.failure { background: var(--s-critical); color: #fff; font-weight: 700; box-shadow: none; }
+.cg-key .cg-sw.failure.sys { background: var(--ink2); color: var(--surface); }
+.cg-key .cg-sw.success { color: var(--muted); font-size: 10px; }
+.cg-key .cg-sw.pending { font-weight: 700; color: var(--ink); }
+.cg-key .cg-sw.unknown { color: var(--muted); font-style: italic; }
