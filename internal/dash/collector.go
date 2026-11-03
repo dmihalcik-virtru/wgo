@@ -72,6 +72,9 @@ type Config struct {
 	// JiraBoard is [jira] board, whose sprints the dash shows (gh-98);
 	// zero means none is configured.
 	JiraBoard int
+	// Facts are the [dash.facts] thresholds of the derived attention facts
+	// (gh-99); zero fields mean the defaults.
+	Facts FactThresholds
 }
 
 // Collector builds snapshots. It runs outside HTTP request handling.

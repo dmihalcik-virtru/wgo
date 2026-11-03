@@ -42,8 +42,10 @@ func loadAnalysisFixture(t testing.TB) *Snapshot {
 // to effort keys, and to agent session IDs and conflicts_with, so agent IDs
 // stay "agent:<session>". Everything else (labels, people, PR numbers,
 // ticket keys, sprint IDs, times, sources) is shared: the copies are
-// disjoint graphs with identical facts. A JS test can mirror this from
-// analysis_fixture.json in a few lines.
+// disjoint graphs with identical inputs. A JS test can mirror this from
+// analysis_fixture.json in a few lines. The derived facts (gh-99) are then
+// recomputed over the whole: each copy's PRs count toward their
+// repository's check stats, which can make a check systemic that was not.
 func scaleAnalysisFixture(t testing.TB, base *Snapshot, minNodes int) *Snapshot {
 	t.Helper()
 	raw, err := json.Marshal(base)
@@ -108,6 +110,7 @@ func scaleAnalysisFixture(t testing.TB, base *Snapshot, minNodes int) *Snapshot 
 			out.Counts.Merged[ref(id)] = v
 		}
 	}
+	ComputeFacts(&out, out.People, DefaultFactThresholds(), out.GeneratedAt).apply(&out)
 	return &out
 }
 
@@ -195,9 +198,10 @@ func TestAnalysisFixtureCoversEveryFact(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc struct {
-		Nodes   []map[string]json.RawMessage `json:"nodes"`
-		Sources map[string]map[string]any    `json:"sources"`
-		People  []map[string]any             `json:"people"`
+		Nodes      []map[string]json.RawMessage `json:"nodes"`
+		Sources    map[string]map[string]any    `json:"sources"`
+		People     []map[string]any             `json:"people"`
+		CheckStats map[string]any               `json:"check_stats"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
@@ -238,6 +242,12 @@ func TestAnalysisFixtureCoversEveryFact(t *testing.T) {
 			if p, ok := m["parent"].(map[string]any); ok {
 				note("TicketParent", p)
 			}
+			if f, ok := m["facts"].(map[string]any); ok {
+				note(map[string]string{"pr": "PRFacts", "ticket": "TicketFacts"}[kind], f)
+				each(f["reasons"], "Reason")
+				each(f["mismatches"], "Reason")
+				each(f["linked_prs"], "LinkedPR")
+			}
 		}
 	}
 	for _, st := range doc.Sources {
@@ -245,6 +255,9 @@ func TestAnalysisFixtureCoversEveryFact(t *testing.T) {
 	}
 	for _, p := range doc.People {
 		note("Person", p)
+	}
+	for _, list := range doc.CheckStats {
+		each(list, "CheckStat")
 	}
 
 	// notExercised lists fields the fixture deliberately leaves out.
@@ -257,7 +270,8 @@ func TestAnalysisFixtureCoversEveryFact(t *testing.T) {
 		"SprintInfo.ticket_count":      "set by the sprint ticket search, which arrives with gh-98's sprint fetch",
 	}
 	for _, v := range []any{PRInfo{}, TicketInfo{}, SprintInfo{}, ReviewRequest{}, Review{}, CheckDetail{},
-		Involvement{}, SprintRef{}, TicketParent{}, SourcePart{}, Person{}} {
+		Involvement{}, SprintRef{}, TicketParent{}, SourcePart{}, Person{},
+		PRFacts{}, Reason{}, TicketFacts{}, LinkedPR{}, CheckStat{}} {
 		rt := reflect.TypeOf(v)
 		for f := range rt.Fields() {
 			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
@@ -557,6 +571,14 @@ func TestScaledAnalysisFixture(t *testing.T) {
 		t.Fatalf("scaled fixture invalid: %v", err)
 	}
 	checkCountsMatch(t, s)
+	for _, n := range s.Nodes {
+		if (n.PR != nil && n.PR.Facts == nil) || (n.Ticket != nil && n.Ticket.Facts == nil) {
+			t.Fatalf("scaled %s has no facts", n.ID)
+		}
+	}
+	if st := s.CheckStats["acme/api"]; len(st) == 0 || st[len(st)-1].Runs != 6*(len(s.Nodes)/len(base.Nodes)) {
+		t.Errorf("scaled check stats were not recomputed: %+v", st)
+	}
 	t.Logf("scaled fixture: %d nodes, %d edges", len(s.Nodes), len(s.Edges))
 
 	// WGO_DASH_SCALED_FIXTURE=<path> writes the scaled snapshot for tests

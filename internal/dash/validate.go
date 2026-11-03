@@ -144,6 +144,7 @@ func (s *Snapshot) Validate() error {
 	}
 	v.checkPeople(s.People)
 	v.checkSources(s.Sources)
+	v.checkFacts(s, isKind)
 
 	// Cross-references.
 	for _, n := range s.Nodes {

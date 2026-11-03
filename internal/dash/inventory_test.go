@@ -236,7 +236,7 @@ func TestKnownEmptyReviewersEncodeAsEmpty(t *testing.T) {
 	if got := encoded(3); !strings.Contains(got, `"review_requests":[]`) || !strings.Contains(got, `"reviews":[]`) {
 		t.Errorf("#3: reported empty lists lost: %s", got)
 	}
-	if got := encoded(2); strings.Contains(got, "requested_reviewers") || !strings.Contains(got, `"reviewers_known":false`) {
+	if got := encoded(2); strings.Contains(got, `"requested_reviewers":`) || !strings.Contains(got, `"reviewers_known":false`) {
 		t.Errorf("#2: unknown reviewers should be omitted: %s", got)
 	}
 	// And they survive a round trip through a persisted snapshot.
