@@ -711,7 +711,8 @@ test("table: column info names the scales", () => {
 // ===== gh-105: the sprint view's pure logic (web/live-sprint.js) =====
 // Loaded beside live.js, on the analysis fixture beside fields.json; the
 // day count, default sprint and points must agree with extract_sprint.go
-// (the last test reads its golden summary).
+// (the last test reads its golden summary). A block keeps its names local.
+{
 const SP = require(require("node:path").join(require("node:path").dirname(process.argv[2]), "live-sprint.js"))(L);
 const SPDATA = require("node:path").dirname(process.argv[3]);
 const AFIX = JSON.parse(fs.readFileSync(require("node:path").join(SPDATA, "analysis_fixture.json"), "utf8"));
@@ -719,16 +720,51 @@ const keysOf = (nodes) => nodes.map((x) => x.label);
 
 test("sprint: active sprints, their tickets and the default", () => {
   const list = SP.activeSprints(AFIX);
-  assert.deepEqual(list.map((a) => [a.id, a.tickets.length, a.people]), [[1234, 6, 5], [1240, 1, 0]], "Sprint 12: five of six for alice and bob; Web Sprint 4: carol's");
+  assert.deepEqual(list.map((a) => [a.id, a.tickets.length, a.people, a.unknownPeople]), [[1234, 6, 5, 0], [1240, 1, 0, 0]], "Sprint 12: five of six for alice and bob; Web Sprint 4: carol's");
   assert.equal(SP.defaultSprint(list).id, 1234);
-  const mk = (id, n, people, start) => ({ id, sprint: { id, start }, tickets: new Array(n), people });
-  assert.equal(SP.defaultSprint([mk(1, 9, 1, "2026-10-01T00:00:00Z"), mk(2, 3, 2, "2026-10-02T00:00:00Z")]).id, 2, "people first");
-  assert.equal(SP.defaultSprint([mk(1, 3, 2, "2026-10-01T00:00:00Z"), mk(2, 4, 2, "2026-10-02T00:00:00Z")]).id, 2, "then tickets");
-  assert.equal(SP.defaultSprint([mk(1, 4, 2, "2026-10-01T00:00:00Z"), mk(2, 4, 2, "2026-10-02T00:00:00Z")]).id, 1, "then the first");
+  assert.equal(SP.peopleText(list[0]), "5 of its 6 tickets are assigned to the people wgo dash follows");
+  const mk = (id, n, people, unknown) => ({ id, sprint: { id }, tickets: new Array(n), people, unknownPeople: unknown });
+  for (const [l, want, what] of [
+    [[mk(1, 9, 1, 0), mk(2, 3, 2, 0)], 2, "people first"],
+    [[mk(1, 3, 2, 0), mk(2, 4, 2, 0)], 2, "then tickets"],
+    [[mk(1, 4, 2, 0), mk(2, 4, 2, 0)], 1, "then the first"],
+    [[mk(1, 0, 0, 0), mk(2, 0, 0, 0)], 1, "none"],
+    [[mk(1, 3, 3, 0), mk(2, 4, 0, 4)], 2, "unknown for some sprint: the most tickets"],
+    [[mk(1, 4, 3, 1), mk(2, 4, 0, 0)], 1, "unknown, tied: the first"],
+  ]) assert.equal(SP.defaultSprint(l).id, want, what);
   assert.equal(SP.defaultSprint([]), null);
-  assert.ok(SP.assignedToPeople({ assignee_id: "ACCT-ALICE" }, AFIX.people), "by account ID, any case");
-  assert.ok(SP.assignedToPeople({ assignee: "bob" }, AFIX.people), "by display name");
-  assert.ok(!SP.assignedToPeople({ assignee: "Carol", assignee_id: "acct-carol" }, AFIX.people));
+  assert.match(SP.peopleText(mk(2, 4, 1, 3)), /^whose tickets these are is unknown for 3 of its 4 tickets \(1 is known to be assigned to the people wgo dash follows\): .*\[\[dash\.people\]\]$/);
+});
+
+test("sprint: whose tickets: account IDs or the sprint's search, else unknown (TestForPeople's cases)", () => {
+  const acct = [{ login: "alice", jira: "acct-alice", me: true }, { login: "bob", jira: "acct-bob" }];
+  const placeholder = [{ login: "alice", jira: "currentUser()", me: true }, { login: "bob", jira: "acct-bob" }];
+  const noJira = [{ login: "alice", jira: "currentUser()", me: true }, { login: "bob" }];
+  const searched = { id: 7, searched: true };
+  for (const [name, t, sp, people, want] of [
+    ["account ID", { assignee_id: "ACCT-BOB" }, { id: 7 }, placeholder, true],
+    ["found by the search", { assignee_id: "acct-x", sprint_search: [7] }, { id: 7 }, placeholder, true],
+    ["found by another sprint's search", { assignee_id: "acct-x", sprint_search: [8] }, { id: 7 }, placeholder, null],
+    ["unassigned", { freshness: "fresh" }, { id: 7 }, placeholder, false],
+    ["assignee unknown", { freshness: "unknown" }, { id: 7 }, placeholder, null],
+    ["compared with every account ID", { assignee_id: "acct-carol" }, { id: 7 }, acct, false],
+    ["currentUser() cannot be compared", { assignee_id: "acct-carol" }, { id: 7 }, placeholder, null],
+    ["an email cannot be compared", { assignee_id: "acct-carol" }, { id: 7 }, [{ login: "alice", jira: "alice@example.com" }], null],
+    ["display names are not trusted", { assignee: "Alice", freshness: "fresh" }, { id: 7 }, [{ login: "alice", jira: "currentUser()", name: "Alice" }], null],
+    ["the complete search missed it", { assignee_id: "acct-carol" }, searched, placeholder, false],
+    ["a truncated search", { assignee_id: "acct-carol" }, { id: 7, searched: true, truncated: true }, placeholder, null],
+    ["a search that skipped someone", { assignee_id: "acct-carol" }, searched, noJira, null],
+    ["nobody followed", { assignee_id: "acct-carol" }, searched, [], null],
+  ]) assert.equal(SP.forPeople(t, sp, people), want, name);
+  // Without account IDs or the search: unknown, and the default is the
+  // sprint with the most tickets.
+  const snap = JSON.parse(JSON.stringify(AFIX));
+  snap.people = placeholder;
+  snap.nodes.forEach((x) => { if (x.ticket) delete x.ticket.sprint_search; if (x.sprint) delete x.sprint.searched; });
+  const list = SP.activeSprints(snap);
+  assert.deepEqual(list.map((a) => [a.people, a.unknownPeople]), [[1, 4], [0, 1]]);
+  assert.equal(SP.peopleKnown(list), false);
+  assert.equal(SP.defaultSprint(list).id, 1234);
 });
 
 test("sprint: sprint= chooses a sprint or names the active ones", () => {
@@ -754,6 +790,10 @@ test("sprint: points by status category, unestimated and unknown apart", () => {
   assert.deepEqual(SP.pointsOf({ story_points_known: true, story_points: 0 }), { kind: "known", value: 0, text: "0" }, "zero is an estimate");
   assert.equal(SP.pointsOf({ story_points: 5 }).kind, "unknown", "points without story_points_known are not trusted");
   assert.equal(SP.ptsText(1) + "|" + SP.ptsText(2.5), "1 pt|2.5 pts");
+  // Two decimals, as pointsText in Go (TestCountSprint has the same cases).
+  assert.deepEqual([1, 2.5, 0, 0.1 + 0.2, 1 / 3, 1e-9, 13].map(SP.num), ["1", "2.5", "0", "0.3", "0.33", "0", "13"]);
+  const sum = SP.progress([{ label: "F-1", ticket: { status_category: "done", story_points_known: true, story_points: 0.1 } }, { label: "F-2", ticket: { status_category: "done", story_points_known: true, story_points: 0.2 } }]);
+  assert.equal(SP.ptsText(sum.parts[0].points), "0.3 pts", "a sum of fractions");
 });
 
 test("sprint: tickets by status category, then assignee, then key", () => {
@@ -779,9 +819,14 @@ test("sprint: linked PR glyphs, mismatches and whose move on hover", () => {
   assert.deepEqual(SP.mismatchesOf(byId.get("ticket:jira:TEAM-101").ticket).list, []);
   assert.deepEqual(SP.mismatchesOf(byId.get("ticket:jira:TEAM-108").ticket), { unknown: true, why: "could not be decided: status_category unknown" });
   assert.equal(SP.mismatchesOf({ key: "X" }).unknown, true);
-  const lp = t102.facts.linked_prs[0], tip = SP.prTitle(lp, byId.get(lp.id).pr);
-  assert.match(tip, /^acme\/api#102: open, awaiting review — /);
-  assert.match(tip, /\nWhose move: \w+/);
+  // Whose move, with the table's details (L.moveTitle): who, why, uncertain.
+  const lp = t102.facts.linked_prs[0], pr102 = byId.get(lp.id).pr, tip = SP.prTitle(lp, pr102, "alice");
+  assert.equal(tip, lp.ref + ": open, awaiting review — " + pr102.title + "\nWhose move: " + L.moveWord(pr102.facts, "alice").word + "\n" + L.moveTitle(pr102.facts));
+  const mine = { title: "T", facts: { move: "author", move_people: ["alice"], reasons: [{ code: "draft", evidence: "draft since Oct 8" }] } };
+  assert.equal(SP.prTitle({ id: "p", ref: "acme/x#2", state: "draft" }, mine, "ALICE"), "acme/x#2: draft — T\nWhose move: you (author)\nHeld by alice\ndraft: draft since Oct 8");
+  const unk = { facts: { move: "unknown", reasons: [{ code: "ci_pending", evidence: "2 checks pending" }], uncertain: ["requested_at:bob"] } };
+  assert.equal(SP.prTitle({ id: "p", ref: "acme/x#3", state: "open" }, unk, "alice"), "acme/x#3: open, awaiting review\nWhose move: unknown\nci pending: 2 checks pending\nUncertain: requested_at:bob", "unknown keeps its reasons and what is uncertain");
+  assert.equal(SP.prTitle({ id: "p", ref: "acme/x#4", state: "open" }, {}, "alice"), "acme/x#4: open, awaiting review\nWhose move is unknown: no derived facts for this PR");
   assert.equal(SP.prTitle({ id: "pr:x", ref: "acme/x#1", state: "merged" }, null), "acme/x#1: merged\nNot in the snapshot");
   assert.equal(SP.codeText("ticket_done_code_open"), "ticket done code open");
 });
@@ -831,11 +876,12 @@ test("sprint: direct labels sit under their segments without overlapping", () =>
 test("sprint: the page counts as extract_sprint.go does (its golden summary)", () => {
   const golden = fs.readFileSync(require("node:path").join(SPDATA, "sprint_extract.golden.md"), "utf8");
   const sp = SP.activeSprints(AFIX)[0], p = SP.progress(sp.tickets);
-  for (const part of p.parts) assert.ok(golden.includes("- " + part.label + ": " + part.points + " points · " + part.tickets + " ticket" + (part.tickets === 1 ? "" : "s") + "\n"), part.label);
+  for (const part of p.parts) assert.ok(golden.includes("- " + part.label + ": " + SP.num(part.points) + " points · " + part.tickets + " ticket" + (part.tickets === 1 ? "" : "s") + "\n"), part.label);
   assert.ok(golden.includes("Not in the points: " + p.unestimated.length + " unestimated (TEAM-104) · " + p.unknownPoints.length + " with points unknown (TEAM-106)\n"));
   const d = SP.sprintDay(sp.sprint.start, sp.sprint.end, L.queryEnv(AFIX).nowMs, L.queryEnv(AFIX).dayOf);
   assert.ok(golden.includes("## " + SP.sprintName(sp.sprint) + "\n") && golden.includes(" · " + d.text + "\n"), "same default sprint and day");
 });
+}
 // ===== end gh-105 =====
 
 // ---------- performance (requirement 28): logged, not asserted ----------

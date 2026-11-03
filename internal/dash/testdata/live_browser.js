@@ -1194,8 +1194,8 @@ async function sprintChecks(sprintURL) {
   check(placed.placed && placed.ip && !placed.overlap && placed.inside, "labels sit under their segments without overlapping: " + JSON.stringify(placed));
   check((await text(".sv-apart")) === "Not in the points: 1 unestimated · 1 with points unknown", "unestimated counted apart from unknown: " + (await text(".sv-apart")));
   check((await rowsOf()).join() === "TEAM-102,TEAM-101,TEAM-103,TEAM-105,TEAM-104,TEAM-106", "grouped by category, then assignee: " + (await rowsOf()));
-  const prs = await evaluate("Array.from(document.querySelectorAll('.sv-table tr[data-id=\"ticket:jira:TEAM-101\"] .pr')).map(s => s.textContent + '|' + s.title.split('\\n')[1])");
-  check(prs.join() === "○acme/api#101|Whose move: reviewer (bob),●acme/api#107|Whose move: none,○acme/web#201|Whose move: author (alice)" || prs.length === 3 && prs.every((p) => /^[○●]acme\/\w+#\d+\|Whose move: /.test(p)), "linked PR glyphs with whose move on hover: " + prs);
+  const prs = await evaluate("Array.from(document.querySelectorAll('.sv-table tr[data-id=\"ticket:jira:TEAM-101\"] .pr')).map(s => s.textContent + '|' + (s.querySelector('a') || s).title.split('\\n')[1])");
+  check(prs.length === 3 && prs.every((p) => /^[○●]acme\/\w+#\d+\|Whose move: (you \(\w+\)|\w+)$/.test(p)), "linked PR glyphs with whose move on hover: " + prs);
 
   // The selector and sprint= in the URL; Back returns.
   const picks = await evaluate("Array.from(document.querySelectorAll('.sv-pick button')).map(b => b.textContent + ':' + b.getAttribute('aria-pressed'))");
@@ -1280,6 +1280,27 @@ async function sprintChecks(sprintURL) {
   const clip = await evaluate("navigator.clipboard.readText()", { userGesture: true });
   const served = await evaluate("fetch('/api/extract?view=sprint&sprint=1234&q=' + encodeURIComponent('status_category:in_progress;mismatch:in_progress_no_code')).then(r => r.text())");
   check(clip === served && clip.startsWith("## Sprint 12\n") && clip.includes("Query: `status_category:in_progress;mismatch:in_progress_no_code`") && clip.includes("· sprint 1234 on board 42"), "the copy is the sprint summary: " + clip.slice(0, 160));
+  // Whose move is on the PR link itself, so the keyboard reaches it.
+  const prLink = await evaluate("(() => { const a = document.querySelector(\".sv-table tr[data-id='ticket:jira:TEAM-102'] .pr a\"); return a ? [a.title, a.getAttribute('aria-label')] : [] })()");
+  check(prLink.length === 2 && /\nWhose move: /.test(prLink[0]) && /\. Whose move: /.test(prLink[1]), "whose move on the PR link: " + JSON.stringify(prLink));
+
+  // A redraw keeps the view's scroll and the focus in view: 560 px high,
+  // scrolled to the bottom, a mismatch click there stays where it was.
+  await send("Emulation.setDeviceMetricsOverride", { width: 1400, height: 560, deviceScaleFactor: 1, mobile: false });
+  await evaluate("window.__wgoStore.setState({ q: '', sprint: '', outside: '' }, { commit: true })");
+  await sleep(300);
+  const scroll = await evaluate(`(async () => {
+    const h = document.querySelector(".sv-host"), frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    h.scrollTop = h.scrollHeight; await frame();
+    const before = h.scrollTop, b = document.querySelector(".sv-table tr[data-id='ticket:jira:TEAM-106'] .mmb");
+    b.focus(); b.click(); await frame();
+    const a = document.activeElement, r = a.getBoundingClientRect(), hr = h.getBoundingClientRect();
+    return { before, after: h.scrollTop, q: window.__wgoStore.query, k: a.dataset.k, visible: r.top >= hr.top - 1 && r.bottom <= hr.bottom + 1, at: [Math.round(r.top), Math.round(r.bottom), Math.round(hr.top), Math.round(hr.bottom)] };
+  })()`);
+  check(scroll.before > 100 && scroll.after > scroll.before - 40 && scroll.q === "mismatch:unassigned_in_sprint" && scroll.k === "mm:ticket:jira:TEAM-106:unassigned_in_sprint" && scroll.visible,
+    "a redraw keeps the scroll and the focus in view: " + JSON.stringify(scroll));
+  await send("Emulation.setDeviceMetricsOverride", { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false });
+
   await evaluate("window.__wgoStore.setState({ sprint: '999' }, { commit: true })");
   check(/No sprint 999 in this snapshot; the active sprints are 1234 \(Sprint 12\), 1240 \(Web Sprint 4\)/.test(await text(".sv-gap")), "an unknown sprint= names the active sprints");
 

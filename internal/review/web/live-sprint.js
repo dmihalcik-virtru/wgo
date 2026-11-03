@@ -43,14 +43,27 @@
     S.sprintName = function (sp) { return (sp && sp.name) || "Sprint " + (sp && sp.id); };
     S.compareKeys = function (a, b) { return String(a).localeCompare(String(b), "en", { numeric: true }) || cmp(a, b); };
 
-    // assignedToPeople: the ticket's assignee is a configured person, by
-    // Jira account ID, or else by display name or login (extract_sprint.go).
-    S.assignedToPeople = function (t, people) {
-      return (people || []).some(function (p) {
-        if (!isObj(p)) return false;
-        if (t.assignee_id && p.jira && lower(t.assignee_id) === lower(p.jira)) return true;
-        return !!t.assignee && (lower(t.assignee) === lower(p.name) || lower(t.assignee) === lower(p.login));
-      });
+    // forPeople tells whether ticket t of active sprint sp is assigned to a
+    // followed person (forPeople in extract_sprint.go): true when its
+    // assignee's account ID is a followed person's Jira account ID or sp's
+    // search for the followed people's tickets found it; false when it is
+    // unassigned, its account ID was compared with every followed person's,
+    // or sp's complete search, covering everyone, did not find it; null
+    // (unknown) otherwise, as for currentUser() or an email.
+    function accountID(j) { return typeof j === "string" && j !== "" && !/[@(]/.test(j); }
+    S.forPeople = function (t, sp, people) {
+      people = (people || []).filter(isObj);
+      var compared = people.length > 0, covered = people.length > 0, aid = lower(t.assignee_id);
+      for (var i = 0; i < people.length; i++) {
+        var j = people[i].jira;
+        if (accountID(j)) { if (aid && aid === lower(j)) return true; } else compared = false;
+        if (!j) covered = false;
+      }
+      if (Array.isArray(t.sprint_search) && t.sprint_search.indexOf(sp.id) >= 0) return true;
+      if (!t.assignee && !t.assignee_id && (t.freshness === "fresh" || t.freshness === "stale")) return false;
+      if (aid && compared) return false;
+      if (sp.searched === true && sp.truncated !== true && covered) return false;
+      return null;
     };
 
     // activeSprints lists the snapshot's active sprints by start, then ID,
@@ -63,7 +76,7 @@
         var sp = n && n.kind === "sprint" && isObj(n.sprint) ? n.sprint : null;
         if (!sp || sp.state !== "active" || typeof sp.id !== "number") return;
         sprintOf.set(n.id, sp.id);
-        if (!byId.has(sp.id)) { var a = { id: sp.id, node: n, sprint: sp, tickets: [], people: 0, members: new Set() }; byId.set(sp.id, a); out.push(a); }
+        if (!byId.has(sp.id)) { var a = { id: sp.id, node: n, sprint: sp, tickets: [], people: 0, unknownPeople: 0, members: new Set() }; byId.set(sp.id, a); out.push(a); }
       });
       if (!out.length) return out;
       edges.forEach(function (e) {
@@ -75,7 +88,8 @@
         out.forEach(function (a) {
           if (!a.members.has(n.id)) return;
           a.tickets.push(n);
-          if (S.assignedToPeople(n.ticket, snap.people)) a.people++;
+          var f = S.forPeople(n.ticket, a.sprint, snap.people);
+          if (f === true) a.people++; else if (f == null) a.unknownPeople++;
         });
       });
       out.forEach(function (a) { delete a.members; });
@@ -84,12 +98,27 @@
       return out;
     };
 
-    // defaultSprint: the most tickets for the configured people, then the
-    // most tickets, then the first by start and ID.
+    // peopleKnown: whose tickets they are is known for every sprint's.
+    S.peopleKnown = function (list) { return list.every(function (a) { return !a.unknownPeople; }); };
+    // defaultSprint: the most tickets for the followed people, then the
+    // most tickets, then the first by start and ID; the most tickets when
+    // whose they are is unknown for some sprint's (defaultSprint in Go).
     S.defaultSprint = function (list) {
-      var best = null;
-      list.forEach(function (a) { if (!best || a.people > best.people || (a.people === best.people && a.tickets.length > best.tickets.length)) best = a; });
+      var known = S.peopleKnown(list), best = null;
+      list.forEach(function (a) {
+        if (!best) best = a;
+        else if (known && a.people !== best.people) { if (a.people > best.people) best = a; }
+        else if (a.tickets.length > best.tickets.length) best = a;
+      });
       return best;
+    };
+    // peopleText says how many of a sprint's tickets are the followed
+    // people's, saying what is unknown rather than counting it as no.
+    S.peopleText = function (a) {
+      var n = a.tickets.length, of = n === 1 ? " ticket" : " tickets";
+      if (!a.unknownPeople) return a.people + " of its " + n + of + " " + (a.people === 1 ? "is" : "are") + " assigned to the people wgo dash follows";
+      return "whose tickets these are is unknown for " + a.unknownPeople + " of its " + n + of + (a.people ? " (" + a.people + (a.people === 1 ? " is" : " are") + " known to be assigned to the people wgo dash follows)" : "") +
+        ": a Jira identity such as currentUser() cannot be matched to an assignee; set jira = \"<account ID>\" in [[dash.people]]";
     };
 
     // chooseSprint reads sprint= ("1234" or "sprint:1234"): {sprint} or
@@ -235,16 +264,18 @@
       return { list: f.mismatches.filter(function (m) { return isObj(m) && typeof m.code === "string" && m.code; }) };
     };
 
-    // prTitle is a linked PR's details on demand: its state and gh-99's
-    // whose move, who holds it and why.
-    S.prTitle = function (lp, pr) {
+    // prTitle is a linked PR's details on demand: its state, then gh-99's
+    // whose move ("you" when it is the operator's, me) and the details the
+    // analysis table shows (L.moveTitle: who holds it, why, what is
+    // uncertain).
+    S.prTitle = function (lp, pr, me) {
       var g = S.prGlyph(lp.state), lines = [(lp.ref || lp.id) + ": " + g.text + (pr && pr.title ? " — " + pr.title : "")];
       var f = pr && isObj(pr.facts) ? pr.facts : null;
       if (!pr) lines.push("Not in the snapshot");
-      else if (!f || !f.move || f.move === "unknown") lines.push("Whose move: unknown");
       else {
-        lines.push("Whose move: " + f.move + (Array.isArray(f.move_people) && f.move_people.length ? " (" + f.move_people.join(", ") + ")" : ""));
-        (Array.isArray(f.reasons) ? f.reasons : []).forEach(function (r) { if (isObj(r) && r.code) lines.push(S.codeText(r.code) + (r.evidence ? ": " + r.evidence : "")); });
+        if (f) { var w = L.moveWord(f, me); lines.push("Whose move: " + (w.mine ? "you (" + w.move + ")" : w.word)); }
+        var d = L.moveTitle(f);
+        if (d) lines.push(d);
       }
       return lines.join("\n");
     };
@@ -322,8 +353,10 @@
     if (!V || V.host !== ctx.container) build(ctx);
     if (!ctx.snapshot) return;
     if (ctx.reason === "selection" && V.m && V.m.sprint && V.snap === ctx.snapshot) { paintSelection(); return; }
-    // Keep the keyboard where it was across a redraw: the same control.
+    // Keep the keyboard where it was across a redraw (the same control) and
+    // the scroll positions: the view's, and the table's sideways.
     var a = document.activeElement, key = a && V.root.contains(a) && a.dataset ? a.dataset.k : null;
+    var top = V.host.scrollTop, sc = V.root.querySelector(".sv-scroll"), left = sc ? sc.scrollLeft : 0;
     V.snap = ctx.snapshot;
     V.m = model(ctx);
     V.root.textContent = "";
@@ -333,9 +366,12 @@
     if (V.m.gap) paintGap();
     else if (V.m.error) paintError();
     else { paintHead(); paintBars(); paintBar(); paintTable(); }
+    V.host.scrollTop = top;
+    sc = V.root.querySelector(".sv-scroll");
+    if (sc) sc.scrollLeft = left;
     if (key) {
       var back = Array.prototype.filter.call(V.root.querySelectorAll("[data-k]"), function (e) { return e.dataset.k === key; })[0];
-      if (back) back.focus({ preventScroll: true });
+      if (back) { back.focus({ preventScroll: true }); if (back.scrollIntoView) back.scrollIntoView({ block: "nearest", inline: "nearest" }); }
     }
   }
 
@@ -350,7 +386,7 @@
       var b = cur.dom.button(box, S.sprintName(a.sprint) + " · " + cur.dom.plural(a.tickets.length, "ticket"), null, null);
       b.dataset.act = "sprint"; b.dataset.sprint = String(a.id); b.dataset.k = "sprint:" + a.id;
       b.setAttribute("aria-pressed", String(!!m.sprint && m.sprint.id === a.id));
-      b.title = "Sprint " + a.id + ": " + a.people + " of its tickets are assigned to the people wgo dash follows" + (a === S.defaultSprint(m.list) ? " (the default: the most of them)" : "");
+      b.title = "Sprint " + a.id + ": " + S.peopleText(a) + (a !== S.defaultSprint(m.list) ? "" : S.peopleKnown(m.list) ? "\nThe default: the most tickets for those people" : "\nThe default: the most tickets, since whose tickets these are is unknown for some sprint");
     });
   }
   function paintGap() {
@@ -548,11 +584,12 @@
     list.slice(0, SHOW_PRS).forEach(function (lp) {
       var pr = ix && ix.byId.get(lp.id), g = S.prGlyph(lp.state), s = el("span", "pr " + (lp.state || "unknown"), null, td);
       s.dataset.hover = lp.id;
-      var tip = S.prTitle(lp, pr && pr.pr);
+      var tip = S.prTitle(lp, pr && pr.pr, cur.queryIndex && cur.queryIndex.env.me);
       el("span", "gl", g.glyph, s).setAttribute("aria-hidden", "true");
       var a = cur.dom.link(s, lp.ref || lp.id, pr && pr.pr && pr.pr.url);
-      if (a) { a.dataset.k = "pr:" + n.id + ":" + lp.id; a.setAttribute("aria-label", (lp.ref || lp.id) + ", " + g.text); }
-      s.title = tip;
+      // The details sit on the link, so the keyboard reaches them too.
+      if (a) { a.dataset.k = "pr:" + n.id + ":" + lp.id; a.title = tip; a.setAttribute("aria-label", tip.replace(/\n/g, ". ")); }
+      else s.title = tip;
     });
     if (list.length > SHOW_PRS) {
       var more = el("span", "more", "+" + (list.length - SHOW_PRS), td);
