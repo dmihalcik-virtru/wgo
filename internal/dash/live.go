@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -399,6 +400,19 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		if err != nil {
 			return err
 		}
+		s, more := c.assemble(ls)
+		// The fetched data can name new work: a sprint's tickets (gh-98),
+		// whose own entries hold their facts. Run those once more, so a
+		// waited-for refresh prints them complete.
+		if extra := newJobs(jobs, more); len(extra) > 0 {
+			select {
+			case res2 := <-d.opts.Refresher.Submit(extra):
+				res = mergeBatches(res, res2)
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			s, _ = c.assemble(ls)
+		}
 		remoteErr := res.Err()
 		d.recordRefreshError(remoteErr)
 		d.recordSkipped(d.opts.Refresher.skipSummary(res))
@@ -523,4 +537,33 @@ func (d *Dash) Resolve(id string) (Target, error) {
 		return Target{}, ErrStaleWorkspace
 	}
 	return Target{}, ErrUnknownWorkspace
+}
+
+// newJobs returns the jobs in next whose keys are not in prev.
+func newJobs(prev, next []Job) []Job {
+	seen := make(map[string]bool, len(prev))
+	for _, j := range prev {
+		seen[j.key()] = true
+	}
+	var out []Job
+	for _, j := range next {
+		if !seen[j.key()] {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// mergeBatches adds up two batches' results.
+func mergeBatches(a, b BatchResult) BatchResult {
+	out := BatchResult{Jobs: a.Jobs + b.Jobs, Dropped: a.Dropped + b.Dropped, Failed: slices.Concat(a.Failed, b.Failed)}
+	for _, r := range []BatchResult{a, b} {
+		for k, n := range r.Skipped {
+			if out.Skipped == nil {
+				out.Skipped = map[JobKind]int{}
+			}
+			out.Skipped[k] += n
+		}
+	}
+	return out
 }

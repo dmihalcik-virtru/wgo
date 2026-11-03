@@ -69,6 +69,9 @@ type Config struct {
 	// queues no inventory or identity lookups and reports it as
 	// github_inventory's detail. Cached PRs' tickets are still looked up.
 	GitHubUnavailable string
+	// JiraBoard is [jira] board, whose sprints the dash shows (gh-98);
+	// zero means none is configured.
+	JiraBoard int
 }
 
 // Collector builds snapshots. It runs outside HTTP request handling.

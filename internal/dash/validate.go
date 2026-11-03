@@ -95,9 +95,11 @@ func (s *Snapshot) Validate() error {
 			v.addf("edge endpoints: %s edge %q (%s) -> %q (%s) joins the wrong kinds", e.Kind, e.Source, srcKind, e.Target, dstKind)
 			continue
 		}
-		// A ticket is in_sprint of exactly the sprint nodes it lists.
+		// A ticket whose sprints are known is in_sprint of exactly the sprint
+		// nodes it lists. One whose sprints are unknown may be in_sprint of
+		// any: a sprint's ticket search found it there.
 		if t, sp := byID[e.Source], byID[e.Target]; e.Kind == EdgeInSprint && t.Ticket != nil && sp.Sprint != nil {
-			if !slices.ContainsFunc(t.Ticket.Sprints, func(r SprintRef) bool { return r.ID == sp.Sprint.ID }) {
+			if t.Ticket.Sprints != nil && !slices.ContainsFunc(t.Ticket.Sprints, func(r SprintRef) bool { return r.ID == sp.Sprint.ID }) {
 				v.addf("reference: ticket %q has an in_sprint edge to %q, a sprint it does not list", e.Source, e.Target)
 			}
 			if inSprint[e.Source] == nil {

@@ -277,3 +277,13 @@ func TestValidateInventoryPRMayAlsoHaveABookmark(t *testing.T) {
 		t.Fatalf("valid snapshot rejected: %v", err)
 	}
 }
+
+// TestValidateInSprintWithUnknownSprints: a ticket whose sprints are unknown
+// may be in_sprint of a sprint whose ticket search found it.
+func TestValidateInSprintWithUnknownSprints(t *testing.T) {
+	s := validAnalysisSnapshot()
+	s.Node(tTicketTwo).Ticket.Sprints = nil
+	if err := s.Validate(); err != nil {
+		t.Fatalf("valid snapshot rejected: %v", err)
+	}
+}

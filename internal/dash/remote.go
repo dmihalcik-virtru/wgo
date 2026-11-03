@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,8 @@ const (
 	// JobIdentity looks up the authenticated GitHub login, which the
 	// inventory needs to know whose PRs to fetch.
 	JobIdentity JobKind = "identity"
+	// JobSprints refreshes [jira] board's sprints and their tickets (gh-98).
+	JobSprints JobKind = "sprints"
 )
 
 // Job is one remote cache entry to refresh.
@@ -44,6 +47,10 @@ type Job struct {
 	// window. Since is not part of the key: a set is fetched once.
 	Inventory inventory.Key
 	Since     time.Time
+	// Sprint lookups: the board, and the Jira identities whose tickets
+	// each active sprint is searched for (sorted).
+	Board     int
+	Assignees []string
 }
 
 func (j Job) key() string {
@@ -56,6 +63,8 @@ func (j Job) key() string {
 		return "inventory\x00" + strings.ToLower(j.Inventory.String())
 	case JobIdentity:
 		return "identity"
+	case JobSprints:
+		return "sprints\x00" + strconv.Itoa(j.Board) + "\x00" + strings.Join(j.Assignees, "\x00")
 	default:
 		return "issue\x00" + j.Issue.String()
 	}
@@ -69,6 +78,8 @@ type Fetchers struct {
 	Issue issuecache.Fetcher
 	// Inventory runs inventory searches and identity lookups.
 	Inventory inventory.Fetcher
+	// Sprints reads [jira] board's sprints (gh-98).
+	Sprints jiracache.SprintFetcher
 	// Missing optionally says why a kind has no fetcher ("acli not on
 	// PATH"), so a skipped batch can explain itself.
 	Missing map[JobKind]string
@@ -85,6 +96,8 @@ func (j Job) describe() string {
 		return "inventory " + j.Inventory.String()
 	case JobIdentity:
 		return "GitHub identity"
+	case JobSprints:
+		return "jira sprints of board " + strconv.Itoa(j.Board)
 	default:
 		return "issue " + j.Issue.String()
 	}
@@ -282,6 +295,8 @@ func (r *Refresher) supports(j Job) bool {
 		return r.f.Issue != nil
 	case JobInventory, JobIdentity:
 		return r.f.Inventory != nil
+	case JobSprints:
+		return r.f.Sprints != nil
 	}
 	return false
 }
@@ -370,6 +385,10 @@ func (r *Refresher) run(j Job) error {
 			_, err := inventory.RefreshIdentity(r.ctx, r.f.Inventory)
 			return err
 		}
+	case JobSprints:
+		if r.opts.IgnoreLeases || jiracache.LockSprintsRefresh(j.Board, r.opts.Backoff) {
+			return jiracache.RefreshSprints(r.f.Sprints, j.Board, j.Assignees)
+		}
 	}
 	return nil
 }
@@ -415,6 +434,8 @@ func (r *Refresher) skipSummary(res BatchResult) string {
 			label = "GitHub PR inventory"
 		case JobIdentity:
 			label = "GitHub identity"
+		case JobSprints:
+			label = "Jira sprint"
 		}
 		p := fmt.Sprintf("%d %s lookups skipped", res.Skipped[k], label)
 		if why := r.f.Missing[k]; why != "" {

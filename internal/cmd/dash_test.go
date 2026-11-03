@@ -323,7 +323,7 @@ func TestDashFetchersAbsentIntegrations(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 	f := dashFetchers()
-	if f.PR != nil || f.Issue != nil || f.Jira != nil || f.Inventory != nil {
+	if f.PR != nil || f.Issue != nil || f.Jira != nil || f.Inventory != nil || f.Sprints != nil {
 		t.Fatalf("fetchers without any integration: %+v", f)
 	}
 	want := map[dash.JobKind]string{
@@ -332,6 +332,7 @@ func TestDashFetchersAbsentIntegrations(t *testing.T) {
 		dash.JobInventory: "no GitHub token or gh",
 		dash.JobIdentity:  "no GitHub token or gh",
 		dash.JobJira:      "acli not on PATH",
+		dash.JobSprints:   "acli not on PATH",
 	}
 	for k, why := range want {
 		if f.Missing[k] != why {
