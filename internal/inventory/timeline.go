@@ -267,3 +267,113 @@ func timelinePath(k TimelineKey) (string, error) {
 	}
 	return filepath.Join(dir, timelinesDir, owner, name, strconv.Itoa(k.Number)+".json"), nil
 }
+
+// TimelineMaxUnseen is how long a PR may go unseen by the dash before
+// PruneTimelines removes its cached timeline.
+const TimelineMaxUnseen = 60 * 24 * time.Hour
+
+// timelineSeenFile records when the dash last saw each PR with a cached
+// timeline, and timelinePruneLock how often pruning runs.
+const (
+	timelineSeenFile  = "seen.json"
+	timelinePruneLock = "prune.lock"
+)
+
+// TimelinePruneDue reports whether pruning has not run for every, by its
+// lease. It never makes a network call.
+func TimelinePruneDue(now time.Time, every time.Duration) bool {
+	dir, err := Dir()
+	if err != nil {
+		return false
+	}
+	fi, err := os.Stat(filepath.Join(dir, timelinesDir, timelinePruneLock))
+	return err != nil || now.Sub(fi.ModTime()) >= every
+}
+
+// LockTimelinePrune takes the pruning lease, held for window: pruning runs
+// at most once per window across wgo processes.
+func LockTimelinePrune(window time.Duration) bool {
+	dir, err := Dir()
+	if err != nil {
+		return false
+	}
+	return acquireLease(filepath.Join(dir, timelinesDir, timelinePruneLock), window, "timeline pruning")
+}
+
+// PruneTimelines records the PRs in seen as seen at now, then removes the
+// cached timeline, and its lease, of every PR not seen for maxAge: by that
+// record, or by the entry's modification time for a PR never recorded. It
+// returns how many it removed. The record keeps only PRs whose timeline is
+// still cached.
+func PruneTimelines(seen []TimelineKey, now time.Time, maxAge time.Duration) (int, error) {
+	dir, err := Dir()
+	if err != nil {
+		return 0, err
+	}
+	root := filepath.Join(dir, timelinesDir)
+	recPath := filepath.Join(root, timelineSeenFile)
+	rec := map[string]time.Time{}
+	if data, err := os.ReadFile(recPath); err == nil {
+		if err := json.Unmarshal(data, &rec); err != nil {
+			logf("inventory cache: corrupt %s: %v", recPath, err)
+			rec = map[string]time.Time{}
+		}
+	}
+	for _, k := range seen {
+		rec[strings.ToLower(k.String())] = now
+	}
+	kept, removed := map[string]time.Time{}, 0
+	owners, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	for _, o := range owners {
+		if !o.IsDir() {
+			continue
+		}
+		repos, _ := os.ReadDir(filepath.Join(root, o.Name()))
+		for _, r := range repos {
+			if !r.IsDir() {
+				continue
+			}
+			repoDir := filepath.Join(root, o.Name(), r.Name())
+			files, _ := os.ReadDir(repoDir)
+			for _, f := range files {
+				n, ok := strings.CutSuffix(f.Name(), ".json")
+				if !ok {
+					continue
+				}
+				key := o.Name() + "/" + r.Name() + "#" + n
+				last, recorded := rec[key]
+				if !recorded {
+					if fi, err := f.Info(); err == nil {
+						last = fi.ModTime()
+					}
+				}
+				if now.Sub(last) <= maxAge {
+					if recorded {
+						kept[key] = last
+					}
+					continue
+				}
+				path := filepath.Join(repoDir, f.Name())
+				if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					logf("inventory cache: prune %s: %v", path, err)
+					continue
+				}
+				_ = os.Remove(strings.TrimSuffix(path, ".json") + ".lock")
+				removed++
+			}
+			_ = os.Remove(repoDir) // only once empty
+		}
+		_ = os.Remove(filepath.Join(root, o.Name()))
+	}
+	data, err := json.Marshal(kept)
+	if err != nil {
+		return removed, err
+	}
+	return removed, atomicfile.Write(recPath, data, 0o644)
+}

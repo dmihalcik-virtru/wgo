@@ -1628,13 +1628,16 @@ thin bar from its creation, labelled so.
 Histories are read from GitHub's GraphQL timeline (ready, draft, review
 requested and removed, reviews and their dismissals, merged, closed,
 reopened), 100 events per
-page, by the background refresh only: at most 50 PRs per refresh, open PRs
+page, by the served dashboard's background refresh only (`wgo dash --json
+--refresh` does not wait for them): at most 50 PRs per refresh, open PRs
 first, then those merged or closed in the closed-recent window, one after
 another. A PR's history is fetched again only when GitHub reports a newer
 `updated_at` for it, and is cached under
-`~/.wgo/cache/inventory/timelines.d/<owner>/<repo>/<number>.json`. A failed
-fetch backs off like an inventory set, and a rate limit pauses every
-timeline fetch until GitHub's reset. The `github_timelines` source says how
+`~/.wgo/cache/inventory/timelines.d/<owner>/<repo>/<number>.json`; once a
+day, the histories of PRs the dashboard has not seen for 60 days are
+removed. A failed fetch backs off like an inventory set, three server
+errors or timeouts in a row end that refresh's batch, and a rate limit
+pauses every timeline fetch until GitHub's reset. The `github_timelines` source says how
 many of the PRs followed have a history ("120 of 195 PRs have a cached
 history") and how old the oldest is.
 

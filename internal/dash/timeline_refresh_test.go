@@ -67,6 +67,24 @@ func (g *fakeTimelineGraphQL) fetches() (prs, requests int) {
 	return len(g.calls), len(g.order)
 }
 
+// bgCycle is one background cycle of a served dash: collect, run the lookups
+// that queued, as the background Refresher does, and collect again with
+// their data, which it returns.
+func bgCycle(t *testing.T, d *Dash) *Snapshot {
+	t.Helper()
+	c := d.opts.Collector
+	_, jobs, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-d.opts.Refresher.Submit(jobs)
+	s, _, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 // timelineDash is a Dash following alice, whose inventory the test seeds,
 // with a Refresher that fetches timelines from gc and nothing else.
 func timelineDash(t *testing.T, gc inventory.TimelineFetcher, ignoreLeases bool) *Dash {
@@ -126,13 +144,7 @@ func TestTimelinesRefreshOnlyChangedPRsAtMost50PerCycle(t *testing.T) {
 	seedTimelinePRs(t, g, 120, 5, nil)
 	d := timelineDash(t, gc, true)
 
-	cycle := func() *Snapshot {
-		t.Helper()
-		if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true}); err != nil {
-			t.Fatal(err)
-		}
-		return d.Current().Snapshot
-	}
+	cycle := func() *Snapshot { t.Helper(); return bgCycle(t, d) }
 	src := func(s *Snapshot) SourceStatus { return s.Sources[SourceGitHubTimelines] }
 
 	s := cycle()
@@ -210,13 +222,11 @@ func TestTimelinesFollowTheBackgroundRules(t *testing.T) {
 		t.Fatal("lease")
 	}
 	d := timelineDash(t, gc, false)
-	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true}); err != nil {
-		t.Fatal(err)
-	}
+	bgCycle(t, d)
 	if !slices.Equal(sortedInts(g.order), []int{1}) {
 		t.Fatalf("fetched %v, want only PR 1", g.order)
 	}
-	st := d.Current().Snapshot.Sources[SourceGitHubTimelines]
+	st := bgCycle(t, d).Sources[SourceGitHubTimelines]
 	if st.Fresh != 1 || st.Error != 1 || st.Unknown != 1 || st.State != Error {
 		t.Fatalf("github_timelines %+v", st)
 	}
@@ -227,13 +237,11 @@ func TestTimelinesFollowTheBackgroundRules(t *testing.T) {
 	if _, err := inventory.RefreshTimeline(context.Background(), rateLimitedTimelines{pauseUntil}, inventory.TimelineKey{Repo: asmSlug, Number: 9}); err == nil {
 		t.Fatal("want a rate limit")
 	}
-	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true}); err != nil {
-		t.Fatal(err)
-	}
+	bgCycle(t, d)
+	s := bgCycle(t, d)
 	if len(g.order) != 1 {
 		t.Fatalf("fetched %v while paused by a rate limit", g.order)
 	}
-	s := d.Current().Snapshot
 	st = s.Sources[SourceGitHubTimelines]
 	if st.Stale != 1 || !strings.Contains(st.Detail, "paused by a GitHub rate limit until") {
 		t.Fatalf("github_timelines while paused: %+v", st)
@@ -355,5 +363,121 @@ func TestTimelineWarmCachePerformance(t *testing.T) {
 	}
 	if enforce := !testing.Short() && !raceEnabled; enforce && elapsed >= time.Second {
 		t.Fatalf("collection took %v, want under 1s", elapsed)
+	}
+}
+
+// TestWaitedRefreshLeavesTimelinesToTheBackground: gh-104 requirement 2.
+// `wgo dash --json --refresh` (a waited-for refresh) neither runs nor waits
+// for timeline fetches; the served dash's background refresh does them.
+func TestWaitedRefreshLeavesTimelinesToTheBackground(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	g := &fakeTimelineGraphQL{t: t}
+	srv := httptest.NewServer(g)
+	defer srv.Close()
+	gc := github.NewClient(github.WithBaseURL(srv.URL), github.WithToken("test-token"), github.WithRetryBackoff(0, 0, 0))
+	seedTimelinePRs(t, g, 3, 0, nil)
+	d := timelineDash(t, gc, true)
+	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, reqs := g.fetches(); reqs != 0 {
+		t.Fatalf("a waited-for refresh made %d timeline requests", reqs)
+	}
+	if st := d.Current().Snapshot.Sources[SourceGitHubTimelines]; st.Unknown != 3 {
+		t.Fatalf("github_timelines %+v", st)
+	}
+	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 200; i++ {
+		if _, reqs := g.fetches(); reqs == 3 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, reqs := g.fetches()
+	t.Fatalf("the background refresh made %d timeline requests, want 3", reqs)
+}
+
+// scriptedTimelines fails or answers each call in turn, counting calls.
+type scriptedTimelines struct {
+	mu    sync.Mutex
+	errs  []error // nil answers
+	calls int
+}
+
+func (s *scriptedTimelines) PRTimeline(_ context.Context, repo string, number int) (*github.PRTimeline, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := s.errs[s.calls%len(s.errs)]
+	s.calls++
+	if err != nil {
+		return nil, err
+	}
+	return &github.PRTimeline{Repo: repo, Number: number, State: "open", UpdatedAt: time.Now(), Events: []github.TimelineEvent{}}, nil
+}
+
+// TestTimelineBatchStopsAfterServerErrors: a batch stops after three fetches
+// in a row fail with a server error or a timeout, as it does on a rate
+// limit; a success in between, or another kind of failure, does not count.
+func TestTimelineBatchStopsAfterServerErrors(t *testing.T) {
+	reqs := make([]TimelineRequest, 10)
+	for i := range reqs {
+		reqs[i] = TimelineRequest{Key: inventory.TimelineKey{Repo: "acme/api", Number: i + 1}}
+	}
+	run := func(errs ...error) (*scriptedTimelines, BatchResult) {
+		t.Helper()
+		t.Setenv("HOME", t.TempDir())
+		f := &scriptedTimelines{errs: errs}
+		r := NewRefresher(Fetchers{Timelines: f}, RefresherOptions{IgnoreLeases: true})
+		defer r.Close()
+		return f, <-r.Submit([]Job{{Kind: JobTimelines, Timelines: reqs}})
+	}
+	bad := &github.PRTimelineError{Repo: "acme/api", Number: 1, Page: 1, Retries: 3, Err: &github.APIError{StatusCode: 502}}
+	f, res := run(bad)
+	if f.calls != 3 || len(res.Failed) != 1 || !strings.Contains(res.Failed[0], "3 of 10 failed") || !strings.Contains(res.Failed[0], "stopped after 3 server errors or timeouts in a row") {
+		t.Fatalf("%d calls, %+v", f.calls, res)
+	}
+	if f, _ = run(bad, bad, nil); f.calls != 10 {
+		t.Fatalf("a success in between: %d calls, want 10", f.calls)
+	}
+	missing := &github.PRTimelineError{Repo: "acme/api", Number: 1, Page: 1, Err: &github.GraphQLErrors{Errors: []github.GraphQLError{{Type: "NOT_FOUND", Message: "Could not resolve"}}}}
+	if f, _ = run(missing); f.calls != 10 {
+		t.Fatalf("PRs that cannot be read: %d calls, want 10", f.calls)
+	}
+	if f, _ = run(context.DeadlineExceeded); f.calls != 3 {
+		t.Fatalf("timeouts: %d calls, want 3", f.calls)
+	}
+}
+
+// TestTimelinePruningRunsDaily: collection queues pruning, with every PR it
+// sees, at most once a day, and the background Refresher runs it.
+func TestTimelinePruningRunsDaily(t *testing.T) {
+	a := inventoryAsm(t)
+	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/open-authored": {openPR(1, "alice", "feat"), openPR(2, "alice", "fix")}})
+	prune := func(jobs []Job) *Job {
+		for i := range jobs {
+			if jobs[i].Kind == JobTimelinePrune {
+				return &jobs[i]
+			}
+		}
+		return nil
+	}
+	_, jobs := a.build()
+	j := prune(jobs)
+	if j == nil || len(j.Timelines) != 2 {
+		t.Fatalf("pruning not queued with the PRs seen: %+v", j)
+	}
+	r := NewRefresher(Fetchers{}, RefresherOptions{})
+	defer r.Close()
+	if res := <-r.Submit([]Job{*j}); res.Jobs != 1 || len(res.Failed) != 0 || len(res.Skipped) != 0 {
+		t.Fatalf("pruning: %+v", res)
+	}
+	if _, jobs = a.build(); prune(jobs) != nil {
+		t.Fatal("pruning queued again the same day")
+	}
+	a.ls.at = a.ls.at.Add(25 * time.Hour)
+	if _, jobs = a.build(); prune(jobs) == nil {
+		t.Fatal("pruning not queued the next day")
 	}
 }
