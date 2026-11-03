@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/inventory"
 	"github.com/virtru/wgo/internal/prcache"
 	"github.com/virtru/wgo/models"
 )
@@ -92,6 +94,8 @@ func TestAssembleAnalysisWiring(t *testing.T) {
 	}
 	a.session("s-repo", "active", nil, "", "repo:acme/widgets")
 	a.session("s-sprint", "active", nil, "", "sprint:7")
+	// Merges are known only once everyone's closed-recent set is.
+	seedInventory(t, inventory.ClosedSince(a.ls.at, a.ls.days), map[string][]github.PRFacts{"alice/closed-recent": {}, "bob/closed-recent": {}})
 	s, _ := a.build()
 
 	pr := s.Node(prNodeID(asmSlug, 4))

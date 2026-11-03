@@ -291,7 +291,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 
 	// The PR inventory (gh-97), after the bookmarks so that it can merge
 	// into their PRs and attach to them.
-	invStatus, invDiags := c.addInventory(b, ls, wsEffort, effortNode, &issueTally, &jiraTally, addJob)
+	invStatus, invDiags, mergedKnown := c.addInventory(b, ls, wsEffort, effortNode, &issueTally, &jiraTally, addJob)
 
 	s := &Snapshot{
 		Schema:      SchemaVersion,
@@ -336,6 +336,9 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		return a.Kind < z.Kind
 	})
 	s.Counts = computeCounts(s, ls, effortBookmarks)
+	if !mergedKnown {
+		s.Counts.Merged = nil
+	}
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].key() < jobs[j].key() })
 	return s, jobs
 }

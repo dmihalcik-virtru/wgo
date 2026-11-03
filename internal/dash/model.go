@@ -401,7 +401,11 @@ type Counts struct {
 	// omitted rather than shown as zeros: one holding a merged PR whose
 	// merge time is unknown (known only through a bookmark) and may fall in
 	// the window, because its updated_at is unknown or not before the
-	// window, or one with PRs counted unknown in PRStates.
+	// window, or one with PRs counted unknown in PRStates. Merged is
+	// omitted entirely while nobody is followed, or while a followed
+	// person's closed-recent inventory set has no data covering the window
+	// or lags their open-authored set: their merges could belong to any
+	// effort.
 	Merged map[string][]int `json:"merged,omitempty"`
 }
 

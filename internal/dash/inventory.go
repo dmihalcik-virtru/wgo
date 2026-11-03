@@ -2,6 +2,7 @@ package dash
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/inventory"
+	"github.com/virtru/wgo/internal/issuecache"
 	"github.com/virtru/wgo/internal/spec"
 )
 
@@ -56,9 +58,12 @@ type wsTicket struct {
 // already found, and any other PR is attached per gh-97 requirement 14. Each
 // PR's ticket keys become ticket nodes, looked up like bookmarks' tickets. A
 // set that is not fresh is queued for refresh, unless GitHub cannot be asked
-// at all. It returns the github_inventory source and any diagnostics.
+// at all. It returns the github_inventory source, any diagnostics, and
+// whether merges in the counts window are known: every followed person's
+// closed-recent set has data covering the window and up to date with their
+// open-authored set. Otherwise someone's merges could be missing anywhere.
 func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string]string, effortNode func(string) string,
-	issues, jira *remoteTally, addJob func(Job)) (SourceStatus, []string) {
+	issues, jira *remoteTally, addJob func(Job)) (SourceStatus, []string, bool) {
 	var login, jiraID string
 	if c.cfg.Identity != nil {
 		login, jiraID = c.cfg.Identity()
@@ -72,8 +77,15 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 	var tally remoteTally
 	var diags []string
 	since := inventory.ClosedSince(ls.at, ls.days)
+	y, m, d := ls.at.Date()
+	countsStart := time.Date(y, m, d, 0, 0, 0, 0, ls.at.Location()).AddDate(0, 0, -(ls.days - 1))
+	mergedKnown := len(people) > 0
 	found := map[string]*invPR{}
 	for _, person := range people {
+		// PRs that left the person's open-authored set since closed-recent
+		// was last fetched: most merged or closed meanwhile.
+		var dropped []inventory.PR
+		var droppedAt, droppedFetched time.Time
 		for _, set := range inventory.Sets {
 			k := inventory.Key{Login: person.Login, Set: set}
 			ttl := c.cfg.InventoryTTL
@@ -82,6 +94,18 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 			}
 			res := inventory.Read(k, ttl, since, ls.at)
 			f := inventoryFreshness(res)
+			if set == inventory.OpenAuthored && f.hasData() {
+				dropped, droppedAt, droppedFetched = res.Dropped, res.DroppedAt, res.DroppedFetchedAt
+			}
+			// closed-recent is due at once when it predates PRs leaving
+			// open-authored: until refetched it cannot say what they became.
+			due := set == inventory.ClosedRecent && len(dropped) > 0 && res.FetchedAt.Before(droppedAt)
+			if due && f == Fresh {
+				f = Stale
+			}
+			if set == inventory.ClosedRecent && (!f.hasData() || due || res.Since.IsZero() || res.Since.After(countsStart)) {
+				mergedKnown = false
+			}
 			part := SourcePart{Name: k.String(), State: f, FetchedAt: res.FetchedAt, Truncated: res.Truncated}
 			if res.Err != nil {
 				part.Error = res.Err.Error()
@@ -112,6 +136,15 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 					ip.requested[strings.ToLower(person.Login)] = true
 				}
 			}
+			if due {
+				// Keep them, as last seen and stale, rather than let a PR
+				// that just merged vanish until closed-recent is refetched.
+				for _, pr := range dropped {
+					if id := prNodeID(pr.Repo, pr.Number); found[id] == nil {
+						found[id] = &invPR{pr: pr, state: Stale, fetchedAt: droppedFetched, requested: map[string]bool{}}
+					}
+				}
+			}
 		}
 	}
 	st := tally.status()
@@ -125,7 +158,7 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 		st.State, st.Detail = Unknown, noPeopleDetail
 	}
 	if len(found) == 0 {
-		return st, diags
+		return st, diags, mergedKnown
 	}
 
 	// Everything the attachment rules and ticket filtering look up.
@@ -147,15 +180,33 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 	for _, id := range ids {
 		ip := found[id]
 		f := ip.pr.PRFacts
-		repo := f.Repo
-		keys := ticketKeys(f.HeadRef, ip.pr.Refs, known, func(n int) bool { return isPR[prNodeID(repo, n)] })
-		inv := involvement(people, f, ip.requested)
-		if n := b.nodes[id]; n != nil && n.PR != nil {
-			mergeInventory(n.PR, ip, keys, inv)
+		owner, repo, _ := strings.Cut(f.Repo, "/")
+		// A same-repository reference is no ticket when it is a PR: one in
+		// the snapshot, or one the issue cache has found to be a PR.
+		refIsPR := func(n int) bool {
+			if isPR[prNodeID(f.Repo, n)] {
+				return true
+			}
+			r := issuecache.Read(issuecache.Key{Owner: owner, Repo: repo, Number: n}, c.cfg.IssueTTL)
+			return r.State != issuecache.Miss && r.Info.IsPR
+		}
+		n := b.nodes[id]
+		bookmarked := n != nil && n.PR != nil
+		// Someone else's branch name ("patch-1", "revert-45-fix") is held to
+		// the known prefixes too; a bookmark's PR keeps its branch ticket.
+		keys := ticketKeys(f.HeadRef, ip.pr.Refs, known, refIsPR, !bookmarked && len(known) > 0)
+		var p *PRInfo
+		invNewer := true
+		if bookmarked {
+			p = n.PR
+			invNewer = mergeInventory(p, ip, keys)
 		} else {
-			p := &PRInfo{Number: f.Number, Repo: f.Repo, Freshness: ip.state, FetchedAt: ip.fetchedAt, Sources: []string{PRSourceInventory}}
+			p = &PRInfo{Number: f.Number, Repo: f.Repo, Freshness: ip.state, FetchedAt: ip.fetchedAt, Sources: []string{PRSourceInventory}}
 			setPRBase(p, f)
-			setPRFacts(p, f, keys, inv)
+			setPRFacts(p, f, keys)
+		}
+		p.Involvement = involvement(people, p, ip.requested, invNewer)
+		if !bookmarked {
 			b.node(Node{ID: id, Kind: KindPR, Label: f.Repo + "#" + strconv.Itoa(f.Number), PR: p})
 			att.attach(b, id, p, keys, effortNode)
 		}
@@ -163,7 +214,7 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 			b.edge(id, c.ticketNodeFor(b, branchTicket(k), f.Repo, f.Repo, "", issues, jira, addJob), EdgeTicket)
 		}
 	}
-	return st, diags
+	return st, diags, mergedKnown
 }
 
 // inventoryFreshness maps an inventory cache result onto a Freshness.
@@ -197,10 +248,11 @@ func (c *Collector) knownTicketPrefixes(ls *localState) map[string]bool {
 // ticketKeys are a PR's ticket keys: its head branch's ticket by
 // spec.ParseTicketFromBranch's rules, then the title and body references
 // whose Jira prefix is known, and same-repository issues that are not
-// themselves PRs (isPR). Ordered and deduplicated; GitHub issues are
-// "gh-<n>", like TicketInfo.Key. Never nil: an inventory PR with no ticket
-// reported none.
-func ticketKeys(headRef string, refs []string, known map[string]bool, isPR func(int) bool) []string {
+// themselves PRs (isPR). With filterHead the branch's Jira ticket counts
+// only for a known prefix too: GitHub names branches "patch-1" and
+// "revert-45-x". Ordered and deduplicated; GitHub issues are "gh-<n>", like
+// TicketInfo.Key. Never nil: an inventory PR with no ticket reported none.
+func ticketKeys(headRef string, refs []string, known map[string]bool, isPR func(int) bool, filterHead bool) []string {
 	keys := []string{}
 	seen := map[string]bool{}
 	add := func(k string) {
@@ -209,8 +261,11 @@ func ticketKeys(headRef string, refs []string, known map[string]bool, isPR func(
 			keys = append(keys, k)
 		}
 	}
-	if t := spec.ParseTicketFromBranch(headRef); t != "" {
-		add(ticketKey(t))
+	if t := ticketKey(spec.ParseTicketFromBranch(headRef)); t != "" {
+		prefix, _, _ := strings.Cut(t, "-")
+		if !filterHead || prefix == "gh" || known[prefix] {
+			add(t)
+		}
 	}
 	for _, r := range refs {
 		if n, ok := strings.CutPrefix(r, "gh-"); ok {
@@ -243,35 +298,46 @@ func branchTicket(key string) string {
 	return key
 }
 
-// involvement lists each person's part in PR f, in people order: author,
-// review_requested (their review-requested set holds the open PR, or it
-// asks them directly), reviewed (a latest review is theirs). Never nil.
-func involvement(people []Person, f github.PRFacts, requested map[string]bool) []Involvement {
+// involvement lists each person's part in PR p, as merged, in people order:
+// author; review_requested while p is open and asks them directly, or their
+// review-requested set holds it (requested), trusted when the inventory is
+// the newer source (invNewer) or the newer bookmark lookup still lists a
+// team or them; reviewed when one of p's latest reviews is theirs and they
+// are not its author. Never nil.
+func involvement(people []Person, p *PRInfo, requested map[string]bool, invNewer bool) []Involvement {
 	out := []Involvement{}
-	for _, p := range people {
-		if strings.EqualFold(f.Author, p.Login) {
-			out = append(out, Involvement{Person: p.Login, Role: RoleAuthor})
+	for _, person := range people {
+		author := strings.EqualFold(p.Author, person.Login)
+		if author {
+			out = append(out, Involvement{Person: person.Login, Role: RoleAuthor})
 		}
-		if f.State == "open" && (requested[strings.ToLower(p.Login)] || hasReviewer(f.ReviewRequests, p.Login)) {
-			out = append(out, Involvement{Person: p.Login, Role: RoleReviewRequested})
+		inSet := requested[strings.ToLower(person.Login)] && (invNewer || mayRequest(p, person.Login))
+		if p.State == "open" && (inSet || asksDirectly(p, person.Login)) {
+			out = append(out, Involvement{Person: person.Login, Role: RoleReviewRequested})
 		}
-		for _, r := range f.Reviews {
-			if strings.EqualFold(r.Author, p.Login) {
-				out = append(out, Involvement{Person: p.Login, Role: RoleReviewed})
-				break
-			}
+		if !author && slices.ContainsFunc(p.Reviews, func(r Review) bool { return strings.EqualFold(r.Author, person.Login) }) {
+			out = append(out, Involvement{Person: person.Login, Role: RoleReviewed})
 		}
 	}
 	return out
 }
 
-func hasReviewer(reqs []github.ReviewRequestFact, login string) bool {
-	for _, r := range reqs {
-		if r.Kind == ReviewerUser && strings.EqualFold(r.Reviewer, login) {
-			return true
-		}
+// asksDirectly reports whether p's outstanding requests name login.
+func asksDirectly(p *PRInfo, login string) bool {
+	if p.ReviewRequests != nil {
+		return slices.ContainsFunc(p.ReviewRequests, func(r ReviewRequest) bool {
+			return r.Kind == ReviewerUser && strings.EqualFold(r.Reviewer, login)
+		})
 	}
-	return false
+	return slices.ContainsFunc(p.RequestedReviewers, func(r string) bool { return strings.EqualFold(r, login) })
+}
+
+// mayRequest reports whether p's requested reviewers could still include
+// login: they are unknown, or name login or a team.
+func mayRequest(p *PRInfo, login string) bool {
+	return !p.ReviewersKnown || slices.ContainsFunc(p.RequestedReviewers, func(r string) bool {
+		return strings.EqualFold(r, login) || strings.HasPrefix(r, teamPrefix)
+	})
 }
 
 // setPRBase sets the fields a bookmark's PR lookup also reports from f.
@@ -286,11 +352,24 @@ func setPRBase(p *PRInfo, f github.PRFacts) {
 
 // setPRFacts sets the inventory's facts from f. A list GitHub did not report
 // stays nil (unknown); a reported empty one becomes [].
-func setPRFacts(p *PRInfo, f github.PRFacts, keys []string, inv []Involvement) {
-	p.Author = f.Author
-	p.CreatedAt, p.MergedAt, p.ClosedAt, p.ReadyAt = f.CreatedAt, f.MergedAt, f.ClosedAt, f.ReadyAt
+func setPRFacts(p *PRInfo, f github.PRFacts, keys []string) {
+	setStableFacts(p, f, keys)
+	setStateFacts(p, f)
+}
+
+// setStableFacts sets the facts that do not change with a PR's state.
+func setStableFacts(p *PRInfo, f github.PRFacts, keys []string) {
+	p.Author, p.CreatedAt = f.Author, f.CreatedAt
 	p.Additions, p.Deletions, p.ChangedFiles = f.Additions, f.Deletions, f.ChangedFiles
-	p.Mergeable, p.BaseRef, p.HeadRef = f.Mergeable, f.BaseRef, f.HeadRef
+	p.BaseRef, p.HeadRef = f.BaseRef, f.HeadRef
+	p.TicketKeys = keys
+}
+
+// setStateFacts sets the facts that go with a PR's state: its times,
+// mergeability, requests, reviews and checks.
+func setStateFacts(p *PRInfo, f github.PRFacts) {
+	p.MergedAt, p.ClosedAt, p.ReadyAt = f.MergedAt, f.ClosedAt, f.ReadyAt
+	p.Mergeable = f.Mergeable
 	p.ReviewRequests, p.Reviews, p.CheckDetails = nil, nil, nil
 	if f.ReviewRequests != nil {
 		p.ReviewRequests = make([]ReviewRequest, 0, len(f.ReviewRequests))
@@ -311,30 +390,32 @@ func setPRFacts(p *PRInfo, f github.PRFacts, keys []string, inv []Involvement) {
 		}
 	}
 	p.ChecksTruncated = f.ChecksTruncated || len(f.CheckDetails) > MaxCheckDetails
-	p.TicketKeys, p.Involvement = keys, inv
 }
 
 // mergeInventory merges an inventory PR into the node a bookmark found
-// (gh-97 requirement 13). The fields both sources report come from the
-// newer of the two by GitHub's updated_at, the inventory on a tie, except
-// that a review decision the inventory lacks never erases the bookmark's;
-// the facts only the inventory has are added. Freshness becomes the worse
-// of the two sources' and FetchedAt the older fetch.
-func mergeInventory(p *PRInfo, ip *invPR, keys []string, inv []Involvement) {
+// (gh-97 requirement 13) and reports whether the inventory's copy was the
+// newer, by GitHub's updated_at (the inventory on a tie). The state and
+// everything that goes with it (decision, requests, reviews, checks,
+// mergeability, times) come together from the newer copy, so old and new
+// never mix: when the bookmark's lookup is newer, those inventory facts stay
+// unknown. Facts that do not change with the state are always added.
+// Freshness becomes the worse of the two sources' and FetchedAt the older
+// fetch.
+func mergeInventory(p *PRInfo, ip *invPR, keys []string) bool {
 	f := ip.pr.PRFacts
-	if !f.UpdatedAt.Before(p.UpdatedAt) {
-		decision := p.ReviewDecision
+	newer := !f.UpdatedAt.Before(p.UpdatedAt)
+	if newer {
 		setPRBase(p, f)
-		if p.ReviewDecision == "" {
-			p.ReviewDecision = decision
-		}
+		setPRFacts(p, f, keys)
+	} else {
+		setStableFacts(p, f, keys)
 	}
-	setPRFacts(p, f, keys, inv)
 	p.Freshness = worseFreshness(p.Freshness, ip.state)
 	if p.FetchedAt.IsZero() || (!ip.fetchedAt.IsZero() && ip.fetchedAt.Before(p.FetchedAt)) {
 		p.FetchedAt = ip.fetchedAt
 	}
 	p.Sources = []string{PRSourceBookmark, PRSourceInventory}
+	return newer
 }
 
 var freshnessRank = map[Freshness]int{Fresh: 0, Stale: 1, Unknown: 2, Error: 3}
