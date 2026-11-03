@@ -64,6 +64,15 @@
     }
    },
    {
+    "id": "effort:sprint:1234",
+    "kind": "effort",
+    "label": "Sprint 12",
+    "effort": {
+     "key": "sprint:1234",
+     "group": "sprint"
+    }
+   },
+   {
     "id": "ws-0000000000000001",
     "kind": "workspace",
     "label": "api/team-123-widgets",
@@ -345,7 +354,8 @@
      "freshness": "fresh",
      "status_category": "in_progress",
      "story_points": 5,
-     "updated_at": "2026-10-17T09:00:00-04:00"
+     "updated_at": "2026-10-17T09:00:00-04:00",
+     "story_points_known": true
     }
    },
    {
@@ -362,7 +372,8 @@
      "status_category": "done",
      "story_points": 3,
      "resolved_at": "2026-10-12T00:30:00-04:00",
-     "updated_at": "2026-10-19T09:00:00-04:00"
+     "updated_at": "2026-10-19T09:00:00-04:00",
+     "story_points_known": true
     }
    },
    {
@@ -389,7 +400,14 @@
      "assignee": "Bob",
      "freshness": "fresh",
      "status_category": "todo",
-     "updated_at": "2026-10-02T09:00:00-04:00"
+     "updated_at": "2026-10-02T09:00:00-04:00",
+     "sprints": [
+      {
+       "id": 1234,
+       "name": "Sprint 12",
+       "state": "active"
+      }
+     ]
     }
    },
    {
@@ -520,6 +538,11 @@
     "source": "pr:acme/web#12",
     "target": "ticket:gh:acme/web#5",
     "kind": "ticket"
+   },
+   {
+    "source": "effort:sprint:1234",
+    "target": "ticket:jira:TEAM-99",
+    "kind": "tracks"
    },
    {
     "source": "effort:api-widgets",
@@ -934,8 +957,8 @@
    "name": "empty query matches everything and filters nothing",
    "query": "",
    "expect": {
-    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
-    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
     "visible": "all"
    }
   },
@@ -943,7 +966,7 @@
    "name": "kind restricts rows, not matches",
    "query": "kind:pr",
    "expect": {
-    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
     "rows": ["pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9"],
     "visible": "all"
    }
@@ -1151,11 +1174,11 @@
    }
   },
   {
-   "name": "a node in no effort has a known empty effort set",
+   "name": "every node here is in an effort, so !effort:* matches none",
    "query": "!effort:*",
    "expect": {
-    "matches": ["ticket:jira:TEAM-99"],
-    "rows": ["ticket:jira:TEAM-99"]
+    "matches": [],
+    "rows": []
    }
   },
   {
@@ -1226,8 +1249,8 @@
    "name": "no activity is known, not unknown",
    "query": "!activity:*",
    "expect": {
-    "matches": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000004", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-99", "ws-0000000000000002", "ws-0000000000000004", "ws-0000000000000005"],
-    "rows": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000004", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-99", "ws-0000000000000002", "ws-0000000000000004", "ws-0000000000000005"]
+    "matches": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000004", "effort:sprint:1234", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-99", "ws-0000000000000002", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:codex-2", "bm-0000000000000002", "bm-0000000000000004", "effort:sprint:1234", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-99", "ws-0000000000000002", "ws-0000000000000004", "ws-0000000000000005"]
    }
   },
   {
@@ -1266,8 +1289,8 @@
    "name": "negated text",
    "query": "!text:widget",
    "expect": {
-    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
-    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"]
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-7", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"]
    }
   },
   {
@@ -1338,8 +1361,8 @@
    "name": "negated kind",
    "query": "!kind:pr",
    "expect": {
-    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
-    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:ticket-team-7", "effort:ungrouped", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "matches": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "pr:acme/api#38", "pr:acme/api#41", "pr:acme/api#42", "pr:acme/web#12", "pr:acme/web#9", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
+    "rows": ["agent:claude-1", "agent:codex-2", "bm-0000000000000001", "bm-0000000000000002", "bm-0000000000000003", "bm-0000000000000004", "effort:api-widgets", "effort:sprint:1234", "effort:ticket-team-7", "effort:ungrouped", "ticket:gh:acme/web#5", "ticket:jira:TEAM-123", "ticket:jira:TEAM-7", "ticket:jira:TEAM-99", "ws-0000000000000001", "ws-0000000000000002", "ws-0000000000000003", "ws-0000000000000004", "ws-0000000000000005"],
     "visible": "all"
    }
   },

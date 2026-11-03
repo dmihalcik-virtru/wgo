@@ -1072,31 +1072,59 @@
       return [decodePart(i < 0 ? part : part.slice(0, i)), i < 0 ? "" : part.slice(i + 1), part];
     }) : [];
   };
+  // hashState reads the page state from a parsed hash: view, q and sel (a
+  // list of node IDs) are the page's own; every other key, sort and cols
+  // included, is a raw string in values, for the view that owns it to
+  // interpret (gh-101's sort=-waiting,size; gh-103's x= and y=).
   L.hashState = function (pairs) {
-    var st = { view: "", q: "", sort: "", cols: [], sel: [] };
+    var st = { view: "", q: "", sel: [], values: {} };
     pairs.forEach(function (p) {
-      if (p[0] === "view" || p[0] === "q" || p[0] === "sort") st[p[0]] = decodePart(p[1]);
-      else if (p[0] === "cols" || p[0] === "sel") st[p[0]] = splitItems(p[1]);
+      if (p[0] === "view" || p[0] === "q") st[p[0]] = decodePart(p[1]);
+      else if (p[0] === "sel") st.sel = splitItems(p[1]);
+      else if (p[0]) st.values[p[0]] = decodePart(p[1]);
     });
     return st;
   };
-  // buildHash writes st over pairs: known keys are replaced in place (or
-  // appended, or dropped when empty); unknown keys are kept verbatim. The
-  // graph view, the default, is not written.
+  // buildHash writes st (as hashState returns it) over pairs: each key is
+  // replaced in place, appended, or dropped when empty; a value that did not
+  // change, and every key st does not name, is kept verbatim. The graph
+  // view, the default, is not written.
   L.buildHash = function (pairs, st) {
-    var vals = {
-      view: st.view && st.view !== "graph" ? encodeValue(st.view) : "", q: st.q ? encodeValue(st.q) : "", sort: st.sort ? encodeValue(st.sort) : "",
-      cols: (st.cols || []).map(encodeItem).join(","), sel: (st.sel || []).map(encodeItem).join(",")
-    };
+    var vals = { view: st.view && st.view !== "graph" ? encodeValue(st.view) : "", q: st.q ? encodeValue(st.q) : "", sel: (st.sel || []).map(encodeItem).join(",") };
+    var values = st.values || {};
+    Object.keys(values).forEach(function (k) { if (!hasOwn.call(vals, k)) vals[k] = values[k] == null || values[k] === "" ? "" : encodeValue(String(values[k])); });
     var out = [], done = {};
     pairs.forEach(function (p) {
       if (!hasOwn.call(vals, p[0])) { out.push(p[2]); return; }
-      if (!done[p[0]] && vals[p[0]]) out.push(p[0] + "=" + vals[p[0]]);
+      if (!done[p[0]] && vals[p[0]]) out.push(hasOwn.call(values, p[0]) && decodePart(p[1]) === String(values[p[0]]) ? p[2] : encodeValue(p[0]) + "=" + vals[p[0]]);
       done[p[0]] = true;
     });
-    L.HASH_KEYS.forEach(function (k) { if (!done[k] && vals[k]) out.push(k + "=" + vals[k]); });
+    L.HASH_KEYS.concat(Object.keys(vals).filter(function (k) { return L.HASH_KEYS.indexOf(k) < 0; }).sort()).forEach(function (k) {
+      if (!done[k] && vals[k]) out.push(encodeValue(k) + "=" + vals[k]);
+    });
     return out.length ? "#" + out.join("&") : "";
   };
+  // historyStep is the history model (requirement 13). mode is "commit" (a
+  // click, Enter, the end of a drag), "live" (a drag or typing in progress)
+  // or "normalize" (the page tidying the URL, not a user change). The first
+  // live change after a commit pushes an entry and leaves it open; later
+  // live changes replace it; a commit replaces the open entry, or pushes
+  // when none is open, and closes it. So Back after a drag returns to the
+  // state before the drag. same says the URL would not change.
+  L.historyStep = function (open, mode, same) {
+    if (same) return { op: "", open: mode === "commit" ? false : open };
+    if (mode === "normalize") return { op: "replace", open: open };
+    if (mode === "commit") return { op: open ? "replace" : "push", open: false };
+    return { op: open ? "replace" : "push", open: true };
+  };
+  // addonBoot is the bootstrap views and panels see: without the action
+  // token and the routes it guards, so no addon can post actions.
+  L.addonBoot = function (boot) {
+    var out = {};
+    Object.keys(boot || {}).forEach(function (k) { if (k !== "token" && k !== "action_api" && k !== "ack_api") out[k] = boot[k]; });
+    return Object.freeze(out);
+  };
+  L.STATE_KEY = /^[A-Za-z][A-Za-z0-9_-]*$/;
   // extractURL is the GET /api/extract request for a page state.
   L.extractURL = function (base, p) {
     var qs = [];
@@ -1192,28 +1220,67 @@
   var store = {
     payload: null, snap: null, idx: L.index(null), qi: null, rows: [], links: null, linksError: "",
     selection: new Set(), query: "", qres: null, queryError: null, qHasKind: false, vis: null, hover: null,
-    view: "graph", sort: { key: "kind", dir: 1 }, cols: [], fetchedAt: 0, error: "", focusMissing: "",
+    // hashVals holds every other URL key as a raw string (sort, cols, and
+    // addon keys such as x=, y=, t=, sprint=); views interpret their own.
+    view: "graph", hashVals: {}, fetchedAt: 0, error: "", focusMissing: "",
     busy: new Set(), actionResult: null, ackResult: null,
     subs: [],
     // subscribe calls fn(reason) on every change; it returns an unsubscribe.
     subscribe: function (fn) { var subs = this.subs; subs.push(fn); return function () { var i = subs.indexOf(fn); if (i >= 0) subs.splice(i, 1); }; },
     notify: function (reason) { var subs = this.subs.slice(); for (var i = 0; i < subs.length; i++) subs[i](reason); },
-    // select changes the selection; how is "push" (a click: a history
-    // entry, the default) or "replace" (keyboard walking, search).
-    select: function (ids, add, how) { this.selection = L.select(this.selection, ids, add); writeHash(how !== "replace"); this.notify("selection"); },
-    clear: function () { if (this.selection.size) { this.selection = new Set(); writeHash(true); this.notify("selection"); } },
+    // select changes the selection; how is "push" (a click: committed, the
+    // default) or "replace" (keyboard walking, search: live).
+    select: function (ids, add, how) { this.selection = L.select(this.selection, ids, add); writeHash(how === "replace" ? "live" : "commit"); this.notify("selection"); },
+    clear: function () { if (this.selection.size) { this.selection = new Set(); writeHash("commit"); this.notify("selection"); } },
     // setQuery applies expr and returns null, or returns the parse error and
-    // changes nothing. commit pushes a history entry; otherwise the URL is
-    // replaced (typing, dragging).
-    setQuery: function (expr, opts) {
-      expr = expr == null ? "" : String(expr).trim();
-      var q = L.parseQuery(expr, REG);
-      if (q.error) return q.error;
-      this.query = expr; this.queryError = null;
-      recomputeQuery();
-      writeHash(!!(opts && opts.commit));
-      this.notify("query");
+    // changes nothing. {commit: true} is a committed change; otherwise it is
+    // live (typing, dragging) — see L.historyStep.
+    setQuery: function (expr, opts) { return this.setState({ q: expr }, opts); },
+    // setState sets URL state — q, view, sel (IDs, as a list or comma
+    // separated) or any other key (a string; "" or null removes it) — with
+    // the same history model, and notifies "query", "view", "selection" or
+    // "state". It returns null, or the parse error of a bad q, changing
+    // nothing.
+    setState: function (obj, opts) {
+      obj = obj || {};
+      var keys = Object.keys(obj), changed = {}, self = this, q = null;
+      if (hasOwn.call(obj, "q")) {
+        var expr = obj.q == null ? "" : String(obj.q).trim();
+        q = L.parseQuery(expr, REG);
+        if (q.error) return q.error;
+        q = expr;
+      }
+      keys.forEach(function (k) { if (k !== "q" && k !== "view" && k !== "sel" && !L.STATE_KEY.test(k)) throw new Error("wgo dash: bad state key " + JSON.stringify(k)); });
+      if (q !== null && q !== this.query) { this.query = q; changed.query = true; }
+      if (q !== null) { this.queryError = null; qDirty = false; }
+      if (hasOwn.call(obj, "view")) { var v = viewSpec(String(obj.view || "graph")).id; if (v !== this.view) { this.view = v; changed.view = true; } }
+      if (hasOwn.call(obj, "sel")) {
+        var ids = Array.isArray(obj.sel) ? obj.sel : String(obj.sel || "").split(",").filter(Boolean);
+        this.selection = this.snap ? L.prune(new Set(ids), this.idx.byId) : new Set(ids); changed.selection = true;
+      }
+      keys.forEach(function (k) {
+        if (k === "q" || k === "view" || k === "sel") return;
+        var val = obj[k] == null ? "" : String(obj[k]);
+        if ((self.hashVals[k] || "") !== val) { if (val) self.hashVals[k] = val; else delete self.hashVals[k]; changed.state = true; }
+      });
+      if (changed.query) recomputeQuery();
+      writeHash(opts && opts.commit ? "commit" : "live");
+      if (changed.view) renderTabs();
+      if (changed.query) this.notify("query");
+      else {
+        if (changed.view) this.notify("view");
+        if (changed.selection) this.notify("selection");
+        if (changed.state) this.notify("state");
+      }
+      if (q !== null && !changed.query) renderQueryBar();
       return null;
+    },
+    // getState reads URL state: q, view, sel (a list) or any other key ("").
+    getState: function (key) {
+      if (key === "q") return this.query;
+      if (key === "view") return this.view;
+      if (key === "sel") return Array.from(this.selection);
+      return hasOwn.call(this.hashVals, key) ? this.hashVals[key] : "";
     },
     isVisible: function (id) { return !this.vis || this.vis.has(id); },
     isRow: function (id) { return !this.qres || this.qres.rowSet.has(id); }
@@ -1255,7 +1322,10 @@
   copyBtn.title = "Copy the current rows as Markdown, with links, the query and data freshness";
   var fitBtn = button(bar, "Fit to view", null, function () { robustFit(); });
   var statusEl = el("span", "status", "", bar); statusEl.setAttribute("role", "status"); statusEl.setAttribute("aria-live", "polite");
-  var qmsg = el("div", "qmsg", null, bar); qmsg.hidden = true; qmsg.setAttribute("role", "alert");
+  // An invalid query is an alert; the result summary is a polite status.
+  var qmsg = el("div", "qmsg", null, bar); qmsg.hidden = true;
+  var qerrEl = el("div", "qerrbox", null, qmsg); qerrEl.setAttribute("role", "alert");
+  var qinfoEl = el("div", "qinfobox", null, qmsg); qinfoEl.setAttribute("role", "status");
   var copyOut = el("div", "copyout", null, bar); copyOut.hidden = true;
 
   var mults = el("div", "multiples", null, root);
@@ -1286,18 +1356,31 @@
     if (!b) { b = el("div", "viewwrap", null, stage); b.hidden = true; b.setAttribute("aria-label", spec.label || spec.id); viewBoxes.set(spec.id, b); }
     return b;
   }
-  // viewCtx is what a view's or panel's render(ctx) gets: the store, the
-  // gestures, the theme and the DOM helpers, and its own container.
-  function viewCtx(spec, reason, container) {
+  // viewCtx is what a view's or panel's render(ctx) gets: the store, URL
+  // state with the history model, the gestures, the theme, the DOM helpers
+  // and its own container. reason says why it renders: "view" (shown),
+  // "data", "query", "selection", "state", "history" (Back/Forward),
+  // "theme" or "panel". Subscriptions made through ctx.subscribe end when
+  // the view or panel is destroyed or replaced.
+  var ADDON_BOOT = L.addonBoot(BOOT), ownedSubs = new Map();
+  function viewCtx(spec, reason, container, owner) {
+    owner = owner || "view:" + spec.id;
     return {
-      store: store, L: L, registry: REG, boot: BOOT, reason: reason, container: container || viewBox(spec),
+      store: store, L: L, registry: REG, boot: ADDON_BOOT, reason: reason, container: container || viewBox(spec),
       snapshot: store.snap, index: store.idx, queryIndex: store.qi, query: store.qres, selection: store.selection,
       setQuery: function (expr, opts) { return store.setQuery(expr, opts); },
+      setState: function (obj, opts) { return store.setState(obj, opts); },
+      getState: function (key) { return store.getState(key); },
       select: function (ids, add, how) { store.select(ids, add, how); },
-      subscribe: function (fn) { return store.subscribe(fn); },
+      subscribe: function (fn) {
+        var off = store.subscribe(fn), list = ownedSubs.get(owner) || [];
+        list.push(off); ownedSubs.set(owner, list);
+        return off;
+      },
       theme: theme, dom: { el: el, svgEl: svgEl, button: button, link: link, clamp: clamp, plural: plural }
     };
   }
+  function releaseSubs(owner) { (ownedSubs.get(owner) || []).forEach(function (off) { off(); }); ownedSubs.delete(owner); }
   function viewFailed(spec, e) {
     store.error = "The " + (spec.label || spec.id) + " view failed: " + ((e && e.message) || e);
     renderBanner();
@@ -1307,8 +1390,9 @@
   function showView(reason) {
     var spec = viewSpec(store.view);
     if (!spec) return;
-    if (activeView && activeView !== spec && activeView.destroy) {
-      try { activeView.destroy(viewCtx(activeView, "destroy")); } catch (e) { viewFailed(activeView, e); }
+    if (activeView && activeView !== spec) {
+      if (activeView.destroy) { try { activeView.destroy(viewCtx(activeView, "destroy")); } catch (e) { viewFailed(activeView, e); } }
+      releaseSubs("view:" + activeView.id);
     }
     activeView = spec;
     store.view = spec.id;
@@ -1327,12 +1411,7 @@
       if (t.title) b.title = t.title;
     });
   }
-  function setView(v, commit) {
-    store.view = viewSpec(v) ? viewSpec(v).id : "graph";
-    renderTabs();
-    writeHash(!!commit);
-    store.notify("view");
-  }
+  function setView(v, commit) { store.setState({ view: v }, { commit: commit }); }
 
   // ---------- theme / encoding ----------
   var theme = {};
@@ -1548,7 +1627,9 @@
       }
       if (opts.values && it.n > 0) { var vt = svgEl("text", { x: x + bw / 2, y: base - h - 2, "text-anchor": "middle" }, g); vt.textContent = String(it.n); }
       if (opts.label(i)) { var lt = svgEl("text", { x: i * slot + slot / 2, y: H - 3, "text-anchor": "middle" }, g); lt.textContent = it.label; }
-      function choose() { store.setQuery(L.toggleClause(store.query, REG, opts.field, it.key), { commit: true }); }
+      // A click that would make an invalid query (say, prstate under
+      // kind:agent) shows the error and its fix in the query bar.
+      function choose() { applyQueryText(L.toggleClause(store.query, REG, opts.field, it.key), true); }
       g.addEventListener("click", choose);
       g.addEventListener("keydown", function (ev) {
         if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); choose(); }
@@ -1567,16 +1648,25 @@
   // replace one by id. Chart clicks set query clauses (requirement 10).
   var panelBoxes = new Map();
   function effortKeyOf(id) { var n = store.idx.byId.get(id); return (n && n.effort && n.effort.key) || id.replace(/^effort:/, ""); }
-  function panelCtx(p, box) { return viewCtx(p, "panel", box); }
-  function renderMultiples() {
+  var panelSpecs = new Map(); // id -> the spec last rendered in its box
+  function panelCtx(p, box, reason) { return viewCtx(p, reason || "panel", box, "panel:" + p.id); }
+  function destroyPanel(id) {
+    var old = panelSpecs.get(id);
+    if (old && old.destroy) { try { old.destroy(panelCtx(old, panelBoxes.get(id), "destroy")); } catch (e) { viewFailed(old, e); } }
+    releaseSubs("panel:" + id);
+    panelSpecs.delete(id);
+  }
+  function renderMultiples(reason) {
     var active = document.activeElement, activeLabel = active && active.closest && active.closest(".mult") ? active.getAttribute("aria-label") : null;
     var ids = L.panels.map(function (p) { return p.id; });
-    panelBoxes.forEach(function (b, id) { if (ids.indexOf(id) < 0) { b.remove(); panelBoxes.delete(id); } });
+    panelBoxes.forEach(function (b, id) { if (ids.indexOf(id) < 0) { destroyPanel(id); b.remove(); panelBoxes.delete(id); } });
     L.panels.forEach(function (p) {
       var box = panelBoxes.get(p.id);
       if (!box) { box = el("div", "mult", null, mults); panelBoxes.set(p.id, box); }
+      if (panelSpecs.has(p.id) && panelSpecs.get(p.id) !== p) { destroyPanel(p.id); box.textContent = ""; }
+      panelSpecs.set(p.id, p);
       mults.appendChild(box); // keeps registry order
-      try { p.render(panelCtx(p, box)); } catch (e) { viewFailed(p, e); }
+      try { p.render(panelCtx(p, box, reason)); } catch (e) { viewFailed(p, e); }
     });
     if (activeLabel) {
       var again = Array.prototype.filter.call(mults.querySelectorAll(".mbar"), function (g) { return g.getAttribute("aria-label") === activeLabel; })[0];
@@ -1833,10 +1923,18 @@
   // gh-101 replaces it with an addon.
   var tableRows = [], focusRow = -1;
   var COLS = [["label", "Name"], ["kind", "Kind"], ["effort", "Effort"], ["state", "State"], ["data", "Data"], ["activity", "Last activity"]];
+  // tableSort reads sort= for this table: its first key when that is one
+  // of the six columns, else the default. The raw value stays in the URL
+  // for whichever table owns it (gh-101's multi-key sort).
+  function tableSort() {
+    var first = String(store.hashVals.sort || "").split(",")[0], desc = first.charAt(0) === "-", key = desc ? first.slice(1) : first;
+    return COLS.some(function (c) { return c[0] === key; }) ? { key: key, dir: desc ? -1 : 1 } : { key: "kind", dir: 1 };
+  }
+  function colsList() { return String(store.hashVals.cols || "").split(",").map(function (c) { return c.trim(); }).filter(Boolean); }
   function sortedTableRows() {
-    var rows = L.filterRows(store.rows, store.vis);
+    var rows = L.filterRows(store.rows, store.vis), sort = tableSort();
     if (store.qres && store.qHasKind) rows = rows.filter(function (r) { return store.qres.rowSet.has(r.id); });
-    return L.sortRows(rows, store.sort.key, store.sort.dir);
+    return L.sortRows(rows, sort.key, sort.dir);
   }
   function renderTable() {
     if (store.view !== "table" || !store.snap) return;
@@ -1845,17 +1943,17 @@
     var tbl = el("table", "live", null, tableWrap); tbl.setAttribute("role", "grid");
     el("caption", "sr", "Nodes in the current query. Use the arrow keys to move, Enter or Space to select, Shift+Enter to add.", tbl);
     var thead = el("thead", null, null, tbl), tr = el("tr", null, null, thead);
+    var sort = tableSort();
     COLS.forEach(function (c) {
-      var th = el("th", null, null, tr), on = store.sort.key === c[0], dir = store.sort.dir;
+      var th = el("th", null, null, tr), on = sort.key === c[0], dir = sort.dir;
       th.scope = "col";
       th.setAttribute("aria-sort", on ? (dir > 0 ? "ascending" : "descending") : "none");
       button(th, c[1] + (on ? (dir > 0 ? " ▲" : " ▼") : ""), null, function () {
-        store.sort = on ? { key: c[0], dir: -dir } : { key: c[0], dir: c[0] === "activity" ? -1 : 1 };
-        writeHash(true);
-        renderTable();
+        var next = on ? { key: c[0], dir: -dir } : { key: c[0], dir: c[0] === "activity" ? -1 : 1 };
+        store.setState({ sort: next.key === "kind" && next.dir === 1 ? "" : (next.dir < 0 ? "-" : "") + next.key }, { commit: true });
       });
     });
-    var extra = store.cols.filter(function (name) { return REG.field(name) && !COLS.some(function (c) { return c[0] === name; }); });
+    var extra = colsList().filter(function (name) { return REG.field(name) && !COLS.some(function (c) { return c[0] === name; }); });
     extra.forEach(function (name) { var th = el("th", null, REG.field(name).label, tr); th.scope = "col"; th.title = "Query field " + name; });
     var ctxRows = !!store.qres && !store.qHasKind;
     tableRows = sortedTableRows();
@@ -1942,18 +2040,26 @@
     return { nodes: nodes, links: links, idx: idx, adj: adj };
   }
   var LINK_DIST = { contains: 60, on: 26, pr: 30, ticket: 34, runs: 70, works_in: 40 };
+  // startSim lays the visible nodes out. While another view is shown it
+  // only marks the layout stale (the graph catches up when shown again), and
+  // nodes with cached positions get no synchronous ticks: the running
+  // simulation settles them over the next frames. Both keep a filter change
+  // within the 100 ms budget at 2,000 nodes.
+  var simStale = false, simFit = false;
   function startSim(fit) {
     if (sim) sim.stop();
+    if (store.view !== "graph") { simStale = true; simFit = simFit || !!fit; return; }
+    fit = fit || simFit; simStale = false; simFit = false;
     view = buildView();
     if (!d3 || !view.nodes.length) { dirty = true; return; }
-    var fresh = view.nodes.some(function (n) { return n.x == null; });
+    var freshN = view.nodes.filter(function (n) { return n.x == null; }).length, fresh = freshN > 0;
     sim = d3.forceSimulation(view.nodes)
       .force("link", d3.forceLink(view.links).distance(function (l) { return LINK_DIST[l.kind] || 40; }).strength(function (l) { return 1 / Math.min(l.source.deg, l.target.deg, 6); }))
       .force("charge", d3.forceManyBody().strength(function (d) { return -30 - d.r * 4; }).distanceMax(400))
       .force("collide", d3.forceCollide(function (d) { return d.r + 3; }).iterations(1))
       .force("x", d3.forceX().strength(0.04)).force("y", d3.forceY().strength(0.04))
       .alphaDecay(0.03).velocityDecay(0.4).stop();
-    var pre = reduceMotion ? 300 : (fresh ? 120 : 20);
+    var pre = !fresh ? 0 : reduceMotion ? 300 : Math.max(10, Math.ceil(120 * freshN / view.nodes.length));
     for (var i = 0; i < pre; i++) sim.tick();
     view.nodes.forEach(function (n) { posCache.set(n.id, n); });
     quadDirty = true;
@@ -2128,32 +2234,45 @@
 
   // ---------- built-in views ----------
   L.registerView({ id: "graph", label: "Graph", question: "How do efforts, workspaces, PRs, tickets and agents connect?", builtin: true,
-    render: function (ctx) { if (ctx.reason === "view") resize(); dirty = true; } });
+    render: function (ctx) { if (ctx.reason === "view") resize(); if (simStale) startSim(false); dirty = true; } });
   L.registerView({ id: "table", label: "Table", question: "Which nodes does the query keep, and in what state?", builtin: true,
     render: function () { renderTable(); } });
 
   // ---------- query bar ----------
   var qDirty = false; // the text differs from the applied query
   function presetFor(expr) { return FILTERS.filter(function (f) { return f.expr === expr; })[0]; }
+  // renderQueryBar shows the applied query unless the operator is editing
+  // it (qDirty); any change of the applied query from elsewhere — a chart,
+  // Back/Forward, an addon — clears qDirty first, so the text never goes
+  // stale. The message line is rebuilt only when its content changes, so
+  // screen readers hear about new results, not every snapshot.
+  var qmsgKey = "";
   function renderQueryBar() {
-    if (!qDirty && document.activeElement !== qinput) qinput.value = store.queryError ? store.queryError.expr : store.query;
+    if (!qDirty) qinput.value = store.queryError ? store.queryError.expr : store.query;
     qinput.setAttribute("aria-invalid", String(!!store.queryError));
     qclear.hidden = !store.query && !qinput.value;
-    qmsg.textContent = "";
-    var err = store.queryError;
-    if (err) {
-      var line = el("span", "qerr", err.error.error, qmsg);
-      line.setAttribute("title", "Column " + err.error.pos);
-      if (err.error.fixed) {
-        qmsg.appendChild(document.createTextNode(" "));
-        button(qmsg, "Use " + err.error.fixed, "linkish", function () { applyQueryText(err.error.fixed, true); }, "Apply the suggested query " + err.error.fixed);
-      }
-    } else if (store.qres) {
+    var err = store.queryError, info = "", warns = [];
+    if (!err && store.qres) {
       var n = store.qres.rows.length, m = store.qres.matches.length, total = store.idx.byId.size;
-      el("span", "qinfo", plural(n, "row") + (m !== n ? " of " + m.toLocaleString() + (m === 1 ? " match" : " matches") : "") + " · " + plural(total, "node") + " in the snapshot", qmsg);
-      store.qres.warnings.forEach(function (w) { el("span", "qwarn", w, qmsg); });
+      info = plural(n, "row") + (m !== n ? " of " + m.toLocaleString() + (m === 1 ? " match" : " matches") : "") + " · " + plural(total, "node") + " in the snapshot";
+      warns = store.qres.warnings;
     }
-    qmsg.hidden = !qmsg.childNodes.length;
+    var key = JSON.stringify([err && err.error.error, err && err.error.fixed, info, warns]);
+    if (key !== qmsgKey) {
+      qmsgKey = key;
+      qerrEl.textContent = ""; qinfoEl.textContent = "";
+      if (err) {
+        var line = el("span", "qerr", err.error.error, qerrEl);
+        line.setAttribute("title", "Column " + err.error.pos);
+        if (err.error.fixed) {
+          qerrEl.appendChild(document.createTextNode(" "));
+          button(qerrEl, "Use " + err.error.fixed, "linkish", function () { applyQueryText(err.error.fixed, true); }, "Apply the suggested query " + err.error.fixed);
+        }
+      }
+      if (info) el("span", "qinfo", info, qinfoEl);
+      warns.forEach(function (w) { el("span", "qwarn", w, qinfoEl); });
+      qmsg.hidden = !err && !info;
+    }
     presetSel.hidden = !FILTERS.length;
     if (FILTERS.length) {
       presetSel.textContent = "";
@@ -2166,7 +2285,7 @@
   // applyQueryText applies text as the query, or shows why it cannot be.
   function applyQueryText(text, commit) {
     var err = store.setQuery(text, { commit: commit });
-    if (err) { store.queryError = { expr: text, error: err }; qDirty = true; renderQueryBar(); return false; }
+    if (err) { store.queryError = { expr: text, error: err }; qDirty = true; qinput.value = text; renderQueryBar(); return false; }
     qDirty = false;
     renderQueryBar();
     return true;
@@ -2199,7 +2318,7 @@
     if (!EXTRACT_API) { statusEl.textContent = "This wgo dash server has no Markdown extract."; return; }
     var spec = viewSpec(store.view), extra = null;
     if (spec && spec.extract) { try { extra = spec.extract(viewCtx(spec, "extract")); } catch (e) { viewFailed(spec, e); return; } }
-    var url = L.extractURL(EXTRACT_API, Object.assign({ q: store.query, cols: store.cols, view: "rows" }, extra || {}));
+    var url = L.extractURL(EXTRACT_API, Object.assign({ q: store.query, cols: colsList(), view: "rows" }, extra || {}));
     var text = fetch(url, { cache: "no-store", credentials: "same-origin" }).then(function (r) {
       return r.text().then(function (t) {
         if (!r.ok) { var e = new Error(t || "HTTP " + r.status); e.status = r.status; e.detail = t.trim(); throw e; }
@@ -2239,22 +2358,23 @@
   // The hash mirrors view, query, sort, columns and selection. A committed
   // change pushes a history entry; walking, typing and data updates replace
   // the current one. Back and forward re-apply the hash.
-  var started = false, lastHash = null;
-  function sortSpec() { return store.sort.key === "kind" && store.sort.dir === 1 ? "" : (store.sort.dir < 0 ? "-" : "") + store.sort.key; }
-  function writeHash(push) {
+  var started = false, lastHash = null, histOpen = false;
+  // writeHash records the state in the URL under the history model
+  // (L.historyStep): mode is "commit", "live" or "normalize".
+  function writeHash(mode) {
     if (!started) return;
-    var h = L.buildHash(L.parseHash(location.hash), { view: store.view, q: store.query, sort: sortSpec(), cols: store.cols, sel: Array.from(store.selection) });
-    if (h === (location.hash === "#" ? "" : location.hash)) return;
+    var h = L.buildHash(L.parseHash(location.hash), { view: store.view, q: store.query, sel: Array.from(store.selection), values: store.hashVals });
+    var step = L.historyStep(histOpen, mode, h === (location.hash === "#" ? "" : location.hash));
+    histOpen = step.open;
+    if (!step.op) return;
     lastHash = h;
-    history[push ? "pushState" : "replaceState"](null, "", h || location.pathname + location.search);
+    history[step.op === "push" ? "pushState" : "replaceState"](null, "", h || location.pathname + location.search);
   }
   function applyHash() {
     var st = L.hashState(L.parseHash(location.hash));
-    lastHash = location.hash;
+    lastHash = location.hash; histOpen = false;
     store.view = viewSpec(st.view || "graph").id;
-    var desc = st.sort.charAt(0) === "-", key = desc ? st.sort.slice(1) : st.sort;
-    store.sort = COLS.some(function (c) { return c[0] === key; }) ? { key: key, dir: desc ? -1 : 1 } : { key: "kind", dir: 1 };
-    store.cols = st.cols;
+    store.hashVals = st.values;
     store.selection = new Set(st.sel);
     if (store.snap) store.selection = L.prune(store.selection, store.idx.byId);
     var q = L.parseQuery(st.q, REG);
@@ -2262,32 +2382,35 @@
     qDirty = false;
     recomputeQuery();
   }
+  // Back and Forward re-apply the URL; views render with reason "history".
   function onHistory() {
     if (location.hash === lastHash) return;
     applyHash();
     renderTabs();
-    renderAll(true);
+    store.notify("history");
   }
   window.addEventListener("popstate", onHistory);
   window.addEventListener("hashchange", onHistory);
 
   // ---------- wiring ----------
-  function renderAll(fit) {
+  function renderAll(fit, reason) {
     loadingEl.hidden = !!store.snap;
-    renderQueryBar(); renderHeader(); renderBanner(); renderSince(); renderMultiples(); renderEfforts(); renderDetail(); buildLegend();
+    renderQueryBar(); renderHeader(); renderBanner(); renderSince(); renderMultiples(reason); renderEfforts(); renderDetail(); buildLegend();
     startSim(fit);
-    showView("data");
+    showView(reason || "data");
   }
   store.subscribe(function (reason) {
-    if (reason === "data") renderAll(false);
-    else if (reason === "query") { renderAll(true); }
-    else if (reason === "selection") { renderMultiples(); renderEfforts(); renderDetail(); showView("selection"); dirty = true; }
+    if (reason === "data") renderAll(false, "data");
+    else if (reason === "query") { renderAll(true, "query"); }
+    else if (reason === "history") { renderAll(true, "history"); }
+    else if (reason === "selection") { renderMultiples("selection"); renderEfforts(); renderDetail(); showView("selection"); dirty = true; }
+    else if (reason === "state") { renderMultiples("state"); showView("state"); }
     else if (reason === "view") { showView("view"); dirty = true; }
     else if (reason === "status") { renderHeader(); renderBanner(); }
   });
   if (window.matchMedia) {
     var mq = matchMedia("(prefers-color-scheme: dark)");
-    if (mq.addEventListener) mq.addEventListener("change", function () { readTheme(); buildLegend(); renderMultiples(); showView("theme"); dirty = true; });
+    if (mq.addEventListener) mq.addEventListener("change", function () { readTheme(); buildLegend(); renderMultiples("theme"); showView("theme"); dirty = true; });
   }
 
   // ---------- actions ----------
@@ -2391,7 +2514,7 @@
         else store.focusMissing = (BOOT.entity || focusPending) + " is not part of any active effort.";
         focusPending = "";
       }
-      if (store.selection.size !== selBefore || first) writeHash(false);
+      if (store.selection.size !== selBefore || first) writeHash("normalize");
       store.notify("data");
       if (first) { robustFit(); if (store.selection.size) revealEffort(Array.from(store.selection)[0]); }
     } catch (e) {

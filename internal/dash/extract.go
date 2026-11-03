@@ -268,12 +268,14 @@ func (x *extractInput) sections(rows []int) []section {
 		}
 	}
 	efforts := slices.Collect(maps.Keys(byEffort))
+	// Groups in CompareEfforts' order (groupRank), as L.effortOrder lists
+	// them; an unknown group sorts with themes.
 	rank := func(e int) int {
 		g := x.str(e, "effort.group")
 		if r, ok := groupRank[g]; ok {
 			return r
 		}
-		return 2
+		return groupRank[GroupTheme]
 	}
 	sort.Slice(efforts, func(a, z int) bool {
 		i, j := efforts[a], efforts[z]

@@ -257,7 +257,8 @@ func TestLiveAddonsFollowTheLiveAppRules(t *testing.T) {
 		}
 		src := string(b)
 		for _, bad := range []string{`XMLHttpRequest`, `sendBeacon`, `localStorage`, `sessionStorage`, `document\.cookie`, `console\.log`,
-			`\beval\(`, `new Function`, `\.innerHTML`, `\.outerHTML`, `insertAdjacentHTML`, `document\.write`, `\.submit\(`, `"POST"`, `BOOT\.token`, `X-Wgo-Token`} {
+			`\beval\(`, `new Function`, `\.innerHTML`, `\.outerHTML`, `insertAdjacentHTML`, `document\.write`, `\.submit\(`, `"POST"`, `BOOT\.token`, `X-Wgo-Token`,
+			`wgo-boot`, `__wgoStore`, `action_api`, `ack_api`} {
 			if regexp.MustCompile(bad).MatchString(src) {
 				t.Errorf("%s matches %s", path, bad)
 			}
@@ -273,6 +274,12 @@ func TestLiveAddonsFollowTheLiveAppRules(t *testing.T) {
 		if !strings.HasPrefix(name, "web/live-") {
 			t.Errorf("addon %s: live page addons are web/live-*.js", name)
 		}
+	}
+	// Views and panels get ctx.boot without the action token (L.addonBoot),
+	// never the page's own bootstrap.
+	app := liveAppSource(t)
+	if regexp.MustCompile(`boot:\s*BOOT\b`).MatchString(app) || !strings.Contains(app, "boot: ADDON_BOOT") {
+		t.Error("live.js must hand addons ADDON_BOOT (L.addonBoot), not BOOT")
 	}
 }
 

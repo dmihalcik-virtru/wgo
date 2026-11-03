@@ -179,7 +179,7 @@ func TestDashJSONQueryAddsMatchesAndLimitsTheSnapshot(t *testing.T) {
 	if got.Query.Expr != dashQuery || len(got.Query.Matches) != 9 || len(got.Query.Rows) != 2 {
 		t.Fatalf("query = %+v", got.Query)
 	}
-	if n := len(got.Snapshot.Nodes); n == 0 || n >= 23 {
+	if n := len(got.Snapshot.Nodes); n == 0 || n >= 24 {
 		t.Errorf("snapshot has %d nodes; it should keep only the visible set", n)
 	}
 	if len(got.Query.Filters) == 0 || !got.Query.Filters[0].Hidden || got.Query.Filters[0].Reason == "" {
@@ -307,7 +307,7 @@ func TestDashQueryAloneServesAtTheQuery(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != 200 || !strings.Contains(string(body), "5 of 23 nodes") {
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "5 of 24 nodes") {
 		t.Errorf("extract from the served fixture: %d %s", resp.StatusCode, body)
 	}
 	cancel()
@@ -325,6 +325,11 @@ func TestDashQueryAloneServesAtTheQuery(t *testing.T) {
 func TestDashMDCollectsAndPrints(t *testing.T) {
 	saveQueryFlags(t)
 	goldenHome(t, "[discovery]\nbase_dirs = [\""+t.TempDir()+"\"]\n")
+	// No GitHub token, gh or acli: --refresh has no lookup that could fail
+	// (otherwise it would look up the GitHub identity, gh-97).
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
