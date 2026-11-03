@@ -243,7 +243,8 @@ async function runChecks() {
   await send("Page.navigate", { url: "about:blank" });
   await send("Page.navigate", { url: pageURL + "#view=table&q=kind:pr" });
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('table.atable tbody tr[data-i]')", "the table");
-  check((await heads()).join() === "Name,Repository,Author,Move,Waiting,Age,Size,CI,Reviews,Tickets", "PR default columns: " + (await heads()));
+  check((await heads()).join() === "Name,Repository,Author,Move,Reasons,Waiting,Age,Size,CI,Reviews,Tickets", "PR default columns: " + (await heads()));
+  check((await evaluate("Array.from(document.querySelectorAll('table.atable tbody tr[data-i]')).some(tr => (tr.getAttribute('aria-label') || '').includes('reasons:') && (tr.title || '').includes(': '))")), "focused PR rows expose reasons and their evidence");
   check((await evaluate("getComputedStyle(document.querySelector('thead th')).position + ' ' + getComputedStyle(document.querySelector('.atable-scroll')).overflowY")) === "sticky auto", "the addon's own stylesheet (live-table.css) applies under the CSP");
   const prRows = await rowNames();
   check(prRows.length === 5 && prRows.every((n) => /^acme\/(api|web)#\d+$/.test(n)), "kind:pr lists only the PRs: " + prRows);
@@ -258,16 +259,16 @@ async function runChecks() {
   check(!(await evaluate("document.querySelector('.atable-chooser').hidden")), "Enter opens the chooser");
   check((await active()).startsWith("right:repo:"), "focus starts on the first usable button: " + (await active()));
   await key("Enter");
-  check((await evaluate("window.__wgoStore.getState('cols')")) === "author,repo,move,waiting,age,size,ci,reviewer,ticket", "→ moves Repository right: " + (await evaluate("location.hash")));
+  check((await evaluate("window.__wgoStore.getState('cols')")) === "author,repo,move,reason,waiting,age,size,ci,reviewer,ticket", "→ moves Repository right: " + (await evaluate("location.hash")));
   check((await active()).startsWith("right:repo:"), "focus follows the moved column: " + (await active()));
   await key("Tab");
   check((await active()).startsWith("remove:repo:"), "Tab reaches Remove");
   await key("Enter");
-  check((await evaluate("window.__wgoStore.getState('cols')")) === "author,move,waiting,age,size,ci,reviewer,ticket", "✕ removes Repository");
+  check((await evaluate("window.__wgoStore.getState('cols')")) === "author,move,reason,waiting,age,size,ci,reviewer,ticket", "✕ removes Repository");
   for (let i = 0; i < 80 && !(await active()).startsWith("add:updated_ago:"); i++) await key("Tab");
   check((await active()).startsWith("add:updated_ago:"), "Tab reaches + Since update");
   await key("Enter");
-  check((await evaluate("window.__wgoStore.getState('cols')")) === "author,move,waiting,age,size,ci,reviewer,ticket,updated_ago", "+ adds Since update at the end");
+  check((await evaluate("window.__wgoStore.getState('cols')")) === "author,move,reason,waiting,age,size,ci,reviewer,ticket,updated_ago", "+ adds Since update at the end");
   await key("Escape");
   check((await evaluate("document.querySelector('.atable-chooser').hidden")) && (await active()).includes("Columns"), "Esc closes the chooser and returns to its button");
   // Reset keeps the keyboard in the chooser (its own button is then disabled).
@@ -278,8 +279,8 @@ async function runChecks() {
     "Reset to defaults clears cols= and keeps focus in the chooser: " + (await active()));
   await evaluate("history.back()"); await sleep(300);
   await key("Escape");
-  check((await evaluate("window.__wgoStore.getState('cols')")) === "author,move,waiting,age,size,ci,reviewer,ticket,updated_ago", "Back restores the columns: " + (await evaluate("location.hash + ' ' + window.__wgoStore.getState('cols')")));
-  check((await heads()).join() === "Name,Author,Move,Waiting,Age,Size,CI,Reviews,Tickets,Since update", "headers follow cols=: " + (await heads()));
+  check((await evaluate("window.__wgoStore.getState('cols')")) === "author,move,reason,waiting,age,size,ci,reviewer,ticket,updated_ago", "Back restores the columns: " + (await evaluate("location.hash + ' ' + window.__wgoStore.getState('cols')")));
+  check((await heads()).join() === "Name,Author,Move,Reasons,Waiting,Age,Size,CI,Reviews,Tickets,Since update", "headers follow cols=: " + (await heads()));
 
   // 7b. Multi-key sort by keyboard: Enter sorts, Shift+Enter adds a key;
   // rank and direction show in the headers.
@@ -293,14 +294,14 @@ async function runChecks() {
   const sortShown = () => evaluate("({ rows: Array.from(document.querySelectorAll('table.atable tbody tr[data-i] td.nm')).map(td => td.firstChild.textContent), sort: Array.from(document.querySelectorAll('table.atable thead th')).map(th => th.getAttribute('aria-sort') + (th.querySelector('.si') ? th.querySelector('.si').textContent : '')).join() })");
   let shown = await sortShown();
   check(shown.rows.join() === sortedRows.join(), "rows sorted by Since update, then Author: " + shown.rows);
-  check(shown.sort === "none,none▲2,none,none,none,none,none,none,none,descending▼1", "rank and direction in the headers: " + shown.sort);
+  check(shown.sort === "none,none▲2,none,none,none,none,none,none,none,none,descending▼1", "rank and direction in the headers: " + shown.sort);
   const sortedURL = await evaluate("location.href");
   await send("Page.navigate", { url: "about:blank" });
   await send("Page.navigate", { url: sortedURL });
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('table.atable tbody tr[data-i]')", "the table after a reload");
   shown = await sortShown();
-  check(shown.rows.join() === sortedRows.join() && shown.sort === "none,none▲2,none,none,none,none,none,none,none,descending▼1", "sort and columns survive a reload: " + JSON.stringify(shown));
-  check((await heads()).join() === "Name,Author,Move,Waiting,Age,Size,CI,Reviews,Tickets,Since update", "columns survive a reload");
+  check(shown.rows.join() === sortedRows.join() && shown.sort === "none,none▲2,none,none,none,none,none,none,none,none,descending▼1", "sort and columns survive a reload: " + JSON.stringify(shown));
+  check((await heads()).join() === "Name,Author,Move,Reasons,Waiting,Age,Size,CI,Reviews,Tickets,Since update", "columns survive a reload");
 
   // 7c. Unknown sorts last in both directions (only acme/api#41 has an age).
   const ageCol = () => evaluate("(() => { const i = Array.from(document.querySelectorAll('table.atable thead th')).findIndex(th => th.textContent.startsWith('Age')); return Array.from(document.querySelectorAll('table.atable tbody tr[data-i]')).map(tr => tr.children[i].textContent) })()");
@@ -315,7 +316,18 @@ async function runChecks() {
   await send("Runtime.evaluate", { expression: "Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Copy as Markdown').click()", userGesture: true });
   await waitFor("document.querySelector('.status').textContent.startsWith('Copied') || document.querySelector('.status').textContent.includes('failed') || !document.querySelector('.copyout').hidden", "the table's copy");
   const tclip = await evaluate("navigator.clipboard.readText()", { userGesture: true });
-  check(tclip.includes("Sort: `age` (unknown values last)") && tclip.includes(" · author: alice · move: ") && tclip.includes(" · age: 15d · size: ") && tclip.includes(" · ci: ") && tclip.includes("updated_ago: 1d"), "the extract follows the table: " + tclip.slice(0, 400));
+  // The copy is one list in the table's order: no effort sections, each row once.
+  const clipRows = tclip.split("\n").filter((l) => l.startsWith("- ")).map((l) => (/^- \[([^\]]+)\]/.exec(l) || /^- (\S+)/.exec(l))[1]);
+  const tableRows = await rowNames();
+  check(clipRows.join() === tableRows.join() && !tclip.includes("\n### "), "the copy lists the table's rows in its order: " + clipRows + " vs " + tableRows);
+  check(tclip.includes("Sort: `age` (unknown values last)") && tclip.includes(" · author: alice · move: ") && tclip.includes(" · age: 15d · size: ") && tclip.includes("updated_ago: 1d"), "the copy has the table's columns: " + tclip.slice(0, 400));
+  // A sort on the table's own column cannot reach the Markdown: the status says so.
+  await evaluate("window.__wgoStore.setState({ sort: '-last_activity,age' }, { commit: true })");
+  await send("Runtime.evaluate", { expression: "Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Copy as Markdown').click()", userGesture: true });
+  await waitFor("document.querySelector('.status').textContent.includes('Last activity') || document.querySelector('.status').textContent.includes('failed')", "the note");
+  check((await evaluate("document.querySelector('.status').textContent")).includes("Markdown cannot sort by Last activity"), "the status names the sort key the copy left out: " + (await evaluate("document.querySelector('.status').textContent")));
+  check((await evaluate("navigator.clipboard.readText()", { userGesture: true })).includes("Sort: `age` (unknown values last)"), "the copy keeps the other keys");
+  await evaluate("window.__wgoStore.setState({ sort: 'age' }, { commit: true })");
 
   // 7e. Rows by keyboard: arrows move and select, Shift+arrows only move,
   // Shift+Enter adds, Enter selects; hovering a row marks it in the store.
@@ -459,6 +471,29 @@ async function timeTable() {
   await evaluate("document.querySelector('.atable-scroll').scrollTop += 30");
   await sleep(200);
   check((await evaluate("document.activeElement.tagName")) === "TR", "a scroll that redraws the window keeps focus on a row");
+  // A long wheel scroll draws the focused row away: the keyboard parks on
+  // the scroller, and the next arrow resumes from that row, not from
+  // whatever is drawn.
+  const focusedId = await evaluate("Array.from(window.__wgoStore.selection)[0]");
+  await evaluate("document.querySelector('.atable-scroll').scrollTop += 4000");
+  await sleep(300);
+  check((await evaluate("document.activeElement === document.querySelector('.atable-scroll')")), "a far scroll parks the keyboard on the scroller");
+  check((await evaluate("Array.from(window.__wgoStore.selection)[0]")) === focusedId, "parking selects nothing");
+  await key("ArrowDown");
+  const resumed = await evaluate("({ tag: document.activeElement.tagName, at: document.activeElement.getAttribute('aria-rowindex'), sel: document.activeElement.classList.contains('sel') })");
+  check(resumed.tag === "TR" && resumed.at === "63" && resumed.sel, "ArrowDown resumes from the focused row: " + JSON.stringify(resumed));
+  // A re-sort, and Back, keep the keyboard on the same node wherever it lands.
+  const node = await evaluate("Array.from(window.__wgoStore.selection)[0]");
+  const onNode = () => evaluate("({ tag: document.activeElement.tagName, sel: document.activeElement.classList.contains('sel'), at: document.activeElement.getAttribute('aria-rowindex'), id: Array.from(window.__wgoStore.selection)[0] })");
+  await evaluate("window.__wgoStore.setState({ sort: '-updated_ago,repo' }, { commit: true })");
+  await sleep(200);
+  const afterSort = await onNode();
+  check(afterSort.tag === "TR" && afterSort.sel && afterSort.id === node && afterSort.at !== "63", "a re-sort keeps focus on the same node: " + JSON.stringify(afterSort));
+  await evaluate("history.back()"); await sleep(400);
+  const afterBack = await onNode();
+  // Back also undoes the arrow keys' selection (one history entry with the
+  // sort); the node is back at its old position, and so is the keyboard.
+  check(afterBack.tag === "TR" && afterBack.at === "63", "Back keeps focus on the same node: " + JSON.stringify(afterBack));
   check(r.rows >= 2000 && r.dom < 200, "the table draws only the rows in view: " + r.dom + " of " + r.rows);
   check(r.midOK, "the drawn rows follow the scroll: " + r.mid);
   return "table on the scaled analysis fixture (" + r.rows + " rows, " + r.dom + " in the DOM): show " + r.show + ", re-sort " + r.sort + ", kind:pr (" + r.prs + " rows) " + r.kindpr +
@@ -468,13 +503,14 @@ async function timeTable() {
 async function screenshots() {
   fs.mkdirSync(shotDir, { recursive: true });
   const shots = SHOT_SETS[shotSet];
+  const shotURL = flag("--shots-data") || pageURL;
   if (!shots) throw new Error("unknown --set " + shotSet + "; use " + Object.keys(SHOT_SETS).join(" or "));
   // The table's PR columns need a wider window than the graph.
   if (shotSet === "table") await send("Emulation.setDeviceMetricsOverride", { width: 2200, height: 1000, deviceScaleFactor: 1, mobile: false });
   for (const [file, scheme, hash, open] of shots) {
     await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
     await send("Page.navigate", { url: "about:blank" }); // a fresh document, not a same-page hash change
-    await send("Page.navigate", { url: pageURL + hash });
+    await send("Page.navigate", { url: shotURL + hash });
     await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the snapshot");
     await sleep(1500);
     if (open === "columns") { await evaluate("document.querySelector('.atable-bar button[aria-controls]').click()"); await sleep(300); }

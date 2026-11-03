@@ -45,6 +45,8 @@ func (noAck) Acknowledge(uint64) error { return nil }
 // fixture scaled to 2,000 nodes. It needs node and Chrome,
 // so it runs only when WGO_BROWSER_TESTS is set; WGO_CHROME names the
 // browser and WGO_SHOTS a directory for light and dark screenshots.
+// WGO_SHOT_SET selects a view's screenshot set; WGO_SHOTS_ONLY skips the
+// already-verified interaction checks when only images are needed.
 func TestLivePageInBrowser(t *testing.T) {
 	if os.Getenv("WGO_BROWSER_TESTS") == "" {
 		t.Skip("set WGO_BROWSER_TESTS=1 (with node and Chrome installed) to drive the page in a browser")
@@ -99,7 +101,20 @@ func TestLivePageInBrowser(t *testing.T) {
 	table := newServerOpts(t, HandlerOptions{Source: StaticSource{V: scaledView}})
 	args := []string{filepath.Join("testdata", "live_browser.js"), chrome, srv.URL + "/", "--perf=" + perf.URL + "/", "--perf-table=" + table.URL + "/"}
 	if dir := os.Getenv("WGO_SHOTS"); dir != "" {
-		args = append(args, "--shots="+dir)
+		// Screenshot sets describe the analysis fixture, not the small
+		// query-vector page used by the core interaction checks.
+		shotView, err := LoadFixture(analysisFixturePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shotServer := newServerOpts(t, HandlerOptions{Source: StaticSource{V: shotView}})
+		args = append(args, "--shots="+dir, "--shots-data="+shotServer.URL+"/")
+	}
+	if set := os.Getenv("WGO_SHOT_SET"); set != "" {
+		args = append(args, "--set="+set)
+	}
+	if os.Getenv("WGO_SHOTS_ONLY") != "" {
+		args = append(args, "--no-checks")
 	}
 	out, err := exec.Command(node, args...).CombinedOutput()
 	if err != nil || !strings.HasPrefix(string(out), "ok ") {

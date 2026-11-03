@@ -1289,7 +1289,8 @@
   // extract(ctx)}: render draws the view into ctx.container when it is shown
   // and again on every data, query or selection change while it is; destroy
   // runs when another view is chosen; extract, optional, returns the
-  // /api/extract parameters for Copy as Markdown (default view=rows).
+  // /api/extract parameters for Copy as Markdown (default view=rows), and
+  // note, a sentence the status line adds (what the copy could not keep).
   L.registerView = function (spec) { return registerIn(L.views, "view", spec); };
   // registerPanel adds an overview panel {id, label, render(ctx), destroy(ctx)}.
   L.registerPanel = function (spec) { return registerIn(L.panels, "panel", spec); };
@@ -2402,6 +2403,7 @@
     var spec = viewSpec(store.view), extra = null;
     if (spec && spec.extract) { try { extra = spec.extract(viewCtx(spec, "extract")); } catch (e) { viewFailed(spec, e); return; } }
     var url = L.extractURL(EXTRACT_API, Object.assign({ q: store.query, cols: colsList(), view: "rows" }, extra || {}));
+    var note = extra && typeof extra.note === "string" && extra.note ? " " + extra.note : "";
     var text = fetch(url, { cache: "no-store", credentials: "same-origin" }).then(function (r) {
       return r.text().then(function (t) {
         if (!r.ok) { var e = new Error(t || "HTTP " + r.status); e.status = r.status; e.detail = t.trim(); throw e; }
@@ -2421,9 +2423,9 @@
       wrote = Promise.reject(new Error("no clipboard access"));
     }
     wrote.then(function () { return text; }).then(function (t) {
-      statusEl.textContent = "Copied the Markdown (" + plural(t.split("\n").length, "line") + ").";
+      statusEl.textContent = "Copied the Markdown (" + plural(t.split("\n").length, "line") + ")." + note;
     }, function () {
-      text.then(showCopyFallback, function (e) { statusEl.textContent = "Copy as Markdown failed: " + L.actionError(e); });
+      text.then(function (t) { showCopyFallback(t); statusEl.textContent += note; }, function (e) { statusEl.textContent = "Copy as Markdown failed: " + L.actionError(e); });
     });
   }
   function showCopyFallback(t) {
