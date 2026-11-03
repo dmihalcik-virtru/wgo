@@ -1,6 +1,7 @@
 package dash
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,6 +125,17 @@ func (b *Baseline) inventoryKnew(holders [][]string) bool {
 	return false
 }
 
+// closedBefore reports whether p was merged or closed before t, or at an
+// unknown time. Such a PR is never new by the inventory: had its set held it
+// at t, the baseline would too, so its absence says the closed-recent window
+// grew, not that the PR appeared.
+func closedBefore(p *PRInfo, t time.Time) bool {
+	if p.State == "open" {
+		return false
+	}
+	closed := cmp.Or(p.ClosedAt, p.MergedAt)
+	return closed.IsZero() || closed.Before(t)
+}
 func sortedCopy(in []string) []string {
 	out := append([]string(nil), in...)
 	sort.Strings(out)
@@ -305,7 +317,7 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 			} else {
 				rd.Status = ItemUnknown
 			}
-		case b.Bookmarks[p.BookmarkID].PRsKnown || b.inventoryKnew(inventoryHolders(p)):
+		case b.Bookmarks[p.BookmarkID].PRsKnown || (b.inventoryKnew(inventoryHolders(p)) && !closedBefore(p, b.AcknowledgedAt)):
 			// The bookmark's PR list, or every inventory set that would
 			// hold this PR for one of its involvements (inventoryKnew), was
 			// known then and lacked it.
@@ -340,7 +352,8 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 	}
 	// A previously seen PR that is gone while its bookmark lookup is now
 	// unknown or failed, or an inventory set that held it is now incomplete
-	// (unknown, failed, truncated or missing): it may still be there.
+	// (unknown, failed, truncated or missing), or, found only by the
+	// inventory, while no inventory set has data: it may still be there.
 	covered := inventoryCoverage(s)
 	ids := make([]string, 0, len(b.PRs))
 	for id := range b.PRs {
@@ -355,6 +368,7 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 		bm := s.Node(base.BookmarkID)
 		lost := bm != nil && bm.Bookmark != nil && (bm.Bookmark.PRLookup == Unknown || bm.Bookmark.PRLookup == Error)
 		lost = lost || slices.ContainsFunc(base.InventoryParts, func(p string) bool { return !covered[p] })
+		lost = lost || (base.BookmarkID == "" && len(covered) == 0)
 		if lost {
 			d.PRs = append(d.PRs, PRDelta{ID: id, Label: id, Status: ItemUnknown, FromState: base.State, FromReview: base.ReviewDecision})
 			d.Summary.Unknown++

@@ -221,6 +221,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 					Freshness:          bi.PRLookup,
 					BookmarkID:         bmID,
 					Sources:            []string{PRSourceBookmark},
+					FetchedAt:          res.FetchedAt,
 				}})
 				b.edge(bmID, id, EdgePR)
 			}
@@ -288,6 +289,10 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		b.edge(id, ai.WorkspaceID, EdgeWorksIn)
 	}
 
+	// The PR inventory (gh-97), after the bookmarks so that it can merge
+	// into their PRs and attach to them.
+	invStatus, invDiags := c.addInventory(b, ls, wsEffort, effortNode, &issueTally, &jiraTally, addJob)
+
 	s := &Snapshot{
 		Schema:      SchemaVersion,
 		GeneratedAt: ls.at,
@@ -304,6 +309,8 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	s.Sources[SourceGitHubPRs] = prTally.status()
 	s.Sources[SourceGitHubIssues] = issueTally.status()
 	s.Sources[SourceJira] = jiraTally.status()
+	s.Sources[SourceGitHubInventory] = invStatus
+	s.Diagnostics = dedupeStrings(append(s.Diagnostics, invDiags...))
 
 	for _, n := range b.nodes {
 		s.Nodes = append(s.Nodes, *n)
@@ -383,7 +390,13 @@ func workspaceInfo(w *wsData, repo, repoSlug, effortID string, annotations map[s
 // directory-derived owner/repo is deliberately not used: a guessed repo would
 // fetch some other project's issue.
 func (c *Collector) ticketNode(b *builder, bookmark, repoName, repoSlug, noGitHub string, issues, jira *remoteTally, addJob func(Job)) string {
-	ticket := spec.ParseTicketFromBranch(bookmark)
+	return c.ticketNodeFor(b, spec.ParseTicketFromBranch(bookmark), repoName, repoSlug, noGitHub, issues, jira, addJob)
+}
+
+// ticketNodeFor adds the node of ticket, as spec.ParseTicketFromBranch
+// returns it ("WGO-12", "GH-70"), and returns its ID, or "" for no ticket.
+// The repository arguments are ticketNode's.
+func (c *Collector) ticketNodeFor(b *builder, ticket, repoName, repoSlug, noGitHub string, issues, jira *remoteTally, addJob func(Job)) string {
 	if ticket == "" {
 		return ""
 	}
@@ -612,22 +625,28 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 		}
 	}
 
-	// Merged PRs per effort per local day of merge. An effort with a PR that
-	// may be merged at an unknown time, a bookmark whose lookup is unknown or
-	// failed, or a workspace jj could not read has no series rather than a
-	// misleading zero.
+	// Merged PRs per effort per local day of merge. An effort with a PR of
+	// unknown state, a bookmark whose lookup is unknown or failed, or a
+	// workspace jj could not read has no series rather than a misleading
+	// zero. So does one with a merged PR whose merge time is unknown, unless
+	// its last update (never before the merge) precedes the window.
 	for n, effs := range prEfforts {
-		if n.PR.State == "" || (n.PR.State == "merged" && n.PR.MergedAt.IsZero()) {
+		if n.PR.State == "" {
 			for _, eff := range effs {
 				mergedUnknown[eff] = true
 			}
 		}
 	}
-	for eff := range mergedUnknown {
-		delete(c.Merged, eff)
-	}
 	for n, effs := range prEfforts {
-		if n.PR.State != "merged" || n.PR.MergedAt.IsZero() {
+		if n.PR.State != "merged" {
+			continue
+		}
+		if n.PR.MergedAt.IsZero() {
+			if n.PR.UpdatedAt.IsZero() || !n.PR.UpdatedAt.Before(start) {
+				for _, eff := range effs {
+					mergedUnknown[eff] = true
+				}
+			}
 			continue
 		}
 		t := n.PR.MergedAt.In(loc)
@@ -641,6 +660,9 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 				c.Merged[eff][idx]++
 			}
 		}
+	}
+	for eff := range mergedUnknown {
+		delete(c.Merged, eff)
 	}
 	if !mergedKnown(s) {
 		c.Merged = nil

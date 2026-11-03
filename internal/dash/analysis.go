@@ -47,6 +47,9 @@ const (
 	ReviewerTeam = "team"
 )
 
+// teamPrefix starts a team reviewer, "team:<slug>", and only a team one.
+const teamPrefix = "team:"
+
 // Involvement roles (Involvement.Role).
 const (
 	RoleAuthor = "author"

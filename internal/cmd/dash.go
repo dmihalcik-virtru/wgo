@@ -11,9 +11,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 	"github.com/virtru/wgo/internal/dash"
 	"github.com/virtru/wgo/internal/discovery"
 	"github.com/virtru/wgo/internal/github"
+	"github.com/virtru/wgo/internal/inventory"
 	"github.com/virtru/wgo/internal/issuecache"
 	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/launch"
@@ -46,20 +49,24 @@ var dashCmd = &cobra.Command{
 	Short: "Live dashboard of all ongoing work: efforts, workspaces, PRs, tickets and agents",
 	Long: `Serve a web dashboard of ongoing work across every discovered
 workspace: efforts, workspaces, bookmarks and their PRs, tickets, and agent
-sessions, with per-source freshness and a "since last look" delta.
+sessions, with per-source freshness and a "since last look" delta. It also
+follows every PR the configured people author or are asked to review, and
+their recently merged or closed PRs, whether or not a local bookmark leads
+to them; those PRs join their bookmark, ticket effort or a per-repository
+group.
 
 The dashboard is served on http://127.0.0.1:8766 by default (only the
 loopback address; change the port with --port or [dash] port) and opened in the browser unless
 --no-open. The page appears at once and fills in when the first snapshot
 is ready. In the background it re-collects local state and refreshes stale
-PR, Jira and GitHub issue data every 30 seconds by default; page requests
+PR, PR inventory, Jira and GitHub issue data every 30 seconds by default; page requests
 only read the last published snapshot. Year-in-review runs under
 ~/.wgo/cache/review/runs/ are served under /review/ and linked to the live
 efforts they share PRs or tickets with. Stop it with Ctrl-C.
 
 With --json, wgo dash prints one snapshot instead of serving. The local
 collection reads jj with --ignore-working-copy, so it never snapshots a
-workspace, and reads PR, Jira and GitHub issue data from wgo's caches only:
+workspace, and reads PR, PR inventory, Jira and GitHub issue data from wgo's caches only:
 anything not cached is reported as unknown. Add --refresh to also try to
 fetch the missing or stale remote data before printing; lookups that fail
 are listed in the output's diagnostics and make the command exit non-zero.
@@ -77,6 +84,11 @@ launch does changes jj, the plan or agent state.
 terminal_command, resume and editor; --port and --days win over it.
 [[dash.people]] lists the people whose PRs and tickets the dash follows
 (default: [pair]'s teammate; you are added once your GitHub login is known).
+[dash] inventory_ttl_seconds (60 to 86400, default 300) is how long their
+open PRs stay fresh; their merged and closed PRs stay fresh six times as
+long. [dash] ticket_prefixes lists the Jira project keys whose ticket IDs
+count in PR titles and bodies (default: [jira] project, default_project and
+project_rules projects; local bookmarks' ticket prefixes always count).
 
 The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.`,
 	Args: cobra.NoArgs,
@@ -90,9 +102,10 @@ func init() {
 	// background republish, an unwritable cache) to the WGO_DEBUG logger.
 	dash.Logf = debugf
 	issuecache.Logf = debugf
+	inventory.Logf = debugf
 	dashCmd.Flags().BoolVar(&dashJSON, "json", false, "print the snapshot and delta as JSON")
 	dashCmd.Flags().IntVar(&dashDays, "days", dash.DefaultDays, "activity window in days")
-	dashCmd.Flags().BoolVar(&dashRefresh, "refresh", false, "with --json, also fetch missing or stale PR, Jira and GitHub issue data")
+	dashCmd.Flags().BoolVar(&dashRefresh, "refresh", false, "with --json, also fetch missing or stale PR, PR inventory, Jira and GitHub issue data")
 	dashCmd.Flags().IntVar(&dashPort, "port", DefaultDashPort, "loopback port to serve the dashboard on")
 	dashCmd.Flags().BoolVar(&dashNoOpen, "no-open", false, "serve without opening a browser")
 	rootCmd.AddCommand(dashCmd)
@@ -138,6 +151,16 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		JiraSite: cfg.Jira.Site,
 		People:   dashPeople(cfg.Dash.People),
 		Pair:     dashPair(cfg, os.Stderr),
+		// The login cached by the background identity lookup: a file read,
+		// never a network call or a process.
+		Identity: func() (string, string) {
+			login, _ := inventory.ReadIdentity(inventory.IdentityTTL, time.Now())
+			return login, ""
+		},
+		InventoryTTL:       dashInventoryTTL(cfg.Dash),
+		InventoryClosedTTL: dash.ClosedInventoryTTL(dashInventoryTTL(cfg.Dash)),
+		TicketPrefixes:     dashTicketPrefixes(cfg),
+		GitHubUnavailable:  githubUnavailable(),
 	})
 	opts := dash.Options{Dir: filepath.Join(st.BaseDir(), "cache", "dash"), Collector: collector}
 	if !dashJSON {
@@ -148,7 +171,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		}
 		// The server honors leases: a key that this or any other wgo process
 		// tried within the backoff window is not fetched again.
-		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4})
+		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, Queue: dashQueue})
 		defer r.Close()
 		opts.Refresher = r
 		d, err := dash.Open(opts)
@@ -184,7 +207,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		})
 	}
 	if dashRefresh {
-		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, IgnoreLeases: true})
+		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, Queue: dashQueue, IgnoreLeases: true})
 		defer r.Close()
 		opts.Refresher = r
 	}
@@ -209,6 +232,24 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	return refreshErr
 }
 
+// dashQueue bounds a refresh's pending lookups. The PR inventory can bring a
+// few hundred PRs, each naming a ticket to look up, which the default bound
+// would drop and report as not run.
+const dashQueue = 4096
+
+// githubUnavailable is github.ErrNoAuth's message when there is no
+// GITHUB_TOKEN and no gh to get a token from, else "". It only looks at the
+// environment and PATH: it starts no process.
+func githubUnavailable() string {
+	if strings.TrimSpace(os.Getenv("GITHUB_TOKEN")) != "" {
+		return ""
+	}
+	if _, err := exec.LookPath("gh"); err == nil {
+		return ""
+	}
+	return github.ErrNoAuth.Error()
+}
+
 // dashFetchers returns the lookups this machine can actually make. An
 // integration that is absent (no GitHub token or gh, no acli) gets no fetcher,
 // so its jobs are skipped rather than failing every run.
@@ -217,9 +258,12 @@ func dashFetchers() dash.Fetchers {
 	if gc := github.NewClient(); gc.Available() {
 		f.PR = newGHFetcher()
 		f.Issue = ghIssueFetcher{c: gc}
+		f.Inventory = gc
 	} else {
 		f.Missing[dash.JobPR] = "no GitHub token or gh"
 		f.Missing[dash.JobIssue] = "no GitHub token or gh"
+		f.Missing[dash.JobInventory] = "no GitHub token or gh"
+		f.Missing[dash.JobIdentity] = "no GitHub token or gh"
 	}
 	if _, err := exec.LookPath("acli"); err == nil {
 		f.Jira = jiraFetcherFn()
@@ -230,9 +274,9 @@ func dashFetchers() dash.Fetchers {
 }
 
 // applyDashConfig uses [dash] port and days in place of any flag the user
-// did not pass, and checks refresh_seconds and [[dash.people]]. A setting a
-// flag overrides is not checked, and neither is port under --json, which
-// never serves.
+// did not pass, and checks refresh_seconds, inventory_ttl_seconds,
+// ticket_prefixes and [[dash.people]]. A setting a flag overrides is not
+// checked, and neither is port under --json, which never serves.
 func applyDashConfig(dc config.DashConfig, flagChanged func(name string) bool) error {
 	if dc.Port != 0 && !dashJSON && !flagChanged("port") {
 		if dc.Port < 1 || dc.Port > 65535 {
@@ -252,7 +296,56 @@ func applyDashConfig(dc config.DashConfig, flagChanged func(name string) bool) e
 			return fmt.Errorf("[dash] refresh_seconds in ~/.wgo/config.toml must be between %d and %d, got %d; fix it, or remove it to use the %v default", minS, maxS, dc.RefreshSeconds, dash.DefaultRefreshInterval)
 		}
 	}
+	if s := dc.InventoryTTLSeconds; s != 0 && (s < minInventoryTTLSeconds || s > maxInventoryTTLSeconds) {
+		return fmt.Errorf("[dash] inventory_ttl_seconds in ~/.wgo/config.toml must be between %d and %d, got %d; fix it, or remove it to use the %d default",
+			minInventoryTTLSeconds, maxInventoryTTLSeconds, s, int(dash.DefaultInventoryTTL/time.Second))
+	}
+	for _, p := range dc.TicketPrefixes {
+		if !ticketPrefixRe.MatchString(p) {
+			return fmt.Errorf("[dash] ticket_prefixes in ~/.wgo/config.toml has %q, which is not a Jira project key; fix it to the letters before the dash of a ticket ID, such as \"TEAM\" for TEAM-123", p)
+		}
+	}
 	return dc.ValidatePeople()
+}
+
+// Bounds of [dash] inventory_ttl_seconds. GitHub's search rate limits make
+// refetching every person's sets more often than once a minute unwise.
+const (
+	minInventoryTTLSeconds = 60
+	maxInventoryTTLSeconds = 86400
+)
+
+// ticketPrefixRe is a ticket prefix as spec.ParseTicketFromBranch reads one.
+var ticketPrefixRe = regexp.MustCompile(`^[A-Za-z]+$`)
+
+// dashInventoryTTL is [dash] inventory_ttl_seconds, already range-checked by
+// applyDashConfig, or the default when unset.
+func dashInventoryTTL(dc config.DashConfig) time.Duration {
+	if dc.InventoryTTLSeconds == 0 {
+		return dash.DefaultInventoryTTL
+	}
+	return time.Duration(dc.InventoryTTLSeconds) * time.Second
+}
+
+// dashTicketPrefixes are the Jira prefixes whose keys count in PR titles and
+// bodies: [dash] ticket_prefixes, else every project [jira] names. Prefixes
+// that cannot be one (a project key with digits) are left out.
+func dashTicketPrefixes(cfg *config.Config) []string {
+	src := cfg.Dash.TicketPrefixes
+	if len(src) == 0 {
+		src = []string{cfg.Jira.Project, cfg.Jira.DefaultProject}
+		for _, r := range cfg.Jira.ProjectRules {
+			src = append(src, r.Project)
+		}
+	}
+	var out []string
+	for _, p := range src {
+		p = strings.ToUpper(strings.TrimSpace(p))
+		if ticketPrefixRe.MatchString(p) && !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // dashPeople turns [[dash.people]], already checked by applyDashConfig, into
