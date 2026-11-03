@@ -2,9 +2,12 @@ package dash
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/virtru/wgo/internal/review"
@@ -53,6 +56,13 @@ type HandlerOptions struct {
 	// TokenHeader. When empty and actions or ack are enabled, NewHandler
 	// generates one. It is embedded only in the live page.
 	Token string
+	// Filters are the saved filters ([dash.filters] merged over the
+	// built-ins); nil means the built-ins alone.
+	Filters []SavedFilter
+	// Addons replaces the live page's addon scripts (liveAddons), read from
+	// AddonFS when set instead of the embedded files. Tests use them.
+	Addons  []string
+	AddonFS fs.FS
 }
 
 func stderrLogf(format string, args ...any) {
@@ -99,8 +109,13 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	if opts.Logf == nil {
 		opts.Logf = stderrLogf
 	}
+	if opts.Filters == nil {
+		opts.Filters = MergeFilters(nil, Fields())
+	}
 	s := &server{opts: opts}
-	s.boot = liveBoot{Mode: string(review.ModeLive), API: "/api/snapshot", PollMS: opts.PollInterval.Milliseconds()}
+	reg := Fields().JSON()
+	s.boot = liveBoot{Mode: string(review.ModeLive), API: "/api/snapshot", PollMS: opts.PollInterval.Milliseconds(),
+		Fields: &reg, Filters: opts.Filters, Extract: ExtractPath}
 	if opts.Reviews != nil {
 		s.boot.Links = "/api/review-links"
 	}
@@ -123,7 +138,11 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 			s.boot.AckAPI = AckPath
 		}
 	}
-	s.live, s.err = newPage(review.Page{Mode: review.ModeLive, Title: "live work", Boot: s.boot})
+	addons := liveAddons
+	if opts.Addons != nil {
+		addons = opts.Addons
+	}
+	s.live, s.err = newPage(review.Page{Mode: review.ModeLive, Title: "live work", Boot: s.boot, Addons: addons, AddonFS: opts.AddonFS})
 	if s.err != nil {
 		opts.Logf("render the live page: %v", s.err)
 	}
@@ -131,6 +150,7 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) { s.serveLive(w, s.boot, http.StatusOK) })
 	mux.HandleFunc("/api/snapshot", s.serveSnapshot)
+	mux.HandleFunc(ExtractPath, s.serveExtract)
 	mux.HandleFunc("/lookup", s.serveLookup)
 	if opts.Reviews != nil {
 		mux.HandleFunc("/api/review-links", s.serveReviewLinks)
@@ -205,8 +225,59 @@ func (s *server) serveSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveLive writes the live explorer with boot as its bootstrap.
+// ExtractPath is the Markdown extract route (spec/gh-100.md, requirement 24).
+const ExtractPath = "/api/extract"
+
+// serveExtract renders the held snapshot as Markdown for q, cols, group,
+// layout, view and sprint, exactly as wgo dash --md does. Like every GET
+// route it reads only the published view.
+func (s *server) serveExtract(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("Content-Type", "text/plain; charset=utf-8")
+	v := s.opts.Source.Current()
+	if v == nil {
+		http.Error(w, "wgo dash has no snapshot yet; try again once the page shows one", http.StatusServiceUnavailable)
+		return
+	}
+	p := r.URL.Query()
+	md, err := Extract(v, Fields(), s.opts.Filters, ExtractArgs{
+		Query: p.Get("q"), Cols: SplitCols(p.Get("cols")), Group: p.Get("group"),
+		Layout: p.Get("layout"), View: p.Get("view"), Sprint: p.Get("sprint"),
+	})
+	if err != nil {
+		var qe *QueryError
+		if errors.As(err, &qe) || errors.Is(err, ErrExtractArgs) {
+			http.Error(w, strings.TrimPrefix(err.Error(), ErrExtractArgs.Error()+": "), http.StatusBadRequest)
+			return
+		}
+		s.opts.Logf("render the extract: %v", err)
+		http.Error(w, "the extract could not be rendered", http.StatusInternalServerError)
+		return
+	}
+	h.Set("Content-Type", "text/markdown; charset=utf-8")
+	_, _ = w.Write([]byte(md))
+}
+
+// SplitCols splits a comma-separated column list, dropping blanks.
+func SplitCols(s string) []string {
+	var out []string
+	for _, c := range strings.Split(s, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// serveLive writes the live explorer with boot as its bootstrap. Me and
+// People come from the snapshot being served, when there is one.
 func (s *server) serveLive(w http.ResponseWriter, boot liveBoot, status int) {
+	if s.opts.Source != nil {
+		if v := s.opts.Source.Current(); v != nil {
+			env := v.Env()
+			boot.Me, boot.People = env.Me, env.People
+		}
+	}
 	if s.err != nil {
 		s.opts.Logf("render the live page: %v", s.err)
 		http.Error(w, "wgo dash could not render its page: "+s.err.Error(), http.StatusInternalServerError)
