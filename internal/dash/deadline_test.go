@@ -262,7 +262,7 @@ func TestRefreshDeadlineInterruptsAtTheCap(t *testing.T) {
 	v := d.Current()
 	k := inventory.Key{Login: "alice", Set: inventory.ReviewRequested}
 	res := inventory.Read(k, time.Hour, time.Time{}, time.Now())
-	if !res.Interrupted || res.LastAttemptAt.IsZero() || res.Failures != 0 || res.Err == nil ||
+	if !res.Interrupted || res.InterruptedAt.IsZero() || !res.LastAttemptAt.IsZero() || res.Failures != 0 || res.Err == nil ||
 		!strings.HasPrefix(res.Err.Error(), "cancelled at the refresh deadline on page ") {
 		t.Fatalf("review-requested cache: %+v", res)
 	}
@@ -355,5 +355,29 @@ func TestTimelinesRunUnderATicketFlood(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the timelines never ran behind the ticket flood")
+	}
+}
+
+// TestDeadlineSummaryCountsCompletions: the diagnostic says "finished" only
+// of the inventory fetches that did.
+func TestDeadlineSummaryCountsCompletions(t *testing.T) {
+	base := BatchResult{Deadline: time.Minute, Finishing: 2, Overrun: 41 * time.Second}
+	for _, tc := range []struct {
+		res  func(BatchResult) BatchResult
+		want string
+	}{
+		{func(r BatchResult) BatchResult { r.Finished = 2; return r },
+			"finished 2 PR inventory fetches started before the refresh deadline (60s), 41s past it"},
+		{func(r BatchResult) BatchResult { r.Finished, r.Interrupted, r.Capped = 1, 1, true; return r },
+			"finished 1 of 2 PR inventory fetches started before the refresh deadline (60s); cancelled 1 at 180s, 3 times the deadline (fetched again on the next refresh)"},
+		{func(r BatchResult) BatchResult { r.Finished, r.Capped = 0, true; return r },
+			"finished 0 of 2 PR inventory fetches started before the refresh deadline (60s); cancelled 2 at 180s, 3 times the deadline (fetched again on the next refresh)"},
+		{func(r BatchResult) BatchResult { r.Finished = 1; return r },
+			"finished 1 of 2 PR inventory fetches started before the refresh deadline (60s); stopped waiting for 1 after 41s"},
+	} {
+		got := tc.res(base).deadlineSummary()
+		if len(got) != 1 || got[0] != tc.want {
+			t.Errorf("got %q, want %q", got, tc.want)
+		}
 	}
 }
