@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -294,5 +295,65 @@ func TestReasonsDetail(t *testing.T) {
 	}
 	if reasonsDetail(nil) != "" {
 		t.Fatal("all fresh: no detail")
+	}
+}
+
+// floodTickets answers each ticket after a while.
+type floodTickets struct{}
+
+func (floodTickets) FetchJira(string) (jiracache.Info, error) {
+	time.Sleep(5 * time.Millisecond)
+	return jiracache.Info{Status: "Done"}, nil
+}
+
+// quickTimeline answers a PR's history at once, counting.
+type quickTimeline struct{ calls atomic.Int32 }
+
+func (q *quickTimeline) PRTimeline(_ context.Context, repo string, number int) (*github.PRTimeline, error) {
+	q.calls.Add(1)
+	return &github.PRTimeline{Repo: repo, Number: number, State: "open", Events: []github.TimelineEvent{}}, nil
+}
+
+// TestTimelinesRunUnderATicketFlood: the served dashboard resubmits its
+// ticket lookups every refresh; when they come faster than the workers
+// drain them, the PR timelines and their pruning still run.
+func TestTimelinesRunUnderATicketFlood(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	q := &quickTimeline{}
+	r := NewRefresher(Fetchers{Jira: floodTickets{}, Timelines: q}, RefresherOptions{Workers: 2, Queue: 100000, IgnoreLeases: true})
+	defer r.Close()
+	stop := make(chan struct{})
+	var flood sync.WaitGroup
+	flood.Add(1)
+	go func() {
+		defer flood.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			jobs := make([]Job, 50)
+			for k := range jobs {
+				jobs[k] = Job{Kind: JobJira, Ticket: fmt.Sprintf("TEAM-%d", i*50+k)}
+			}
+			r.Submit(jobs) // 50 lookups every 10ms: 2 workers drain 400 a second
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	defer func() { close(stop); flood.Wait() }()
+	time.Sleep(50 * time.Millisecond) // a backlog builds up
+	key := inventory.TimelineKey{Repo: "acme/api", Number: 7}
+	done := r.Submit([]Job{
+		{Kind: JobTimelines, Timelines: []TimelineRequest{{Key: key, UpdatedAt: time.Now()}}},
+		{Kind: JobTimelinePrune},
+	})
+	select {
+	case res := <-done:
+		if res.Err() != nil || q.calls.Load() != 1 {
+			t.Fatalf("timelines: %+v, %d fetched", res, q.calls.Load())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the timelines never ran behind the ticket flood")
 	}
 }

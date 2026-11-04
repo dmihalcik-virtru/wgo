@@ -234,8 +234,15 @@ type batch struct {
 // whose move an open PR is depends on them alone; closed-recent feeds the
 // shipped counts. The GitHub login comes before all, since the inventory of
 // "me" needs it; the board's sprints, which name more tickets, next; then
-// the bookmarks' PRs; then the ticket lookups, which the inventory and the
-// sprints reveal by the hundred; PR timelines last, as background upkeep.
+// the bookmarks' PRs; then PR timelines and their pruning; the ticket
+// lookups, which the inventory and the sprints reveal by the hundred, last.
+//
+// There is no aging: a job of a lower rank waits while higher ones keep
+// coming. So the timelines come before the tickets: each is one deduped job
+// (see Job.key), which cannot flood the queue, whereas the served
+// dashboard's tickets, resubmitted every refresh, can outpace the workers
+// and would starve them for good. A waited-for refresh runs neither
+// (waitedJobs).
 const (
 	rankIdentity = iota
 	rankOpenAuthored
@@ -243,8 +250,8 @@ const (
 	rankClosedRecent
 	rankSprints
 	rankPR
-	rankTicket
 	rankTimelines
+	rankTicket
 	numRanks
 )
 
