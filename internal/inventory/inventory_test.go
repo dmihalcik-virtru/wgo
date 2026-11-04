@@ -417,3 +417,41 @@ func TestRefs(t *testing.T) {
 		})
 	}
 }
+
+// TestRefreshRecordsAnInterruption: a fetch cancelled with ErrInterrupted
+// is recorded, when and on which page, keeping the earlier PRs and the
+// failure count; one cancelled otherwise (wgo exiting) is not. The next
+// success clears it.
+func TestRefreshRecordsAnInterruption(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	good := &fakeFetcher{res: result(github.PRFacts{Repo: "acme/api", Number: 1, State: "open"})}
+	_, err := Refresh(context.Background(), good, alice, since)
+	require.NoError(t, err)
+	before := Read(alice, time.Hour, since, time.Now())
+
+	cut := &fakeFetcher{err: &github.PRSearchError{Page: 7, Err: context.Canceled}}
+	exiting, stop := context.WithCancel(context.Background())
+	stop()
+	_, err = Refresh(exiting, cut, alice, since)
+	require.Error(t, err)
+	assert.Equal(t, before.LastAttemptAt, Read(alice, time.Hour, since, time.Now()).LastAttemptAt, "a plain cancellation is not recorded")
+
+	deadline, interrupt := context.WithCancelCause(context.Background())
+	interrupt(ErrInterrupted)
+	res, err := Refresh(deadline, cut, alice, since)
+	require.Error(t, err)
+	assert.True(t, res.Interrupted)
+	r := Read(alice, time.Hour, since, time.Now())
+	assert.True(t, r.Interrupted)
+	assert.Len(t, r.PRs, 1, "the earlier PRs are kept")
+	assert.Equal(t, 0, r.Failures, "an interruption is no failure: no back-off")
+	assert.True(t, r.LastAttemptAt.After(before.LastAttemptAt))
+	require.Error(t, r.Err)
+	assert.Equal(t, "cancelled at the refresh deadline on page 7 (fetched again on the next refresh)", r.Err.Error())
+
+	_, err = Refresh(context.Background(), good, alice, since)
+	require.NoError(t, err)
+	r = Read(alice, time.Hour, since, time.Now())
+	assert.False(t, r.Interrupted)
+	assert.NoError(t, r.Err)
+}

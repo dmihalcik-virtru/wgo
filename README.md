@@ -1050,14 +1050,20 @@ refreshes stale PR, PR inventory, Jira and GitHub issue data. Year-in-review run
 served under `/review/`. Stop the server with Ctrl-C.
 
 `--json` reads remote data from wgo's caches only. `--refresh` fetches what
-is missing or stale first, waiting at most `--refresh-timeout` (60 seconds
-by default; a number of seconds or a duration such as `2m`; `0` waits for
-every lookup). At the deadline it prints what it has, and the diagnostics
-say `not run: refresh deadline (60s) reached; N lookups left`; lookups
-still running may finish after the output, so the next run has them. Only
-lookups that failed make the command exit non-zero: not those left at the
-deadline, nor Jira lookups skipped because `acli`'s login expired, nor
-GitHub issues that do not exist.
+is missing or stale first, starting lookups for at most `--refresh-timeout`
+(60 seconds by default; a number of seconds or a duration such as `2m`;
+`0` waits for every lookup). The PR inventory goes first (your login, then
+the open-authored, review-requested and closed-recent sets), since whose
+move a PR is depends on it; then the board's sprints, the bookmarks' PRs,
+and the ticket and issue lookups. At the deadline no more lookups start,
+and the diagnostics say `not run: refresh deadline (60s) reached; N
+lookups left`. PR inventory fetches already running get up to twice the
+timeout again to finish, so a set with many pages is cached rather than
+lost on every run; a fetch still running then is cancelled, recorded with
+when and on which page, and `github_inventory`'s detail says why the set
+is unknown or stale. Only lookups that failed make the command exit
+non-zero: not those left at the deadline, nor Jira lookups skipped because
+`acli`'s login expired, nor GitHub issues that do not exist.
 
 With `[jira] board` set, the dashboard also shows that board's active and
 future sprints, with their goals and dates, and every ticket in an active

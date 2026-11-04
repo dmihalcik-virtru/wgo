@@ -94,10 +94,13 @@ workspace, and reads PR, PR inventory, Jira and GitHub issue data from
 wgo's caches only: anything not cached is reported as unknown. Add
 --refresh to also try to fetch the missing or stale remote data before
 printing; lookups that fail are listed in the output's diagnostics and make
-the command exit non-zero. --refresh waits at most --refresh-timeout
-(default 60s; 0 waits for every lookup) and then prints what it has:
-the lookups left are listed as not run, not as failed, and some may
-finish after the output, for the next run.
+the command exit non-zero. --refresh starts lookups for at most
+--refresh-timeout (default 60s; 0 waits for every lookup), PR
+inventory sets first, then prints what it has: the lookups left are
+listed as not run, not as failed. PR inventory fetches already running
+get up to twice that again to finish, so a large set is cached rather
+than lost; one still running then is cancelled, and the
+github_inventory source says so.
 Once acli turns out to be logged out, the remaining Jira lookups are
 skipped instead: one diagnostic says so, the jira source is in error with
 the reason, and the exit status is unaffected. The served dashboard then
@@ -182,7 +185,7 @@ func init() {
 	dashCmd.Flags().BoolVar(&dashJSON, "json", false, "print the snapshot and delta as JSON")
 	dashCmd.Flags().IntVar(&dashDays, "days", dash.DefaultDays, "activity window in days")
 	dashCmd.Flags().BoolVar(&dashRefresh, "refresh", false, "with --json, also fetch missing or stale PR, PR inventory, Jira and GitHub issue data")
-	dashCmd.Flags().Var(secondsFlag{&dashRefreshTimeout}, "refresh-timeout", "with --refresh, wait at most this long for remote lookups, then print what was fetched (seconds, or a duration such as 2m; 0 waits for every lookup)")
+	dashCmd.Flags().Var(secondsFlag{&dashRefreshTimeout}, "refresh-timeout", "with --refresh, start remote lookups for at most this long, then print what was fetched (seconds, or a duration such as 2m; 0 waits for every lookup); PR inventory fetches already running get up to twice as long again")
 	dashCmd.Flags().IntVar(&dashPort, "port", DefaultDashPort, "loopback port to serve the dashboard on")
 	dashCmd.Flags().BoolVar(&dashNoOpen, "no-open", false, "serve without opening a browser")
 	dashCmd.Flags().StringVar(&dashQuery, "query", "", "filter with a query: with --json add the matches and keep only what it shows, with --md choose the rows, alone open the dashboard at it")

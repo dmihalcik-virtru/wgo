@@ -77,6 +77,8 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 
 	var tally remoteTally
 	var diags []string
+	// notFresh says, per set not fresh, why: github_inventory's detail.
+	var notFresh []partReason
 	since := inventory.ClosedSince(ls.at, ls.days)
 	y, m, d := ls.at.Date()
 	countsStart := time.Date(y, m, d, 0, 0, 0, 0, ls.at.Location()).AddDate(0, 0, -(ls.days - 1))
@@ -121,6 +123,9 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 			}
 			if res.Err != nil {
 				part.Error = res.Err.Error()
+			}
+			if f != Fresh {
+				notFresh = append(notFresh, partReason{k.String(), inventoryReason(f, res)})
 			}
 			tally.add(f, res.FetchedAt)
 			tally.Parts = append(tally.Parts, part)
@@ -185,6 +190,8 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 		}
 		st.Detail = "your GitHub login is not known yet, so your own PRs are not shown; " + why
 		diags = append(diags, "github_inventory: "+st.Detail)
+	default:
+		st.Detail = reasonsDetail(notFresh)
 	}
 	if covered {
 		st.CoveredSince = coveredSince
@@ -252,7 +259,9 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 	return st, diags, mergedKnown
 }
 
-// inventoryFreshness maps an inventory cache result onto a Freshness.
+// inventoryFreshness maps an inventory cache result onto a Freshness. A set
+// whose only fetch was cancelled at a refresh's deadline is unknown, not in
+// error.
 func inventoryFreshness(r inventory.Result) Freshness {
 	switch r.State {
 	case inventory.Fresh:
@@ -260,7 +269,47 @@ func inventoryFreshness(r inventory.Result) Freshness {
 	case inventory.Stale:
 		return Stale
 	}
+	if r.Interrupted {
+		return Unknown
+	}
 	return missFreshness(r.Err)
+}
+
+// partReason is why one inventory set is not fresh.
+type partReason struct{ name, why string }
+
+// inventoryReason says why a set at freshness f is not fresh.
+func inventoryReason(f Freshness, r inventory.Result) string {
+	switch {
+	case r.Interrupted && r.Err != nil:
+		return r.Err.Error()
+	case f == Error && r.Err != nil:
+		return "failed: " + r.Err.Error()
+	case r.Err != nil && r.Failures > 0:
+		return "last refresh failed: " + r.Err.Error()
+	case f == Unknown:
+		return "not fetched yet"
+	}
+	return "due for a refresh"
+}
+
+// reasonsDetail lists the sets not fresh, grouped by reason in the order
+// first seen: "alice/open-authored, alice/review-requested: not fetched
+// yet". It is "" when every set is fresh.
+func reasonsDetail(rs []partReason) string {
+	var order []string
+	names := map[string][]string{}
+	for _, r := range rs {
+		if names[r.why] == nil {
+			order = append(order, r.why)
+		}
+		names[r.why] = append(names[r.why], r.name)
+	}
+	parts := make([]string, 0, len(order))
+	for _, why := range order {
+		parts = append(parts, strings.Join(names[why], ", ")+": "+why)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // knownTicketPrefixes are the Jira prefixes whose keys count in PR titles and
