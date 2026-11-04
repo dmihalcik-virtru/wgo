@@ -352,11 +352,15 @@ type BatchResult struct {
 	Deadline   time.Duration
 	// Finishing counts the PR inventory fetches that were running at the
 	// deadline, which the refresh waited for, Overrun past it, up to
-	// deadlineGrace times the deadline; Interrupted counts those cancelled
-	// then, recorded as such in the inventory cache.
+	// deadlineGrace times the deadline; Finished counts those that ended on
+	// their own then, cached or failed. Interrupted counts those cancelled,
+	// recorded as such in the inventory cache; Capped is set when the wait
+	// reached deadlineGrace times the deadline.
 	Finishing   int
+	Finished    int
 	Overrun     time.Duration
 	Interrupted int
+	Capped      bool
 }
 
 // add folds another batch's result into r.
@@ -373,8 +377,10 @@ func (r *BatchResult) add(o BatchResult) {
 		r.Deadline = o.Deadline
 	}
 	r.Finishing += o.Finishing
+	r.Finished += o.Finished
 	r.Overrun += o.Overrun
 	r.Interrupted += o.Interrupted
+	r.Capped = r.Capped || o.Capped
 	for k, n := range o.Skipped {
 		if r.Skipped == nil {
 			r.Skipped = map[JobKind]int{}
@@ -870,18 +876,22 @@ func (res BatchResult) deadlineSummary() []string {
 	if n := res.Unfinished; n > 0 {
 		out = append(out, fmt.Sprintf("not run: refresh deadline (%s) reached; %d %s left", dl, n, plural(n, "lookup", "lookups")))
 	}
-	n, cut := res.Finishing, res.Interrupted
-	switch {
-	case n == 0:
-	case cut == 0:
-		out = append(out, fmt.Sprintf("finished %d PR inventory %s started before the refresh deadline (%s), %s past it",
-			n, plural(n, "fetch", "fetches"), dl, res.Overrun.Round(100*time.Millisecond)))
-	case cut >= n:
-		out = append(out, fmt.Sprintf("cancelled %d PR inventory %s started before the refresh deadline (%s) at %s, %d times the deadline (fetched again on the next refresh)",
-			cut, plural(cut, "fetch", "fetches"), dl, FormatSeconds((1+deadlineGrace)*res.Deadline), 1+deadlineGrace))
+	n, done := res.Finishing, res.Finished
+	if n == 0 {
+		return out
+	}
+	finished := fmt.Sprintf("finished %d PR inventory %s started before the refresh deadline (%s)", n, plural(n, "fetch", "fetches"), dl)
+	if done < n {
+		finished = fmt.Sprintf("finished %d of %d PR inventory fetches started before the refresh deadline (%s)", done, n, dl)
+	}
+	switch left := n - done; {
+	case left == 0:
+		out = append(out, fmt.Sprintf("%s, %s past it", finished, res.Overrun.Round(100*time.Millisecond)))
+	case res.Capped:
+		out = append(out, fmt.Sprintf("%s; cancelled %d at %s, %d times the deadline (fetched again on the next refresh)",
+			finished, left, FormatSeconds((1+deadlineGrace)*res.Deadline), 1+deadlineGrace))
 	default:
-		out = append(out, fmt.Sprintf("finished %d of %d PR inventory fetches started before the refresh deadline (%s); cancelled %d at %s, %d times the deadline (fetched again on the next refresh)",
-			n-cut, n, dl, cut, FormatSeconds((1+deadlineGrace)*res.Deadline), 1+deadlineGrace))
+		out = append(out, fmt.Sprintf("%s; stopped waiting for %d after %s", finished, left, res.Overrun.Round(100*time.Millisecond)))
 	}
 	return out
 }

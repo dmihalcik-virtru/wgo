@@ -445,7 +445,8 @@ func TestRefreshRecordsAnInterruption(t *testing.T) {
 	assert.True(t, r.Interrupted)
 	assert.Len(t, r.PRs, 1, "the earlier PRs are kept")
 	assert.Equal(t, 0, r.Failures, "an interruption is no failure: no back-off")
-	assert.True(t, r.LastAttemptAt.After(before.LastAttemptAt))
+	assert.Equal(t, before.LastAttemptAt, r.LastAttemptAt, "nor an attempt")
+	assert.True(t, r.InterruptedAt.After(before.LastAttemptAt))
 	require.Error(t, r.Err)
 	assert.Equal(t, "cancelled at the refresh deadline on page 7 (fetched again on the next refresh)", r.Err.Error())
 
@@ -454,4 +455,34 @@ func TestRefreshRecordsAnInterruption(t *testing.T) {
 	r = Read(alice, time.Hour, since, time.Now())
 	assert.False(t, r.Interrupted)
 	assert.NoError(t, r.Err)
+}
+
+// TestInterruptionLeavesTheBackOffAlone: a set backing off after failures
+// keeps its back-off when a waited refresh interrupts a fetch of it, so
+// refreshes every few minutes cannot keep pushing back the served
+// dashboard's next try.
+func TestInterruptionLeavesTheBackOffAlone(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	failing := &fakeFetcher{err: &github.PRSearchError{Page: 3, Err: errors.New("HTTP 502")}}
+	for range 2 {
+		_, _ = Refresh(context.Background(), failing, alice, since)
+	}
+	before := Read(alice, time.Hour, since, time.Now())
+	require.Equal(t, 2, before.Failures)
+
+	deadline, interrupt := context.WithCancelCause(context.Background())
+	interrupt(ErrInterrupted)
+	_, _ = Refresh(deadline, &fakeFetcher{err: &github.PRSearchError{Page: 1, Err: context.Canceled}}, alice, since)
+	after := Read(alice, time.Hour, since, time.Now())
+	assert.True(t, after.Interrupted)
+	assert.Equal(t, before.Failures, after.Failures)
+	assert.Equal(t, before.LastAttemptAt, after.LastAttemptAt)
+	assert.Equal(t, before.NotBefore(), after.NotBefore(), "the back-off is unchanged")
+
+	// The next failure is an attempt again, and clears the interruption.
+	_, _ = Refresh(context.Background(), failing, alice, since)
+	again := Read(alice, time.Hour, since, time.Now())
+	assert.False(t, again.Interrupted)
+	assert.True(t, again.InterruptedAt.IsZero())
+	assert.Equal(t, 3, again.Failures)
 }

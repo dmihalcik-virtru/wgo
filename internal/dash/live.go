@@ -736,6 +736,7 @@ func (d *Dash) finishAtDeadline(ctx context.Context, b *batch, timeout time.Dura
 	r := d.opts.Refresher
 	finishing := r.expire(b)
 	start := time.Now()
+	capped := false
 	if finishing > 0 {
 		grace := time.NewTimer(deadlineGrace * timeout)
 		defer grace.Stop()
@@ -746,6 +747,7 @@ func (d *Dash) finishAtDeadline(ctx context.Context, b *batch, timeout time.Dura
 			case <-b.progressed:
 			case <-grace.C:
 				r.interrupt(b)
+				capped = true
 				giveUp = time.After(interruptWait)
 			case <-giveUp:
 				break wait
@@ -754,11 +756,15 @@ func (d *Dash) finishAtDeadline(ctx context.Context, b *batch, timeout time.Dura
 			}
 		}
 	}
+	running := r.runningInventory(b)
 	res, left := b.progress()
 	res.Unfinished += left
-	res.Deadline, res.Finishing = timeout, finishing
+	res.Deadline, res.Finishing, res.Capped = timeout, finishing, capped
 	if finishing > 0 {
 		res.Overrun = time.Since(start)
+		// Inventory fetches running now started before the deadline, as
+		// did any interrupted one; the rest ended on their own.
+		res.Finished = max(finishing-running-res.Interrupted, 0)
 	}
 	return res
 }
