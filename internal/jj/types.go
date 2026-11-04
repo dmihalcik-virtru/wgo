@@ -68,9 +68,9 @@ type Change struct {
 	Parents []string
 	// AuthorEmail is the change author's email address.
 	AuthorEmail string
-	// AuthorTimestamp is the change author timestamp parsed from `%+`.
+	// AuthorTimestamp is the change author timestamp parsed from timestampFormat.
 	AuthorTimestamp time.Time
-	// CommitterTimestamp is the committer timestamp parsed from `%+`. Unlike
+	// CommitterTimestamp is the committer timestamp parsed from timestampFormat. Unlike
 	// the author timestamp it moves on every rewrite, so of two revisions of
 	// one change the newer has the later committer timestamp.
 	CommitterTimestamp time.Time
