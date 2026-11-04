@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,4 +93,93 @@ func TestGraphQLTransportErrorIsReturned(t *testing.T) {
 	require.Error(t, err)
 	var apiErr *APIError
 	assert.False(t, errors.As(err, &apiErr))
+}
+
+// TestGraphQLIncompleteBodies: a successful status whose body is empty, cut
+// off, not JSON, or holds neither data nor errors is an
+// IncompleteResponseError, which Transient retries; a well-formed body that
+// does not fit the caller's type is not.
+func TestGraphQLIncompleteBodies(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty":          "",
+		"blank":          "  \n",
+		"cut off":        `{"data": {"x": 4`,
+		"html":           `<html>upstream reset</html>`,
+		"null data":      `{"data": null}`,
+		"empty envelope": `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			var out struct{ X int }
+			err := newTestClient(t, srv, "o/r").GraphQL(context.Background(), "query { x }", nil, &out)
+			var incomplete *IncompleteResponseError
+			require.ErrorAs(t, err, &incomplete)
+			assert.Equal(t, http.StatusOK, incomplete.StatusCode)
+			assert.Equal(t, len(body), incomplete.Received)
+			assert.True(t, Transient(err))
+		})
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data": {"x": "not a number"}}`))
+	}))
+	defer srv.Close()
+	var out struct{ X int }
+	err := newTestClient(t, srv, "o/r").GraphQL(context.Background(), "query { x }", nil, &out)
+	require.Error(t, err)
+	var incomplete *IncompleteResponseError
+	assert.False(t, errors.As(err, &incomplete), "a complete body of the wrong shape is not transient")
+	assert.False(t, Transient(err))
+}
+
+// TestGraphQLBodyCutByTheConnection: a connection that closes before the
+// promised Content-Length arrives is an IncompleteResponseError too.
+func TestGraphQLBodyCutByTheConnection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		_, _ = w.Write([]byte(`{"data": {"x"`))
+	}))
+	defer srv.Close()
+	err := newTestClient(t, srv, "o/r").GraphQL(context.Background(), "query { x }", nil, nil)
+	var incomplete *IncompleteResponseError
+	require.ErrorAs(t, err, &incomplete)
+	assert.True(t, Transient(err))
+}
+
+// TestTransient: which failures are worth another attempt.
+func TestTransient(t *testing.T) {
+	assert.True(t, Transient(&APIError{StatusCode: 502}))
+	assert.False(t, Transient(&APIError{StatusCode: 404}))
+	assert.True(t, Transient(context.DeadlineExceeded))
+	assert.True(t, Transient(&GraphQLErrors{NoData: true, Errors: []GraphQLError{{Message: "This may be the result of a timeout"}}}))
+	assert.False(t, Transient(&GraphQLErrors{NoData: false, Errors: []GraphQLError{{Message: "This may be the result of a timeout"}}}),
+		"partial data with a timeout note is kept, not refetched")
+	assert.False(t, Transient(&GraphQLErrors{NoData: true, Errors: []GraphQLError{{Message: "Could not resolve to a Repository", Type: "NOT_FOUND"}}}))
+	assert.False(t, Transient(errors.New("boom")))
+}
+
+// TestWithContextAbandonsRESTRequests: a client from WithContext abandons
+// its REST requests when the context is done; the original is unaffected.
+func TestWithContextAbandonsRESTRequests(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	defer close(release)
+	c := newTestClient(t, srv, "o/r")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	start := time.Now()
+	err := c.WithContext(ctx).getJSON("/repos/o/r/pulls", nil)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Less(t, time.Since(start), 5*time.Second)
+	assert.Nil(t, c.ctx, "the original client keeps no context")
 }

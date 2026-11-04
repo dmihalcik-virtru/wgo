@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/virtru/wgo/internal/discovery"
+	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/issuecache"
 	"github.com/virtru/wgo/internal/jiracache"
 	"github.com/virtru/wgo/internal/jjtest"
@@ -28,7 +29,7 @@ func (f *failingFetchers) FetchPRs(string, string) ([]models.PRRef, error) {
 
 func (f *failingFetchers) FetchJira(string) (jiracache.Info, error) {
 	f.calls.Add(1)
-	return jiracache.Info{}, errors.New("acli: not authenticated")
+	return jiracache.Info{}, errors.New("acli: exit status 1: failed to fetch work item details")
 }
 
 func (f *failingFetchers) FetchIssue(issuecache.Key) (issuecache.Info, error) {
@@ -86,7 +87,7 @@ func TestRefreshWaitReportsFailedLookups(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true})
-	if err == nil || !strings.Contains(err.Error(), "4 of 4 lookups failed") || !strings.Contains(err.Error(), "jira WGO-5: acli: not authenticated") {
+	if err == nil || !strings.Contains(err.Error(), "4 of 4 lookups failed") || !strings.Contains(err.Error(), "jira WGO-5: acli: exit status 1: failed to fetch work item details") {
 		t.Fatalf("Refresh = %v, want the failed lookups", err)
 	}
 	v := d.Current()
@@ -455,5 +456,77 @@ func TestBatchResultErrListsAFew(t *testing.T) {
 	}
 	if (BatchResult{Jobs: 3}).Err() != nil {
 		t.Fatal("a clean batch has an error")
+	}
+}
+
+// notFoundIssues answer every issue lookup with GitHub's 404.
+type notFoundIssues struct{ calls atomic.Int32 }
+
+func (f *notFoundIssues) FetchIssue(k issuecache.Key) (issuecache.Info, error) {
+	f.calls.Add(1)
+	return issuecache.Info{}, &github.APIError{StatusCode: 404, Method: "GET", URL: fmt.Sprintf("/repos/%s/%s/issues/%d", k.Owner, k.Repo, k.Number)}
+}
+
+// TestRefreshIssueNotFoundIsNoFailure: an issue GitHub does not find is
+// cached as not found and fails no lookup.
+func TestRefreshIssueNotFoundIsNoFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f := &notFoundIssues{}
+	r := NewRefresher(Fetchers{Issue: f}, RefresherOptions{Workers: 2, IgnoreLeases: true})
+	defer r.Close()
+	k := issuecache.Key{Owner: "acme", Repo: "api", Number: 12}
+	res := <-r.Submit([]Job{{Kind: JobIssue, Issue: k}})
+	if res.Err() != nil || res.Jobs != 1 || f.calls.Load() != 1 {
+		t.Fatalf("batch %+v, calls %d", res, f.calls.Load())
+	}
+	if got := issuecache.Read(k, time.Minute); !got.NotFound || got.State != issuecache.Fresh {
+		t.Fatalf("cache %+v", got)
+	}
+}
+
+// TestRefreshWaitDeadline: a waited-for refresh stops waiting at its
+// deadline and publishes what it has; the lookups left are reported as not
+// run, not as failed, and the refresh succeeds. They are not cancelled.
+func TestRefreshWaitDeadline(t *testing.T) {
+	f := newFixture(t)
+	bf := &blockingFetchers{release: make(chan struct{})}
+	r := NewRefresher(Fetchers{PR: bf, Jira: bf, Issue: bf}, RefresherOptions{Workers: 2, IgnoreLeases: true})
+	defer func() {
+		close(bf.release)
+		r.Close()
+	}()
+	d, err := Open(Options{Dir: t.TempDir(), Collector: f.collector(t, time.Now(), memSource{}), Refresher: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true, Timeout: 150 * time.Millisecond}); err != nil {
+		t.Fatalf("a refresh that ran out of time failed: %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("the refresh took %v, past its 150ms deadline", took)
+	}
+	v := d.Current()
+	if v.Snapshot.Generation != 2 {
+		t.Fatalf("generation %d, want 2: the snapshot at the deadline is published", v.Snapshot.Generation)
+	}
+	if !hasDiag(v, "not run: refresh deadline (150ms) reached; 4 lookups left") {
+		t.Fatalf("diagnostics %v", v.Diagnostics)
+	}
+	for _, diag := range v.Diagnostics {
+		if strings.Contains(diag, "failed") {
+			t.Fatalf("unfinished lookups reported as failed: %q", diag)
+		}
+	}
+	if n := bf.calls.Load(); n != 2 {
+		t.Fatalf("%d fetches started, want 2 (one per worker, still running)", n)
+	}
+}
+
+func TestFormatSeconds(t *testing.T) {
+	for d, want := range map[time.Duration]string{60 * time.Second: "60s", 90 * time.Minute: "5400s", time.Hour: "1h", 3 * time.Hour: "3h", 1500 * time.Millisecond: "1.5s", 0: "0s"} {
+		if got := FormatSeconds(d); got != want {
+			t.Errorf("FormatSeconds(%v) = %q, want %q", d, got, want)
+		}
 	}
 }

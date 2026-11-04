@@ -22,6 +22,9 @@ const PRSearchPageSize = 20
 // beyond it PRFacts.ChecksTruncated is set.
 const MaxCheckContexts = 100
 
+// MaxClosingIssues bounds the issues read per PR that it closes when merged.
+const MaxClosingIssues = 10
+
 // PRFacts is a pull request with the facts the dash's PR inventory keeps
 // (gh-97). Its JSON form is the inventory cache's. A fact GitHub did not
 // report is left unset: an empty string or time, a nil pointer or a nil list,
@@ -69,6 +72,10 @@ type PRFacts struct {
 	// at most MaxCheckContexts.
 	CheckDetails    []CheckFact `json:"check_details,omitzero"`
 	ChecksTruncated bool        `json:"checks_truncated,omitempty"`
+	// ClosingIssues are the issues GitHub links to the PR as closed by it
+	// when merged ("Fixes #12", or linked by hand), at most
+	// MaxClosingIssues; nil when GitHub did not report them.
+	ClosingIssues []IssueRef `json:"closing_issues,omitzero"`
 
 	// Body is the description, read for ticket references; never cached.
 	Body string `json:"-"`
@@ -93,6 +100,12 @@ type ReviewFact struct {
 	SubmittedAt time.Time `json:"submitted_at,omitzero"`
 }
 
+// IssueRef names an issue: its repository's owner/repo and its number.
+type IssueRef struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+}
+
 // CheckFact is one check run or status context.
 type CheckFact struct {
 	Name string `json:"name"`
@@ -112,7 +125,7 @@ type PRSearchResult struct {
 }
 
 // PRSearchError is a PR search that failed on one page: after its retries
-// for a 5xx or a timeout, or at once for anything else.
+// for a transient failure (see Transient), or at once for anything else.
 type PRSearchError struct {
 	Page    int
 	Retries int
@@ -166,6 +179,7 @@ var prSearchQuery = fmt.Sprintf(`query($q: String!, $after: String) {
             }
           }
         }
+        closingIssuesReferences(first: %d) { nodes { number repository { nameWithOwner } } }
         commits(last: 1) {
           nodes { commit { statusCheckRollup {
             state
@@ -182,7 +196,7 @@ var prSearchQuery = fmt.Sprintf(`query($q: String!, $after: String) {
       }
     }
   }
-}`, PRSearchPageSize, MaxCheckContexts)
+}`, PRSearchPageSize, MaxClosingIssues, MaxCheckContexts)
 
 type gqlActor struct {
 	Login string `json:"login"`
@@ -266,6 +280,14 @@ type gqlPR struct {
 			RequestedReviewer *gqlReviewer `json:"requestedReviewer"`
 		} `json:"nodes"`
 	} `json:"timelineItems"`
+	ClosingIssuesReferences *struct {
+		Nodes []*struct {
+			Number     int `json:"number"`
+			Repository *struct {
+				NameWithOwner string `json:"nameWithOwner"`
+			} `json:"repository"`
+		} `json:"nodes"`
+	} `json:"closingIssuesReferences"`
 	Commits *struct {
 		Nodes []struct {
 			Commit struct {
@@ -294,8 +316,8 @@ type gqlSearchData struct {
 
 // SearchPullRequests runs a GitHub search for pull requests through the
 // GraphQL search connection, PRSearchPageSize at a time, following the cursor
-// to the end. A page that fails with a 5xx or a timeout is retried after each
-// WithRetryBackoff wait; when the retries run out, or on any other failure,
+// to the end. A page that fails with a 5xx, a timeout or an incomplete body
+// is retried after each WithRetryBackoff wait; when the retries run out, or on any other failure,
 // the search fails with a *PRSearchError and no result. PRs in archived
 // repositories are dropped, and a PR listed twice (results shifting between
 // pages) is kept once.
@@ -357,8 +379,9 @@ func (c *CLIClient) SearchPullRequests(ctx context.Context, query string) (*PRSe
 	return res, nil
 }
 
-// graphQLWithRetry runs GraphQL, retrying a 5xx or a timeout after each
-// c.retryBackoff wait. It returns how many retries it made.
+// graphQLWithRetry runs GraphQL, retrying a transient failure (see
+// Transient) after each c.retryBackoff wait. It returns how many retries it
+// made.
 func (c *CLIClient) graphQLWithRetry(ctx context.Context, query string, vars map[string]any, data any) (int, error) {
 	for retries := 0; ; retries++ {
 		err := c.GraphQL(ctx, query, vars, data)
@@ -375,15 +398,28 @@ func (c *CLIClient) graphQLWithRetry(ctx context.Context, query string, vars map
 	}
 }
 
-// retryable reports whether a failed request is worth repeating: a server
-// error or a timeout, unless the caller's context is done.
+// retryable reports whether a failed request is worth repeating: a
+// transient failure, unless the caller's context is done.
 func retryable(ctx context.Context, err error) bool {
-	if ctx.Err() != nil {
-		return false
-	}
+	return ctx.Err() == nil && Transient(err)
+}
+
+// Transient reports whether a request failed in a way a later attempt may
+// not: a server error, a timeout (GitHub reports a GraphQL query that ran too
+// long as HTTP 200 with no data and a timeout error), or a successful status
+// whose body was empty, cut off or not JSON.
+func Transient(err error) bool {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode >= 500
+	}
+	var incomplete *IncompleteResponseError
+	if errors.As(err, &incomplete) {
+		return true
+	}
+	var gqlErrs *GraphQLErrors
+	if errors.As(err, &gqlErrs) {
+		return gqlErrs.timedOut()
 	}
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
@@ -469,6 +505,16 @@ func (n *gqlPR) facts() (PRFacts, bool) {
 
 	if p.ReviewDecision == "" {
 		p.ReviewDecision = rollupLatestReviews(p.Reviews)
+	}
+
+	if n.ClosingIssuesReferences != nil {
+		p.ClosingIssues = []IssueRef{}
+		for _, is := range n.ClosingIssuesReferences.Nodes {
+			if is == nil || is.Number <= 0 || is.Repository == nil || is.Repository.NameWithOwner == "" {
+				continue // an issue the token cannot read
+			}
+			p.ClosingIssues = append(p.ClosingIssues, IssueRef{Repo: is.Repository.NameWithOwner, Number: is.Number})
+		}
 	}
 
 	if n.Commits != nil && len(n.Commits.Nodes) > 0 {

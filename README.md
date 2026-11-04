@@ -1039,6 +1039,8 @@ wgo dash                 # serve http://127.0.0.1:8766 and open it
 wgo dash --no-open       # serve without opening a browser
 wgo dash --port 8800     # another loopback port
 wgo dash --json          # print one snapshot as JSON and exit
+wgo dash --json --refresh                        # fetch stale remote data first, for at most 60s
+wgo dash --json --refresh --refresh-timeout 2m   # wait longer; 0 waits for every lookup
 ```
 
 The server listens on the loopback address only. Every 30 seconds by
@@ -1046,6 +1048,26 @@ default (`[dash] refresh_seconds`) it re-collects local jj state, reading
 with `--ignore-working-copy` so it never snapshots a workspace. It also
 refreshes stale PR, PR inventory, Jira and GitHub issue data. Year-in-review runs are
 served under `/review/`. Stop the server with Ctrl-C.
+
+`--json` reads remote data from wgo's caches only. `--refresh` fetches what
+is missing or stale first, starting lookups for at most `--refresh-timeout`
+(60 seconds by default; a number of seconds or a duration such as `2m`;
+`0` waits for every lookup). The PR inventory goes first (your login, then
+the open-authored, review-requested and closed-recent sets), since whose
+move a PR is depends on it; then the board's sprints, the bookmarks' PRs,
+and the ticket and issue lookups. At the deadline no more lookups start,
+and the diagnostics say `not run: refresh deadline (60s) reached; N
+lookups left`; lookups already running are cancelled (`acli` is killed,
+GitHub requests are abandoned), and once it has printed, the command waits
+at most a second for them, leaving behind any that has not stopped (the
+caches are written atomically). So it exits within about three times the
+timeout, even when `acli` hangs. PR inventory fetches already
+running get up to twice the timeout again to finish, so a set with many pages is cached rather than
+lost on every run; a fetch still running then is cancelled, recorded with
+when and on which page, and `github_inventory`'s detail says why the set
+is unknown or stale. Only lookups that failed make the command exit
+non-zero: not those left at the deadline, nor Jira lookups skipped because
+`acli`'s login expired, nor GitHub issues that do not exist.
 
 With `[jira] board` set, the dashboard also shows that board's active and
 future sprints, with their goals and dates, and every ticket in an active
@@ -1492,6 +1514,15 @@ known prefix too, once any is known, so GitHub's `patch-1` and
 that turns out to be a PR is dropped. A prefix with anything but letters is
 an error.
 
+GitHub issues of the PR's own repository count when GitHub links them to
+the PR as closed by it, or when they are written out: `gh-12`,
+`acme/api#12` or an issue URL. A bare `#12` in a title or body counts only
+on a PR your bookmarks lead to: on the inventory's PRs, often other
+people's, it mostly names no issue of that repository. An issue GitHub
+answers 404 (or 410) for is shown as `not found`, counted apart on the
+`github_issues` source ("120 not found"), not as a failed lookup, and
+asked again a day later.
+
 ### Jira sprints and ticket facts
 
 Ticket nodes carry the facts Jira reports through `acli`: summary, status
@@ -1528,6 +1559,19 @@ after 2 minutes. Without `acli`, or with its login expired, the `jira` and
 `jira_sprints` sources are unknown or failed and say why, and the rest of
 the dashboard is unaffected. `wgo statusline` still reads only the ticket's
 cache entry.
+
+Once a Jira lookup fails because `acli`'s login expired (acli says
+"unauthorized", or, when a ticket view fails without saying why,
+`acli jira auth status` does), the remaining Jira ticket and sprint lookups
+are skipped rather than run into the same failure one by one. One
+diagnostic says ``acli is not authenticated: run `acli jira auth login`;
+N Jira lookups skipped``, the `jira` source is in error with that reason, and
+`wgo dash --json --refresh` does not exit non-zero for it. Should `acli`
+not be able to say whether it is logged in, three lookups in a row failing
+the same way pause the rest too; those three still count as failures. The
+served dashboard pauses Jira lookups for 5 minutes, then tries one; each
+failure doubles the pause, up to 30 minutes, and the first lookup that
+works ends it.
 
 A `terminal`, `terminal_command` or `resume` value of the right type that
 wgo does not support (an unknown terminal, `terminal = "command"` with no

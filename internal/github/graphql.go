@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,7 +28,43 @@ type GraphQLError struct {
 // data and an error for the hole, so the data is often worth keeping.
 type GraphQLErrors struct {
 	Errors []GraphQLError
+	// NoData is set when the response carried no data at all, only errors.
+	NoData bool
 }
+
+// timedOut reports whether GitHub gave up on the whole query: it answers a
+// query that ran too long with HTTP 200, no data and an error saying "This
+// may be the result of a timeout".
+func (e *GraphQLErrors) timedOut() bool {
+	if !e.NoData {
+		return false
+	}
+	for _, ge := range e.Errors {
+		if strings.Contains(strings.ToLower(ge.Message), "timeout") {
+			return true
+		}
+	}
+	return false
+}
+
+// IncompleteResponseError is a GraphQL response with a successful HTTP
+// status whose body was empty, cut off or not JSON, or held neither data nor
+// errors: a proxy or GitHub dropped the response part way. It is transient,
+// so it is retried like a 5xx.
+type IncompleteResponseError struct {
+	StatusCode int
+	// Received is how many bytes of body arrived.
+	Received int
+	Err      error
+}
+
+// Error implements error.
+func (e *IncompleteResponseError) Error() string {
+	return fmt.Sprintf("github graphql: incomplete response (HTTP %d, %d bytes): %v", e.StatusCode, e.Received, e.Err)
+}
+
+// Unwrap returns the read or parse error.
+func (e *IncompleteResponseError) Unwrap() error { return e.Err }
 
 // Error implements error, listing the first few messages.
 func (e *GraphQLErrors) Error() string {
@@ -48,7 +85,9 @@ func (e *GraphQLErrors) Error() string {
 // be nil. A non-2xx response is an *APIError (or a *RateLimitError), like the
 // REST helpers return; a transport failure is returned as is. A response with
 // a non-empty errors array decodes its data anyway and returns
-// *GraphQLErrors, so the caller can keep partial data.
+// *GraphQLErrors, so the caller can keep partial data. A successful status
+// with a body that is empty, cut off, not JSON, or without data and errors is
+// an *IncompleteResponseError.
 func (c *CLIClient) GraphQL(ctx context.Context, query string, variables map[string]any, data any) error {
 	body, err := json.Marshal(struct {
 		Query     string         `json:"query"`
@@ -69,25 +108,36 @@ func (c *CLIClient) GraphQL(ctx context.Context, query string, variables map[str
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if resp.StatusCode < 300 {
+			return &IncompleteResponseError{StatusCode: resp.StatusCode, Received: len(raw), Err: err}
+		}
 		return fmt.Errorf("github graphql: reading body: %w", err)
 	}
 	if resp.StatusCode >= 300 {
 		return graphQLHTTPError(resp, raw)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return &IncompleteResponseError{StatusCode: resp.StatusCode, Received: len(raw), Err: errors.New("empty body")}
 	}
 	var env struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []GraphQLError  `json:"errors"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return fmt.Errorf("github graphql: parse response: %w", err)
+		return &IncompleteResponseError{StatusCode: resp.StatusCode, Received: len(raw), Err: err}
 	}
-	if data != nil && len(env.Data) > 0 && !bytes.Equal(env.Data, []byte("null")) {
+	noData := len(env.Data) == 0 || bytes.Equal(env.Data, []byte("null"))
+	if noData && len(env.Errors) == 0 {
+		// GraphQL always answers with data, errors or both.
+		return &IncompleteResponseError{StatusCode: resp.StatusCode, Received: len(raw), Err: errors.New("neither data nor errors")}
+	}
+	if data != nil && !noData {
 		if err := json.Unmarshal(env.Data, data); err != nil {
 			return fmt.Errorf("github graphql: parse data: %w", err)
 		}
 	}
 	if len(env.Errors) > 0 {
-		return &GraphQLErrors{Errors: env.Errors}
+		return &GraphQLErrors{Errors: env.Errors, NoData: noData}
 	}
 	return nil
 }

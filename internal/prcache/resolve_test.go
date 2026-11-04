@@ -1,6 +1,7 @@
 package prcache
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -275,4 +276,33 @@ func TestResolveSyncOnMissRetriesOldFailure(t *testing.T) {
 	assert.Equal(t, Fresh, res.State)
 	require.Len(t, res.PRs, 1)
 	assert.Equal(t, 1, f.count())
+}
+
+// cutFetcher is a ContextFetcher whose lookup the context ends.
+type cutFetcher struct{ cancel func() }
+
+func (cutFetcher) FetchPRs(_, _ string) ([]models.PRRef, error) {
+	panic("FetchPRsContext is preferred")
+}
+
+func (f cutFetcher) FetchPRsContext(ctx context.Context, _, _ string) ([]models.PRRef, error) {
+	f.cancel()
+	return nil, ctx.Err()
+}
+
+// TestRefreshContextCutShortRecordsNothing: a lookup the context ended is no
+// failed attempt; a completed one is written as Resolve would.
+func TestRefreshContextCutShortRecordsNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	res := RefreshContext(ctx, cutFetcher{cancel: cancel}, testRemote, testRepo, "feature-x")
+	assert.ErrorIs(t, res.Err, context.Canceled)
+	after := Read(testRemote, testRepo, "feature-x", time.Hour)
+	assert.Equal(t, Miss, after.State)
+	assert.NoError(t, after.Err, "no failure recorded")
+	assert.True(t, after.LastAttemptAt.IsZero())
+
+	res = RefreshContext(context.Background(), &countingFetcher{refs: sampleRefs()}, testRemote, testRepo, "feature-x")
+	require.NoError(t, res.Err)
+	assert.Equal(t, Fresh, Read(testRemote, testRepo, "feature-x", time.Hour).State)
 }

@@ -1745,6 +1745,7 @@
       el("span", "glyph", f.glyph, chip).setAttribute("aria-hidden", "true");
       var parts = [];
       ["fresh", "stale", "unknown", "error"].forEach(function (s) { if (st[s]) parts.push(st[s] + " " + L.fresh(s).label); });
+      if (st.not_found) parts.push(st.not_found + " not found");
       el("span", null, (SOURCE_LABEL[k] || k) + ": " + f.label + (parts.length ? " (" + parts.join(", ") + ")" : ""), chip);
       var t = [];
       if (st.oldest_fetch) t.push("oldest fetch " + fmtTime(st.oldest_fetch));

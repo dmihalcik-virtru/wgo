@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"time"
 
 	"github.com/virtru/wgo/internal/config"
@@ -31,7 +32,13 @@ func newGHFetcher() prcache.Fetcher {
 // decision, draft flag, and CI rollup are cached alongside the base PR data —
 // the extra API calls land here (off the statusline hot path), never on reads.
 func (g ghFetcher) FetchPRs(repoPath, branch string) ([]models.PRRef, error) {
-	prs, err := g.c.ListPRsForBranchEnriched(repoPath, branch)
+	return g.FetchPRsContext(context.Background(), repoPath, branch)
+}
+
+// FetchPRsContext implements prcache.ContextFetcher: FetchPRs, with its
+// GitHub requests abandoned when ctx is done.
+func (g ghFetcher) FetchPRsContext(ctx context.Context, repoPath, branch string) ([]models.PRRef, error) {
+	prs, err := g.c.WithContext(ctx).ListPRsForBranchEnriched(repoPath, branch)
 	if err != nil {
 		return nil, err
 	}
