@@ -150,7 +150,9 @@ func RefreshSprints(f SprintFetcher, board int, assignees []string) error {
 }
 
 // RefreshSprintsContext is RefreshSprints through f's FetchSprintsContext
-// when it has one. A lookup cut short because ctx is done records nothing.
+// when it has one. A lookup cut short because ctx is done records nothing,
+// even one that returned data: a sprint whose ticket search acli was killed
+// in would be cached as a failed search.
 func RefreshSprintsContext(ctx context.Context, f SprintFetcher, board int, assignees []string) error {
 	if f == nil {
 		return nil
@@ -162,7 +164,10 @@ func RefreshSprintsContext(ctx context.Context, f SprintFetcher, board int, assi
 	} else {
 		data, err = f.FetchSprints(board, assignees)
 	}
-	if err != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
+		if err == nil {
+			err = ctx.Err()
+		}
 		return err
 	}
 	if err != nil {
