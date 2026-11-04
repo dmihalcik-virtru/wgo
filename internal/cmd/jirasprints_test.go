@@ -162,3 +162,34 @@ func TestFetchSprintsCutsPagedResults(t *testing.T) {
 	assert.Len(t, got.Sprints[0].Tickets, jiracache.MaxSprintTickets)
 	assert.True(t, got.Sprints[0].Truncated)
 }
+
+// TestSprintSearchCutShortRejectsNobody: once the refresh's context is done,
+// a failed search (acli killed) is no verdict on an identity: nobody is
+// reported as rejected or left out, and the board fails with the context's
+// error rather than returning sprints whose searches failed.
+func TestSprintSearchCutShortRejectsNobody(t *testing.T) {
+	jiraHome(t, "")
+	t.Setenv("PATH", t.TempDir())
+	oldList, oldSearch := listSprints, searchIssuesJSON
+	t.Cleanup(func() { listSprints, searchIssuesJSON = oldList, oldSearch })
+	ctx, cancel := context.WithCancel(context.Background())
+	listSprints = func(context.Context, int, string, bool) ([]jira.Sprint, error) {
+		return []jira.Sprint{{ID: 1234, Name: "Sprint 12", State: "active"}}, nil
+	}
+	searches := 0
+	searchIssuesJSON = func(_ context.Context, jql string, _ []string, _ int) ([]json.RawMessage, error) {
+		searches++
+		if searches == 2 {
+			cancel() // the deadline passes during the per-person retry
+		}
+		return nil, errors.New("search issues: signal: killed")
+	}
+	rejected := map[string]string{}
+	_, _, msg := sprintTickets(ctx, 1234, []string{"acct-1", "acct-2", "currentUser()"}, rejected)
+	assert.Empty(t, rejected, "no identity is blamed for a killed search")
+	assert.Equal(t, "search issues: signal: killed", msg)
+
+	got, err := sprintFetcher{}.FetchSprintsContext(ctx, 42, []string{"acct-1", "currentUser()"})
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, got.Sprints)
+}

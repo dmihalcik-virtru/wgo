@@ -1,6 +1,7 @@
 package jiracache
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -111,4 +112,38 @@ func TestFailedSearchKeepsTheSprintsTickets(t *testing.T) {
 	e.Data.Sprints[0].Error = ""
 	require.NoError(t, writeSprints(42, e))
 	assert.Equal(t, Fresh, ReadSprints(42, SprintTTL).State, "a clean entry lives its full TTL")
+}
+
+// killedSearch is a SprintContextFetcher whose sprint list worked but whose
+// ticket search acli was killed in when the context ended: it returns the
+// board with the search's failure on the sprint, and no error.
+type killedSearch struct{ cancel context.CancelFunc }
+
+func (k killedSearch) FetchSprints(int, []string) (BoardSprints, error) {
+	panic("FetchSprintsContext is preferred")
+}
+
+func (k killedSearch) FetchSprintsContext(_ context.Context, board int, _ []string) (BoardSprints, error) {
+	k.cancel()
+	return BoardSprints{Board: board, Sprints: []SprintEntry{{ID: 7, Name: "Sprint 7", State: "active", Error: "search issues: signal: killed"}}}, nil
+}
+
+// TestRefreshSprintsCutShortRecordsNothing: a refresh whose context ended
+// writes nothing, even with data in hand, so a killed search is never served
+// as a failed one.
+func TestRefreshSprintsCutShortRecordsNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	err := RefreshSprintsContext(ctx, killedSearch{cancel: cancel}, 42, nil)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, Miss, ReadSprints(42, SprintTTL).State, "nothing cached")
+
+	// With a good entry cached, it stays as it was.
+	require.NoError(t, RefreshSprints(&stubSprints{data: BoardSprints{Sprints: []SprintEntry{{ID: 7, Name: "Sprint 7", State: "active"}}}}, 42, nil))
+	before := ReadSprints(42, SprintTTL)
+	ctx, cancel = context.WithCancel(context.Background())
+	_ = RefreshSprintsContext(ctx, killedSearch{cancel: cancel}, 42, nil)
+	after := ReadSprints(42, SprintTTL)
+	assert.Equal(t, before.FetchedAt, after.FetchedAt)
+	assert.Empty(t, after.Data.Sprints[0].Error)
 }
