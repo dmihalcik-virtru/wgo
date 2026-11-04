@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -49,7 +50,7 @@ func stubIssueJSON(t *testing.T, byFields map[string]string) *int {
 	t.Helper()
 	calls := 0
 	old := getIssueJSON
-	getIssueJSON = func(ticket, fields string) ([]byte, error) {
+	getIssueJSON = func(_ context.Context, ticket, fields string) ([]byte, error) {
 		calls++
 		out, ok := byFields[fields]
 		if !ok {
@@ -172,7 +173,7 @@ func TestFetchTicketFactsFallsBack(t *testing.T) {
 
 	// A retry that fails for another reason reports that reason first.
 	old := getIssueJSON
-	getIssueJSON = func(ticket, fields string) ([]byte, error) {
+	getIssueJSON = func(_ context.Context, ticket, fields string) ([]byte, error) {
 		if fields == jira.FactFields {
 			return nil, errors.New("Error: field '*all' is not allowed")
 		}
@@ -191,7 +192,7 @@ func TestFetchTicketFactsDoesNotFallBackOnOtherErrors(t *testing.T) {
 	jiraHome(t, "")
 	calls := 0
 	old := getIssueJSON
-	getIssueJSON = func(ticket, fields string) ([]byte, error) {
+	getIssueJSON = func(_ context.Context, ticket, fields string) ([]byte, error) {
 		calls++
 		return nil, errors.New("get issue TEAM-123: exit status 1\n✗ Error: unauthorized: use 'acli jira auth login' to authenticate")
 	}

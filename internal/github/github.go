@@ -8,6 +8,7 @@ package github
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1032,7 +1033,12 @@ func readGitConfig(path string) (string, error) {
 
 // getJSON performs a GET and unmarshals the JSON body into v.
 func (c *CLIClient) getJSON(endpoint string, v any) error {
-	resp, err := c.doRaw(http.MethodGet, endpoint, nil)
+	return c.getJSONContext(context.Background(), endpoint, v)
+}
+
+// getJSONContext is getJSON, abandoned when ctx is done.
+func (c *CLIClient) getJSONContext(ctx context.Context, endpoint string, v any) error {
+	resp, err := c.doRawContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
 	}
@@ -1095,11 +1101,16 @@ func (c *CLIClient) bodyJSON(method, endpoint string, body, v any) error {
 // doRaw performs the HTTP request and returns the raw response. The caller is
 // responsible for closing the body.
 func (c *CLIClient) doRaw(method, endpoint string, body io.Reader) (*http.Response, error) {
+	return c.doRawContext(context.Background(), method, endpoint, body)
+}
+
+// doRawContext is doRaw, abandoned when ctx is done.
+func (c *CLIClient) doRawContext(ctx context.Context, method, endpoint string, body io.Reader) (*http.Response, error) {
 	u, err := c.absURL(endpoint)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(method, u, body)
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return nil, fmt.Errorf("github api: build request: %w", err)
 	}

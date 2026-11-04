@@ -115,7 +115,7 @@ type Fetchers struct {
 	// error when it cannot tell. It confirms that Jira lookups failing
 	// without saying why (acli's `workitem view` does not) failed for a
 	// lapsed login, so the rest are paused (see jiraPause).
-	JiraLogin func() error
+	JiraLogin func(context.Context) error
 }
 
 // describe names j for a failure message.
@@ -155,6 +155,12 @@ type RefresherOptions struct {
 	// IgnoreLeases fetches even when a lease is held, and takes none: the
 	// explicit `wgo dash --refresh`, matching --refresh elsewhere in wgo.
 	IgnoreLeases bool
+	// CloseWait bounds how long Close waits for running lookups once it
+	// has cancelled them; zero waits until they end. Most stop at once,
+	// but a bookmark's PR lookup cannot be cancelled. A one-shot command
+	// sets it: with IgnoreLeases and atomic cache writes, leaving a lookup
+	// behind at exit is safe.
+	CloseWait time.Duration
 }
 
 // Refresher warms remote caches in the background with a bounded worker
@@ -213,6 +219,8 @@ type batch struct {
 	left int
 	// done yields res once every accepted job has finished, then closes.
 	done chan BatchResult
+	// progressed is signalled, without blocking, as each job finishes.
+	progressed chan struct{}
 	// expired is set, under the Refresher's mu, once the batch's waited-for
 	// refresh has passed its deadline: its jobs that have not started do
 	// not start.
@@ -301,6 +309,10 @@ func (b *batch) finish(j Job, err error) {
 	}
 	b.left--
 	b.mu.Unlock()
+	select {
+	case b.progressed <- struct{}{}:
+	default:
+	}
 	b.wg.Done()
 }
 
@@ -424,7 +436,7 @@ func (r *Refresher) Submit(jobs []Job) <-chan BatchResult {
 
 // submit is Submit, returning the batch so that its progress can be read.
 func (r *Refresher) submit(jobs []Job) *batch {
-	b := &batch{done: make(chan BatchResult, 1)}
+	b := &batch{done: make(chan BatchResult, 1), progressed: make(chan struct{}, 1)}
 	r.mu.Lock()
 	for _, j := range jobs {
 		if !r.supports(j) {
@@ -503,10 +515,10 @@ var errNotStarted = errors.New("not run: refresh deadline reached")
 var errInterrupted = errors.New("interrupted at the refresh deadline")
 
 // Close stops accepting jobs, fails the ones still queued without fetching
-// them, cancels the running fetches that take a context (inventory and
-// identity lookups), and waits for the running ones. The other fetches cannot
-// be cancelled, so letting the queue drain would hold shutdown hostage to
-// every pending network call.
+// them, cancels the running fetches (all but a bookmark's PR lookup stop:
+// acli is killed, GitHub requests abandoned), and waits for the running
+// ones, at most CloseWait when set. Letting the queue drain would hold
+// shutdown hostage to every pending network call.
 func (r *Refresher) Close() {
 	r.mu.Lock()
 	if r.closed {
@@ -517,7 +529,20 @@ func (r *Refresher) Close() {
 	r.ready.Broadcast()
 	r.mu.Unlock()
 	r.cancel()
-	r.wg.Wait()
+	if r.opts.CloseWait <= 0 {
+		r.wg.Wait()
+		return
+	}
+	stopped := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(r.opts.CloseWait):
+		logf("dash: leaving lookups that are still running after %v", r.opts.CloseWait)
+	}
 }
 
 // next takes the most urgent queued job, waiting for one; nil once the
@@ -558,7 +583,7 @@ func (r *Refresher) work() {
 			f.cancel = cancel
 			r.mu.Unlock()
 			err = r.run(ctx, f.job)
-			if takesContext(f.job) && err != nil && errors.Is(context.Cause(ctx), errInterrupted) {
+			if err != nil && errors.Is(context.Cause(ctx), errInterrupted) {
 				err = fmt.Errorf("%w: %w", errInterrupted, err)
 			}
 			cancel(nil)
@@ -574,19 +599,32 @@ func (r *Refresher) work() {
 	}
 }
 
-// takesContext reports whether j's fetch stops when its context is
-// cancelled; the others run to the end.
-func takesContext(j Job) bool {
-	return j.Kind == JobInventory || j.Kind == JobIdentity || j.Kind == JobTimelines
-}
-
 // expire marks b past its deadline: its jobs that have not started will not,
-// unless another batch waits on them. It returns how many PR inventory
-// fetches b waits on are running, which run on.
+// unless another batch waits on them, and its running jobs are cancelled,
+// all but the PR inventory fetches (see interrupt). It returns how many of
+// those run on.
 func (r *Refresher) expire(b *batch) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	b.expired = true
+	n := 0
+	for _, f := range r.pending {
+		switch {
+		case f.cancel == nil || !slices.Contains(f.waiters, b):
+		case f.job.Kind == JobInventory:
+			n++
+		case f.expired():
+			f.cancel(errInterrupted)
+		}
+	}
+	return n
+}
+
+// runningInventory counts the PR inventory fetches b waits on that are
+// running.
+func (r *Refresher) runningInventory(b *batch) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	n := 0
 	for _, f := range r.pending {
 		if f.cancel != nil && f.job.Kind == JobInventory && slices.Contains(f.waiters, b) {
@@ -597,9 +635,8 @@ func (r *Refresher) expire(b *batch) int {
 }
 
 // interrupt cancels the running jobs that only expired batches wait on, b's
-// among them, with errInterrupted. Only the fetches that take a context
-// stop: PR inventory sets, which record the interruption, and the identity
-// lookup.
+// among them, with errInterrupted. A PR inventory fetch records the
+// interruption (inventory.ErrInterrupted).
 func (r *Refresher) interrupt(b *batch) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -621,13 +658,13 @@ func (r *Refresher) run(ctx context.Context, j Job) error {
 			return errors.Join(res.Err, res.WriteErr)
 		}
 	case JobJira:
-		return r.jiraLookup(func() bool { return jiracache.LockRefresh(j.Ticket, r.opts.Backoff) }, func() error {
-			_, _, err := jiracache.Resolve(r.f.Jira, j.Ticket, jiracache.Opts{Synchronous: true})
+		return r.jiraLookup(ctx, func() bool { return jiracache.LockRefresh(j.Ticket, r.opts.Backoff) }, func() error {
+			_, _, err := jiracache.RefreshContext(ctx, r.f.Jira, j.Ticket)
 			return err
 		})
 	case JobIssue:
 		if r.opts.IgnoreLeases || issuecache.LockRefresh(j.Issue, r.opts.Backoff) {
-			return issuecache.Refresh(r.f.Issue, j.Issue).Err
+			return issuecache.RefreshContext(ctx, r.f.Issue, j.Issue).Err
 		}
 	case JobInventory:
 		if r.opts.IgnoreLeases {
@@ -655,8 +692,8 @@ func (r *Refresher) run(ctx context.Context, j Job) error {
 			return err
 		}
 	case JobSprints:
-		return r.jiraLookup(func() bool { return jiracache.LockSprintsRefresh(j.Board, r.opts.Backoff) }, func() error {
-			return jiracache.RefreshSprints(r.f.Sprints, j.Board, j.Assignees)
+		return r.jiraLookup(ctx, func() bool { return jiracache.LockSprintsRefresh(j.Board, r.opts.Backoff) }, func() error {
+			return jiracache.RefreshSprintsContext(ctx, r.f.Sprints, j.Board, j.Assignees)
 		})
 	case JobTimelines:
 		return r.runTimelines(ctx, j.Timelines)
@@ -678,8 +715,8 @@ func (r *Refresher) run(ctx context.Context, j Job) error {
 
 // jiraLookup runs a Jira ticket or sprint lookup through the Jira pause:
 // skipped while lookups are paused, behind its lease (taken by lease) unless
-// IgnoreLeases is set.
-func (r *Refresher) jiraLookup(lease func() bool, lookup func() error) error {
+// IgnoreLeases is set. A lookup cut short by ctx tells the pause nothing.
+func (r *Refresher) jiraLookup(ctx context.Context, lease func() bool, lookup func() error) error {
 	ok, probe := r.jira.admit()
 	if !ok {
 		return &pausedError{reason: r.jira.paused()}
@@ -688,7 +725,12 @@ func (r *Refresher) jiraLookup(lease func() bool, lookup func() error) error {
 		r.jira.release(probe)
 		return nil
 	}
-	return r.jira.done(lookup(), probe)
+	err := lookup()
+	if err != nil && ctx.Err() != nil {
+		r.jira.release(probe)
+		return err
+	}
+	return r.jira.done(ctx, err, probe)
 }
 
 // timelinePruneEvery is how often cached PR timelines are pruned.

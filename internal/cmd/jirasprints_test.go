@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +24,7 @@ func TestFetchSprints(t *testing.T) {
 	oldList, oldSearch := listSprints, searchIssuesJSON
 	t.Cleanup(func() { listSprints, searchIssuesJSON = oldList, oldSearch })
 	start := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
-	listSprints = func(board int, state string, paginate bool) ([]jira.Sprint, error) {
+	listSprints = func(_ context.Context, board int, state string, paginate bool) ([]jira.Sprint, error) {
 		assert.Equal(t, 42, board)
 		assert.Equal(t, "active,future", state)
 		return []jira.Sprint{
@@ -34,7 +35,7 @@ func TestFetchSprints(t *testing.T) {
 		}, nil
 	}
 	var jqls []string
-	searchIssuesJSON = func(jql string, fields []string, limit int) ([]json.RawMessage, error) {
+	searchIssuesJSON = func(_ context.Context, jql string, fields []string, limit int) ([]json.RawMessage, error) {
 		jqls = append(jqls, jql)
 		assert.Equal(t, jira.SearchFactFields, fields)
 		assert.Equal(t, jiracache.MaxSprintTickets+1, limit)
@@ -93,7 +94,7 @@ func TestFetchSprints(t *testing.T) {
 func TestFetchSprintsListFailure(t *testing.T) {
 	old := listSprints
 	t.Cleanup(func() { listSprints = old })
-	listSprints = func(int, string, bool) ([]jira.Sprint, error) {
+	listSprints = func(context.Context, int, string, bool) ([]jira.Sprint, error) {
 		return nil, errors.New("list sprints for board 42: exit status 1\n✗ Error: unauthorized: use 'acli jira auth login' to authenticate")
 	}
 	_, err := sprintFetcher{}.FetchSprints(42, []string{"currentUser()"})
@@ -114,11 +115,11 @@ func TestFetchSprintsSurvivesARejectedIdentity(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	oldList, oldSearch := listSprints, searchIssuesJSON
 	t.Cleanup(func() { listSprints, searchIssuesJSON = oldList, oldSearch })
-	listSprints = func(int, string, bool) ([]jira.Sprint, error) {
+	listSprints = func(context.Context, int, string, bool) ([]jira.Sprint, error) {
 		return []jira.Sprint{{ID: 1234, Name: "Sprint 12", State: "active"}, {ID: 1240, Name: "Web 7", State: "active"}}, nil
 	}
 	var jqls []string
-	searchIssuesJSON = func(jql string, fields []string, limit int) ([]json.RawMessage, error) {
+	searchIssuesJSON = func(_ context.Context, jql string, fields []string, limit int) ([]json.RawMessage, error) {
 		jqls = append(jqls, jql)
 		if strings.Contains(jql, "acct-gone") {
 			return nil, errors.New("search issues: exit status 1\nError: The value 'acct-gone' does not exist for the field 'assignee'.")
@@ -155,11 +156,11 @@ func TestFetchSprintsTransientFailureIsNotAnIdentity(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	oldList, oldSearch := listSprints, searchIssuesJSON
 	t.Cleanup(func() { listSprints, searchIssuesJSON = oldList, oldSearch })
-	listSprints = func(int, string, bool) ([]jira.Sprint, error) {
+	listSprints = func(context.Context, int, string, bool) ([]jira.Sprint, error) {
 		return []jira.Sprint{{ID: 1234, Name: "Sprint 12", State: "active"}, {ID: 1240, Name: "Web 7", State: "active"}}, nil
 	}
 	var jqls []string
-	searchIssuesJSON = func(jql string, fields []string, limit int) ([]json.RawMessage, error) {
+	searchIssuesJSON = func(_ context.Context, jql string, fields []string, limit int) ([]json.RawMessage, error) {
 		jqls = append(jqls, jql)
 		if strings.Contains(jql, "acct-bob") && strings.HasPrefix(jql, "sprint = 1234 ") {
 			return nil, errors.New("search issues: exit status 1\nError: 429 Too Many Requests")
@@ -183,10 +184,10 @@ func TestFetchSprintsNotesUnreadableResults(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	oldList, oldSearch := listSprints, searchIssuesJSON
 	t.Cleanup(func() { listSprints, searchIssuesJSON = oldList, oldSearch })
-	listSprints = func(int, string, bool) ([]jira.Sprint, error) {
+	listSprints = func(context.Context, int, string, bool) ([]jira.Sprint, error) {
 		return []jira.Sprint{{ID: 1234, Name: "Sprint 12", State: "active"}}, nil
 	}
-	searchIssuesJSON = func(string, []string, int) ([]json.RawMessage, error) {
+	searchIssuesJSON = func(context.Context, string, []string, int) ([]json.RawMessage, error) {
 		return []json.RawMessage{json.RawMessage(`{"key":"TEAM-1","fields":{}}`), json.RawMessage(`"not an issue"`)}, nil
 	}
 	got, err := sprintFetcher{}.FetchSprints(42, []string{"currentUser()"})
@@ -202,10 +203,10 @@ func TestFetchSprintsCutsPagedResults(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	oldList, oldSearch := listSprints, searchIssuesJSON
 	t.Cleanup(func() { listSprints, searchIssuesJSON = oldList, oldSearch })
-	listSprints = func(int, string, bool) ([]jira.Sprint, error) {
+	listSprints = func(context.Context, int, string, bool) ([]jira.Sprint, error) {
 		return []jira.Sprint{{ID: 1234, Name: "Sprint 12", State: "active"}}, nil
 	}
-	searchIssuesJSON = func(string, []string, int) ([]json.RawMessage, error) {
+	searchIssuesJSON = func(context.Context, string, []string, int) ([]json.RawMessage, error) {
 		var out []json.RawMessage
 		for i := range 250 { // more than the limit asked for
 			out = append(out, json.RawMessage(fmt.Sprintf(`{"key":"TEAM-%d","fields":{}}`, i+1)))

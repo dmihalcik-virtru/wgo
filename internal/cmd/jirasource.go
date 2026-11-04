@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -39,8 +40,14 @@ var jiraFetcherFn = newJiraFetcher
 // statusline hot path), never on reads. Besides the status and assignee the
 // statusline shows, it reads the ticket facts wgo dash shows (gh-98); see
 // fetchTicketFacts.
-func (jiraFetcher) FetchJira(ticket string) (jiracache.Info, error) {
-	info, err := fetchTicketFacts(ticket)
+func (f jiraFetcher) FetchJira(ticket string) (jiracache.Info, error) {
+	return f.FetchJiraContext(context.Background(), ticket)
+}
+
+// FetchJiraContext implements jiracache.ContextFetcher: FetchJira, with
+// acli killed when ctx is done.
+func (jiraFetcher) FetchJiraContext(ctx context.Context, ticket string) (jiracache.Info, error) {
+	info, err := fetchTicketFactsContext(ctx, ticket)
 	if err != nil {
 		return jiracache.Info{}, err
 	}
@@ -95,7 +102,7 @@ func jiraTTL() time.Duration {
 }
 
 // getIssueJSON is the acli seam of the ticket fetcher; tests replace it.
-var getIssueJSON = jira.GetIssueJSON
+var getIssueJSON = jira.GetIssueJSONContext
 
 // jiraLoginFn is the acli seam wgo dash asks whether acli is logged in when
 // Jira lookups fail; tests replace it.
@@ -107,7 +114,13 @@ var jiraLoginFn = jira.LoginStatus
 // to the system fields by name, leaving the custom fields unknown with a
 // note saying so.
 func fetchTicketFacts(ticket string) (jiracache.Info, error) {
-	raw, err := getIssueJSON(ticket, jira.FactFields)
+	return fetchTicketFactsContext(context.Background(), ticket)
+}
+
+// fetchTicketFactsContext is fetchTicketFacts, with acli killed when ctx is
+// done.
+func fetchTicketFactsContext(ctx context.Context, ticket string) (jiracache.Info, error) {
+	raw, err := getIssueJSON(ctx, ticket, jira.FactFields)
 	partial := false
 	var ids jira.FieldIDs
 	var notes []string
@@ -117,7 +130,7 @@ func fetchTicketFacts(ticket string) (jiracache.Info, error) {
 		// failure (an expired login, a missing ticket) would fail it too.
 		debugf("jira %s: acli refused %s: %v", ticket, jira.FactFields, err)
 		var ferr error
-		if raw, ferr = getIssueJSON(ticket, jira.FactFieldList); ferr != nil {
+		if raw, ferr = getIssueJSON(ctx, ticket, jira.FactFieldList); ferr != nil {
 			// The retry's error is the one to act on (an expired login, say);
 			// the refusal says why there was a retry.
 			return jiracache.Info{}, errors.Join(ferr, err)

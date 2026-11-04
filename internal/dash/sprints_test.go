@@ -428,7 +428,7 @@ func TestRefreshWaitRunsAFailedTicketLookupOnce(t *testing.T) {
 	jf := &failingJiraFacts{calls: map[string]int{}}
 	r := NewRefresher(Fetchers{
 		Jira: jf, Sprints: &stubSprintFetcher{data: boardFixture()},
-		JiraLogin: func() error { return nil },
+		JiraLogin: func(context.Context) error { return nil },
 	}, RefresherOptions{Workers: 2, IgnoreLeases: true})
 	defer r.Close()
 	c := f.collector(t, time.Now(), memSource{})

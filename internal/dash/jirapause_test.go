@@ -64,7 +64,7 @@ func (a *fakeAcli) FetchSprints(board int, _ []string) (jiracache.BoardSprints, 
 	return jiracache.BoardSprints{Board: board, Sprints: []jiracache.SprintEntry{}}, nil
 }
 
-func (a *fakeAcli) Login() error {
+func (a *fakeAcli) Login(context.Context) error {
 	a.logins.Add(1)
 	time.Sleep(a.delay)
 	a.mu.Lock()

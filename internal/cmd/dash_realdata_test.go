@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -32,6 +33,9 @@ type fakeGitHubAPI struct {
 	attempts map[string]int
 	// issueDelay is how long each REST issue lookup takes.
 	issueDelay time.Duration
+	// noCut serves every page whole; noIssues leaves the issue references
+	// out of the PRs' bodies.
+	noCut, noIssues bool
 
 	issues, notFound atomic.Int32
 }
@@ -84,7 +88,7 @@ func (g *fakeGitHubAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"number": i, "title": fmt.Sprintf("TEAM-%d: change %d", i, i), "url": fmt.Sprintf("https://github.com/acme/api/pull/%d", i),
 			"state": "OPEN", "author": map[string]any{"login": "alice"}, "headRefName": fmt.Sprintf("change-%d", i), "baseRefName": "main",
 			// gh-N names an issue that does not exist; a bare #N is no ticket.
-			"body":                    fmt.Sprintf("Follow-up of gh-%d; see #%d.", 1000+i, 2000+i),
+			"body":                    g.body(i),
 			"repository":              map[string]any{"nameWithOwner": "acme/api", "isArchived": false},
 			"closingIssuesReferences": map[string]any{"nodes": []any{}},
 		})
@@ -94,10 +98,19 @@ func (g *fakeGitHubAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"pageInfo":   map[string]any{"hasNextPage": hi < n, "endCursor": strconv.Itoa(page)},
 		"nodes":      nodes,
 	}}})
-	if page == 3 && attempt == 1 {
+	if !g.noCut && page == 3 && attempt == 1 {
 		data = data[:len(data)/2] // a body cut off on the way, as seen once for real
 	}
 	_, _ = w.Write(data)
+}
+
+// body is PR i's description: a gh-N reference to an issue that does not
+// exist and a bare #N, which is no ticket.
+func (g *fakeGitHubAPI) body(i int) string {
+	if g.noIssues {
+		return "No issue."
+	}
+	return fmt.Sprintf("Follow-up of gh-%d; see #%d.", 1000+i, 2000+i)
 }
 
 func (g *fakeGitHubAPI) serveIssue(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +244,81 @@ func TestDashRefreshRealDataSituation(t *testing.T) {
 			calls, _ := os.ReadFile(acliLog)
 			if views := strings.Count(string(calls), "workitem view"); views > tc.maxViews || strings.Count(string(calls), "auth status") != tc.authStatus {
 				t.Fatalf("acli calls:\n%s\nwant at most %d views and %d auth status", calls, tc.maxViews, tc.authStatus)
+			}
+		})
+	}
+}
+
+// hangingAcliOnPath puts an acli on PATH that never answers, writing its
+// process ID to the returned file first.
+func hangingAcliOnPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	pids := filepath.Join(dir, "pids")
+	script := "#!/bin/sh\necho $$ >> \"" + pids + "\"\nexec /bin/sleep 600\n"
+	if err := os.WriteFile(filepath.Join(dir, "acli"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	return pids
+}
+
+// TestDashRefreshExitsOnTimeWithHangingAcli: the deadline bounds when wgo
+// dash --json --refresh exits, not only when it prints: an acli that hangs
+// is killed at the deadline, and the command returns at once after it.
+func TestDashRefreshExitsOnTimeWithHangingAcli(t *testing.T) {
+	for _, tc := range []struct{ name, jira string }{
+		{name: "sprint list hangs", jira: "[jira]\nboard = 42\nsite = \"jira.example\"\n"},
+		{name: "ticket views hang", jira: "[jira]\nsite = \"jira.example\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			goldenHome(t, "[[dash.people]]\ngithub = \"alice\"\n\n[dash]\nticket_prefixes = [\"TEAM\"]\n\n"+tc.jira)
+			pids := hangingAcliOnPath(t)
+			t.Setenv("GITHUB_TOKEN", "test-token")
+			old := http.DefaultTransport
+			http.DefaultTransport = &fakeGitHubAPI{noCut: true, noIssues: true}
+			t.Cleanup(func() { http.DefaultTransport = old })
+			setDashFlags(t, 3)
+			dashRefresh = true
+			ot := dashRefreshTimeout
+			t.Cleanup(func() { dashRefreshTimeout = ot })
+			dashRefreshTimeout = time.Second
+
+			var buf bytes.Buffer
+			start := time.Now()
+			err := runDash(context.Background(), &buf, noDashFlags)
+			took := time.Since(start)
+			if err != nil {
+				t.Fatalf("runDash: %v", err)
+			}
+			t.Logf("returned after %v with a 1s deadline and acli hanging", took)
+			if took > 4*time.Second {
+				t.Fatalf("returned after %v: the deadline did not bound the exit", took)
+			}
+			var out struct {
+				Diagnostics []string `json:"diagnostics"`
+			}
+			if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, d := range out.Diagnostics {
+				found = found || strings.HasPrefix(d, "not run: refresh deadline (1s) reached; ")
+			}
+			if !found {
+				t.Fatalf("diagnostics %q", out.Diagnostics)
+			}
+			data, _ := os.ReadFile(pids)
+			started := strings.Fields(string(data))
+			if len(started) == 0 {
+				t.Fatal("acli never ran")
+			}
+			for _, p := range started {
+				pid, _ := strconv.Atoi(p)
+				if err := syscall.Kill(pid, 0); err == nil {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+					t.Errorf("acli (pid %d) still runs after wgo dash returned", pid)
+				}
 			}
 		})
 	}
