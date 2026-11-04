@@ -363,6 +363,27 @@ type CLIClient struct {
 	// retryBackoff is the wait before each retry of a GraphQL page that
 	// failed transiently (see Transient); its length is the retry count.
 	retryBackoff []time.Duration
+
+	// ctx, when set (WithContext), is the context of the REST requests
+	// that take none of their own.
+	ctx context.Context
+}
+
+// WithContext returns a copy of c whose REST requests are abandoned when ctx
+// is done. The copy shares c's credentials, cache and transport.
+func (c *CLIClient) WithContext(ctx context.Context) *CLIClient {
+	cc := *c
+	cc.ctx = ctx
+	return &cc
+}
+
+// reqContext is the context of a request that takes none: WithContext's, else
+// the background.
+func (c *CLIClient) reqContext() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
 }
 
 // ClientOption configures a CLIClient at construction time.
@@ -1033,7 +1054,7 @@ func readGitConfig(path string) (string, error) {
 
 // getJSON performs a GET and unmarshals the JSON body into v.
 func (c *CLIClient) getJSON(endpoint string, v any) error {
-	return c.getJSONContext(context.Background(), endpoint, v)
+	return c.getJSONContext(c.reqContext(), endpoint, v)
 }
 
 // getJSONContext is getJSON, abandoned when ctx is done.
@@ -1101,7 +1122,7 @@ func (c *CLIClient) bodyJSON(method, endpoint string, body, v any) error {
 // doRaw performs the HTTP request and returns the raw response. The caller is
 // responsible for closing the body.
 func (c *CLIClient) doRaw(method, endpoint string, body io.Reader) (*http.Response, error) {
-	return c.doRawContext(context.Background(), method, endpoint, body)
+	return c.doRawContext(c.reqContext(), method, endpoint, body)
 }
 
 // doRawContext is doRaw, abandoned when ctx is done.

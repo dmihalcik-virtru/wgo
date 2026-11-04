@@ -156,10 +156,10 @@ type RefresherOptions struct {
 	// explicit `wgo dash --refresh`, matching --refresh elsewhere in wgo.
 	IgnoreLeases bool
 	// CloseWait bounds how long Close waits for running lookups once it
-	// has cancelled them; zero waits until they end. Most stop at once,
-	// but a bookmark's PR lookup cannot be cancelled. A one-shot command
-	// sets it: with IgnoreLeases and atomic cache writes, leaving a lookup
-	// behind at exit is safe.
+	// has cancelled them; zero waits until they end. They stop at once
+	// unless a fetcher ignores its context (a test's, or one between two
+	// requests). A one-shot command sets it: with IgnoreLeases and atomic
+	// cache writes, leaving a lookup behind at exit is safe.
 	CloseWait time.Duration
 }
 
@@ -530,9 +530,8 @@ var errNotStarted = errors.New("not run: refresh deadline reached")
 var errInterrupted = errors.New("interrupted at the refresh deadline")
 
 // Close stops accepting jobs, fails the ones still queued without fetching
-// them, cancels the running fetches (all but a bookmark's PR lookup stop:
-// acli is killed, GitHub requests abandoned), and waits for the running
-// ones, at most CloseWait when set. Letting the queue drain would hold
+// them, cancels the running fetches (acli is killed, GitHub requests are
+// abandoned), and waits for the running ones, at most CloseWait when set. Letting the queue drain would hold
 // shutdown hostage to every pending network call.
 func (r *Refresher) Close() {
 	r.mu.Lock()
@@ -669,7 +668,7 @@ func (r *Refresher) run(ctx context.Context, j Job) error {
 	switch j.Kind {
 	case JobPR:
 		if r.opts.IgnoreLeases || prcache.LockRefresh(j.RemoteURL, j.RepoPath, j.Branch, r.opts.Backoff) {
-			res := prcache.Resolve(r.f.PR, j.RemoteURL, j.RepoPath, j.Branch, prcache.Opts{Synchronous: true})
+			res := prcache.RefreshContext(ctx, r.f.PR, j.RemoteURL, j.RepoPath, j.Branch)
 			return errors.Join(res.Err, res.WriteErr)
 		}
 	case JobJira:
