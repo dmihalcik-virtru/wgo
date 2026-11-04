@@ -22,6 +22,9 @@ const PRSearchPageSize = 20
 // beyond it PRFacts.ChecksTruncated is set.
 const MaxCheckContexts = 100
 
+// MaxClosingIssues bounds the issues read per PR that it closes when merged.
+const MaxClosingIssues = 10
+
 // PRFacts is a pull request with the facts the dash's PR inventory keeps
 // (gh-97). Its JSON form is the inventory cache's. A fact GitHub did not
 // report is left unset: an empty string or time, a nil pointer or a nil list,
@@ -69,6 +72,10 @@ type PRFacts struct {
 	// at most MaxCheckContexts.
 	CheckDetails    []CheckFact `json:"check_details,omitzero"`
 	ChecksTruncated bool        `json:"checks_truncated,omitempty"`
+	// ClosingIssues are the issues GitHub links to the PR as closed by it
+	// when merged ("Fixes #12", or linked by hand), at most
+	// MaxClosingIssues; nil when GitHub did not report them.
+	ClosingIssues []IssueRef `json:"closing_issues,omitzero"`
 
 	// Body is the description, read for ticket references; never cached.
 	Body string `json:"-"`
@@ -91,6 +98,12 @@ type ReviewFact struct {
 	// State is APPROVED, CHANGES_REQUESTED, COMMENTED or DISMISSED.
 	State       string    `json:"state"`
 	SubmittedAt time.Time `json:"submitted_at,omitzero"`
+}
+
+// IssueRef names an issue: its repository's owner/repo and its number.
+type IssueRef struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
 }
 
 // CheckFact is one check run or status context.
@@ -166,6 +179,7 @@ var prSearchQuery = fmt.Sprintf(`query($q: String!, $after: String) {
             }
           }
         }
+        closingIssuesReferences(first: %d) { nodes { number repository { nameWithOwner } } }
         commits(last: 1) {
           nodes { commit { statusCheckRollup {
             state
@@ -182,7 +196,7 @@ var prSearchQuery = fmt.Sprintf(`query($q: String!, $after: String) {
       }
     }
   }
-}`, PRSearchPageSize, MaxCheckContexts)
+}`, PRSearchPageSize, MaxClosingIssues, MaxCheckContexts)
 
 type gqlActor struct {
 	Login string `json:"login"`
@@ -266,6 +280,14 @@ type gqlPR struct {
 			RequestedReviewer *gqlReviewer `json:"requestedReviewer"`
 		} `json:"nodes"`
 	} `json:"timelineItems"`
+	ClosingIssuesReferences *struct {
+		Nodes []*struct {
+			Number     int `json:"number"`
+			Repository *struct {
+				NameWithOwner string `json:"nameWithOwner"`
+			} `json:"repository"`
+		} `json:"nodes"`
+	} `json:"closingIssuesReferences"`
 	Commits *struct {
 		Nodes []struct {
 			Commit struct {
@@ -483,6 +505,16 @@ func (n *gqlPR) facts() (PRFacts, bool) {
 
 	if p.ReviewDecision == "" {
 		p.ReviewDecision = rollupLatestReviews(p.Reviews)
+	}
+
+	if n.ClosingIssuesReferences != nil {
+		p.ClosingIssues = []IssueRef{}
+		for _, is := range n.ClosingIssuesReferences.Nodes {
+			if is == nil || is.Number <= 0 || is.Repository == nil || is.Repository.NameWithOwner == "" {
+				continue // an issue the token cannot read
+			}
+			p.ClosingIssues = append(p.ClosingIssues, IssueRef{Repo: is.Repository.NameWithOwner, Number: is.Number})
+		}
 	}
 
 	if n.Commits != nil && len(n.Commits.Nodes) > 0 {

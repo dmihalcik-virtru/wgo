@@ -78,7 +78,7 @@ func TestRefreshWritesAndReadAges(t *testing.T) {
 	r := Read(alice, time.Hour, since, now)
 	assert.Equal(t, Fresh, r.State)
 	require.Len(t, r.PRs, 1)
-	assert.Equal(t, []string{"TEAM-1", "gh-2"}, r.PRs[0].Refs)
+	assert.Equal(t, []string{"TEAM-1", "#2"}, r.PRs[0].Refs)
 	assert.Empty(t, r.PRs[0].Body, "bodies are not cached")
 	assert.Equal(t, Stale, Read(alice, time.Hour, since, now.Add(2*time.Hour)).State)
 	assert.Equal(t, Fresh, Read(Key{Login: "alice", Set: OpenAuthored}, time.Hour, since, now).State, "logins are case-insensitive")
@@ -337,13 +337,15 @@ func TestRefs(t *testing.T) {
 		{name: "jira keys in title then body", title: "TEAM-12: fix", body: "Also OPS-3 and TEAM-12 again", want: []string{"TEAM-12", "OPS-3"}},
 		{name: "false positives kept for the reader", title: "Use SHA-256 and P-384", want: []string{"SHA-256", "P-384"}},
 		{name: "lowercase is not a key", title: "fix team-12 and utf-8", want: nil},
-		{name: "hash refs", body: "Fixes #12, see (#13) and #12", want: []string{"gh-12", "gh-13"}},
-		{name: "self is dropped", body: "Follow-up to #7, reverts #8", want: []string{"gh-8"}},
+		{name: "hash refs are bare", body: "Fixes #12, see (#13) and #12", want: []string{"#12", "#13"}},
+		{name: "self is dropped", body: "Follow-up to #7, reverts #8 and gh-7", want: []string{"#8"}},
+		{name: "written out wins, in place", title: "#14 and TEAM-1", body: "acme/api#14, gh-15 then #15", want: []string{"gh-14", "TEAM-1", "gh-15"}},
 		{name: "gh refs any case", body: "GH-4 and gh-5 and Gh-6", want: []string{"gh-4", "gh-5", "gh-6"}},
 		{name: "same repo full refs", body: "acme/api#20 and ACME/API#21 but not acme/web#22", want: []string{"gh-20", "gh-21"}},
 		{name: "issue urls", body: "https://github.com/acme/api/issues/30 https://github.com/acme/web/issues/31", want: []string{"gh-30"}},
 		{name: "not refs", body: "a#1 &#123; docs/x.md#5 ##6 #12abc color #fff", want: nil},
 		{name: "leading zeros", body: "#012 and gh-12", want: []string{"gh-12"}},
+		{name: "leading zeros, bare", body: "#012 and #12", want: []string{"#12"}},
 		{name: "link text of other repositories' issues", body: `<a href="https://redirect.github.com/dep/lib/issues/456">#456</a> and [#457](https://redirect.github.com/dep/lib/issues/457)`, want: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

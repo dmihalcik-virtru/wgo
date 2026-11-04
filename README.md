@@ -1492,6 +1492,14 @@ known prefix too, once any is known, so GitHub's `patch-1` and
 that turns out to be a PR is dropped. A prefix with anything but letters is
 an error.
 
+GitHub issues of the PR's own repository count when GitHub links them to
+the PR as closed by it, or when they are written out: `gh-12`,
+`acme/api#12` or an issue URL. A bare `#12` in a title or body counts only
+on a PR your bookmarks lead to: on the inventory's PRs, often other
+people's, it mostly names no issue of that repository. An issue GitHub
+answers 404 (or 410) for is shown as `not found`, is not a failed lookup,
+and is asked again a day later.
+
 ### Jira sprints and ticket facts
 
 Ticket nodes carry the facts Jira reports through `acli`: summary, status

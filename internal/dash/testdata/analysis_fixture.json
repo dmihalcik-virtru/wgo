@@ -20,7 +20,7 @@
       ],
       "covered_since": "2026-10-02T00:00:00Z"
     },
-    "github_issues": {"state": "fresh", "fresh": 1, "oldest_fetch": "2026-10-30T15:50:00Z"},
+    "github_issues": {"state": "fresh", "fresh": 2, "oldest_fetch": "2026-10-30T15:50:00Z"},
     "github_prs": {"state": "unknown", "fresh": 3, "unknown": 1, "oldest_fetch": "2026-10-30T15:58:00Z"},
     "jira": {"state": "fresh", "fresh": 8},
     "jira_sprints": {
@@ -168,7 +168,7 @@
           {"name": "lint", "state": "success", "url": "https://github.com/acme/api/actions/runs/7100003"},
           {"name": "vendor-hsm-tests", "state": "failure", "url": "https://github.com/acme/api/actions/runs/7100004"}
         ],
-        "ticket_keys": ["TEAM-101"],
+        "ticket_keys": ["TEAM-101", "gh-12"],
         "involvement": [
           {"person": "alice", "role": "author"},
           {"person": "bob", "role": "review_requested"}
@@ -1442,6 +1442,25 @@
       }
     },
     {
+      "id": "ticket:gh:acme/api#12",
+      "kind": "ticket",
+      "label": "acme/api#12",
+      "ticket": {
+        "key": "gh-12",
+        "system": "github",
+        "status": "not found",
+        "url": "https://github.com/acme/api/issues/12",
+        "freshness": "fresh",
+        "fetched_at": "2026-10-30T15:52:00Z",
+        "not_found": true,
+        "facts": {
+          "linked_prs": [
+            {"id": "pr:acme/api#101", "ref": "acme/api#101", "state": "open"}
+          ]
+        }
+      }
+    },
+    {
       "id": "ticket:gh:acme/web#57",
       "kind": "ticket",
       "label": "acme/web#57",
@@ -1798,6 +1817,7 @@
     {"source": "effort:ungrouped", "target": "ws-79f264e6d279fe14", "kind": "contains"},
     {"source": "effort:ungrouped", "target": "ws-9b20119c413d7eb9", "kind": "contains"},
     {"source": "effort:ungrouped", "target": "ws-fa3d0a1f5bf5a843", "kind": "contains"},
+    {"source": "pr:acme/api#101", "target": "ticket:gh:acme/api#12", "kind": "ticket"},
     {"source": "pr:acme/api#101", "target": "ticket:jira:TEAM-101", "kind": "ticket"},
     {"source": "pr:acme/api#102", "target": "ticket:jira:TEAM-102", "kind": "ticket"},
     {"source": "pr:acme/api#105", "target": "ticket:jira:TEAM-107", "kind": "ticket"},

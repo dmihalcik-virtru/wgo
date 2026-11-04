@@ -170,3 +170,42 @@ func TestLossyNamesDoNotCollide(t *testing.T) {
 	require.NoError(t, Write(Key{Owner: "o", Repo: "foo--bar", Number: 1}, Info{Number: 1, State: "open"}))
 	assert.Equal(t, Miss, Read(Key{Owner: "o", Repo: "foo-bar", Number: 1}, time.Hour).State)
 }
+
+// TestNotFoundIsAnAnswer: GitHub's 404 (or 410 for a deleted issue) is
+// cached as "not found", fresh for NotFoundTTL whatever TTL the reader asks
+// for, and is no failure. A later success replaces it; a later failure
+// keeps it.
+func TestNotFoundIsAnAnswer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, status := range []int{404, 410} {
+		f := &countingFetcher{err: &github.APIError{StatusCode: status, Method: "GET", URL: "/repos/acme/widgets/issues/70"}}
+		r := Refresh(f, key)
+		assert.True(t, r.NotFound, "HTTP %d", status)
+		assert.Equal(t, Fresh, r.State)
+		assert.NoError(t, r.Err, "not found is not a failed lookup")
+
+		got := Read(key, time.Minute)
+		assert.True(t, got.NotFound)
+		assert.NoError(t, got.Err)
+		assert.Equal(t, Fresh, got.State, "fresh for NotFoundTTL, not the reader's TTL")
+		assert.Empty(t, got.Info.State)
+	}
+
+	// A day later the answer is stale, and asked again.
+	path, err := issuePath(key)
+	require.NoError(t, err)
+	old := time.Now().Add(-NotFoundTTL - time.Minute)
+	data := fmt.Sprintf(`{"info":{"number":70},"fetched_at":%q,"not_found":true}`, old.Format(time.RFC3339Nano))
+	require.NoError(t, os.WriteFile(path, []byte(data), 0o644))
+	assert.Equal(t, Stale, Read(key, time.Hour).State)
+
+	f := &countingFetcher{err: errors.New("github api: GET /repos/acme/widgets/issues/70 -> 502")}
+	r := Refresh(f, key)
+	assert.True(t, r.NotFound, "a failure keeps the last answer")
+	assert.Error(t, r.Err)
+
+	f.err, f.info = nil, Info{Number: 70, State: "open"}
+	r = Refresh(f, key)
+	assert.False(t, r.NotFound)
+	assert.False(t, Read(key, time.Hour).NotFound, "the issue exists now")
+}

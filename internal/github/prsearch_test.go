@@ -331,6 +331,11 @@ const fullPRNode = `{
     {"__typename": "ReviewRequestedEvent", "createdAt": "2026-10-26T10:00:00Z", "requestedReviewer": {"__typename": "User", "login": "bob"}},
     {"__typename": "ReviewRequestedEvent", "createdAt": "2026-10-22T08:00:00Z", "requestedReviewer": {"__typename": "Team", "slug": "web"}}
   ]},
+  "closingIssuesReferences": {"nodes": [
+    {"number": 12, "repository": {"nameWithOwner": "acme/api"}},
+    {"number": 3, "repository": {"nameWithOwner": "acme/web"}},
+    null
+  ]},
   "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE", "contexts": {"totalCount": 7, "nodes": [
     {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://ci.example/1"},
     {"__typename": "CheckRun", "name": "vendor-hsm-tests", "status": "COMPLETED", "conclusion": "TIMED_OUT", "detailsUrl": "https://ci.example/2"},
@@ -366,6 +371,7 @@ func TestSearchPullRequestsFacts(t *testing.T) {
 	merged["commits"] = map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"statusCheckRollup": nil}}}}
 	merged["reviewRequests"] = map[string]any{"nodes": []any{}}
 	merged["latestReviews"] = map[string]any{"nodes": []any{}}
+	merged["closingIssuesReferences"] = map[string]any{"nodes": []any{}}
 	s := &searchServer{nodes: []any{full, minimalPR("acme/api", 102), draft, merged}}
 	res, err := newSearchClient(t, s).SearchPullRequests(context.Background(), "q")
 	require.NoError(t, err)
@@ -396,6 +402,7 @@ func TestSearchPullRequestsFacts(t *testing.T) {
 			{Name: "ci/legacy", State: "failure", URL: "https://ci.example/4"},
 		},
 		ChecksTruncated: true, // totalCount 7, 6 served
+		ClosingIssues:   []IssueRef{{Repo: "acme/api", Number: 12}, {Repo: "acme/web", Number: 3}},
 		Body:            "Fixes #12",
 	}
 	assert.Equal(t, want, res.PRs[0])
@@ -421,6 +428,7 @@ func TestSearchPullRequestsFacts(t *testing.T) {
 	b, err = json.Marshal(m)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), `"review_requests":[]`)
+	assert.Contains(t, string(b), `"closing_issues":[]`, "GitHub links no issue: an empty list, not unknown")
 	assert.NotContains(t, string(b), "body")
 }
 

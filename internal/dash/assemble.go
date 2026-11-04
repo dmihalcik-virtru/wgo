@@ -462,6 +462,9 @@ func (c *Collector) ticketNodeFor(b *builder, ticket, repoName, repoSlug, noGitH
 		}
 		if ti.Freshness.hasData() {
 			ti.Status, ti.Title, ti.URL = res.Info.State, res.Info.Title, res.Info.URL
+			if res.NotFound {
+				ti.Status, ti.NotFound = TicketNotFound, true
+			}
 		}
 		if ti.URL == "" {
 			ti.URL = "https://github.com/" + repoSlug + "/issues/" + n
