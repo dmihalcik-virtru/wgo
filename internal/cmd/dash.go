@@ -442,14 +442,11 @@ func (f secondsFlag) Set(s string) error {
 
 func (secondsFlag) Type() string { return "duration" }
 
-// FormatDashTimeout writes a duration as --refresh-timeout takes it: "0"
-// for none, whole hours as "1h", whole seconds as "60s".
+// FormatDashTimeout writes a duration as --refresh-timeout takes it, "0"
+// for none, as the diagnostics do (dash.FormatSeconds).
 func FormatDashTimeout(d time.Duration) string {
-	switch {
-	case d == 0:
+	if d == 0 {
 		return "0"
-	case d%time.Hour == 0:
-		return strconv.FormatInt(int64(d/time.Hour), 10) + "h"
 	}
 	return dash.FormatSeconds(d)
 }

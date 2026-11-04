@@ -428,7 +428,7 @@ func TestAssembleFreshnessGitHubIssues(t *testing.T) {
 		t.Fatalf("issue not found: %+v", t4)
 	}
 	st := s.Sources[SourceGitHubIssues]
-	if st.State != Error || st.Fresh != 2 || st.Error != 1 || st.Unknown != 1 || st.OldestFetch.IsZero() {
+	if st.State != Error || st.Fresh != 1 || st.NotFound != 1 || st.Error != 1 || st.Unknown != 1 || st.OldestFetch.IsZero() {
 		t.Fatalf("issue source: %+v", st)
 	}
 	if n := countJobs(jobs, JobIssue); n != 2 {

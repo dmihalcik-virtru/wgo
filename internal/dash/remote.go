@@ -877,10 +877,13 @@ func (res BatchResult) deadlineSummary() []string {
 	return out
 }
 
-// FormatSeconds writes a whole number of seconds as "60s", and any other
-// duration as time.Duration does.
+// FormatSeconds writes a duration as --refresh-timeout takes it: whole hours
+// as "1h", whole seconds as "60s", any other as time.Duration does.
 func FormatSeconds(d time.Duration) string {
-	if d%time.Second == 0 {
+	switch {
+	case d > 0 && d%time.Hour == 0:
+		return strconv.FormatInt(int64(d/time.Hour), 10) + "h"
+	case d%time.Second == 0:
 		return strconv.FormatInt(int64(d/time.Second), 10) + "s"
 	}
 	return d.String()
