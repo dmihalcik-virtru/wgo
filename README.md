@@ -1523,8 +1523,9 @@ the PR as closed by it, or when they are written out: `gh-12`,
 `acme/api#12` or an issue URL. A bare `#12` in a title or body counts only
 on a PR your bookmarks lead to: on the inventory's PRs, often other
 people's, it mostly names no issue of that repository. An issue GitHub
-answers 404 (or 410) for is shown as `not found`, is not a failed lookup,
-and is asked again a day later.
+answers 404 (or 410) for is shown as `not found`, counted apart on the
+`github_issues` source ("120 not found"), not as a failed lookup, and
+asked again a day later.
 
 ### Jira sprints and ticket facts
 

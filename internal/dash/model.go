@@ -128,6 +128,10 @@ type SourceStatus struct {
 	// GitHub's search limit, or lags their open-authored set: then no
 	// period is known to be complete.
 	CoveredSince time.Time `json:"covered_since,omitzero"`
+	// NotFound, on github_issues, counts the issues GitHub answered 404 or
+	// 410 for within issuecache.NotFoundTTL: answered, so neither fresh data
+	// nor a failure.
+	NotFound int `json:"not_found,omitempty"`
 }
 
 // Node is a snapshot node. Exactly one of the kind-specific fields is set.

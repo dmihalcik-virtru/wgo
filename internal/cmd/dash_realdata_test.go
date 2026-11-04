@@ -215,8 +215,8 @@ func TestDashRefreshRealDataSituation(t *testing.T) {
 			if st := out.Snapshot.Sources[dash.SourceJira]; st.State != dash.Error || st.Detail != "acli is not authenticated: run `acli jira auth login`" {
 				t.Fatalf("jira source %+v", st)
 			}
-			if st := out.Snapshot.Sources[dash.SourceGitHubIssues]; st.State != dash.Fresh || st.Fresh != realDataPRs {
-				t.Fatalf("github_issues source %+v, want %d fresh answers", st, realDataPRs)
+			if st := out.Snapshot.Sources[dash.SourceGitHubIssues]; st.State != dash.Fresh || st.NotFound != realDataPRs || st.Fresh != 0 {
+				t.Fatalf("github_issues source %+v, want %d not found", st, realDataPRs)
 			}
 			if st := out.Snapshot.Sources[dash.SourceGitHubInventory]; st.Fresh != 3 {
 				t.Fatalf("github_inventory %+v: the cut-off page was not retried", st)

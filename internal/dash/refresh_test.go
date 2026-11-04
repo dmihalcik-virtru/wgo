@@ -524,7 +524,7 @@ func TestRefreshWaitDeadline(t *testing.T) {
 }
 
 func TestFormatSeconds(t *testing.T) {
-	for d, want := range map[time.Duration]string{60 * time.Second: "60s", 90 * time.Minute: "5400s", 1500 * time.Millisecond: "1.5s", 0: "0s"} {
+	for d, want := range map[time.Duration]string{60 * time.Second: "60s", 90 * time.Minute: "5400s", time.Hour: "1h", 3 * time.Hour: "3h", 1500 * time.Millisecond: "1.5s", 0: "0s"} {
 		if got := FormatSeconds(d); got != want {
 			t.Errorf("FormatSeconds(%v) = %q, want %q", d, got, want)
 		}

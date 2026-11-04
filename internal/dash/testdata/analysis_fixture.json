@@ -20,7 +20,7 @@
       ],
       "covered_since": "2026-10-02T00:00:00Z"
     },
-    "github_issues": {"state": "fresh", "fresh": 2, "oldest_fetch": "2026-10-30T15:50:00Z"},
+    "github_issues": {"state": "fresh", "fresh": 1, "oldest_fetch": "2026-10-30T15:50:00Z", "not_found": 1},
     "github_prs": {"state": "unknown", "fresh": 3, "unknown": 1, "oldest_fetch": "2026-10-30T15:58:00Z"},
     "jira": {"state": "fresh", "fresh": 8},
     "jira_sprints": {
