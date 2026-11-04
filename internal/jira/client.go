@@ -100,11 +100,12 @@ func IsAuthError(msg string) bool {
 // (no network, say).
 func LoginStatus(ctx context.Context) error {
 	out, err := runContext(ctx, "auth", "status")
+	if IsAuthError(out) {
+		// Whatever the exit status: an acli that says so is logged out.
+		return ErrNotLoggedIn
+	}
 	if err == nil {
 		return nil
-	}
-	if IsAuthError(out) {
-		return ErrNotLoggedIn
 	}
 	return fmt.Errorf("acli jira auth status: %w: %s", err, strings.Join(strings.Fields(out), " "))
 }

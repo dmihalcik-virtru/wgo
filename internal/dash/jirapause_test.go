@@ -265,3 +265,87 @@ func TestRefreshWaitJiraLoggedOut(t *testing.T) {
 		t.Fatalf("jira source %+v", st)
 	}
 }
+
+// deletedTicket is how a work item view of a ticket that no longer exists
+// may fail while acli is logged in.
+func deletedTicket(key string) error {
+	return fmt.Errorf("get issue %s: %s", key, acliViewFailed)
+}
+
+// TestJiraPauseLoggedInResetsTheStreak: failures acli's auth status shows
+// to be the tickets' own leave no streak behind, so a later failure that
+// cannot be checked does not pause lookups with an unrelated reason.
+func TestJiraPauseLoggedInResetsTheStreak(t *testing.T) {
+	var loginErr error
+	var mu sync.Mutex
+	p := newJiraPause(func(context.Context) error { mu.Lock(); defer mu.Unlock(); return loginErr })
+	ctx := context.Background()
+	for i := 1; i <= 3; i++ {
+		ok, probe, _ := p.admit()
+		if err := p.done(ctx, deletedTicket(fmt.Sprintf("TEAM-%d", i)), probe); !ok || err == nil {
+			t.Fatalf("lookup %d: admitted %v, err %v", i, ok, err)
+		}
+		if p.streak != 0 {
+			t.Fatalf("after lookup %d, logged in: streak %d", i, p.streak)
+		}
+	}
+	// A blip: acli's auth status cannot tell, once the answer has aged.
+	mu.Lock()
+	loginErr = errors.New("acli jira auth status: exit status 1: dial tcp: i/o timeout")
+	mu.Unlock()
+	p.mu.Lock()
+	p.loginAt = time.Now().Add(-2 * jiraLoginRecheck)
+	p.mu.Unlock()
+	_, probe, _ := p.admit()
+	_ = p.done(ctx, deletedTicket("TEAM-4"), probe)
+	if p.paused() != "" || p.streak != 1 {
+		t.Fatalf("one failure after a reset paused lookups: %q, streak %d", p.paused(), p.streak)
+	}
+}
+
+// TestJiraPauseFailedProbeWhileLoggedIn: a probe that fails on its own
+// ticket while acli says it is logged in ends the pause; the failure counts.
+func TestJiraPauseFailedProbeWhileLoggedIn(t *testing.T) {
+	p := newJiraPause(func(context.Context) error { return nil })
+	ctx := context.Background()
+	_, probe, _ := p.admit()
+	if err := p.done(ctx, fmt.Errorf("get issue TEAM-1: %s", acliUnauthorized), probe); err == nil || p.paused() != jiraNotLoggedIn {
+		t.Fatalf("not paused by an unauthorized lookup: %v, %q", err, p.paused())
+	}
+	if ok, _, reason := p.admit(); ok || reason != jiraNotLoggedIn {
+		t.Fatalf("admitted while paused (%v), reason %q", ok, reason)
+	}
+	p.mu.Lock()
+	p.until = time.Now().Add(-time.Second)
+	p.mu.Unlock()
+	ok, probe, _ := p.admit()
+	if !ok || !probe {
+		t.Fatalf("no probe after the pause: %v, %v", ok, probe)
+	}
+	err := p.done(ctx, deletedTicket("TEAM-2"), probe)
+	var paused *pausedError
+	if err == nil || errors.As(err, &paused) {
+		t.Fatalf("the probe's own failure: %v, want a plain failure", err)
+	}
+	if p.paused() != "" || p.probing || p.streak != 0 {
+		t.Fatalf("still paused after acli said it is logged in: %q, probing %v, streak %d", p.paused(), p.probing, p.streak)
+	}
+}
+
+// TestBatchKeepsTheFirstSkipReason: a later skip cannot overwrite the reason
+// a batch reports.
+func TestBatchKeepsTheFirstSkipReason(t *testing.T) {
+	b := &batch{progressed: make(chan struct{}, 1)}
+	b.wg.Add(2)
+	b.finish(Job{Kind: JobJira, Ticket: "TEAM-1"}, &pausedError{reason: jiraNotLoggedIn})
+	b.finish(Job{Kind: JobJira, Ticket: "TEAM-2"}, &pausedError{reason: ""})
+	if b.res.JiraSkipped != 2 || b.res.JiraSkipReason != jiraNotLoggedIn {
+		t.Fatalf("%+v", b.res)
+	}
+	var total BatchResult
+	total.add(b.res)
+	total.add(BatchResult{JiraSkipped: 1, JiraSkipReason: "Jira lookups paused after acli failed 3 times in a row (x)"})
+	if total.JiraSkipReason != jiraNotLoggedIn {
+		t.Fatalf("reason %q", total.JiraSkipReason)
+	}
+}
