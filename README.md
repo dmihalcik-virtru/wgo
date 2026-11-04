@@ -1039,6 +1039,8 @@ wgo dash                 # serve http://127.0.0.1:8766 and open it
 wgo dash --no-open       # serve without opening a browser
 wgo dash --port 8800     # another loopback port
 wgo dash --json          # print one snapshot as JSON and exit
+wgo dash --json --refresh                        # fetch stale remote data first, for at most 60s
+wgo dash --json --refresh --refresh-timeout 2m   # wait longer; 0 waits for every lookup
 ```
 
 The server listens on the loopback address only. Every 30 seconds by
@@ -1046,6 +1048,16 @@ default (`[dash] refresh_seconds`) it re-collects local jj state, reading
 with `--ignore-working-copy` so it never snapshots a workspace. It also
 refreshes stale PR, PR inventory, Jira and GitHub issue data. Year-in-review runs are
 served under `/review/`. Stop the server with Ctrl-C.
+
+`--json` reads remote data from wgo's caches only. `--refresh` fetches what
+is missing or stale first, waiting at most `--refresh-timeout` (60 seconds
+by default; a number of seconds or a duration such as `2m`; `0` waits for
+every lookup). At the deadline it prints what it has, and the diagnostics
+say `not run: refresh deadline (60s) reached; N lookups left`; lookups
+still running may finish after the output, so the next run has them. Only
+lookups that failed make the command exit non-zero: not those left at the
+deadline, nor Jira lookups skipped because `acli`'s login expired, nor
+GitHub issues that do not exist.
 
 With `[jira] board` set, the dashboard also shows that board's active and
 future sprints, with their goals and dates, and every ticket in an active

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -190,21 +191,43 @@ type batch struct {
 	wg  sync.WaitGroup
 	mu  sync.Mutex
 	res BatchResult
+	// left counts the accepted jobs not yet finished, under mu.
+	left int
+	// done yields res once every accepted job has finished, then closes.
+	done chan BatchResult
+}
+
+// accept counts one more job this batch waits for. r.mu is held.
+func (b *batch) accept() {
+	b.wg.Add(1)
+	b.mu.Lock()
+	b.left++
+	b.mu.Unlock()
+}
+
+// progress is the batch's result so far and how many of its jobs have not
+// finished yet.
+func (b *batch) progress() (BatchResult, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	res := b.res
+	res.Failed = slices.Clone(res.Failed)
+	res.Skipped = maps.Clone(res.Skipped)
+	return res, b.left
 }
 
 func (b *batch) finish(j Job, err error) {
 	var paused *pausedError
+	b.mu.Lock()
 	switch {
 	case errors.As(err, &paused):
-		b.mu.Lock()
 		b.res.JiraSkipped++
 		b.res.JiraSkipReason = paused.reason
-		b.mu.Unlock()
 	case err != nil:
-		b.mu.Lock()
 		b.res.Failed = append(b.res.Failed, j.describe()+": "+err.Error())
-		b.mu.Unlock()
 	}
+	b.left--
+	b.mu.Unlock()
 	b.wg.Done()
 }
 
@@ -227,6 +250,11 @@ type BatchResult struct {
 	// carries JiraSkipReason, the pause's reason.
 	JiraSkipped    int
 	JiraSkipReason string
+	// Unfinished counts the jobs a waited-for refresh stopped waiting for
+	// when its deadline, Deadline, passed. Not failures: they may still
+	// finish, but the snapshot printed shows them as they were.
+	Unfinished int
+	Deadline   time.Duration
 }
 
 // add folds another batch's result into r.
@@ -237,6 +265,10 @@ func (r *BatchResult) add(o BatchResult) {
 	r.JiraSkipped += o.JiraSkipped
 	if o.JiraSkipReason != "" {
 		r.JiraSkipReason = o.JiraSkipReason
+	}
+	r.Unfinished += o.Unfinished
+	if o.Deadline != 0 {
+		r.Deadline = o.Deadline
 	}
 	for k, n := range o.Skipped {
 		if r.Skipped == nil {
@@ -300,7 +332,12 @@ func NewRefresher(f Fetchers, opts RefresherOptions) *Refresher {
 // already pending from an earlier batch is not fetched again, but this batch
 // waits for it too. Jobs beyond the queue bound are dropped and counted.
 func (r *Refresher) Submit(jobs []Job) <-chan BatchResult {
-	b := &batch{}
+	return r.submit(jobs).done
+}
+
+// submit is Submit, returning the batch so that its progress can be read.
+func (r *Refresher) submit(jobs []Job) *batch {
+	b := &batch{done: make(chan BatchResult, 1)}
 	r.mu.Lock()
 	for _, j := range jobs {
 		if !r.supports(j) {
@@ -318,7 +355,7 @@ func (r *Refresher) Submit(jobs []Job) <-chan BatchResult {
 		k := j.key()
 		if f := r.pending[k]; f != nil {
 			if !slices.Contains(f.waiters, b) {
-				b.wg.Add(1)
+				b.accept()
 				f.waiters = append(f.waiters, b)
 			}
 			continue
@@ -327,23 +364,22 @@ func (r *Refresher) Submit(jobs []Job) <-chan BatchResult {
 		select {
 		case r.queue <- f:
 			// Workers finish a job under r.mu, so this Add lands first.
-			b.wg.Add(1)
+			b.accept()
 			r.pending[k] = f
 		default:
 			b.res.Dropped++
 		}
 	}
 	r.mu.Unlock()
-	done := make(chan BatchResult, 1)
 	go func() {
 		b.wg.Wait()
 		b.mu.Lock()
 		res := b.res
 		b.mu.Unlock()
-		done <- res
-		close(done)
+		b.done <- res
+		close(b.done)
 	}()
-	return done
+	return b
 }
 
 func (r *Refresher) supports(j Job) bool {
@@ -602,4 +638,22 @@ func (r *Refresher) skipSummary(res BatchResult) string {
 		parts = append(parts, fmt.Sprintf("%s; %d Jira %s skipped", res.JiraSkipReason, n, plural(n, "lookup", "lookups")))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// deadlineSummary says how many lookups a waited-for refresh left unfinished
+// at its deadline, or "" when none. It is informational, never an error.
+func (res BatchResult) deadlineSummary() string {
+	if res.Unfinished == 0 {
+		return ""
+	}
+	return fmt.Sprintf("not run: refresh deadline (%s) reached; %d %s left", FormatSeconds(res.Deadline), res.Unfinished, plural(res.Unfinished, "lookup", "lookups"))
+}
+
+// FormatSeconds writes a whole number of seconds as "60s", and any other
+// duration as time.Duration does.
+func FormatSeconds(d time.Duration) string {
+	if d%time.Second == 0 {
+		return strconv.FormatInt(int64(d/time.Second), 10) + "s"
+	}
+	return d.String()
 }

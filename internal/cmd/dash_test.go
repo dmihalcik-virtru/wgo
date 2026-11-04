@@ -617,3 +617,38 @@ type noResolver struct{}
 func (noResolver) Resolve(string) (dash.Target, error) {
 	return dash.Target{}, dash.ErrUnknownWorkspace
 }
+
+// TestDashRefreshTimeoutFlag: --refresh-timeout takes seconds or a
+// duration, only with --refresh, and 0 or 1s to 1h.
+func TestDashRefreshTimeoutFlag(t *testing.T) {
+	oj, or, ot := dashJSON, dashRefresh, dashRefreshTimeout
+	t.Cleanup(func() { dashJSON, dashRefresh, dashRefreshTimeout = oj, or, ot })
+
+	var d time.Duration
+	f := secondsFlag{&d}
+	for in, want := range map[string]time.Duration{"90": 90 * time.Second, "2m": 2 * time.Minute, "0": 0, " 45s ": 45 * time.Second} {
+		if err := f.Set(in); err != nil || d != want {
+			t.Errorf("Set(%q) = %v, %v; want %v", in, d, err, want)
+		}
+	}
+	if err := f.Set("soon"); err == nil || !strings.Contains(err.Error(), "seconds (90) or a duration (90s, 2m)") {
+		t.Errorf("Set(soon) = %v", err)
+	}
+	if got := (secondsFlag{&ot}).String(); ot == DefaultDashRefreshTimeout && got != "60s" {
+		t.Errorf("default shows as %q, want 60s", got)
+	}
+
+	changed := func(name string) bool { return name == "refresh-timeout" }
+	dashJSON, dashRefresh, dashRefreshTimeout = true, false, 30*time.Second
+	if err := runDash(context.Background(), &bytes.Buffer{}, changed); err == nil || !strings.Contains(err.Error(), "only applies with --refresh") ||
+		!strings.Contains(err.Error(), "wgo dash --json --refresh --refresh-timeout 30s") {
+		t.Fatalf("without --refresh: %v", err)
+	}
+	dashRefresh = true
+	for _, bad := range []time.Duration{-time.Second, 500 * time.Millisecond, 2 * time.Hour} {
+		dashRefreshTimeout = bad
+		if err := runDash(context.Background(), &bytes.Buffer{}, changed); err == nil || !strings.Contains(err.Error(), "--refresh-timeout must be 0 (wait for every lookup) or between 1s and 1h") {
+			t.Errorf("--refresh-timeout %v: %v", bad, err)
+		}
+	}
+}
