@@ -1,6 +1,7 @@
 package jiracache
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,6 +73,12 @@ type SprintFetcher interface {
 	FetchSprints(board int, assignees []string) (BoardSprints, error)
 }
 
+// SprintContextFetcher is a SprintFetcher whose lookups also stop when a
+// context is done; RefreshSprintsContext prefers it.
+type SprintContextFetcher interface {
+	FetchSprintsContext(ctx context.Context, board int, assignees []string) (BoardSprints, error)
+}
+
 type sprintsEntry struct {
 	Data      BoardSprints `json:"data"`
 	FetchedAt time.Time    `json:"fetched_at"`
@@ -139,10 +146,25 @@ func (b BoardSprints) searchFailed() bool {
 // negative entry recording the error. Sprints whose ticket search failed
 // are stored with their Error, and also returned as an error.
 func RefreshSprints(f SprintFetcher, board int, assignees []string) error {
+	return RefreshSprintsContext(context.Background(), f, board, assignees)
+}
+
+// RefreshSprintsContext is RefreshSprints through f's FetchSprintsContext
+// when it has one. A lookup cut short because ctx is done records nothing.
+func RefreshSprintsContext(ctx context.Context, f SprintFetcher, board int, assignees []string) error {
 	if f == nil {
 		return nil
 	}
-	data, err := f.FetchSprints(board, assignees)
+	var data BoardSprints
+	var err error
+	if cf, ok := f.(SprintContextFetcher); ok {
+		data, err = cf.FetchSprintsContext(ctx, board, assignees)
+	} else {
+		data, err = f.FetchSprints(board, assignees)
+	}
+	if err != nil && ctx.Err() != nil {
+		return err
+	}
 	if err != nil {
 		if r := ReadSprints(board, 0); r.State == Miss || r.Failed {
 			e := sprintsEntry{Data: BoardSprints{Board: board}, FetchedAt: time.Now(), Failed: true, Error: err.Error()}

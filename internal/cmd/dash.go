@@ -96,10 +96,11 @@ fetch the missing or stale remote data before printing; lookups that fail
 are listed in the output's diagnostics and make the command exit non-zero.
 --refresh starts lookups for at most --refresh-timeout (default 60s; 0
 waits for every lookup), PR inventory sets first, then prints what it has:
-the lookups left are listed as not run, not as failed. PR inventory
-fetches already running get up to twice that again to finish, so a large
-set is cached rather than lost; one still running then is cancelled, and
-the github_inventory source says so.
+the lookups left are listed as not run, not as failed, and the running
+ones are stopped. PR inventory fetches already running get up to twice
+that again to finish, so a large set is cached rather than lost; one still
+running then is cancelled, and the github_inventory source says so. The
+command exits within about three times the timeout.
 Once acli turns out to be logged out, the remaining Jira lookups are
 skipped instead: one diagnostic says so, the jira source is in error with
 the reason, and the exit status is unaffected. The served dashboard then
@@ -388,8 +389,9 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		})
 	}
 	if dashRefresh {
-		// One waited-for batch: queue it whole (see dashQueue).
-		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, Queue: dashQueue, IgnoreLeases: true})
+		// One waited-for batch: queue it whole (see dashQueue). Exit soon
+		// after the output, rather than when the slowest lookup ends.
+		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, Queue: dashQueue, IgnoreLeases: true, CloseWait: dashCloseWait})
 		defer r.Close()
 		opts.Refresher = r
 	}
@@ -451,6 +453,10 @@ func FormatDashTimeout(d time.Duration) string {
 	}
 	return dash.FormatSeconds(d)
 }
+
+// dashCloseWait is how long wgo dash --json --refresh waits, once its
+// output is written, for the lookups it cancelled to stop.
+const dashCloseWait = time.Second
 
 // dashQueue bounds a refresh's pending lookups. The PR inventory can bring a
 // few hundred PRs, each naming a ticket to look up, and two full sprints'
@@ -933,7 +939,13 @@ type ghIssueFetcher struct {
 
 // FetchIssue implements issuecache.Fetcher.
 func (g ghIssueFetcher) FetchIssue(k issuecache.Key) (issuecache.Info, error) {
-	is, err := g.c.GetIssue(k.Owner, k.Repo, k.Number)
+	return g.FetchIssueContext(context.Background(), k)
+}
+
+// FetchIssueContext implements issuecache.ContextFetcher: FetchIssue,
+// abandoned when ctx is done.
+func (g ghIssueFetcher) FetchIssueContext(ctx context.Context, k issuecache.Key) (issuecache.Info, error) {
+	is, err := g.c.GetIssueContext(ctx, k.Owner, k.Repo, k.Number)
 	if err != nil {
 		return issuecache.Info{}, err
 	}

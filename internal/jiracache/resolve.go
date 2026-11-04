@@ -1,6 +1,7 @@
 package jiracache
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -13,6 +14,31 @@ import (
 // jira -> jiracache -> jira import cycle and lets tests count calls.
 type Fetcher interface {
 	FetchJira(ticket string) (Info, error)
+}
+
+// ContextFetcher is a Fetcher whose lookup also stops when a context is
+// done; RefreshContext prefers it.
+type ContextFetcher interface {
+	FetchJiraContext(ctx context.Context, ticket string) (Info, error)
+}
+
+// RefreshContext fetches ticket now and writes the result through the
+// cache, as Resolve does with Synchronous, through f's FetchJiraContext when
+// it has one. A lookup cut short because ctx is done records nothing: it
+// says nothing about the ticket.
+func RefreshContext(ctx context.Context, f Fetcher, ticket string) (Info, State, error) {
+	if f == nil {
+		return Info{}, Miss, nil
+	}
+	cf, ok := f.(ContextFetcher)
+	if !ok {
+		return fetchAndStore(f, ticket)
+	}
+	info, err := cf.FetchJiraContext(ctx, ticket)
+	if err != nil && ctx.Err() != nil {
+		return Info{}, Miss, err
+	}
+	return storeFetch(ticket, info, err)
 }
 
 // Opts controls how Resolve reconciles the on-disk cache with the network.
@@ -80,6 +106,11 @@ func fetchAndStore(f Fetcher, ticket string) (Info, State, error) {
 		return Info{}, Miss, nil
 	}
 	info, err := f.FetchJira(ticket)
+	return storeFetch(ticket, info, err)
+}
+
+// storeFetch writes a fetch's outcome through the cache; see fetchAndStore.
+func storeFetch(ticket string, info Info, err error) (Info, State, error) {
 	if err != nil {
 		if _, state := Read(ticket, 0); state == Miss {
 			if werr := writeNegative(ticket); werr != nil {

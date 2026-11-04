@@ -12,6 +12,7 @@
 package issuecache
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -198,6 +199,12 @@ type Fetcher interface {
 	FetchIssue(k Key) (Info, error)
 }
 
+// ContextFetcher is a Fetcher whose lookup also stops when a context is
+// done; RefreshContext prefers it.
+type ContextFetcher interface {
+	FetchIssueContext(ctx context.Context, k Key) (Info, error)
+}
+
 // Refresh fetches the issue now and writes the result through the cache. It
 // is for background workers and explicit refreshes only, never a read path.
 //
@@ -209,10 +216,27 @@ type Fetcher interface {
 // not exist, or the token cannot see it. It is cached as a fresh
 // Result.NotFound for NotFoundTTL.
 func Refresh(f Fetcher, k Key) Result {
+	return RefreshContext(context.Background(), f, k)
+}
+
+// RefreshContext is Refresh through f's FetchIssueContext when it has one. A
+// lookup cut short because ctx is done records nothing.
+func RefreshContext(ctx context.Context, f Fetcher, k Key) Result {
 	if f == nil {
 		return Read(k, 0)
 	}
-	info, err := f.FetchIssue(k)
+	var info Info
+	var err error
+	if cf, ok := f.(ContextFetcher); ok {
+		info, err = cf.FetchIssueContext(ctx, k)
+	} else {
+		info, err = f.FetchIssue(k)
+	}
+	if err != nil && ctx.Err() != nil {
+		prior := Read(k, 0)
+		prior.Err = err
+		return prior
+	}
 	if notFound(err) {
 		now := time.Now()
 		res := Result{Info: Info{Number: k.Number}, State: Fresh, FetchedAt: now, LastAttemptAt: now, NotFound: true}

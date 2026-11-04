@@ -1057,8 +1057,10 @@ the open-authored, review-requested and closed-recent sets), since whose
 move a PR is depends on it; then the board's sprints, the bookmarks' PRs,
 and the ticket and issue lookups. At the deadline no more lookups start,
 and the diagnostics say `not run: refresh deadline (60s) reached; N
-lookups left`. PR inventory fetches already running get up to twice the
-timeout again to finish, so a set with many pages is cached rather than
+lookups left`; lookups already running are stopped (`acli` is killed,
+GitHub requests are abandoned), so the command exits within about three
+times the timeout even when `acli` hangs. PR inventory fetches already
+running get up to twice the timeout again to finish, so a set with many pages is cached rather than
 lost on every run; a fetch still running then is cancelled, recorded with
 when and on which page, and `github_inventory`'s detail says why the set
 is unknown or stale. Only lookups that failed make the command exit

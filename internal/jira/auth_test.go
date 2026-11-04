@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -35,17 +36,17 @@ func TestIsAuthError(t *testing.T) {
 
 func TestLoginStatus(t *testing.T) {
 	withFakeAcli(t, `echo "✓ Authenticated"`)
-	if err := LoginStatus(); err != nil {
+	if err := LoginStatus(context.Background()); err != nil {
 		t.Fatalf("logged in: %v", err)
 	}
 
 	withFakeAcli(t, `echo "✗ Error: unauthorized: use 'acli jira auth login' to authenticate"; exit 1`)
-	if err := LoginStatus(); !errors.Is(err, ErrNotLoggedIn) {
+	if err := LoginStatus(context.Background()); !errors.Is(err, ErrNotLoggedIn) {
 		t.Fatalf("logged out: %v, want ErrNotLoggedIn", err)
 	}
 
 	withFakeAcli(t, `echo "✗ Error: dial tcp: lookup jira.example: no such host" >&2; exit 1`)
-	err := LoginStatus()
+	err := LoginStatus(context.Background())
 	if err == nil || errors.Is(err, ErrNotLoggedIn) {
 		t.Fatalf("acli could not tell: %v, want another error", err)
 	}

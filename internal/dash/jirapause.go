@@ -1,6 +1,7 @@
 package dash
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -59,7 +60,7 @@ const (
 type jiraPause struct {
 	// login is Fetchers.JiraLogin; nil when acli's auth status cannot be
 	// asked.
-	login func() error
+	login func(context.Context) error
 	// first and max are jiraPauseFirst and jiraPauseMax; tests shorten them.
 	first, max time.Duration
 
@@ -79,7 +80,7 @@ type jiraPause struct {
 	loginAt time.Time
 }
 
-func newJiraPause(login func() error) *jiraPause {
+func newJiraPause(login func(context.Context) error) *jiraPause {
 	return &jiraPause{login: login, first: jiraPauseFirst, max: jiraPauseMax}
 }
 
@@ -135,7 +136,8 @@ func (p *jiraPause) release(probe bool) {
 
 // done records how an admitted lookup went and returns what to report: nil
 // on success, a *pausedError for a failure the pause accounts for, else err.
-func (p *jiraPause) done(err error, probe bool) error {
+// ctx is the lookup's, for asking acli whether it is logged in.
+func (p *jiraPause) done(ctx context.Context, err error, probe bool) error {
 	if probe {
 		defer p.release(true)
 	}
@@ -169,7 +171,7 @@ func (p *jiraPause) done(err error, probe bool) error {
 	streak := p.streak
 	p.mu.Unlock()
 
-	switch p.checkLogin() {
+	switch p.checkLogin(ctx) {
 	case loginOut:
 		p.mu.Lock()
 		p.pauseLocked(jiraNotLoggedIn, true, probe)
@@ -194,7 +196,7 @@ func (p *jiraPause) done(err error, probe bool) error {
 
 // checkLogin asks acli whether it is logged in, reusing an answer younger
 // than jiraLoginRecheck.
-func (p *jiraPause) checkLogin() loginState {
+func (p *jiraPause) checkLogin(ctx context.Context) loginState {
 	if p.login == nil {
 		return loginUnknown
 	}
@@ -208,7 +210,7 @@ func (p *jiraPause) checkLogin() loginState {
 	}
 	p.mu.Unlock()
 	st := loginOK
-	if err := p.login(); err != nil {
+	if err := p.login(ctx); err != nil {
 		st = loginUnknown
 		if errors.Is(err, jira.ErrNotLoggedIn) || jira.IsAuthError(err.Error()) {
 			st = loginOut

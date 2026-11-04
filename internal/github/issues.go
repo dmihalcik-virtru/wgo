@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
@@ -36,11 +37,16 @@ type apiIssue struct {
 // without credentials so a caller caching the result never records a missing
 // token as a real answer.
 func (c *CLIClient) GetIssue(owner, repo string, number int) (IssueInfo, error) {
+	return c.GetIssueContext(context.Background(), owner, repo, number)
+}
+
+// GetIssueContext is GetIssue, abandoned when ctx is done.
+func (c *CLIClient) GetIssueContext(ctx context.Context, owner, repo string, number int) (IssueInfo, error) {
 	if !c.Available() {
 		return IssueInfo{}, ErrNoAuth
 	}
 	var is apiIssue
-	if err := c.getJSON(fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number), &is); err != nil {
+	if err := c.getJSONContext(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number), &is); err != nil {
 		return IssueInfo{}, err
 	}
 	return IssueInfo{

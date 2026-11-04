@@ -727,38 +727,35 @@ const deadlineGrace = 2
 const interruptWait = 5 * time.Second
 
 // finishAtDeadline ends batch b at its deadline: its lookups not yet started
-// never start. When PR inventory fetches are running, it waits for the
-// batch's running lookups to finish, so that a large set's result is cached
-// rather than lost, up to deadlineGrace times the deadline; then it
-// interrupts them, and the inventory cache records the interruption.
-// Otherwise it waits for nothing: the other lookups are short, and the
-// Refresher's Close waits for them. It returns b's result, with what is
-// still running counted as unfinished.
+// never start, and the running ones are cancelled, all but the PR inventory
+// fetches. It waits for those to finish, so that a large set's result is
+// cached rather than lost, up to deadlineGrace times the deadline; then it
+// interrupts them, and the inventory cache records the interruption. It
+// returns b's result, with what is still running counted as unfinished.
 func (d *Dash) finishAtDeadline(ctx context.Context, b *batch, timeout time.Duration) BatchResult {
 	r := d.opts.Refresher
 	finishing := r.expire(b)
 	start := time.Now()
-	res, ok := BatchResult{}, false
 	if finishing > 0 {
 		grace := time.NewTimer(deadlineGrace * timeout)
 		defer grace.Stop()
-		select {
-		case res, ok = <-b.done:
-		case <-grace.C:
-			r.interrupt(b)
+		var giveUp <-chan time.Time
+	wait:
+		for r.runningInventory(b) > 0 {
 			select {
-			case res, ok = <-b.done:
-			case <-time.After(interruptWait):
+			case <-b.progressed:
+			case <-grace.C:
+				r.interrupt(b)
+				giveUp = time.After(interruptWait)
+			case <-giveUp:
+				break wait
 			case <-ctx.Done():
+				break wait
 			}
-		case <-ctx.Done():
 		}
 	}
-	if !ok {
-		var left int
-		res, left = b.progress()
-		res.Unfinished += left
-	}
+	res, left := b.progress()
+	res.Unfinished += left
 	res.Deadline, res.Finishing = timeout, finishing
 	if finishing > 0 {
 		res.Overrun = time.Since(start)
