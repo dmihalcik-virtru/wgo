@@ -226,7 +226,10 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 		bookmarked := n != nil && n.PR != nil
 		// Someone else's branch name ("patch-1", "revert-45-fix") is held to
 		// the known prefixes too; a bookmark's PR keeps its branch ticket.
-		keys := ticketKeys(f.HeadRef, ip.pr.Refs, known, refIsPR, !bookmarked && len(known) > 0)
+		// Bare #N in titles and bodies counts only on a bookmark's PR: on
+		// the inventory's (often other people's) it mostly names no issue
+		// of the repository, and GitHub's closing issues say which do.
+		keys := ticketKeys(f.HeadRef, f.Repo, f.ClosingIssues, ip.pr.Refs, known, refIsPR, !bookmarked && len(known) > 0, bookmarked)
 		var p *PRInfo
 		invNewer := true
 		if bookmarked {
@@ -278,13 +281,15 @@ func (c *Collector) knownTicketPrefixes(ls *localState) map[string]bool {
 }
 
 // ticketKeys are a PR's ticket keys: its head branch's ticket by
-// spec.ParseTicketFromBranch's rules, then the title and body references
-// whose Jira prefix is known, and same-repository issues that are not
-// themselves PRs (isPR). With filterHead the branch's Jira ticket counts
-// only for a known prefix too: GitHub names branches "patch-1" and
-// "revert-45-x". Ordered and deduplicated; GitHub issues are "gh-<n>", like
-// TicketInfo.Key. Never nil: an inventory PR with no ticket reported none.
-func ticketKeys(headRef string, refs []string, known map[string]bool, isPR func(int) bool, filterHead bool) []string {
+// spec.ParseTicketFromBranch's rules; then the title and body references
+// (refs) whose Jira prefix is known, and same-repository issues that are not
+// themselves PRs (isPR), bare "#<n>" ones only with keepBare; then the
+// issues of its repository (repo) that GitHub says it closes (closing).
+// With filterHead the branch's Jira ticket counts only for a known prefix
+// too: GitHub names branches "patch-1" and "revert-45-x". Ordered and
+// deduplicated; GitHub issues are "gh-<n>", like TicketInfo.Key. Never nil:
+// an inventory PR with no ticket reported none.
+func ticketKeys(headRef, repo string, closing []github.IssueRef, refs []string, known map[string]bool, isPR func(int) bool, filterHead, keepBare bool) []string {
 	keys := []string{}
 	seen := map[string]bool{}
 	add := func(k string) {
@@ -300,6 +305,12 @@ func ticketKeys(headRef string, refs []string, known map[string]bool, isPR func(
 		}
 	}
 	for _, r := range refs {
+		if n, ok := strings.CutPrefix(r, "#"); ok {
+			if !keepBare {
+				continue
+			}
+			r = "gh-" + n
+		}
 		if n, ok := strings.CutPrefix(r, "gh-"); ok {
 			if num, err := strconv.Atoi(n); err == nil && !isPR(num) {
 				add(r)
@@ -308,6 +319,12 @@ func ticketKeys(headRef string, refs []string, known map[string]bool, isPR func(
 		}
 		if prefix, _, _ := strings.Cut(r, "-"); known[prefix] {
 			add(r)
+		}
+	}
+	for _, is := range closing {
+		// An issue elsewhere has no gh-<n> key; GitHub links those too.
+		if strings.EqualFold(is.Repo, repo) && is.Number > 0 {
+			add("gh-" + strconv.Itoa(is.Number))
 		}
 	}
 	return keys

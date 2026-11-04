@@ -110,6 +110,7 @@ func TestInventoryMergesIntoBookmarkPR(t *testing.T) {
 	}
 	pr := openPR(12, "alice", "TEAM-5-a")
 	pr.Title, pr.UpdatedAt = "new title", time.Now()
+	pr.Body = "Fixes #8" // a bookmark's PR keeps its bare #N references
 	seedInventory(t, a.since(), map[string][]github.PRFacts{"alice/open-authored": {pr}})
 	s, _ := a.build()
 
@@ -130,7 +131,7 @@ func TestInventoryMergesIntoBookmarkPR(t *testing.T) {
 	if p.Author != "alice" || p.Title != "new title" || p.Additions == nil || *p.Additions != 10 || p.Deletions == nil || *p.Deletions != 0 {
 		t.Fatalf("inventory facts not merged: %+v", p)
 	}
-	if !slices.Equal(p.TicketKeys, []string{"TEAM-5"}) || !hasEdge(s, id, jiraTicketID("TEAM-5"), EdgeTicket) {
+	if !slices.Equal(p.TicketKeys, []string{"TEAM-5", "gh-8"}) || !hasEdge(s, id, jiraTicketID("TEAM-5"), EdgeTicket) || !hasEdge(s, id, githubTicketID(asmSlug, 8), EdgeTicket) {
 		t.Fatalf("ticket keys %v", p.TicketKeys)
 	}
 	if countEdges(s, EdgeTracks) != 0 {
@@ -554,18 +555,45 @@ func TestInventoryAttachment(t *testing.T) {
 		{
 			name:  "2 with a GitHub issue in the same repository",
 			setup: func(a *asmFixture) { a.ws(asmMain, "gh-70-x") },
-			pr:    func() github.PRFacts { p := openPR(1, "bob", "other"); p.Body = "Part of #70"; return p },
+			pr:    func() github.PRFacts { p := openPR(1, "bob", "other"); p.Body = "Part of gh-70"; return p },
 			want:  want{effort: effortNodeID("ticket-gh-70")},
+		},
+		{
+			name:  "2 with an issue GitHub says the PR closes",
+			setup: func(a *asmFixture) { a.ws(asmMain, "gh-70-x") },
+			pr: func() github.PRFacts {
+				p := openPR(1, "bob", "other")
+				p.ClosingIssues = []github.IssueRef{{Repo: "ACME/widgets", Number: 70}}
+				return p
+			},
+			want: want{effort: effortNodeID("ticket-gh-70")},
+		},
+		{
+			name:  "a bare #N in an inventory PR is no ticket",
+			setup: func(a *asmFixture) { a.ws(asmMain, "gh-70-x") },
+			pr:    func() github.PRFacts { p := openPR(1, "bob", "other"); p.Body = "Part of #70"; return p },
+			want:  want{effort: effortNodeID(repoEffortKey(asmSlug))},
 		},
 		{
 			name:  "a GitHub issue of another repository never matches",
 			setup: func(a *asmFixture) { a.ws(asmMain, "gh-70-x") },
 			pr: func() github.PRFacts {
 				p := openPR(1, "bob", "other")
-				p.Repo, p.Body = "acme/other", "Part of #70"
+				p.Repo, p.Body = "acme/other", "Part of gh-70"
+				p.ClosingIssues = []github.IssueRef{{Repo: "acme/other", Number: 70}}
 				return p
 			},
 			want: want{effort: effortNodeID(repoEffortKey("acme/other"))},
+		},
+		{
+			name:  "an issue of another repository the PR closes has no key",
+			setup: func(a *asmFixture) { a.ws(asmMain, "gh-70-x") },
+			pr: func() github.PRFacts {
+				p := openPR(1, "bob", "other")
+				p.ClosingIssues = []github.IssueRef{{Repo: "acme/other", Number: 70}}
+				return p
+			},
+			want: want{effort: effortNodeID(repoEffortKey(asmSlug))},
 		},
 		{
 			name:  "1 needs the same repository",
@@ -649,7 +677,10 @@ func TestInventoryTicketsAndCounts(t *testing.T) {
 	a.ws(asmMain, "TEAM-1-local")
 	pr := openPR(20, "alice", "feature")
 	pr.Title = "TEAM-2: move to SHA-256"
-	pr.Body = "Also OPS-3, P-384, fixes #5, see #21 and UTF-8"
+	pr.Body = "Also OPS-3, P-384, fixes #5, see #21, #30 and UTF-8"
+	// GitHub links #5 as closed by it, and an issue elsewhere; #30, written
+	// bare, is no ticket of an inventory PR.
+	pr.ClosingIssues = []github.IssueRef{{Repo: asmSlug, Number: 5}, {Repo: "acme/other", Number: 6}}
 	other := openPR(21, "alice", "other")
 	merged := openPR(22, "alice", "old")
 	merged.State, merged.MergedAt, merged.ClosedAt = "merged", a.ls.at.Add(-time.Hour), a.ls.at.Add(-time.Hour)
@@ -662,7 +693,7 @@ func TestInventoryTicketsAndCounts(t *testing.T) {
 	s, jobs := a.build()
 	p := s.Node(prNodeID(asmSlug, 20)).PR
 	if want := []string{"TEAM-2", "OPS-3", "gh-5"}; !slices.Equal(p.TicketKeys, want) {
-		t.Fatalf("ticket keys %v, want %v (SHA-256, P-384 and UTF-8 are not tickets; #21 is a PR)", p.TicketKeys, want)
+		t.Fatalf("ticket keys %v, want %v (SHA-256, P-384 and UTF-8 are not tickets; #21 is a PR; #30 is bare)", p.TicketKeys, want)
 	}
 	for _, tid := range []string{jiraTicketID("TEAM-2"), jiraTicketID("OPS-3"), githubTicketID(asmSlug, 5)} {
 		if !hasEdge(s, prNodeID(asmSlug, 20), tid, EdgeTicket) {
@@ -950,7 +981,7 @@ func TestInventory195OpenPRs(t *testing.T) {
 // fullNode reports every fact the inventory reads, for a merged PR.
 const fullNode = `{
   "number": 9, "title": "TEAM-9: rotate keys", "url": "https://github.com/acme/api/pull/9",
-  "state": "MERGED", "isDraft": false, "body": "Fixes #4",
+  "state": "MERGED", "isDraft": false, "body": "Fixes #4, see #3",
   "createdAt": "2026-10-20T09:00:00Z", "updatedAt": "2026-10-29T14:10:00Z",
   "mergedAt": "2026-10-29T14:00:00Z", "closedAt": "2026-10-29T14:00:05Z",
   "additions": 0, "deletions": 4, "changedFiles": 1, "mergeable": "UNKNOWN",
@@ -963,6 +994,7 @@ const fullNode = `{
     {"__typename": "ReadyForReviewEvent", "createdAt": "2026-10-21T15:30:00Z"},
     {"__typename": "ReviewRequestedEvent", "createdAt": "2026-10-22T08:00:00Z", "requestedReviewer": {"__typename": "Team", "slug": "web"}}
   ]},
+  "closingIssuesReferences": {"nodes": [{"number": 4, "repository": {"nameWithOwner": "acme/api"}}]},
   "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE", "contexts": {"totalCount": 101, "nodes": [
     {"__typename": "CheckRun", "name": "vendor-hsm-tests", "status": "COMPLETED", "conclusion": "FAILURE", "detailsUrl": "https://ci.example/1"}
   ]}}}}]}

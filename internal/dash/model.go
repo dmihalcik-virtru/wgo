@@ -369,7 +369,14 @@ type TicketInfo struct {
 	// followed people, so it says whose ticket it is when the assignee's
 	// account ID cannot; see SprintInfo.Searched.
 	SprintSearch []int `json:"sprint_search,omitempty"`
+	// NotFound is set on a GitHub issue GitHub answered 404 or 410 for: it
+	// does not exist, or the token cannot see it. Status is then
+	// TicketNotFound; the answer is cached for issuecache.NotFoundTTL.
+	NotFound bool `json:"not_found,omitempty"`
 }
+
+// TicketNotFound is the Status of a GitHub issue GitHub did not find.
+const TicketNotFound = "not found"
 
 // AgentInfo describes a gh-72 agent session, read only.
 type AgentInfo struct {

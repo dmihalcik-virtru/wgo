@@ -106,14 +106,16 @@ type PR struct {
 	github.PRFacts
 	// Refs are ticket references in the title, then the body, in order and
 	// deduplicated: Jira-shaped keys as written ("TEAM-123", but also
-	// "SHA-256"), and same-repository issues as "gh-<n>". Which Jira-shaped
-	// keys count is the reader's choice (gh-97 requirement 5).
+	// "SHA-256"), same-repository issues written out as "gh-<n>", and bare
+	// "#<n>" numbers as such (see Refs). Which of them count is the
+	// reader's choice (gh-97 requirement 5).
 	Refs []string `json:"refs,omitempty"`
 }
 
 // SchemaVersion is the entry layout Write produces. An entry of another
-// version reads as a Miss, so the next refresh rewrites it.
-const SchemaVersion = 1
+// version reads as a Miss, so the next refresh rewrites it. Version 2 marks
+// bare #<n> references in Refs and adds the PRs' closing issues.
+const SchemaVersion = 2
 
 type entry struct {
 	Schema int    `json:"schema"`

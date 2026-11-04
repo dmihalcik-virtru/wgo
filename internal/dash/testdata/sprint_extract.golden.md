@@ -34,4 +34,4 @@ Snapshot 2026-10-30 16:00 +00:00 · generation 42 · sprint 1234 on board 42, fe
 
 Query: none (the whole sprint)
 
-Sources: agents fresh (1 fresh) · github_inventory stale (5 fresh, 1 stale, oldest fetch 2026-10-30 14:40 +00:00) · github_issues fresh (1 fresh, oldest fetch 2026-10-30 15:50 +00:00) · github_prs unknown (3 fresh, 1 unknown, oldest fetch 2026-10-30 15:58 +00:00) · jira fresh (8 fresh) · jira_sprints fresh (2 fresh, oldest fetch 2026-10-30 15:52 +00:00) · jj fresh (5 fresh) · plan fresh
+Sources: agents fresh (1 fresh) · github_inventory stale (5 fresh, 1 stale, oldest fetch 2026-10-30 14:40 +00:00) · github_issues fresh (2 fresh, oldest fetch 2026-10-30 15:50 +00:00) · github_prs unknown (3 fresh, 1 unknown, oldest fetch 2026-10-30 15:58 +00:00) · jira fresh (8 fresh) · jira_sprints fresh (2 fresh, oldest fetch 2026-10-30 15:52 +00:00) · jj fresh (5 fresh) · plan fresh

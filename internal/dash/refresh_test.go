@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/virtru/wgo/internal/discovery"
+	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/issuecache"
 	"github.com/virtru/wgo/internal/jiracache"
 	"github.com/virtru/wgo/internal/jjtest"
@@ -455,5 +456,30 @@ func TestBatchResultErrListsAFew(t *testing.T) {
 	}
 	if (BatchResult{Jobs: 3}).Err() != nil {
 		t.Fatal("a clean batch has an error")
+	}
+}
+
+// notFoundIssues answer every issue lookup with GitHub's 404.
+type notFoundIssues struct{ calls atomic.Int32 }
+
+func (f *notFoundIssues) FetchIssue(k issuecache.Key) (issuecache.Info, error) {
+	f.calls.Add(1)
+	return issuecache.Info{}, &github.APIError{StatusCode: 404, Method: "GET", URL: fmt.Sprintf("/repos/%s/%s/issues/%d", k.Owner, k.Repo, k.Number)}
+}
+
+// TestRefreshIssueNotFoundIsNoFailure: an issue GitHub does not find is
+// cached as not found and fails no lookup.
+func TestRefreshIssueNotFoundIsNoFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f := &notFoundIssues{}
+	r := NewRefresher(Fetchers{Issue: f}, RefresherOptions{Workers: 2, IgnoreLeases: true})
+	defer r.Close()
+	k := issuecache.Key{Owner: "acme", Repo: "api", Number: 12}
+	res := <-r.Submit([]Job{{Kind: JobIssue, Issue: k}})
+	if res.Err() != nil || res.Jobs != 1 || f.calls.Load() != 1 {
+		t.Fatalf("batch %+v, calls %d", res, f.calls.Load())
+	}
+	if got := issuecache.Read(k, time.Minute); !got.NotFound || got.State != issuecache.Fresh {
+		t.Fatalf("cache %+v", got)
 	}
 }
