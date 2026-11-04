@@ -201,10 +201,15 @@ func TestJiraPauseBacksOffAndProbes(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	a := &fakeAcli{fail: acliUnauthorized, sprintFail: acliUnauthorized}
 	r := jiraRefresher(t, a, 2, true)
-	r.jira.first, r.jira.max = 40*time.Millisecond, 100*time.Millisecond
+	r.jira.first, r.jira.max = 5*time.Minute, 12*time.Minute
+	expirePause := func() {
+		r.jira.mu.Lock()
+		r.jira.until = time.Time{}
+		r.jira.mu.Unlock()
+	}
 
 	<-r.Submit(jiraJobs(5))
-	if r.jira.backoff != 40*time.Millisecond {
+	if r.jira.backoff != 5*time.Minute {
 		t.Fatalf("first pause %v", r.jira.backoff)
 	}
 	before := a.views.Load() + a.sprints.Load()
@@ -212,8 +217,8 @@ func TestJiraPauseBacksOffAndProbes(t *testing.T) {
 		t.Fatalf("a paused round called acli: skipped %d, calls %d → %d", res.JiraSkipped, before, a.views.Load()+a.sprints.Load())
 	}
 
-	for _, want := range []time.Duration{80 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond} {
-		time.Sleep(r.jira.backoff + 10*time.Millisecond)
+	for _, want := range []time.Duration{10 * time.Minute, 12 * time.Minute, 12 * time.Minute} {
+		expirePause()
 		before = a.views.Load() + a.sprints.Load()
 		res := <-r.Submit(jiraJobs(5))
 		if calls := a.views.Load() + a.sprints.Load() - before; calls != 1 || res.JiraSkipped != 6 {
@@ -225,7 +230,7 @@ func TestJiraPauseBacksOffAndProbes(t *testing.T) {
 	}
 
 	a.set("", nil)
-	time.Sleep(r.jira.backoff + 10*time.Millisecond)
+	expirePause()
 	<-r.Submit(jiraJobs(1)[:1]) // the probe, which works
 	if r.jira.paused() != "" {
 		t.Fatalf("still paused after a lookup worked: %q", r.jira.paused())

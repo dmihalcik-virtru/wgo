@@ -97,7 +97,7 @@ printing; lookups that fail are listed in the output's diagnostics and make
 the command exit non-zero. --refresh starts lookups for at most
 --refresh-timeout (default 60s; 0 waits for every lookup), PR inventory
 sets first, then prints what it has: the lookups left are listed as not
-run, not as failed, and the running ones are stopped. PR inventory
+run, not as failed, and the running ones are cancelled. PR inventory
 fetches already running get up to twice that again to finish, so a large
 set is cached rather than lost; one still running then is cancelled, and
 the github_inventory source says so. The command exits within about

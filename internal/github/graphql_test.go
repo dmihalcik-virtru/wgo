@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -158,4 +159,27 @@ func TestTransient(t *testing.T) {
 		"partial data with a timeout note is kept, not refetched")
 	assert.False(t, Transient(&GraphQLErrors{NoData: true, Errors: []GraphQLError{{Message: "Could not resolve to a Repository", Type: "NOT_FOUND"}}}))
 	assert.False(t, Transient(errors.New("boom")))
+}
+
+// TestWithContextAbandonsRESTRequests: a client from WithContext abandons
+// its REST requests when the context is done; the original is unaffected.
+func TestWithContextAbandonsRESTRequests(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	defer close(release)
+	c := newTestClient(t, srv, "o/r")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	start := time.Now()
+	err := c.WithContext(ctx).getJSON("/repos/o/r/pulls", nil)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Less(t, time.Since(start), 5*time.Second)
+	assert.Nil(t, c.ctx, "the original client keeps no context")
 }
