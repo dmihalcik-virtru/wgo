@@ -483,3 +483,50 @@ func TestRefreshIssueNotFoundIsNoFailure(t *testing.T) {
 		t.Fatalf("cache %+v", got)
 	}
 }
+
+// TestRefreshWaitDeadline: a waited-for refresh stops waiting at its
+// deadline and publishes what it has; the lookups left are reported as not
+// run, not as failed, and the refresh succeeds. They are not cancelled.
+func TestRefreshWaitDeadline(t *testing.T) {
+	f := newFixture(t)
+	bf := &blockingFetchers{release: make(chan struct{})}
+	r := NewRefresher(Fetchers{PR: bf, Jira: bf, Issue: bf}, RefresherOptions{Workers: 2, IgnoreLeases: true})
+	defer func() {
+		close(bf.release)
+		r.Close()
+	}()
+	d, err := Open(Options{Dir: t.TempDir(), Collector: f.collector(t, time.Now(), memSource{}), Refresher: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true, Timeout: 150 * time.Millisecond}); err != nil {
+		t.Fatalf("a refresh that ran out of time failed: %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("the refresh took %v, past its 150ms deadline", took)
+	}
+	v := d.Current()
+	if v.Snapshot.Generation != 2 {
+		t.Fatalf("generation %d, want 2: the snapshot at the deadline is published", v.Snapshot.Generation)
+	}
+	if !hasDiag(v, "not run: refresh deadline (150ms) reached; 4 lookups left") {
+		t.Fatalf("diagnostics %v", v.Diagnostics)
+	}
+	for _, diag := range v.Diagnostics {
+		if strings.Contains(diag, "failed") {
+			t.Fatalf("unfinished lookups reported as failed: %q", diag)
+		}
+	}
+	if n := bf.calls.Load(); n != 2 {
+		t.Fatalf("%d fetches started, want 2 (one per worker, still running)", n)
+	}
+}
+
+func TestFormatSeconds(t *testing.T) {
+	for d, want := range map[time.Duration]string{60 * time.Second: "60s", 90 * time.Minute: "5400s", 1500 * time.Millisecond: "1.5s", 0: "0s"} {
+		if got := FormatSeconds(d); got != want {
+			t.Errorf("FormatSeconds(%v) = %q, want %q", d, got, want)
+		}
+	}
+}

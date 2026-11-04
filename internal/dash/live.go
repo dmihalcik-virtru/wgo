@@ -330,6 +330,9 @@ type Dash struct {
 	// skipDiag is informational, not an error: remote lookups skipped for
 	// want of an integration. Cleared when the next refresh starts.
 	skipDiag string
+	// deadlineDiag is informational too: the lookups a waited-for refresh
+	// left at its deadline. Cleared when the next refresh starts.
+	deadlineDiag string
 }
 
 // Logf, when set, receives Dash faults that have no caller to return to,
@@ -362,6 +365,9 @@ func (d *Dash) diagnosticsLocked() []string {
 	}
 	if d.skipDiag != "" {
 		out = append(out, d.skipDiag)
+	}
+	if d.deadlineDiag != "" {
+		out = append(out, d.deadlineDiag)
 	}
 	return out
 }
@@ -401,6 +407,14 @@ func (d *Dash) recordSkipped(msg string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.setDiagLocked(&d.skipDiag, msg)
+}
+
+// recordDeadline shows how many lookups a waited-for refresh left at its
+// deadline; "" clears it. It does not affect any error.
+func (d *Dash) recordDeadline(msg string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.setDiagLocked(&d.deadlineDiag, msg)
 }
 
 // recordCollectError makes a failed collection visible on the view still
@@ -526,6 +540,11 @@ type RefreshOptions struct {
 	// Wait blocks until the remote refresh has finished and been
 	// published. Otherwise it continues in the background.
 	Wait bool
+	// Timeout bounds how long Wait waits for remote lookups, follow-up
+	// rounds included; zero waits for all of them. At the deadline the
+	// snapshot is published with whatever has been fetched, and the
+	// lookups left are reported as not run, not as failures.
+	Timeout time.Duration
 }
 
 // Refresh collects local state, publishes a snapshot built from it and the
@@ -551,6 +570,7 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 	}
 	d.latest = ls
 	d.recordSkipped("")
+	d.recordDeadline("")
 	s, jobs := d.assemble(ls)
 	// A failed write leaves the snapshot published in memory, so the remote
 	// refresh still goes ahead; the write error is returned at the end.
@@ -568,17 +588,18 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		d.recordRefreshError(nil) // everything is fresh: nothing failed
 		return persistErr
 	}
-	done := d.opts.Refresher.Submit(jobs)
+	b := d.opts.Refresher.submit(jobs)
 	if opts.Wait {
-		s, res, err := d.awaitRounds(ctx, ls, jobs, done)
+		s, res, err := d.awaitRounds(ctx, ls, jobs, b, opts.Timeout)
 		if err != nil {
 			return err
 		}
 		// Every problem is shown; only failed lookups fail the command. Jobs
-		// beyond the queue bound were not run, so their data stays stale or
-		// unknown, which the snapshot already says.
+		// beyond the queue bound, or left at the deadline, were not run, so
+		// their data stays stale or unknown, which the snapshot already says.
 		d.recordRefreshError(res.Err())
 		d.recordSkipped(d.opts.Refresher.skipSummary(res))
+		d.recordDeadline(res.deadlineSummary())
 		remoteErr := res.failedErr()
 		if err := d.Publish(s); err != nil {
 			return errors.Join(err, remoteErr)
@@ -586,7 +607,7 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		return remoteErr
 	}
 	go func() {
-		res := <-done
+		res := <-b.done
 		d.refreshMu.Lock()
 		defer d.refreshMu.Unlock()
 		if d.latest != ls {
@@ -635,20 +656,37 @@ func waitedJobs(jobs []Job) []Job {
 // collection.
 const maxFollowUps = 3
 
-// awaitRounds waits for the batch done of jobs, then assembles ls again. Jobs
+// awaitRounds waits for the batch b of jobs, then assembles ls again. Jobs
 // the new data revealed that no earlier round submitted are submitted and
-// waited for in turn, at most maxFollowUps times. It returns the last
-// snapshot and every round's results together.
-func (d *Dash) awaitRounds(ctx context.Context, ls *localState, jobs []Job, done <-chan BatchResult) (*Snapshot, BatchResult, error) {
+// waited for in turn, until a round reveals none or after maxFollowUps
+// rounds. It returns the last snapshot and every round's results together:
+// a job dropped by a full queue in any round counts as dropped, not failed,
+// and is not submitted again. Once timeout (when not zero) has passed, it
+// stops waiting and assembles what has been fetched; the round's jobs not
+// yet finished count as unfinished. They are not cancelled: a later
+// collection sees whatever they fetch.
+func (d *Dash) awaitRounds(ctx context.Context, ls *localState, jobs []Job, b *batch, timeout time.Duration) (*Snapshot, BatchResult, error) {
 	tried := map[string]bool{}
 	for _, j := range jobs {
 		tried[j.key()] = true
 	}
+	var expired <-chan time.Time
+	if timeout > 0 {
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		expired = t.C
+	}
 	var total BatchResult
 	for round := 0; ; round++ {
 		select {
-		case res := <-done:
+		case res := <-b.done:
 			total.add(res)
+		case <-expired:
+			res, left := b.progress()
+			total.add(res)
+			total.Unfinished, total.Deadline = left, timeout
+			s, _ := d.assemble(ls)
+			return s, total, nil
 		case <-ctx.Done():
 			return nil, total, ctx.Err()
 		}
@@ -663,7 +701,7 @@ func (d *Dash) awaitRounds(ctx context.Context, ls *localState, jobs []Job, done
 		if len(more) == 0 || round == maxFollowUps {
 			return s, total, nil
 		}
-		done = d.opts.Refresher.Submit(more)
+		b = d.opts.Refresher.submit(more)
 	}
 }
 
