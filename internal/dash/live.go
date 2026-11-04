@@ -330,9 +330,10 @@ type Dash struct {
 	// skipDiag is informational, not an error: remote lookups skipped for
 	// want of an integration. Cleared when the next refresh starts.
 	skipDiag string
-	// deadlineDiag is informational too: the lookups a waited-for refresh
-	// left at its deadline. Cleared when the next refresh starts.
-	deadlineDiag string
+	// deadlineDiags are informational too: what a waited-for refresh left,
+	// or finished late, at its deadline. Cleared when the next refresh
+	// starts.
+	deadlineDiags []string
 }
 
 // Logf, when set, receives Dash faults that have no caller to return to,
@@ -366,9 +367,7 @@ func (d *Dash) diagnosticsLocked() []string {
 	if d.skipDiag != "" {
 		out = append(out, d.skipDiag)
 	}
-	if d.deadlineDiag != "" {
-		out = append(out, d.deadlineDiag)
-	}
+	out = append(out, d.deadlineDiags...)
 	return out
 }
 
@@ -409,12 +408,15 @@ func (d *Dash) recordSkipped(msg string) {
 	d.setDiagLocked(&d.skipDiag, msg)
 }
 
-// recordDeadline shows how many lookups a waited-for refresh left at its
-// deadline; "" clears it. It does not affect any error.
-func (d *Dash) recordDeadline(msg string) {
+// recordDeadline shows what a waited-for refresh left, or finished late, at
+// its deadline; nil clears it. It does not affect any error.
+func (d *Dash) recordDeadline(msgs []string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.setDiagLocked(&d.deadlineDiag, msg)
+	if !slices.Equal(d.deadlineDiags, msgs) {
+		d.deadlineDiags = msgs
+		d.restampLocked()
+	}
 }
 
 // recordCollectError makes a failed collection visible on the view still
@@ -540,10 +542,13 @@ type RefreshOptions struct {
 	// Wait blocks until the remote refresh has finished and been
 	// published. Otherwise it continues in the background.
 	Wait bool
-	// Timeout bounds how long Wait waits for remote lookups, follow-up
-	// rounds included; zero waits for all of them. At the deadline the
-	// snapshot is published with whatever has been fetched, and the
-	// lookups left are reported as not run, not as failures.
+	// Timeout bounds how long Wait starts remote lookups, follow-up rounds
+	// included; zero waits for all of them. At the deadline no more start,
+	// and the snapshot is published with whatever has been fetched: the
+	// lookups left are reported as not run, not as failures. PR inventory
+	// fetches running then are waited for, up to deadlineGrace times
+	// Timeout more, since a large set can take longer than any one
+	// deadline and would otherwise never be fetched.
 	Timeout time.Duration
 }
 
@@ -570,7 +575,7 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 	}
 	d.latest = ls
 	d.recordSkipped("")
-	d.recordDeadline("")
+	d.recordDeadline(nil)
 	s, jobs := d.assemble(ls)
 	// A failed write leaves the snapshot published in memory, so the remote
 	// refresh still goes ahead; the write error is returned at the end.
@@ -662,9 +667,8 @@ const maxFollowUps = 3
 // rounds. It returns the last snapshot and every round's results together:
 // a job dropped by a full queue in any round counts as dropped, not failed,
 // and is not submitted again. Once timeout (when not zero) has passed, it
-// stops waiting and assembles what has been fetched; the round's jobs not
-// yet finished count as unfinished. They are not cancelled: a later
-// collection sees whatever they fetch.
+// starts nothing more (see finishAtDeadline) and assembles what has been
+// fetched.
 func (d *Dash) awaitRounds(ctx context.Context, ls *localState, jobs []Job, b *batch, timeout time.Duration) (*Snapshot, BatchResult, error) {
 	tried := map[string]bool{}
 	for _, j := range jobs {
@@ -682,10 +686,18 @@ func (d *Dash) awaitRounds(ctx context.Context, ls *localState, jobs []Job, b *b
 		case res := <-b.done:
 			total.add(res)
 		case <-expired:
-			res, left := b.progress()
-			total.add(res)
-			total.Unfinished, total.Deadline = left, timeout
-			s, _ := d.assemble(ls)
+			total.add(d.finishAtDeadline(ctx, b, timeout))
+			s, next := d.assemble(ls)
+			// What the data fetched so far reveals is left too: the tickets
+			// of an inventory set finished past the deadline, say. What data
+			// not fetched would reveal cannot be counted.
+			for _, j := range waitedJobs(next) {
+				if !tried[j.key()] {
+					tried[j.key()] = true
+					total.Unfinished++
+				}
+			}
+			markDeadline(s, total)
 			return s, total, nil
 		case <-ctx.Done():
 			return nil, total, ctx.Err()
@@ -703,6 +715,70 @@ func (d *Dash) awaitRounds(ctx context.Context, ls *localState, jobs []Job, b *b
 		}
 		b = d.opts.Refresher.submit(more)
 	}
+}
+
+// deadlineGrace is how many times the deadline a waited-for refresh waits,
+// past it, for the PR inventory fetches running at it: in all it waits at
+// most 1 + deadlineGrace times the deadline.
+const deadlineGrace = 2
+
+// interruptWait bounds the wait for interrupted fetches to stop and record
+// the interruption.
+const interruptWait = 5 * time.Second
+
+// finishAtDeadline ends batch b at its deadline: its lookups not yet started
+// never start. When PR inventory fetches are running, it waits for the
+// batch's running lookups to finish, so that a large set's result is cached
+// rather than lost, up to deadlineGrace times the deadline; then it
+// interrupts them, and the inventory cache records the interruption.
+// Otherwise it waits for nothing: the other lookups are short, and the
+// Refresher's Close waits for them. It returns b's result, with what is
+// still running counted as unfinished.
+func (d *Dash) finishAtDeadline(ctx context.Context, b *batch, timeout time.Duration) BatchResult {
+	r := d.opts.Refresher
+	finishing := r.expire(b)
+	start := time.Now()
+	res, ok := BatchResult{}, false
+	if finishing > 0 {
+		grace := time.NewTimer(deadlineGrace * timeout)
+		defer grace.Stop()
+		select {
+		case res, ok = <-b.done:
+		case <-grace.C:
+			r.interrupt(b)
+			select {
+			case res, ok = <-b.done:
+			case <-time.After(interruptWait):
+			case <-ctx.Done():
+			}
+		case <-ctx.Done():
+		}
+	}
+	if !ok {
+		var left int
+		res, left = b.progress()
+		res.Unfinished += left
+	}
+	res.Deadline, res.Finishing = timeout, finishing
+	if finishing > 0 {
+		res.Overrun = time.Since(start)
+	}
+	return res
+}
+
+// markDeadline says on github_inventory, when it is not fresh, that the
+// refresh deadline came first.
+func markDeadline(s *Snapshot, res BatchResult) {
+	st, ok := s.Sources[SourceGitHubInventory]
+	if !ok || st.State == Fresh || res.Unfinished == 0 {
+		return
+	}
+	note := "the refresh deadline (" + FormatSeconds(res.Deadline) + ") was reached"
+	if st.Detail != "" {
+		note = st.Detail + "; " + note
+	}
+	st.Detail = note
+	s.Sources[SourceGitHubInventory] = st
 }
 
 // Acknowledge records the snapshot with generation gen as seen: it becomes

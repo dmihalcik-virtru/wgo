@@ -125,7 +125,8 @@ func TestJiraPauseOnUnauthorized(t *testing.T) {
 // pauses the rest.
 func TestJiraPauseConfirmsTheLogin(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	a := &fakeAcli{fail: acliViewFailed, login: jira.ErrNotLoggedIn, delay: 5 * time.Millisecond}
+	// The sprint list, which runs first, fails without saying why too.
+	a := &fakeAcli{fail: acliViewFailed, sprintFail: acliViewFailed, login: jira.ErrNotLoggedIn, delay: 5 * time.Millisecond}
 	r := jiraRefresher(t, a, 4, true)
 	res := <-r.Submit(jiraJobs(100))
 	if len(res.Failed) != 0 || res.JiraSkipped != 101 {
@@ -134,8 +135,8 @@ func TestJiraPauseConfirmsTheLogin(t *testing.T) {
 	if a.logins.Load() != 1 {
 		t.Fatalf("auth status asked %d times, want once", a.logins.Load())
 	}
-	if a.views.Load() > 4 {
-		t.Fatalf("%d views ran, want at most one per worker", a.views.Load())
+	if calls := a.views.Load() + a.sprints.Load(); calls > 4 {
+		t.Fatalf("%d acli calls, want at most one per worker", calls)
 	}
 }
 
@@ -168,9 +169,9 @@ func TestJiraPauseAfterAStreak(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			a := &fakeAcli{fail: "exit status 1\n✗ Error: dial tcp: lookup jira.example: no such host", login: errors.New("acli jira auth status: exit status 1: dial tcp: no such host")}
 			r := jiraRefresher(t, a, 1, withLogin)
-			res := <-r.Submit(jiraJobs(20))
-			if len(res.Failed) != jiraFailureStreak || res.JiraSkipped != 21-jiraFailureStreak {
-				t.Fatalf("failed %d, skipped %d; want %d and %d", len(res.Failed), res.JiraSkipped, jiraFailureStreak, 21-jiraFailureStreak)
+			res := <-r.Submit(jiraJobs(20)[:20])
+			if len(res.Failed) != jiraFailureStreak || res.JiraSkipped != 20-jiraFailureStreak {
+				t.Fatalf("failed %d, skipped %d; want %d and %d", len(res.Failed), res.JiraSkipped, jiraFailureStreak, 20-jiraFailureStreak)
 			}
 			if res.JiraSkipReason != "Jira lookups paused after acli failed 3 times in a row (get issue TEAM-3: exit status 1 ✗ Error: dial tcp: lookup jira.example: no such host)" {
 				t.Fatalf("reason %q", res.JiraSkipReason)
