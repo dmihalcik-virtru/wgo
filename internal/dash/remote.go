@@ -296,7 +296,9 @@ func (b *batch) finish(j Job, err error) {
 	switch {
 	case errors.As(err, &paused):
 		b.res.JiraSkipped++
-		b.res.JiraSkipReason = paused.reason
+		if b.res.JiraSkipReason == "" {
+			b.res.JiraSkipReason = paused.reason
+		}
 	case errors.Is(err, errNotStarted):
 		b.res.Unfinished++
 	case errors.Is(err, errInterrupted):
@@ -356,7 +358,7 @@ func (r *BatchResult) add(o BatchResult) {
 	r.Dropped += o.Dropped
 	r.Failed = append(r.Failed, o.Failed...)
 	r.JiraSkipped += o.JiraSkipped
-	if o.JiraSkipReason != "" {
+	if r.JiraSkipReason == "" {
 		r.JiraSkipReason = o.JiraSkipReason
 	}
 	r.Unfinished += o.Unfinished
@@ -717,9 +719,9 @@ func (r *Refresher) run(ctx context.Context, j Job) error {
 // skipped while lookups are paused, behind its lease (taken by lease) unless
 // IgnoreLeases is set. A lookup cut short by ctx tells the pause nothing.
 func (r *Refresher) jiraLookup(ctx context.Context, lease func() bool, lookup func() error) error {
-	ok, probe := r.jira.admit()
+	ok, probe, reason := r.jira.admit()
 	if !ok {
-		return &pausedError{reason: r.jira.paused()}
+		return &pausedError{reason: reason}
 	}
 	if !r.opts.IgnoreLeases && !lease() {
 		r.jira.release(probe)

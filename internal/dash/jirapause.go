@@ -109,19 +109,19 @@ func (p *jiraPause) paused() string {
 }
 
 // admit reports whether a Jira lookup may run now, and whether it is the
-// probe that ends a pause. An admitted lookup must be followed by done or
-// release.
-func (p *jiraPause) admit() (ok, probe bool) {
+// probe that ends a pause; when it may not, reason is the pause's. An
+// admitted lookup must be followed by done or release.
+func (p *jiraPause) admit() (ok, probe bool, reason string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch {
 	case p.reason == "":
-		return true, false
+		return true, false, ""
 	case p.probing || time.Now().Before(p.until):
-		return false, false
+		return false, false, p.reason
 	}
 	p.probing = true
-	return true, true
+	return true, true, ""
 }
 
 // release ends an admitted lookup that made no call (another wgo process
@@ -178,12 +178,14 @@ func (p *jiraPause) done(ctx context.Context, err error, probe bool) error {
 		p.mu.Unlock()
 		return &pausedError{reason: jiraNotLoggedIn, err: err}
 	case loginOK:
-		// acli is logged in: this ticket's own failure.
+		// acli is logged in: this ticket's own failure, which says nothing
+		// about the next one.
+		p.mu.Lock()
 		if probe {
-			p.mu.Lock()
 			p.closeLocked()
-			p.mu.Unlock()
 		}
+		p.last, p.streak = "", 0
+		p.mu.Unlock()
 		return err
 	}
 	if probe || streak >= jiraFailureStreak {

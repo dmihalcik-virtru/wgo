@@ -54,3 +54,12 @@ func TestLoginStatus(t *testing.T) {
 		t.Fatalf("error %q, want %q", err, want)
 	}
 }
+
+// TestLoginStatusTrustsTheOutput: an acli that says it is unauthorized is
+// logged out even when it exits 0.
+func TestLoginStatusTrustsTheOutput(t *testing.T) {
+	withFakeAcli(t, `echo "✗ Error: unauthorized: use 'acli jira auth login' to authenticate"`)
+	if err := LoginStatus(context.Background()); !errors.Is(err, ErrNotLoggedIn) {
+		t.Fatalf("exit 0, unauthorized: %v, want ErrNotLoggedIn", err)
+	}
+}
