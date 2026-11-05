@@ -152,7 +152,16 @@ repo is cloned rather than scaffolding an unenriched spec.
 
 Plain task (no ticket):
   wgo add fix the login bug
-  wgo add -p ship v2 release`,
+  wgo add -p ship v2 release
+
+Scratch workspace (no ticket, explicit -r): creates the same shared root and
+workspaces, with a branch named from the description alone. Meant for
+experiments and cross-repo repros that are not headed for a PR, so no spec is
+scaffolded, Jira is never contacted, and nothing is pushed:
+  wgo add repro token refresh race -r virtru/platform -r virtru/cli
+
+Push a scratch branch later with jj git push --bookmark <branch> if it grows
+into real work.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if addJira {
@@ -165,6 +174,12 @@ Plain task (no ticket):
 			ticket := args[0]
 			desc := joinArgs(args[1:])
 			return addWithWorktree(ticket, desc, addRepos, addPriority)
+		}
+		// Without a ticket, only an explicit -r asks for workspaces: falling
+		// back to the cwd repo here would turn every plain task added from
+		// inside a checkout into a new workspace.
+		if len(addRepos) > 0 {
+			return addWithWorktree("", joinArgs(args), addRepos, addPriority)
 		}
 		return addTask(joinArgs(args), addPriority)
 	},
@@ -222,7 +237,19 @@ func addTask(text string, priority bool) error {
 	return nil
 }
 
+// addWithWorktree creates a shared root holding one workspace per repo, all on
+// a common branch, and records the task in the plan.
+//
+// An empty ticket makes it a scratch workspace: the branch is named from desc
+// alone, and the steps that only make sense for tracked work — the Jira probe,
+// the spec scaffold, and the pushes — are skipped.
 func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
+	scratch := ticket == ""
+	if scratch && addRequireJira {
+		return fmt.Errorf("--require-jira needs a ticket ID as the first argument")
+	}
+	skipSpec := addNoSpec || scratch
+
 	if err := config.Init(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
@@ -231,7 +258,7 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 		return fmt.Errorf("worktree.worktrees_dir not configured; set it in ~/.wgo/config.toml")
 	}
 
-	jiraReady, err := jiraPreflight(ticket, addNoSpec, addRequireJira, jiraCheckAuth)
+	jiraReady, err := jiraPreflight(ticket, skipSpec, addRequireJira, jiraCheckAuth)
 	if err != nil {
 		return err
 	}
@@ -324,9 +351,11 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 			return err
 		}
 
-		fmt.Fprintf(os.Stderr, "pushing %s...\n", branchName)
-		if _, err := jjc.GitPush(repoPath, jj.PushOpts{Bookmarks: []string{branchName}, AllowNew: true}); err != nil && !errors.Is(err, jj.ErrNothingToPush) {
-			return fmt.Errorf("push %s: %w", spec.repo, err)
+		if !scratch {
+			fmt.Fprintf(os.Stderr, "pushing %s...\n", branchName)
+			if _, err := jjc.GitPush(repoPath, jj.PushOpts{Bookmarks: []string{branchName}, AllowNew: true}); err != nil && !errors.Is(err, jj.ErrNothingToPush) {
+				return fmt.Errorf("push %s: %w", spec.repo, err)
+			}
 		}
 
 		fmt.Fprintf(os.Stderr, "created: %s\n", wtPath)
@@ -337,7 +366,7 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 	specWtPath := filepath.Join(sharedRoot, specs[specRepoIdx].repo)
 	specAbs := filepath.Join(specWtPath, specRel)
 
-	if !addNoSpec {
+	if !skipSpec {
 		branches := make([]string, len(specs))
 		for i, sp := range specs {
 			branches[i] = sp.owner + "/" + sp.repo + ":" + branchName
@@ -452,18 +481,19 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 	if priority {
 		bullet = bujo.BulletPriority
 	}
-	taskText := ticket
-	if desc != "" {
-		taskText += " " + desc
-	}
+	taskText := strings.TrimSpace(ticket + " " + desc)
 	p.AddTask(bullet, taskText)
 
+	branchLabel := desc
+	if !scratch {
+		branchLabel = ticket + ": " + desc
+	}
 	for i, sp := range specs {
 		relSpec := ""
-		if i == specRepoIdx && !addNoSpec {
+		if i == specRepoIdx && !skipSpec {
 			relSpec = specRel
 		}
-		p.AddBranch(sp.repo, branchName, ticket+": "+desc, relSpec)
+		p.AddBranch(sp.repo, branchName, branchLabel, relSpec)
 	}
 
 	if err := s.SavePlan(p.Render()); err != nil {
@@ -471,7 +501,7 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 	}
 
 	// Update state annotation with spec path
-	if !addNoSpec {
+	if !skipSpec {
 		_ = s.MutateState(func(state *store.State) (bool, error) {
 			state.SetSpec(specRepoPath, branchName, specRel, "draft")
 			return true, nil
@@ -479,6 +509,9 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Added task: %s %s\n", string(bullet), taskText)
+	if scratch {
+		fmt.Fprintf(os.Stderr, "scratch branch %s is local only; push it with jj git push --bookmark %s\n", branchName, branchName)
+	}
 	fmt.Println(sharedRoot)
 	return nil
 }
@@ -767,13 +800,16 @@ var jiraRe = regexp.MustCompile(`^[A-Z]+-\d+$`)
 
 func isJiraTicket(s string) bool { return jiraRe.MatchString(s) }
 
-// slugTicketBranch builds "TICKET-slug-of-description" capped at 60 chars.
+// slugTicketBranch builds "TICKET-slug-of-description" capped at 60 chars, or
+// just the description slug when ticket is "".
 func slugTicketBranch(ticket, desc string) string {
 	if desc == "" {
 		return ticket
 	}
-	slug := gh.SanitizeBranch(strings.ToLower(desc))
-	full := ticket + "-" + slug
+	full := gh.SanitizeBranch(strings.ToLower(desc))
+	if ticket != "" {
+		full = ticket + "-" + full
+	}
 	if len(full) > 60 {
 		full = full[:60]
 		full = strings.TrimRight(full, "-")
