@@ -231,11 +231,17 @@ type PRInfo struct {
 	IsDraft        bool   `json:"is_draft,omitempty"`
 	ReviewDecision string `json:"review_decision,omitempty"`
 	Checks         string `json:"checks,omitempty"`
-	// RequestedReviewers is meaningful only when ReviewersKnown.
-	RequestedReviewers []string  `json:"requested_reviewers,omitempty"`
+	// RequestedReviewers lists the outstanding review requests when
+	// ReviewersKnown: non-nil, so none encodes as [] and reads as "none
+	// requested". It is nil (omitted) while unknown.
+	RequestedReviewers []string  `json:"requested_reviewers,omitzero"`
 	ReviewersKnown     bool      `json:"reviewers_known"`
 	UpdatedAt          time.Time `json:"updated_at,omitzero"`
-	Freshness          Freshness `json:"freshness"`
+	// Freshness is the worse of the freshness of the sources that found
+	// the PR: the bookmark's PR lookup, and the inventory set its facts
+	// were read from. FetchedAt is the older of their fetch times.
+	Freshness Freshness `json:"freshness"`
+	FetchedAt time.Time `json:"fetched_at,omitzero"`
 	// BookmarkID is the node ID of the bookmark the PR was found for. It is
 	// empty for a PR that only the inventory found and that is attached to
 	// an effort by a tracks edge instead (gh-97).
@@ -268,7 +274,9 @@ type PRInfo struct {
 	BaseRef   string `json:"base_ref,omitempty"`
 	HeadRef   string `json:"head_ref,omitempty"`
 	// ReviewRequests adds kinds and request times to RequestedReviewers,
-	// for the same outstanding requests; ReviewersKnown covers both.
+	// for the same outstanding requests. ReviewersKnown covers
+	// RequestedReviewers only: ReviewRequests is nil (unknown) whenever the
+	// PR's state did not come from the inventory.
 	ReviewRequests []ReviewRequest `json:"review_requests,omitzero"`
 	// Reviews holds the latest review per reviewer.
 	Reviews []Review `json:"reviews,omitzero"`
@@ -395,11 +403,15 @@ type Counts struct {
 	Agents map[string]map[string]int `json:"agents"`
 	// Merged is the number of PRs merged per day of the window, by
 	// merged_at, keyed like PRStates. An absent effort's count is unknown,
-	// never zero: it has a PR of unknown state, a merged PR whose merge time
-	// is unknown (one known only through a bookmark), a bookmark whose
-	// lookup is unknown or failed, or a workspace jj could not read. Merged
-	// is omitted entirely unless People includes the authenticated user (Me)
-	// and every person's closed-recent inventory set is fresh and untruncated.
+	// never zero: it has a PR of unknown state; a merged PR whose merge time
+	// is unknown (one whose state came from a bookmark lookup) and may fall
+	// in the window, because its updated_at is unknown or not before the
+	// window; a bookmark whose lookup is unknown or failed; or a workspace jj
+	// could not read. Merged is omitted entirely unless People includes the
+	// authenticated user (Me) and every person's closed-recent inventory set
+	// is fresh, untruncated, complete, covers the window, and was fetched
+	// since any PR last left their open-authored set: otherwise their merges
+	// could belong to any effort.
 	Merged map[string][]int `json:"merged,omitzero"`
 }
 

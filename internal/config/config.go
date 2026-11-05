@@ -68,6 +68,17 @@ type DashConfig struct {
 	// authenticated user is always added once their GitHub login is known
 	// (gh-97 caches it).
 	People []DashPerson `mapstructure:"people"`
+	// InventoryTTLSeconds is how long the PR inventory's open sets
+	// (open-authored, review-requested) stay fresh, 60 to 86400 (300 when
+	// zero). closed-recent, which changes only when a PR merges or closes,
+	// stays fresh six times as long: 1800 by default.
+	InventoryTTLSeconds int `mapstructure:"inventory_ttl_seconds"`
+	// TicketPrefixes are the Jira project keys whose ticket IDs count when
+	// found in PR titles and bodies, so SHA-256 or UTF-8 never read as
+	// tickets. When empty, [jira]'s project, default_project and
+	// project_rules projects are used. Local bookmarks' ticket prefixes
+	// always count.
+	TicketPrefixes []string `mapstructure:"ticket_prefixes"`
 }
 
 // DashPerson is one [[dash.people]] entry.
@@ -624,6 +635,8 @@ gh_stack = "auto"
 # editor = "zed"                # Editor/Plan/Spec: one executable, no arguments; tried before code, then xed
 # refresh_seconds = 30          # background re-collection interval (5 to 3600)
 # days = 14                     # activity window (--days overrides)
+# inventory_ttl_seconds = 300   # the people's open PRs stay fresh this long (60 to 86400); merged/closed ones 6x as long
+# ticket_prefixes = ["TEAM"]    # Jira keys that count in PR titles and bodies (default: [jira] projects)
 #
 # People whose PRs and tickets the dash follows. Without any entries it
 # follows [pair]'s teammate. You (the authenticated GitHub user) are always

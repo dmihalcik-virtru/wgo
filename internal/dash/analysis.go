@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/virtru/wgo/internal/inventory"
 )
 
 // This file holds the snapshot types the analysis epic (gh-96) adds: PR facts
@@ -47,6 +49,9 @@ const (
 	ReviewerTeam = "team"
 )
 
+// teamPrefix starts a team reviewer, "team:<slug>", and only a team one.
+const teamPrefix = "team:"
+
 // Involvement roles (Involvement.Role).
 const (
 	RoleAuthor = "author"
@@ -63,12 +68,13 @@ const (
 	PRSourceInventory = "inventory"
 )
 
-// Inventory sets (gh-97). The github_inventory source has one part per
-// person and set, named by inventoryPart.
+// Inventory sets (gh-97), as internal/inventory names them. The
+// github_inventory source has one part per person and set, named by
+// inventoryPart.
 const (
-	InventoryOpenAuthored    = "open-authored"
-	InventoryReviewRequested = "review-requested"
-	InventoryClosedRecent    = "closed-recent"
+	InventoryOpenAuthored    = string(inventory.OpenAuthored)
+	InventoryReviewRequested = string(inventory.ReviewRequested)
+	InventoryClosedRecent    = string(inventory.ClosedRecent)
 )
 
 // Jira status categories (TicketInfo.StatusCategory).
@@ -181,6 +187,11 @@ type SourcePart struct {
 	// Truncated is set when a remote limit cut the unit's results short.
 	Truncated bool   `json:"truncated,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Incomplete is set when the unit's last fetch is known to have missed
+	// results it should hold: errors came back beside partial data, or
+	// fewer results than counted. Like a truncated unit, it covers nothing
+	// it lacks.
+	Incomplete bool `json:"incomplete,omitempty"`
 	// CoverageFrom is the earliest time the unit's search reaches, when it
 	// is bounded in time: the cutoff of a closed-recent inventory search
 	// (gh-97), recorded even when the search found nothing. A period before
@@ -189,16 +200,17 @@ type SourcePart struct {
 }
 
 // inventoryPart names the github_inventory part holding person login's
-// inventory set, such as "alice/open-authored". Logins are case-insensitive,
-// so it lowercases them.
-func inventoryPart(login, set string) string { return strings.ToLower(login) + "/" + set }
+// inventory set, such as "alice/open-authored": inventory.Key's String.
+func inventoryPart(login, set string) string {
+	return inventory.Key{Login: login, Set: inventory.Set(set)}.String()
+}
 
 // inventoryCoverage returns the names of s's github_inventory parts whose
-// PR list is complete: they hold data, fresh or stale, and were not
-// truncated. A PR missing from a covered part is not in that set; whether
-// a PR is in any other part is unknown.
+// PR list is complete: they hold data, fresh or stale, and were neither
+// truncated nor incomplete. A PR missing from a covered part is not in that
+// set; whether a PR is in any other part is unknown.
 func inventoryCoverage(s *Snapshot) map[string]bool {
-	return inventoryParts(s, func(p SourcePart) bool { return p.State.hasData() && !p.Truncated })
+	return inventoryParts(s, func(p SourcePart) bool { return p.State.hasData() && !p.Truncated && !p.Incomplete })
 }
 
 // inventoryParts returns the lowercased names of s's github_inventory parts
@@ -215,16 +227,19 @@ func inventoryParts(s *Snapshot, ok func(SourcePart) bool) map[string]bool {
 	return good
 }
 
-// mergedKnown reports whether merges can be counted at all. Merge times come
-// from the inventory's closed-recent sets, so it needs the authenticated
-// user among People (otherwise their own merges were never searched) and
-// every person's closed-recent set fresh and untruncated: a stale set lacks
-// the merges since it was fetched.
+// mergedKnown reports whether the snapshot can show merges at all. Merge
+// times come from the inventory's closed-recent sets, so it needs the
+// authenticated user among People (otherwise their own merges were never
+// searched) and every person's closed-recent set fresh, untruncated and
+// complete: a stale set lacks the merges since it was fetched. Collection
+// also requires each set to cover the counts window and to have been
+// fetched since PRs last left the person's open-authored set (addInventory);
+// Counts.Merged documents the whole rule.
 func mergedKnown(s *Snapshot) bool {
 	if !slices.ContainsFunc(s.People, func(p Person) bool { return p.Me }) {
 		return false
 	}
-	fresh := inventoryParts(s, func(p SourcePart) bool { return p.State == Fresh && !p.Truncated })
+	fresh := inventoryParts(s, func(p SourcePart) bool { return p.State == Fresh && !p.Truncated && !p.Incomplete })
 	return !slices.ContainsFunc(s.People, func(p Person) bool {
 		return !fresh[inventoryPart(p.Login, InventoryClosedRecent)]
 	})

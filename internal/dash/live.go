@@ -395,16 +395,13 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 	}
 	done := d.opts.Refresher.Submit(jobs)
 	if opts.Wait {
-		var res BatchResult
-		select {
-		case res = <-done:
-		case <-ctx.Done():
-			return ctx.Err()
+		s, res, err := d.awaitRounds(ctx, ls, jobs, done)
+		if err != nil {
+			return err
 		}
 		remoteErr := res.Err()
 		d.recordRefreshError(remoteErr)
 		d.recordSkipped(d.opts.Refresher.skipSummary(res))
-		s, _ := c.assemble(ls)
 		if err := d.Publish(s); err != nil {
 			return errors.Join(err, remoteErr)
 		}
@@ -431,6 +428,44 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		d.recordRefreshError(err)
 	}()
 	return persistErr
+}
+
+// maxFollowUps bounds the extra rounds of lookups a waited-for refresh runs
+// for jobs that only fetched data reveals: once the authenticated login is
+// known, that person's inventory; once the inventory is in, the tickets its
+// PRs name. A background refresh leaves them to its next collection.
+const maxFollowUps = 2
+
+// awaitRounds waits for the batch done of jobs, then assembles ls again. Jobs
+// the new data revealed that no earlier round submitted are submitted and
+// waited for in turn, at most maxFollowUps times. It returns the last
+// snapshot and every round's results together.
+func (d *Dash) awaitRounds(ctx context.Context, ls *localState, jobs []Job, done <-chan BatchResult) (*Snapshot, BatchResult, error) {
+	tried := map[string]bool{}
+	for _, j := range jobs {
+		tried[j.key()] = true
+	}
+	var total BatchResult
+	for round := 0; ; round++ {
+		select {
+		case res := <-done:
+			total.add(res)
+		case <-ctx.Done():
+			return nil, total, ctx.Err()
+		}
+		s, next := d.opts.Collector.assemble(ls)
+		var more []Job
+		for _, j := range next {
+			if !tried[j.key()] {
+				tried[j.key()] = true
+				more = append(more, j)
+			}
+		}
+		if len(more) == 0 || round == maxFollowUps {
+			return s, total, nil
+		}
+		done = d.opts.Refresher.Submit(more)
+	}
 }
 
 // Acknowledge records the snapshot with generation gen as seen: it becomes

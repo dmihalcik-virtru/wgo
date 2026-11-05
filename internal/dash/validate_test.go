@@ -203,6 +203,8 @@ func TestValidateAnalysisRules(t *testing.T) {
 		{"mergeable", func(s *Snapshot) { pr(s).Mergeable = "yes" }, `mergeable "yes"`},
 		{"review request kind", func(s *Snapshot) { pr(s).ReviewRequests[0].Kind = "group" }, "review request kind"},
 		{"review request reviewer", func(s *Snapshot) { pr(s).ReviewRequests[0].Reviewer = "" }, "no reviewer"},
+		{"team request without team:", func(s *Snapshot) { pr(s).ReviewRequests[0].Reviewer = "web" }, "only a team is"},
+		{"user request with team:", func(s *Snapshot) { pr(s).ReviewRequests[0].Kind = ReviewerUser }, "only a team is"},
 		{"review state", func(s *Snapshot) { pr(s).Reviews[0].State = "PENDING" }, "review state"},
 		{"check state", func(s *Snapshot) { pr(s).CheckDetails[0].State = "error" }, "check state"},
 		{"check name", func(s *Snapshot) { pr(s).CheckDetails[0].Name = "" }, "check with no name"},

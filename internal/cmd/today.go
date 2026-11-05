@@ -213,7 +213,11 @@ func showToday() error {
 					mu.Unlock()
 					return
 				}
-				gh.EnrichWithActivity(involved, login)
+				if err := gh.EnrichWithActivity(involved, login); err != nil {
+					mu.Lock()
+					errs = append(errs, fmt.Sprintf("pr activity: %v", err))
+					mu.Unlock()
+				}
 				var attn []github.ExtendedPRInfo
 				for _, pr := range involved {
 					if pr.MyLastActivity.IsZero() || pr.HasNewActivity {
