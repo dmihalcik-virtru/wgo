@@ -12,6 +12,11 @@ import (
 // upstream renames a template field we depend on.
 const TemplateSchemaVersion = 4
 
+// timestampFormat is the strftime layout for jj timestamps, e.g.
+// 2026-06-15T12:30:02-04:00. jj 0.47 rejects the old "%+" specifier
+// ("found unrecognized specifier directive `+`"), so spell it out.
+const timestampFormat = "%Y-%m-%dT%H:%M:%S%:z"
+
 // LogEntryTemplate renders a `jj log` record as a single line of JSON. Pair
 // with `--no-graph` and ParseLogEntries to consume.
 //
@@ -32,8 +37,8 @@ const TemplateSchemaVersion = 4
 //	                     because Template-typed concatenations cannot be
 //	                     escape_json'd directly)
 //	author_email_domain  domain part of author email
-//	author_timestamp     ISO 8601 ("%+") author timestamp
-//	committer_timestamp  ISO 8601 ("%+") committer timestamp, which moves on
+//	author_timestamp     ISO 8601 author timestamp (timestampFormat)
+//	committer_timestamp  ISO 8601 committer timestamp, which moves on
 //	                     every rewrite (amend, rebase) while the author
 //	                     timestamp stays
 //	empty                true if the change touches no files
@@ -46,8 +51,8 @@ const LogEntryTemplate = `"{\"change_id\":" ++ change_id.short(32).escape_json()
 	`++ "],\"parents\":[" ++ parents.map(|p| p.change_id().short(32).escape_json()).join(",") ` +
 	`++ "],\"author_email_local\":" ++ author.email().local().escape_json() ` +
 	`++ ",\"author_email_domain\":" ++ author.email().domain().escape_json() ` +
-	`++ ",\"author_timestamp\":" ++ author.timestamp().format("%+").escape_json() ` +
-	`++ ",\"committer_timestamp\":" ++ committer.timestamp().format("%+").escape_json() ` +
+	`++ ",\"author_timestamp\":" ++ author.timestamp().format("` + timestampFormat + `").escape_json() ` +
+	`++ ",\"committer_timestamp\":" ++ committer.timestamp().format("` + timestampFormat + `").escape_json() ` +
 	`++ ",\"empty\":" ++ if(empty, "true", "false") ` +
 	`++ ",\"immutable\":" ++ if(immutable, "true", "false") ` +
 	`++ ",\"current_working_copy\":" ++ if(current_working_copy, "true", "false") ` +
@@ -232,7 +237,7 @@ func ParseWorkspaces(stdout []byte) ([]Workspace, error) {
 	return out, nil
 }
 
-// parseTimestamp accepts both jj's "%+" output (e.g. 2026-06-15T12:30:02-04:00)
+// parseTimestamp accepts both jj's timestampFormat output (e.g. 2026-06-15T12:30:02-04:00)
 // and the RFC3339 variant used for the root commit's zero timestamp.
 func parseTimestamp(s string) (time.Time, error) {
 	if s == "" {
