@@ -22,6 +22,12 @@ import (
 type builder struct {
 	nodes map[string]*Node
 	edges map[Edge]bool
+	// diags are problems found while building; they join the snapshot's
+	// diagnostics. notes are per-ticket notes, such as Jira facts that
+	// could not be read, keyed by cause: each becomes one diagnostic with
+	// the tickets it affects.
+	diags []string
+	notes map[string][]string
 }
 
 func (b *builder) node(n Node) *Node {
@@ -297,12 +303,16 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	// into their PRs and attach to them.
 	invStatus, invDiags, invMergedKnown := c.addInventory(b, ls, wsEffort, effortNode, &issueTally, &jiraTally, addJob)
 
+	// Sprints of [jira] board and their tickets (gh-98). Keep this after
+	// every other source of ticket nodes: it attaches a sprint ticket to the
+	// sprint's group effort only when nothing else leads to it.
+	sprintStatus := c.addSprints(b, effortNode, &jiraTally, addJob)
 	s := &Snapshot{
 		Schema:      SchemaVersion,
 		GeneratedAt: ls.at,
 		Days:        ls.days,
 		Sources:     map[string]SourceStatus{},
-		Diagnostics: dedupeStrings(ls.diags),
+		Diagnostics: dedupeStrings(slices.Concat(ls.diags, b.diags, b.noteDiagnostics())),
 	}
 	maps.Copy(s.Sources, ls.sources)
 	var login, jira string
@@ -315,6 +325,7 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	s.Sources[SourceJira] = jiraTally.status()
 	s.Sources[SourceGitHubInventory] = invStatus
 	s.Diagnostics = dedupeStrings(append(s.Diagnostics, invDiags...))
+	s.Sources[SourceJiraSprints] = sprintStatus
 
 	for _, n := range b.nodes {
 		s.Nodes = append(s.Nodes, *n)
@@ -451,6 +462,13 @@ func (c *Collector) ticketNodeFor(b *builder, ticket, repoName, repoSlug, noGitH
 		b.node(Node{ID: id, Kind: KindTicket, Label: repoSlug + "#" + n, Ticket: ti})
 		return id
 	}
+	return c.jiraTicketNode(b, ticket, jira, addJob)
+}
+
+// jiraTicketNode adds the Jira ticket with the given key, with its cached
+// status and facts, and returns its ID. A ticket whose cache entry is not
+// fresh is queued for refresh.
+func (c *Collector) jiraTicketNode(b *builder, ticket string, jira *remoteTally, addJob func(Job)) string {
 	id := jiraTicketID(ticket)
 	if _, done := b.nodes[id]; done {
 		return id
@@ -471,7 +489,10 @@ func (c *Collector) ticketNodeFor(b *builder, ticket, repoName, repoSlug, noGitH
 		ti.Freshness = Stale
 	}
 	if ti.Freshness.hasData() {
-		ti.Status, ti.Assignee = info.Status, info.Assignee
+		applyJiraFacts(ti, info)
+		for _, n := range info.Notes {
+			b.note(n, ticket)
+		}
 	}
 	site := c.cfg.JiraSite
 	if site == "" {

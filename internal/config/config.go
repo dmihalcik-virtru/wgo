@@ -231,6 +231,22 @@ type JiraConfig struct {
 	Board           int               `mapstructure:"board"`            // default board id for: wgo standup
 	Site            string            `mapstructure:"site"`             // Jira host; auto-detected from acli when empty
 	StandupStatuses []string          `mapstructure:"standup_statuses"` // in-flight statuses for: wgo standup
+	// Fields maps the site-specific fields wgo dash reads ([jira.fields]).
+	Fields JiraFieldsConfig `mapstructure:"fields"`
+}
+
+// JiraFieldsConfig is [jira.fields]: this Jira site's IDs for the custom
+// fields wgo dash reads, such as "customfield_10016". Each overrides
+// discovery; "none" says the site has no such field, which silences the
+// diagnostic about it. acli cannot list a site's fields, so only the sprint
+// field is discovered and the others need setting here to be known.
+type JiraFieldsConfig struct {
+	StoryPoints string `mapstructure:"story_points"`
+	Sprint      string `mapstructure:"sprint"`
+	Team        string `mapstructure:"team"`
+	// EpicLink is the legacy epic link. Tickets that report their epic as
+	// parent, as Jira Cloud does, do not need it.
+	EpicLink string `mapstructure:"epic_link"`
 }
 
 // StandupStatusesOrDefault returns the configured in-flight statuses, or the
@@ -661,6 +677,17 @@ gh_stack = "auto"
 # board           = 305      # default board id used by: wgo standup (override with --board)
 # site            = "your-org.atlassian.net"  # optional; auto-detected from acli when omitted
 # standup_statuses = ["In Progress", "In Review", "In QA"]  # in-flight states for: wgo standup
+#
+# This site's custom field IDs, for the ticket facts in "wgo dash". Each is
+# optional and overrides discovery; "none" means the site has no such field.
+# acli cannot list fields, so only sprint is discovered (cached for 7 days in
+# ~/.wgo/cache/jira/fields.json). Find an ID in a ticket's JSON:
+#   acli jira workitem view TEAM-123 --fields '*all' --json
+# [jira.fields]
+# story_points = "customfield_10016"
+# sprint       = "customfield_10020"
+# team         = "customfield_10001"
+# epic_link    = "customfield_10014"  # legacy epic link; not needed when epics show as parent
 #
 # Per-repo/path rules — first match wins; either field is sufficient
 # [[jira.project_rules]]
