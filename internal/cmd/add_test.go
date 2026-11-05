@@ -177,6 +177,10 @@ func TestSlugTicketBranch(t *testing.T) {
 		{"DSPX-123", "a very long description that will be truncated at the sixty character limit", "DSPX-123-a-very-long-description-that-will-be-truncated-at-t"},
 		// special characters are sanitized
 		{"DSPX-1", "hello world!", "DSPX-1-hello-world"},
+		// scratch workspaces carry no ticket prefix
+		{"", "repro token refresh race", "repro-token-refresh-race"},
+		{"", "a very long description that will be truncated at the sixty character limit", "a-very-long-description-that-will-be-truncated-at-the-sixty"},
+		{"", "", ""},
 	}
 	for _, tt := range tests {
 		got := slugTicketBranch(tt.ticket, tt.desc)
@@ -185,6 +189,17 @@ func TestSlugTicketBranch(t *testing.T) {
 			assert.NotEqual(t, byte('-'), got[len(got)-1], "slugTicketBranch(%q, %q) = %q ends in dash", tt.ticket, tt.desc, got)
 		}
 	}
+}
+
+// --require-jira has nothing to fetch for a scratch workspace; rejecting it up
+// front keeps a typo'd ticket ID from quietly creating untracked workspaces.
+func TestAddScratchRejectsRequireJira(t *testing.T) {
+	addRequireJira = true
+	t.Cleanup(func() { addRequireJira = false })
+
+	err := addWithWorktree("", "repro race", []string{"virtru/wgo"}, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--require-jira needs a ticket ID")
 }
 
 func TestTruncateSlug(t *testing.T) {
