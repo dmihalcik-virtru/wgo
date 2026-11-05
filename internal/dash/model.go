@@ -56,6 +56,7 @@ const (
 	KindPR        NodeKind = "pr"
 	KindTicket    NodeKind = "ticket"
 	KindAgent     NodeKind = "agent"
+	KindSprint    NodeKind = "sprint" // a Jira sprint of [jira] board (gh-98)
 )
 
 // Source names used in Snapshot.Sources.
@@ -66,6 +67,10 @@ const (
 	SourceGitHubPRs    = "github_prs"
 	SourceGitHubIssues = "github_issues"
 	SourceJira         = "jira"
+	// SourceGitHubInventory is the per-person PR inventory (gh-97).
+	SourceGitHubInventory = "github_inventory"
+	// SourceJiraSprints is the board's sprints and their tickets (gh-98).
+	SourceJiraSprints = "jira_sprints"
 )
 
 // Snapshot is one immutable view of ongoing work. Once published by a Dash
@@ -82,6 +87,10 @@ type Snapshot struct {
 	Edges       []Edge                  `json:"edges"`
 	Counts      Counts                  `json:"counts"`
 	Diagnostics []string                `json:"diagnostics,omitempty"`
+	// People are the people the dash follows (gh-97), resolved by
+	// ResolvePeople; the query macros @me and @people read them. Omitted
+	// when nobody is known.
+	People []Person `json:"people,omitempty"`
 }
 
 // SourceStatus is the freshness of one data source. For remote sources the
@@ -97,6 +106,10 @@ type SourceStatus struct {
 	// The jira cache does not record one, so it is never set for jira.
 	OldestFetch time.Time `json:"oldest_fetch,omitzero"`
 	Detail      string    `json:"detail,omitempty"`
+	// Parts break a source that fetches a few named units down by unit:
+	// one per (person, inventory set) for github_inventory, one per board
+	// or sprint for jira_sprints. The counts above then count parts.
+	Parts []SourcePart `json:"parts,omitempty"`
 }
 
 // Node is a snapshot node. Exactly one of the kind-specific fields is set.
@@ -110,6 +123,7 @@ type Node struct {
 	PR        *PRInfo        `json:"pr,omitempty"`
 	Ticket    *TicketInfo    `json:"ticket,omitempty"`
 	Agent     *AgentInfo     `json:"agent,omitempty"`
+	Sprint    *SprintInfo    `json:"sprint,omitempty"`
 }
 
 // Effort groups.
@@ -118,6 +132,8 @@ const (
 	GroupTicket    = "ticket"    // gh-71's ticket-ID fallback
 	GroupTheme     = "theme"     // an agent ThemeID naming no known effort
 	GroupUngrouped = "ungrouped" // unattributed work and conflicts
+	GroupRepo      = "repo"      // inventory PRs no local work leads to, per repository (gh-97)
+	GroupSprint    = "sprint"    // sprint tickets nothing else leads to, per sprint (gh-98)
 )
 
 // UngroupedID is the node ID of the Ungrouped effort.
@@ -126,7 +142,7 @@ const UngroupedID = "effort:ungrouped"
 // EffortInfo describes an effort group.
 type EffortInfo struct {
 	// Key is the attribution key: the effort ID, "ticket-<id>", a raw
-	// ThemeID, or "ungrouped".
+	// ThemeID, "repo:<owner/repo>", "sprint:<id>", or "ungrouped".
 	Key         string `json:"key"`
 	Group       string `json:"group"`
 	Description string `json:"description,omitempty"`
@@ -220,8 +236,52 @@ type PRInfo struct {
 	ReviewersKnown     bool      `json:"reviewers_known"`
 	UpdatedAt          time.Time `json:"updated_at,omitzero"`
 	Freshness          Freshness `json:"freshness"`
-	// BookmarkID is the node ID of the bookmark the PR was found for.
-	BookmarkID string `json:"bookmark_id"`
+	// BookmarkID is the node ID of the bookmark the PR was found for. It is
+	// empty for a PR that only the inventory found and that is attached to
+	// an effort by a tracks edge instead (gh-97).
+	BookmarkID string `json:"bookmark_id,omitempty"`
+	// Sources says how the PR was found: PRSourceBookmark, PRSourceInventory
+	// or both, sorted. It is set on every PR assemble builds; it is absent
+	// only from snapshots older than the inventory.
+	Sources []string `json:"sources,omitempty"`
+
+	// The fields below are the inventory's facts (gh-97). Each is omitted
+	// when GitHub did not report it, which is always the case for a PR
+	// known only through a bookmark: unknown, never zero or "none". A list
+	// distinguishes the two with omitzero: nil is unknown and omitted, while
+	// a non-nil empty list is "reported, none" and encodes as [].
+
+	// Author is the PR author's login.
+	Author    string    `json:"author,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitzero"`
+	MergedAt  time.Time `json:"merged_at,omitzero"`
+	ClosedAt  time.Time `json:"closed_at,omitzero"`
+	// ReadyAt is when the PR last left draft, or CreatedAt if it never was
+	// a draft. It is omitted while the PR is a draft.
+	ReadyAt      time.Time `json:"ready_at,omitzero"`
+	Additions    *int      `json:"additions,omitempty"`
+	Deletions    *int      `json:"deletions,omitempty"`
+	ChangedFiles *int      `json:"changed_files,omitempty"`
+	// Mergeable is MergeMergeable, MergeConflicting or MergeUnknown. GitHub
+	// computes it lazily, so MergeUnknown is common and does not mean no.
+	Mergeable string `json:"mergeable,omitempty"`
+	BaseRef   string `json:"base_ref,omitempty"`
+	HeadRef   string `json:"head_ref,omitempty"`
+	// ReviewRequests adds kinds and request times to RequestedReviewers,
+	// for the same outstanding requests; ReviewersKnown covers both.
+	ReviewRequests []ReviewRequest `json:"review_requests,omitzero"`
+	// Reviews holds the latest review per reviewer.
+	Reviews []Review `json:"reviews,omitzero"`
+	// CheckDetails lists the head commit's check runs and status contexts,
+	// at most MaxCheckDetails of them; Checks stays the rollup.
+	CheckDetails    []CheckDetail `json:"check_details,omitzero"`
+	ChecksTruncated bool          `json:"checks_truncated,omitempty"`
+	// TicketKeys are the ticket IDs read from the head branch, then the
+	// title, then the body: ordered and deduplicated. A GitHub issue in the
+	// same repository is "gh-<n>", matching TicketInfo.Key.
+	TicketKeys []string `json:"ticket_keys,omitzero"`
+	// Involvement lists each configured person's part in the PR.
+	Involvement []Involvement `json:"involvement,omitzero"`
 }
 
 // TicketInfo describes a Jira or GitHub issue ticket.
@@ -236,6 +296,30 @@ type TicketInfo struct {
 	Freshness Freshness `json:"freshness"`
 	FetchedAt time.Time `json:"fetched_at,omitzero"`
 	Error     string    `json:"error,omitempty"`
+
+	// The fields below are Jira facts (gh-98), omitted when Jira did not
+	// report them or the cache predates them. Title carries the summary.
+	// Lists use omitzero like PRInfo's: nil is unknown, [] is none.
+
+	// StatusCategory is StatusToDo, StatusInProgress or StatusDone.
+	StatusCategory string      `json:"status_category,omitempty"`
+	Type           string      `json:"type,omitempty"`
+	Priority       string      `json:"priority,omitempty"`
+	Sprints        []SprintRef `json:"sprints,omitzero"`
+	// StoryPoints is nil when unestimated or unknown; a diagnostic says
+	// when the site's story points field could not be read at all.
+	StoryPoints *float64      `json:"story_points,omitempty"`
+	Parent      *TicketParent `json:"parent,omitempty"`
+	// Team is the team field's display value.
+	Team       string    `json:"team,omitempty"`
+	Components []string  `json:"components,omitzero"`
+	Labels     []string  `json:"labels,omitzero"`
+	Resolution string    `json:"resolution,omitempty"`
+	ResolvedAt time.Time `json:"resolved_at,omitzero"`
+	CreatedAt  time.Time `json:"created_at,omitzero"`
+	UpdatedAt  time.Time `json:"updated_at,omitzero"`
+	// AssigneeID is the assignee's account ID, for matching people.
+	AssigneeID string `json:"assignee_id,omitempty"`
 }
 
 // AgentInfo describes a gh-72 agent session, read only.
@@ -279,6 +363,10 @@ const (
 	EdgeTicket   EdgeKind = "ticket"   // pr (or bookmark without PRs) -> ticket
 	EdgeRuns     EdgeKind = "runs"     // effort -> agent
 	EdgeWorksIn  EdgeKind = "works_in" // agent -> workspace
+	// EdgeTracks attaches a PR or ticket that no bookmark leads to:
+	// effort -> pr (gh-97), effort -> ticket (gh-98).
+	EdgeTracks   EdgeKind = "tracks"
+	EdgeInSprint EdgeKind = "in_sprint" // ticket -> sprint
 )
 
 // Edge is a directed snapshot edge between node IDs.
@@ -299,9 +387,20 @@ type Counts struct {
 	// PRStates counts PRs by state (open, draft, merged, closed) plus
 	// bookmarks whose lookup is unknown or failed (unknown) or that have no
 	// PR (none). A bookmark shared by several efforts counts under each.
+	// A PR attached by a tracks edge counts under that effort. A bookmark
+	// whose lookup is unknown counts as unknown even when the inventory
+	// attached a PR to it, which counts too.
 	PRStates map[string]map[string]int `json:"pr_states"`
 	// Agents counts agent sessions by liveness.
 	Agents map[string]map[string]int `json:"agents"`
+	// Merged is the number of PRs merged per day of the window, by
+	// merged_at, keyed like PRStates. An absent effort's count is unknown,
+	// never zero: it has a PR of unknown state, a merged PR whose merge time
+	// is unknown (one known only through a bookmark), a bookmark whose
+	// lookup is unknown or failed, or a workspace jj could not read. Merged
+	// is omitted entirely unless People includes the authenticated user (Me)
+	// and every person's closed-recent inventory set is fresh and untruncated.
+	Merged map[string][]int `json:"merged,omitzero"`
 }
 
 // Node returns the node with the given ID, or nil.

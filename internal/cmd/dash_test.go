@@ -376,6 +376,9 @@ func TestApplyDashConfig(t *testing.T) {
 		// --json never serves, so it ignores port and refresh_seconds.
 		{name: "json ignores port and refresh", dc: config.DashConfig{Port: 70000, RefreshSeconds: 1, Days: 30}, json: true, flags: noDashFlags, wantPort: 1111, wantDays: 30},
 		{name: "json still checks days", dc: config.DashConfig{Days: 999}, json: true, flags: noDashFlags, wantErr: "[dash] days"},
+		{name: "people", dc: config.DashConfig{People: []config.DashPerson{{GitHub: "alice"}, {GitHub: "bob", Jira: "acct-bob"}}}, flags: noDashFlags, wantPort: 1111, wantDays: 2},
+		{name: "person without login", dc: config.DashConfig{People: []config.DashPerson{{Name: "Alice"}}}, flags: noDashFlags, wantErr: "[[dash.people]] entry 1"},
+		{name: "json checks people", dc: config.DashConfig{People: []config.DashPerson{{GitHub: "@alice"}}}, json: true, flags: noDashFlags, wantErr: "[[dash.people]] entry 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			saveDashFlags(t)
@@ -394,6 +397,17 @@ func TestApplyDashConfig(t *testing.T) {
 				t.Fatalf("port %d days %d, want %d and %d", dashPort, dashDays, tc.wantPort, tc.wantDays)
 			}
 		})
+	}
+}
+
+func TestDashPeople(t *testing.T) {
+	got := dashPeople([]config.DashPerson{{GitHub: "alice", Jira: "acct-alice", Name: "Alice"}, {GitHub: "bob"}})
+	want := []dash.Person{{Login: "alice", Jira: "acct-alice", Name: "Alice"}, {Login: "bob"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	if dashPeople(nil) != nil {
+		t.Fatal("no entries means no configured people")
 	}
 }
 
@@ -537,4 +551,39 @@ type noResolver struct{}
 
 func (noResolver) Resolve(string) (dash.Target, error) {
 	return dash.Target{}, dash.ErrUnknownWorkspace
+}
+
+// TestDashPair covers [pair]'s teammate standing in for [[dash.people]]: a
+// bare login is followed, anything else is left out with a warning that
+// suggests the fix, and with [[dash.people]] set the teammate is not checked.
+func TestDashPair(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		teammate string
+		people   []config.DashPerson
+		want     string
+		warn     string
+	}{
+		{name: "none"},
+		{name: "bare login", teammate: "carol", want: "carol"},
+		{name: "at sign", teammate: "@carol", warn: `teammate = "carol"`},
+		{name: "email", teammate: "carol@example.com", warn: `teammate = "carol"`},
+		{name: "people configured", teammate: "@carol", people: []config.DashPerson{{GitHub: "bob"}}, want: "@carol"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Pair: config.PairConfig{Teammate: tc.teammate, DisplayName: "Carol"}}
+			cfg.Dash.People = tc.people
+			var errOut bytes.Buffer
+			got := dashPair(cfg, &errOut)
+			if got.Login != tc.want {
+				t.Errorf("login %q, want %q", got.Login, tc.want)
+			}
+			if tc.warn == "" && errOut.Len() > 0 {
+				t.Errorf("unexpected warning: %s", errOut.String())
+			}
+			if tc.warn != "" && (!strings.Contains(errOut.String(), tc.warn) || !strings.Contains(errOut.String(), "[pair] teammate")) {
+				t.Errorf("warning %q does not name [pair] teammate and suggest %s", errOut.String(), tc.warn)
+			}
+		})
+	}
 }

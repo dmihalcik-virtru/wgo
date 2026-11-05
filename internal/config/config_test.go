@@ -303,3 +303,65 @@ func TestInitReportsBadTOML(t *testing.T) {
 	assert.Contains(t, err.Error(), "fix the TOML syntax")
 	assert.Equal(t, 120, Get().Cache.PRTTL)
 }
+
+// TestDashPeople verifies [[dash.people]] decodes in order and that a
+// misspelt key in an entry is reported.
+func TestDashPeople(t *testing.T) {
+	warnings := writeConfig(t, `[dash]
+days = 7
+
+[[dash.people]]
+github = "alice"
+jira = "acct-alice"
+name = "Alice"
+
+[[dash.people]]
+github = "bob"
+login = "bobby"
+`)
+	require.NoError(t, Init())
+	assert.Equal(t, []DashPerson{{GitHub: "alice", Jira: "acct-alice", Name: "Alice"}, {GitHub: "bob"}}, Get().Dash.People)
+	assert.Equal(t, 7, Get().Dash.Days)
+	assert.Contains(t, warnings.String(), `unknown key "dash.people[1].login"`)
+	assert.NoError(t, Get().Dash.ValidatePeople())
+}
+
+func TestValidatePeople(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		people []DashPerson
+		want   []string // substrings of the error; none means valid
+	}{
+		{name: "none"},
+		{name: "valid", people: []DashPerson{{GitHub: "alice"}, {GitHub: "bob-2", Jira: "currentUser()"}}},
+		{name: "managed user", people: []DashPerson{{GitHub: "mona_octo"}}},
+		{name: "missing login", people: []DashPerson{{GitHub: "alice"}, {Jira: "acct-bob"}},
+			want: []string{"entry 2", "no github login", `github = "<login>"`}},
+		{name: "blank login", people: []DashPerson{{GitHub: "  "}}, want: []string{"entry 1", "no github login"}},
+		{name: "at sign", people: []DashPerson{{GitHub: "@alice"}}, want: []string{`"@alice"`, "not a GitHub login", `github = "alice"`}},
+		{name: "email", people: []DashPerson{{GitHub: "alice@example.com"}}, want: []string{`github = "alice"`}},
+		{name: "team", people: []DashPerson{{GitHub: "team:web"}}, want: []string{"not a GitHub login", `github = "<login>"`}},
+		{name: "team slug", people: []DashPerson{{GitHub: "@acme/platform-web"}}, want: []string{"not a GitHub login", `github = "<login>"`}},
+		{name: "team url", people: []DashPerson{{GitHub: "https://github.com/orgs/acme/teams/platform-web"}}, want: []string{`github = "<login>"`}},
+		{name: "url", people: []DashPerson{{GitHub: "https://github.com/alice"}}, want: []string{`github = "alice"`}},
+		{name: "spaces", people: []DashPerson{{GitHub: " alice "}}, want: []string{`github = "alice"`}},
+		{name: "unguessable", people: []DashPerson{{GitHub: "al ice"}}, want: []string{`github = "<login>"`}},
+		{name: "too long", people: []DashPerson{{GitHub: strings.Repeat("a", 101)}}, want: []string{"not a GitHub login"}},
+		{name: "duplicate", people: []DashPerson{{GitHub: "alice"}, {GitHub: "bob"}, {GitHub: "Alice"}},
+			want: []string{"entries 1 and 3", "removing one"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := DashConfig{People: tc.people}.ValidatePeople()
+			if len(tc.want) == 0 {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "[[dash.people]]")
+			assert.Contains(t, err.Error(), "fix it")
+			for _, w := range tc.want {
+				assert.Contains(t, err.Error(), w)
+			}
+		})
+	}
+}
