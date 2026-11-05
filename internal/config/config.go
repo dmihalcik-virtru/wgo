@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -62,6 +63,82 @@ type DashConfig struct {
 	// Days is the activity window of the small multiples, 1 to 366
 	// (dash.DefaultDays when zero).
 	Days int `mapstructure:"days"`
+	// People are the people whose PRs and tickets the dash follows, from
+	// [[dash.people]]. When empty, the dash follows [pair]'s teammate. The
+	// authenticated user is always added once their GitHub login is known
+	// (gh-97 caches it).
+	People []DashPerson `mapstructure:"people"`
+}
+
+// DashPerson is one [[dash.people]] entry.
+type DashPerson struct {
+	// GitHub is the person's GitHub login. Required.
+	GitHub string `mapstructure:"github"`
+	// Jira is a Jira account ID, email or currentUser(). Optional.
+	Jira string `mapstructure:"jira"`
+	// Name is a display name. Optional.
+	Name string `mapstructure:"name"`
+}
+
+// githubLoginRe matches a GitHub login: letters, digits and hyphens, plus the
+// underscore of Enterprise Managed User logins ("mona_octo"). Its length limit
+// is generous because managed logins append a suffix to the 39-character
+// handle. It rejects the usual mistakes: "@alice", an email, a team, a URL.
+var githubLoginRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
+
+// ValidatePeople checks [[dash.people]]: every entry needs a well-formed
+// GitHub login, and no login may repeat (logins are case-insensitive). The error names the
+// entry and says how to fix it.
+func (c DashConfig) ValidatePeople() error {
+	seen := map[string]int{}
+	for i, p := range c.People {
+		n := i + 1
+		switch {
+		case strings.TrimSpace(p.GitHub) == "":
+			return fmt.Errorf("[[dash.people]] entry %d in ~/.wgo/config.toml has no github login; fix it by adding github = \"<login>\", or remove the entry", n)
+		case !githubLoginRe.MatchString(p.GitHub):
+			return fmt.Errorf("[[dash.people]] entry %d in ~/.wgo/config.toml has github = %q, which is not a GitHub login; fix it to the bare login, such as github = %q", n, p.GitHub, SuggestLogin(p.GitHub))
+		}
+		key := strings.ToLower(p.GitHub)
+		if first, dup := seen[key]; dup {
+			return fmt.Errorf("[[dash.people]] entries %d and %d in ~/.wgo/config.toml both have github = %q; fix it by removing one", first, n, p.GitHub)
+		}
+		seen[key] = n
+	}
+	return nil
+}
+
+// IsGitHubLogin reports whether s is a bare GitHub login.
+func IsGitHubLogin(s string) bool { return githubLoginRe.MatchString(s) }
+
+// SuggestLogin guesses the login meant by an invalid GitHub login: without
+// surrounding spaces, a leading @, an email domain, or a URL prefix. A team
+// names a group, not a person, so no login is guessed from its slug.
+func SuggestLogin(s string) string {
+	if isTeamForm(s) {
+		return "<login>"
+	}
+	s = strings.TrimPrefix(strings.TrimSpace(s), "@")
+	if i := strings.IndexByte(s, '@'); i > 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndexAny(s, "/:"); i >= 0 {
+		s = s[i+1:]
+	}
+	if !githubLoginRe.MatchString(s) {
+		return "<login>"
+	}
+	return s
+}
+
+// isTeamForm reports whether s names a team: "team:<slug>", "@org/<slug>" or
+// "org/<slug>", or a GitHub /teams/ URL. Profile URLs are not team forms.
+func isTeamForm(s string) bool {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "@")
+	if strings.HasPrefix(s, "team:") || strings.Contains(s, "/teams/") {
+		return true
+	}
+	return strings.Contains(s, "/") && !strings.Contains(s, "://") && !strings.HasPrefix(s, "github.com/")
 }
 
 // RigConfig controls `wgo rig`, which materialises one pinned checkout per
@@ -547,6 +624,14 @@ gh_stack = "auto"
 # editor = "zed"                # Editor/Plan/Spec: one executable, no arguments; tried before code, then xed
 # refresh_seconds = 30          # background re-collection interval (5 to 3600)
 # days = 14                     # activity window (--days overrides)
+#
+# People whose PRs and tickets the dash follows. Without any entries it
+# follows [pair]'s teammate. You (the authenticated GitHub user) are always
+# added once wgo knows your login.
+# [[dash.people]]
+# github = "alice"              # GitHub login (required)
+# jira = "alice@example.com"    # Jira account ID, email or currentUser() (optional)
+# name = "Alice"                # display name (optional)
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)

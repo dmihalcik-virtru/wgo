@@ -43,6 +43,15 @@ type Config struct {
 	JiraSite string
 	// Now is the clock (time.Now when nil).
 	Now func() time.Time
+	// People is [[dash.people]] and Pair is [pair]'s teammate, both without
+	// Me; assemble joins them with Identity through ResolvePeople.
+	People []Person
+	Pair   Person
+	// Identity returns the authenticated GitHub login and Jira identity
+	// from a cache, either empty when unknown. assemble calls it on every
+	// collection, so it must never make a network call or start a process.
+	// Nil means unknown.
+	Identity func() (login, jira string)
 }
 
 // Collector builds snapshots. It runs outside HTTP request handling.

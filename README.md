@@ -1164,6 +1164,25 @@ an error naming the setting; these are never silently adjusted. `--json`
 ignores `port` and `refresh_seconds`, since it prints one snapshot without
 serving.
 
+`[[dash.people]]` names the people whose PRs and tickets the dashboard
+follows, one table per person:
+
+```toml
+[[dash.people]]
+github = "alice"           # GitHub login (required)
+jira = "alice@example.com" # Jira account ID, email or currentUser() (optional)
+name = "Alice"             # display name (optional)
+```
+
+Without entries it follows `[pair]`'s teammate. You (the authenticated
+GitHub user) are always added once wgo knows your login; until then nobody
+is marked as you, and counts that need your own PRs, such as merges per
+day, stay unknown. A `[pair]` teammate that is not a bare GitHub login is
+not followed, with a warning. An entry without a GitHub
+login, with something else in its place (`@alice`, an email, a team), or
+repeating another entry's login stops `wgo dash` with an error naming the
+entry.
+
 A `terminal`, `terminal_command` or `resume` value of the right type that
 wgo does not support (an unknown terminal, `terminal = "command"` with no
 command, a resume tool not on the list) does not stop the dashboard. `wgo
