@@ -274,7 +274,9 @@ type PRInfo struct {
 	BaseRef   string `json:"base_ref,omitempty"`
 	HeadRef   string `json:"head_ref,omitempty"`
 	// ReviewRequests adds kinds and request times to RequestedReviewers,
-	// for the same outstanding requests; ReviewersKnown covers both.
+	// for the same outstanding requests. ReviewersKnown covers
+	// RequestedReviewers only: ReviewRequests is nil (unknown) whenever the
+	// PR's state did not come from the inventory.
 	ReviewRequests []ReviewRequest `json:"review_requests,omitzero"`
 	// Reviews holds the latest review per reviewer.
 	Reviews []Review `json:"reviews,omitzero"`
@@ -402,13 +404,14 @@ type Counts struct {
 	// Merged is the number of PRs merged per day of the window, by
 	// merged_at, keyed like PRStates. An absent effort's count is unknown,
 	// never zero: it has a PR of unknown state; a merged PR whose merge time
-	// is unknown (one known only through a bookmark) and may fall in the
-	// window, because its updated_at is unknown or not before the window; a
-	// bookmark whose lookup is unknown or failed; or a workspace jj could not
-	// read. Merged is omitted entirely unless People includes the
+	// is unknown (one whose state came from a bookmark lookup) and may fall
+	// in the window, because its updated_at is unknown or not before the
+	// window; a bookmark whose lookup is unknown or failed; or a workspace jj
+	// could not read. Merged is omitted entirely unless People includes the
 	// authenticated user (Me) and every person's closed-recent inventory set
-	// is fresh, untruncated, covers the window and is no older than their
-	// open-authored set: otherwise their merges could belong to any effort.
+	// is fresh, untruncated, complete, covers the window, and was fetched
+	// since any PR last left their open-authored set: otherwise their merges
+	// could belong to any effort.
 	Merged map[string][]int `json:"merged,omitzero"`
 }
 

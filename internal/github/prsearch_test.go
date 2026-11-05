@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -128,6 +129,7 @@ func TestSearchPullRequestsPagesAndRetries(t *testing.T) {
 	require.Len(t, res.PRs, 195)
 	assert.Equal(t, 195, res.IssueCount)
 	assert.False(t, res.Truncated)
+	assert.False(t, res.Incomplete, "every PR counted was read")
 	assert.Equal(t, 1, res.PRs[0].Number)
 	assert.Equal(t, 195, res.PRs[194].Number)
 	assert.Equal(t, 11, s.requests(), "10 pages plus one retry")
@@ -222,6 +224,25 @@ func TestSearchPullRequestsKeepsPartialData(t *testing.T) {
 	var gqlErrs *GraphQLErrors
 	require.ErrorAs(t, err, &gqlErrs)
 	assert.Contains(t, err.Error(), "Resource not accessible")
+	assert.True(t, res.Incomplete, "the unreadable PR is missing from the result")
+}
+
+// TestSearchPullRequestsNoticesSkippedPRs: reading fewer PRs than GitHub
+// counted, short of the search limit, marks the result incomplete: results
+// shifted between pages and one was skipped. Past the limit, Truncated says
+// so instead.
+func TestSearchPullRequestsNoticesSkippedPRs(t *testing.T) {
+	s := &searchServer{count: 3, nodes: []any{minimalPR("acme/api", 1), minimalPR("acme/api", 2)}}
+	res, err := newSearchClient(t, s).SearchPullRequests(context.Background(), "q")
+	require.NoError(t, err)
+	assert.True(t, res.Incomplete)
+	assert.False(t, res.Truncated)
+
+	s = &searchServer{count: SearchLimit + 1, nodes: []any{minimalPR("acme/api", 1)}}
+	res, err = newSearchClient(t, s).SearchPullRequests(context.Background(), "q")
+	require.NoError(t, err)
+	assert.True(t, res.Truncated)
+	assert.False(t, res.Incomplete, "a truncated result is reported as truncated")
 }
 
 func TestSearchPullRequestsWithoutSearchDataFails(t *testing.T) {
@@ -294,9 +315,11 @@ func at(s string) time.Time {
 func TestSearchPullRequestsFacts(t *testing.T) {
 	var full map[string]any
 	require.NoError(t, json.Unmarshal([]byte(fullPRNode), &full))
+	// Ready for review once, then converted back to draft.
 	draft := minimalPR("acme/web", 7)
 	draft["isDraft"] = true
-	draft["timelineItems"] = map[string]any{"nodes": []any{}}
+	draft["createdAt"] = "2026-10-01T00:00:00Z"
+	draft["timelineItems"] = map[string]any{"nodes": []any{map[string]any{"__typename": "ReadyForReviewEvent", "createdAt": "2026-10-03T00:00:00Z"}}}
 	merged := minimalPR("acme/web", 8)
 	merged["state"] = "MERGED"
 	merged["createdAt"] = "2026-10-01T00:00:00Z"
@@ -488,6 +511,7 @@ func TestEnrichmentIsBoundedAndReportsRateLimits(t *testing.T) {
 	for i := range prs {
 		prs[i].CheckTotal = -1
 	}
+	defer limited.Store(false)
 	err := NewClient(WithBaseURL(srv.URL), WithToken("t")).EnrichWithChecks(prs)
 	var rl *RateLimitError
 	require.ErrorAs(t, err, &rl, "a rate limit is reported, not shown as unknown checks")
@@ -507,8 +531,8 @@ func TestViewer(t *testing.T) {
 	assert.Equal(t, "alice", login)
 }
 
-// TestListMyOpenPRsFollowsPages: the REST search used to stop at its first
-// page of 50; it now follows every page.
+// TestListMyOpenPRsFollowsPages: the REST search follows every page, up to
+// SearchLimit results.
 func TestListMyOpenPRsFollowsPages(t *testing.T) {
 	const total = 237
 	var pages []string
@@ -536,4 +560,32 @@ func TestListMyOpenPRsFollowsPages(t *testing.T) {
 	involved, err := newTestClient(t, srv, "o/r").ListInvolvedPRs("")
 	require.NoError(t, err)
 	assert.Len(t, involved, total)
+}
+
+// TestChecksUnknownWhenAnEndpointFails: when one of the two check endpoints
+// fails for a reason other than a rate limit (a token without the Checks
+// permission, a 5xx), the PR's checks are unknown rather than counted from
+// the other endpoint alone, and the failures are reported.
+func TestChecksUnknownWhenAnEndpointFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/pulls/"):
+			_, _ = w.Write([]byte(`{"number": 1, "head": {"sha": "abc"}}`))
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message": "Resource not accessible by personal access token"}`))
+		default:
+			_, _ = w.Write([]byte(`{"statuses": [{"state": "success"}], "state": "success"}`))
+		}
+	}))
+	defer srv.Close()
+	prs := []ExtendedPRInfo{{Number: 1, RepoOwner: "acme", RepoName: "api", CheckTotal: -1}, {Number: 2, RepoOwner: "acme", RepoName: "web", CheckTotal: -1}}
+	err := NewClient(WithBaseURL(srv.URL), WithToken("t")).EnrichWithChecks(prs)
+	require.Error(t, err)
+	var rl *RateLimitError
+	assert.False(t, errors.As(err, &rl))
+	assert.Contains(t, err.Error(), "2 of 2 PRs could not be read")
+	for _, p := range prs {
+		assert.Equal(t, -1, p.CheckTotal, "one green status must not read as all checks passing")
+	}
 }

@@ -42,9 +42,10 @@ type invPR struct {
 	// the most recently fetched one holding the PR.
 	state     Freshness
 	fetchedAt time.Time
-	// requested holds the lowercased logins whose review-requested set
-	// holds the PR.
-	requested map[string]bool
+	// requested maps the lowercased logins whose review-requested set holds
+	// the PR to when that set was fetched, so an older set than the facts'
+	// cannot outvote them.
+	requested map[string]time.Time
 }
 
 // wsTicket is a workspace whose bookmark names a ticket, for attachment.
@@ -103,10 +104,10 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 			if due && f == Fresh {
 				f = Stale
 			}
-			if set == inventory.ClosedRecent && (!f.hasData() || due || res.Since.IsZero() || res.Since.After(countsStart)) {
+			if set == inventory.ClosedRecent && (!f.hasData() || due || res.Incomplete || res.Since.IsZero() || res.Since.After(countsStart)) {
 				mergedKnown = false
 			}
-			part := SourcePart{Name: k.String(), State: f, FetchedAt: res.FetchedAt, Truncated: res.Truncated}
+			part := SourcePart{Name: k.String(), State: f, FetchedAt: res.FetchedAt, Truncated: res.Truncated, Incomplete: res.Incomplete && f.hasData()}
 			if set == inventory.ClosedRecent {
 				part.CoverageFrom = res.Since
 			}
@@ -119,32 +120,39 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 				diags = append(diags, fmt.Sprintf("github_inventory: %s matched %d PRs, but GitHub search returns at most %d, so the rest are missing",
 					k, res.IssueCount, github.SearchLimit))
 			}
+			if part.Incomplete {
+				why := fmt.Sprintf("read %d of the %d PRs it matched", len(res.PRs), res.IssueCount)
+				if res.Err != nil {
+					why = res.Err.Error()
+				}
+				diags = append(diags, fmt.Sprintf("github_inventory: %s is incomplete (%s), so PRs missing from it may still exist", k, why))
+			}
 			if f != Fresh && canAsk {
 				addJob(Job{Kind: JobInventory, Inventory: k, Since: since})
 			}
-			if !f.hasData() {
-				continue
-			}
-			for _, pr := range res.PRs {
-				id := prNodeID(pr.Repo, pr.Number)
-				ip := found[id]
-				switch {
-				case ip == nil:
-					ip = &invPR{pr: pr, state: f, fetchedAt: res.FetchedAt, requested: map[string]bool{}}
-					found[id] = ip
-				case res.FetchedAt.After(ip.fetchedAt):
-					ip.pr, ip.state, ip.fetchedAt = pr, f, res.FetchedAt
-				}
-				if set == inventory.ReviewRequested {
-					ip.requested[strings.ToLower(person.Login)] = true
+			if f.hasData() {
+				for _, pr := range res.PRs {
+					id := prNodeID(pr.Repo, pr.Number)
+					ip := found[id]
+					switch {
+					case ip == nil:
+						ip = &invPR{pr: pr, state: f, fetchedAt: res.FetchedAt, requested: map[string]time.Time{}}
+						found[id] = ip
+					case res.FetchedAt.After(ip.fetchedAt):
+						ip.pr, ip.state, ip.fetchedAt = pr, f, res.FetchedAt
+					}
+					if set == inventory.ReviewRequested {
+						ip.requested[strings.ToLower(person.Login)] = res.FetchedAt
+					}
 				}
 			}
 			if due {
 				// Keep them, as last seen and stale, rather than let a PR
-				// that just merged vanish until closed-recent is refetched.
+				// that just merged vanish until closed-recent is refetched,
+				// all the more when closed-recent has no data at all.
 				for _, pr := range dropped {
 					if id := prNodeID(pr.Repo, pr.Number); found[id] == nil {
-						found[id] = &invPR{pr: pr, state: Stale, fetchedAt: droppedFetched, requested: map[string]bool{}}
+						found[id] = &invPR{pr: pr, state: Stale, fetchedAt: droppedFetched, requested: map[string]time.Time{}}
 					}
 				}
 			}
@@ -159,6 +167,16 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 		}
 	case len(people) == 0:
 		st.State, st.Detail = Unknown, noPeopleDetail
+	case login == "" && c.cfg.Identity != nil:
+		// The sets read are fine, but the user's own are not among them.
+		why := "it is looked up in the background"
+		if c.cfg.IdentityError != nil {
+			if e := c.cfg.IdentityError(); e != "" {
+				why = "the last lookup failed: " + e
+			}
+		}
+		st.Detail = "your GitHub login is not known yet, so your own PRs are not shown; " + why
+		diags = append(diags, "github_inventory: "+st.Detail)
 	}
 	if len(found) == 0 {
 		return st, diags, mergedKnown
@@ -208,7 +226,7 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 			setPRBase(p, f)
 			setPRFacts(p, f, keys)
 		}
-		p.Involvement = involvement(people, p, ip.requested, invNewer)
+		p.Involvement = involvement(people, p, ip.requested, invNewer, ip.fetchedAt)
 		if !bookmarked {
 			b.node(Node{ID: id, Kind: KindPR, Label: f.Repo + "#" + strconv.Itoa(f.Number), PR: p})
 			att.attach(b, id, p, keys, effortNode)
@@ -303,18 +321,21 @@ func branchTicket(key string) string {
 
 // involvement lists each person's part in PR p, as merged, in people order:
 // author; review_requested while p is open and asks them directly, or their
-// review-requested set holds it (requested), trusted when the inventory is
-// the newer source (invNewer) or the newer bookmark lookup still lists a
-// team or them; reviewed when one of p's latest reviews is theirs and they
-// are not its author. Never nil.
-func involvement(people []Person, p *PRInfo, requested map[string]bool, invNewer bool) []Involvement {
+// review-requested set holds it (requested, by that set's fetch time). The
+// set is trusted when it is no older than the facts p carries (the inventory
+// facts fetched at factsAt, when invNewer); otherwise only while p's newer
+// requested reviewers still name them or a team, since an approval since
+// removes the request. reviewed when one of p's latest reviews is theirs
+// and they are not its author. Never nil.
+func involvement(people []Person, p *PRInfo, requested map[string]time.Time, invNewer bool, factsAt time.Time) []Involvement {
 	out := []Involvement{}
 	for _, person := range people {
 		author := strings.EqualFold(p.Author, person.Login)
 		if author {
 			out = append(out, Involvement{Person: person.Login, Role: RoleAuthor})
 		}
-		inSet := requested[strings.ToLower(person.Login)] && (invNewer || mayRequest(p, person.Login))
+		setAt, held := requested[strings.ToLower(person.Login)]
+		inSet := held && ((invNewer && !setAt.Before(factsAt)) || mayRequest(p, person.Login))
 		if p.State == "open" && (inSet || asksDirectly(p, person.Login)) {
 			out = append(out, Involvement{Person: person.Login, Role: RoleReviewRequested})
 		}
@@ -426,9 +447,16 @@ func mergeInventory(p *PRInfo, ip *invPR, keys []string) bool {
 
 var freshnessRank = map[Freshness]int{Fresh: 0, Stale: 1, Unknown: 2, Error: 3}
 
-// worseFreshness is the less trustworthy of a and b.
+// worseFreshness is the less trustworthy of a and b. A value it does not
+// know ranks as Unknown, never as Fresh.
 func worseFreshness(a, b Freshness) Freshness {
-	if freshnessRank[b] > freshnessRank[a] {
+	rank := func(f Freshness) int {
+		if r, ok := freshnessRank[f]; ok {
+			return r
+		}
+		return freshnessRank[Unknown]
+	}
+	if rank(b) > rank(a) {
 		return b
 	}
 	return a

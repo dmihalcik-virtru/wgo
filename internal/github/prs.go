@@ -241,8 +241,10 @@ func (c *CLIClient) FetchPRChecks(owner, repo string, number int) (passing, tota
 	return passing, total
 }
 
-// fetchPRChecks is FetchPRChecks plus the first error met, which callers
-// use to tell a rate limit from a PR without checks.
+// fetchPRChecks is FetchPRChecks plus the errors met, joined, which callers
+// use to tell a rate limit from a PR without checks. When either endpoint
+// failed the counts are -1 (unknown): a partial count could read as all
+// passing while failing checks went unread.
 func (c *CLIClient) fetchPRChecks(owner, repo string, number int) (passing, total int, err error) {
 	slug := owner + "/" + repo
 	pr, err := c.fetchPR(slug, number)
@@ -264,7 +266,7 @@ func (c *CLIClient) fetchPRChecks(owner, repo string, number int) (passing, tota
 	}
 
 	total = len(runs.CheckRuns) + len(combined.Statuses)
-	if total == 0 {
+	if total == 0 || err != nil {
 		return -1, -1, err
 	}
 	for _, r := range runs.CheckRuns {
@@ -422,9 +424,10 @@ func rollupReviewDecision(reviews []apiReview) string {
 }
 
 // EnrichWithActivity fetches last-activity timestamps for all PRs, at most
-// enrichConcurrency at a time, and mutates the slice in place. It returns a
-// *RateLimitError when GitHub's rate limit stopped some lookups; those PRs
-// show no activity. Other per-PR failures are skipped, as before.
+// enrichConcurrency at a time, and mutates the slice in place. A PR whose
+// lookup failed shows no activity. It returns a *RateLimitError when
+// GitHub's rate limit stopped some lookups, else an error counting the other
+// failures.
 func (c *CLIClient) EnrichWithActivity(prs []ExtendedPRInfo, myLogin string) error {
 	return enrichEach(len(prs), func(i int) error {
 		pr := &prs[i]
@@ -440,19 +443,22 @@ func (c *CLIClient) EnrichWithActivity(prs []ExtendedPRInfo, myLogin string) err
 }
 
 // enrichConcurrency bounds the per-PR enrichment lookups in flight. Each
-// makes two or three REST calls; with every result of a search now read
+// makes two or three REST calls; with every result of a search read
 // (hundreds of PRs), one goroutine per PR would exceed GitHub's secondary
 // rate limits.
 const enrichConcurrency = 8
 
-// enrichEach calls fn for 0..n-1, enrichConcurrency at a time, and returns
-// the first *RateLimitError any call returned. Once one has, the calls not
-// yet started are skipped: they would fail the same way.
+// enrichEach calls fn for 0..n-1, enrichConcurrency at a time. It returns
+// the first *RateLimitError any call returned; once one has, the calls not
+// yet started are skipped, as they would fail the same way. Otherwise it
+// returns how many calls failed and the first failure, or nil.
 func enrichEach(n int, fn func(i int) error) error {
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
 		limited error
+		failed  int
+		first   error
 	)
 	sem := make(chan struct{}, enrichConcurrency)
 	for i := range n {
@@ -468,18 +474,34 @@ func enrichEach(n int, fn func(i int) error) error {
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			err := fn(i)
+			if err == nil {
+				return
+			}
 			var rl *RateLimitError
-			if err := fn(i); errors.As(err, &rl) {
-				mu.Lock()
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case errors.As(err, &rl):
 				if limited == nil {
 					limited = rl
 				}
-				mu.Unlock()
+			default:
+				failed++
+				if first == nil {
+					first = err
+				}
 			}
 		}()
 	}
 	wg.Wait()
-	return limited
+	if limited != nil {
+		return limited
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d PRs could not be read: %w", failed, n, first)
+	}
+	return nil
 }
 
 // CommentedPR represents a PR/issue that the user commented on.
@@ -635,9 +657,9 @@ func (c *CLIClient) GetSpecFrontmatterForBranch(slug, branch, specPath string) (
 }
 
 // EnrichWithChecks fetches CI check status for all PRs, at most
-// enrichConcurrency at a time. It returns a *RateLimitError when GitHub's
-// rate limit stopped some lookups; those PRs keep CheckTotal -1 (unknown).
-// Other per-PR failures leave that PR unknown, as before.
+// enrichConcurrency at a time. A PR whose checks could not all be read keeps
+// CheckTotal -1 (unknown). It returns a *RateLimitError when GitHub's rate
+// limit stopped some lookups, else an error counting the other failures.
 func (c *CLIClient) EnrichWithChecks(prs []ExtendedPRInfo) error {
 	return enrichEach(len(prs), func(i int) error {
 		pr := &prs[i]

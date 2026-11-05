@@ -59,17 +59,18 @@ The dashboard is served on http://127.0.0.1:8766 by default (only the
 loopback address; change the port with --port or [dash] port) and opened in the browser unless
 --no-open. The page appears at once and fills in when the first snapshot
 is ready. In the background it re-collects local state and refreshes stale
-PR, PR inventory, Jira and GitHub issue data every 30 seconds by default; page requests
-only read the last published snapshot. Year-in-review runs under
-~/.wgo/cache/review/runs/ are served under /review/ and linked to the live
-efforts they share PRs or tickets with. Stop it with Ctrl-C.
+PR, PR inventory, Jira and GitHub issue data every 30 seconds by default;
+page requests only read the last published snapshot. Year-in-review runs
+under ~/.wgo/cache/review/runs/ are served under /review/ and linked to the
+live efforts they share PRs or tickets with. Stop it with Ctrl-C.
 
 With --json, wgo dash prints one snapshot instead of serving. The local
 collection reads jj with --ignore-working-copy, so it never snapshots a
-workspace, and reads PR, PR inventory, Jira and GitHub issue data from wgo's caches only:
-anything not cached is reported as unknown. Add --refresh to also try to
-fetch the missing or stale remote data before printing; lookups that fail
-are listed in the output's diagnostics and make the command exit non-zero.
+workspace, and reads PR, PR inventory, Jira and GitHub issue data from
+wgo's caches only: anything not cached is reported as unknown. Add
+--refresh to also try to fetch the missing or stale remote data before
+printing; lookups that fail are listed in the output's diagnostics and make
+the command exit non-zero.
 
 The page's buttons open a workspace in a new Ghostty tab (or the terminal
 configured in [dash]), resume an agent there, open it in an editor or
@@ -88,7 +89,8 @@ terminal_command, resume and editor; --port and --days win over it.
 open PRs stay fresh; their merged and closed PRs stay fresh six times as
 long. [dash] ticket_prefixes lists the Jira project keys whose ticket IDs
 count in PR titles and bodies (default: [jira] project, default_project and
-project_rules projects; local bookmarks' ticket prefixes always count).
+project_rules projects; your workspaces' bookmarks' ticket prefixes always
+count).
 
 The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.`,
 	Args: cobra.NoArgs,
@@ -157,6 +159,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 			login, _ := inventory.ReadIdentity(inventory.IdentityTTL, time.Now())
 			return login, ""
 		},
+		IdentityError:      inventory.IdentityError,
 		InventoryTTL:       dashInventoryTTL(cfg.Dash),
 		InventoryClosedTTL: dash.ClosedInventoryTTL(dashInventoryTTL(cfg.Dash)),
 		TicketPrefixes:     dashTicketPrefixes(cfg),

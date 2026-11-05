@@ -126,9 +126,9 @@ func (b *Baseline) inventoryKnew(holders [][]string) bool {
 }
 
 // closedBefore reports whether p was merged or closed before t, or at an
-// unknown time. Such a PR is never new by the inventory: had its set held it
-// at t, the baseline would too, so its absence says the closed-recent window
-// grew, not that the PR appeared.
+// unknown time. Such a PR is never new by the inventory: its absence from
+// the baseline does not show that it appeared, since the closed-recent
+// window may have grown, or the set may have been fetched before it closed.
 func closedBefore(p *PRInfo, t time.Time) bool {
 	if p.State == "open" {
 		return false
@@ -352,8 +352,8 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 	}
 	// A previously seen PR that is gone while its bookmark lookup is now
 	// unknown or failed, or an inventory set that held it is now incomplete
-	// (unknown, failed, truncated or missing), or, found only by the
-	// inventory, while no inventory set has data: it may still be there.
+	// (unknown, failed, truncated, partial or missing), or, attached by a
+	// tracks edge, while no inventory set is complete: it may still be there.
 	covered := inventoryCoverage(s)
 	ids := make([]string, 0, len(b.PRs))
 	for id := range b.PRs {

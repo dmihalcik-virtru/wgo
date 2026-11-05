@@ -81,8 +81,8 @@ func TestHandlerReadPathIsPure(t *testing.T) {
 
 // TestHandlerReadPathIsPureWithInventory: with a warm PR inventory and a
 // cached identity, collecting reads only caches, and GET / and GET
-// /api/snapshot serve the inventory PRs without collecting, reading the
-// identity or touching the network. No t.Parallel: it swaps global state.
+// /api/snapshot are served without collecting, reading the identity or
+// touching the network; /api/snapshot carries the inventory PRs. No t.Parallel: it swaps global state.
 func TestHandlerReadPathIsPureWithInventory(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir())

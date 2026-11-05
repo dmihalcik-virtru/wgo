@@ -109,6 +109,10 @@ type PRSearchResult struct {
 	// Truncated is set when IssueCount exceeds SearchLimit: GitHub serves
 	// no more, so the rest are missing.
 	Truncated bool
+	// Incomplete is set when PRs is known to lack some of the matches below
+	// SearchLimit: GitHub returned errors beside partial data, or fewer PRs
+	// than IssueCount.
+	Incomplete bool
 }
 
 // PRSearchError is a PR search that failed on one page: after its retries
@@ -351,6 +355,10 @@ func (c *CLIClient) SearchPullRequests(ctx context.Context, query string) (*PRSe
 		after = next.EndCursor
 	}
 	res.Truncated = res.IssueCount > SearchLimit
+	// Fewer PRs than the last page counted, short of the search limit,
+	// means some were skipped: null nodes beside errors, or results that
+	// shifted between pages as PRs opened or closed during the read.
+	res.Incomplete = len(partial) > 0 || (!res.Truncated && len(res.PRs) < res.IssueCount)
 	if len(partial) > 0 {
 		return res, &GraphQLErrors{Errors: partial}
 	}

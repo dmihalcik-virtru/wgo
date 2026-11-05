@@ -58,8 +58,9 @@ type Key struct {
 }
 
 // String is the key as the dash names a github_inventory part:
-// "<login>/<set>".
-func (k Key) String() string { return k.Login + "/" + string(k.Set) }
+// "<login>/<set>", with the login lowercased as GitHub compares logins, so
+// every part name has one spelling.
+func (k Key) String() string { return strings.ToLower(k.Login) + "/" + string(k.Set) }
 
 // Query is the GitHub search query for k. since bounds ClosedRecent; the
 // other sets ignore it. Archived repositories are excluded.
@@ -122,7 +123,12 @@ type entry struct {
 	PRs        []PR      `json:"prs"`
 	IssueCount int       `json:"issue_count,omitempty"`
 	Truncated  bool      `json:"truncated,omitempty"`
-	// FetchedAt is the last successful fetch, LastAttemptAt the last try.
+	// Incomplete is set when the last successful fetch is known to have
+	// missed PRs it should hold (github.PRSearchResult.Incomplete).
+	Incomplete bool `json:"incomplete,omitempty"`
+	// FetchedAt is when the last successful fetch started, so its PRs are
+	// at least as new as FetchedAt; LastAttemptAt is when the last try
+	// ended.
 	FetchedAt     time.Time `json:"fetched_at,omitzero"`
 	LastAttemptAt time.Time `json:"last_attempt_at,omitzero"`
 	// LastError is the last attempt's failure, or the errors that came
@@ -134,8 +140,8 @@ type entry struct {
 	RetryAt  time.Time `json:"retry_at,omitzero"`
 	// Dropped, in an OpenAuthored entry, are PRs a refresh no longer found
 	// open that the person's ClosedRecent set has not been fetched since
-	// DroppedAt to account for: most merged or closed in between. They are
-	// as last fetched, at DroppedFetchedAt.
+	// DroppedAt (when that refresh ended) to account for: most merged or
+	// closed in between. They are as last fetched, at DroppedFetchedAt.
 	Dropped          []PR      `json:"dropped,omitempty"`
 	DroppedAt        time.Time `json:"dropped_at,omitzero"`
 	DroppedFetchedAt time.Time `json:"dropped_fetched_at,omitzero"`
@@ -147,13 +153,17 @@ type Result struct {
 	// non-nil and empty when GitHub found none.
 	PRs   []PR
 	State State
-	// FetchedAt is when PRs were fetched; zero if never.
+	// FetchedAt is when the fetch of PRs started; zero if never.
 	FetchedAt     time.Time
 	LastAttemptAt time.Time
 	// IssueCount is how many PRs GitHub said matched.
 	IssueCount int
 	// Truncated is set when more matched than GitHub search returns.
 	Truncated bool
+	// Incomplete is set when the fetch is known to have missed PRs: GitHub
+	// returned errors beside partial data, or fewer PRs than it counted.
+	// Such a set does not cover what it lacks.
+	Incomplete bool
 	// Err is the most recent recorded failure: of the last attempt, which
 	// can sit beside last-known-good PRs, or the partial-data errors of the
 	// last successful fetch.
@@ -182,7 +192,8 @@ const (
 // the time a rate limit named, whichever is later. A set failing on its
 // tenth page would otherwise refetch the first nine every lease window.
 func (r Result) NotBefore() time.Time {
-	if r.Failures == 0 || r.LastAttemptAt.IsZero() {
+	// A hand-edited entry may hold any count; only a positive one backs off.
+	if r.Failures <= 0 || r.LastAttemptAt.IsZero() {
 		return r.RetryAt
 	}
 	wait := maxFailureBackoff
@@ -209,6 +220,7 @@ func Read(k Key, ttl time.Duration, since, now time.Time) Result {
 		LastAttemptAt:    e.LastAttemptAt,
 		IssueCount:       e.IssueCount,
 		Truncated:        e.Truncated,
+		Incomplete:       e.Incomplete,
 		Since:            e.Since,
 		Failures:         e.Failures,
 		RetryAt:          e.RetryAt,
@@ -224,10 +236,16 @@ func Read(k Key, ttl time.Duration, since, now time.Time) Result {
 		r.State, r.PRs = Miss, nil
 	case now.Sub(e.FetchedAt) >= ttl:
 		r.State = Stale
-	case k.Set == ClosedRecent && e.Since.After(since):
+	case k.Set == ClosedRecent && (e.Since.IsZero() || e.Since.After(since)):
+		// No recorded window covers nothing in particular.
 		r.State = Stale
 	default:
 		r.State = Fresh
+	}
+	if r.State != Miss && r.PRs == nil {
+		// A fetch that found nothing found none: an entry missing its
+		// list must not read as never fetched.
+		r.PRs = []PR{}
 	}
 	return r
 }
@@ -319,6 +337,9 @@ func Refresh(ctx context.Context, f Fetcher, k Key, since time.Time) (Result, er
 	if _, err := entryPath(k); err != nil {
 		return Result{State: Miss, Err: err}, err
 	}
+	// The PRs are as new as the search's start: a PR that merges while the
+	// pages are read may be missing, so the fetch must not claim to be newer.
+	started := time.Now()
 	res, err := f.SearchPullRequests(ctx, k.Query(since))
 	now := time.Now()
 	if res == nil {
@@ -345,7 +366,8 @@ func Refresh(ctx context.Context, f Fetcher, k Key, since time.Time) (Result, er
 		PRs:           prs,
 		IssueCount:    res.IssueCount,
 		Truncated:     res.Truncated,
-		FetchedAt:     now,
+		Incomplete:    res.Incomplete,
+		FetchedAt:     started,
 		LastAttemptAt: now,
 	}
 	if k.Set == ClosedRecent {
@@ -363,8 +385,8 @@ func Refresh(ctx context.Context, f Fetcher, k Key, since time.Time) (Result, er
 	}
 	werr := writeEntry(k, e)
 	writeMu.Unlock()
-	out := Result{PRs: prs, State: Fresh, FetchedAt: now, LastAttemptAt: now, IssueCount: res.IssueCount, Truncated: res.Truncated,
-		Err: err, Since: e.Since, Dropped: e.Dropped, DroppedAt: e.DroppedAt, DroppedFetchedAt: e.DroppedFetchedAt}
+	out := Result{PRs: prs, State: Fresh, FetchedAt: started, LastAttemptAt: now, IssueCount: res.IssueCount, Truncated: res.Truncated,
+		Incomplete: res.Incomplete, Err: err, Since: e.Since, Dropped: e.Dropped, DroppedAt: e.DroppedAt, DroppedFetchedAt: e.DroppedFetchedAt}
 	if werr != nil {
 		// The fetched data is still returned; the error says it was not kept.
 		logf("inventory cache: write %s: %v", k, werr)
@@ -374,8 +396,8 @@ func Refresh(ctx context.Context, f Fetcher, k Key, since time.Time) (Result, er
 }
 
 // carryDropped sets e's Dropped: the PRs prior listed open that e no longer
-// does, plus those prior already carried that closedFetched (the person's
-// last ClosedRecent fetch) has not caught up with. A merged PR thus stays
+// does, plus those prior already carried that closedFetched (when the
+// person's last ClosedRecent fetch started) has not caught up with. A merged PR thus stays
 // visible, as last seen, until ClosedRecent shows it merged, instead of
 // vanishing for up to ClosedRecent's TTL.
 func carryDropped(e *entry, prior entry, closedFetched time.Time) {
@@ -408,9 +430,10 @@ func carryDropped(e *entry, prior entry, closedFetched time.Time) {
 	case !newly:
 		e.DroppedAt, e.DroppedFetchedAt = prior.DroppedAt, prior.DroppedFetchedAt
 	default:
-		// ClosedRecent must be fetched after this refresh to account for
-		// the newly dropped PRs; the oldest data carried sets the time.
-		e.DroppedAt, e.DroppedFetchedAt = e.FetchedAt, prior.FetchedAt
+		// ClosedRecent must be fetched after this refresh ended to account
+		// for the newly dropped PRs, which could have closed while its
+		// pages were read; the oldest data carried sets the time.
+		e.DroppedAt, e.DroppedFetchedAt = e.LastAttemptAt, prior.FetchedAt
 		if carried && prior.DroppedFetchedAt.Before(prior.FetchedAt) {
 			e.DroppedFetchedAt = prior.DroppedFetchedAt
 		}

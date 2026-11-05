@@ -377,13 +377,15 @@ func (r *Refresher) run(j Job) error {
 // refreshStaleIdentity re-reads the authenticated login once its cache has
 // aged past inventory.IdentityTTL. Collections queue JobIdentity only while
 // the login is unknown, so a known one is kept current from here, beside the
-// inventory refreshes that rely on it. A failure keeps the old login and is
-// only logged: the inventory job it rides on did not fail.
+// inventory refreshes that rely on it. It takes the identity lease unless
+// the refresher ignores leases, as its jobs do. A failure keeps the old
+// login, is recorded on the identity cache (inventory.IdentityError) and
+// logged: the inventory job it rides on did not fail.
 func (r *Refresher) refreshStaleIdentity() {
 	if _, st := inventory.ReadIdentity(inventory.IdentityTTL, time.Now()); st == inventory.Fresh {
 		return
 	}
-	if !inventory.LockIdentityRefresh(r.opts.Backoff) {
+	if !r.opts.IgnoreLeases && !inventory.LockIdentityRefresh(r.opts.Backoff) {
 		return
 	}
 	if _, err := inventory.RefreshIdentity(r.ctx, r.f.Inventory); err != nil {

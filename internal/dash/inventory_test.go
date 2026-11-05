@@ -887,7 +887,7 @@ const fullNode = `{
   "number": 9, "title": "TEAM-9: rotate keys", "url": "https://github.com/acme/api/pull/9",
   "state": "MERGED", "isDraft": false, "body": "Fixes #4",
   "createdAt": "2026-10-20T09:00:00Z", "updatedAt": "2026-10-29T14:10:00Z",
-  "mergedAt": "2026-10-29T14:00:00Z", "closedAt": "2026-10-29T14:00:00Z",
+  "mergedAt": "2026-10-29T14:00:00Z", "closedAt": "2026-10-29T14:00:05Z",
   "additions": 0, "deletions": 4, "changedFiles": 1, "mergeable": "UNKNOWN",
   "baseRefName": "main", "headRefName": "TEAM-9-rotate", "reviewDecision": "APPROVED",
   "author": {"login": "alice"},
@@ -948,6 +948,24 @@ func TestInventoryFactsFromGitHub(t *testing.T) {
 		!slices.Equal(p.TicketKeys, []string{"TEAM-9", "gh-4"}) ||
 		!slices.Equal(p.ReviewRequests, []ReviewRequest{{Reviewer: "team:web", Kind: ReviewerTeam, RequestedAt: time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC)}}) ||
 		!slices.Equal(p.Involvement, []Involvement{{Person: "alice", Role: RoleAuthor}, {Person: "bob", Role: RoleReviewed}}) {
+		t.Errorf("facts %+v", p)
+	}
+	// Each value lands in its own field: the times differ, so a swap shows.
+	utc := func(d, h, m, s int) time.Time { return time.Date(2026, 10, d, h, m, s, 0, time.UTC) }
+	for name, got := range map[string][2]time.Time{
+		"created_at": {p.CreatedAt, utc(20, 9, 0, 0)},
+		"updated_at": {p.UpdatedAt, utc(29, 14, 10, 0)},
+		"merged_at":  {p.MergedAt, utc(29, 14, 0, 0)},
+		"closed_at":  {p.ClosedAt, utc(29, 14, 0, 5)},
+		"ready_at":   {p.ReadyAt, utc(21, 15, 30, 0)},
+	} {
+		if !got[0].Equal(got[1]) {
+			t.Errorf("%s = %v, want %v", name, got[0], got[1])
+		}
+	}
+	if p.Author != "alice" || *p.Deletions != 4 || *p.ChangedFiles != 1 || p.BaseRef != "main" || p.HeadRef != "TEAM-9-rotate" ||
+		!slices.Equal(p.Reviews, []Review{{Author: "bob", State: ReviewApproved, SubmittedAt: utc(28, 10, 0, 0)}}) ||
+		!slices.Equal(p.CheckDetails, []CheckDetail{{Name: "vendor-hsm-tests", State: CheckFailure, URL: "https://ci.example/1"}}) {
 		t.Errorf("facts %+v", p)
 	}
 	got = keysOf(prNodeID("acme/api", 10))

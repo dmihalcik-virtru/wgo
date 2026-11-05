@@ -217,12 +217,14 @@ func fetchAllPRData(gh *github.CLIClient) (mine, involved []github.ExtendedPRInf
 	if fetchErr != nil {
 		return nil, nil, "", "", fetchErr
 	}
-	switch {
-	case checksErr != nil:
-		warn = "some CI checks are not shown: " + checksErr.Error()
-	case activityErr != nil:
-		warn = "some PRs' activity is not shown: " + activityErr.Error()
+	var warns []string
+	if checksErr != nil {
+		warns = append(warns, "some CI checks are not shown: "+checksErr.Error())
 	}
+	if activityErr != nil {
+		warns = append(warns, "some PRs' activity is not shown: "+activityErr.Error())
+	}
+	warn = strings.Join(warns, "; ")
 	return mine, involved, myLogin, warn, nil
 }
 

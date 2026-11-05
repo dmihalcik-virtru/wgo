@@ -68,6 +68,25 @@ func ReadIdentity(ttl time.Duration, now time.Time) (string, State) {
 	return e.Login, Fresh
 }
 
+// IdentityError returns why the last lookup of the authenticated user's
+// login failed, when it failed after the last success; "" otherwise. Like
+// ReadIdentity it only reads the cache.
+func IdentityError() string {
+	path, err := identityPath()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var e identityEntry
+	if json.Unmarshal(data, &e) != nil || e.LastAttemptAt.Before(e.FetchedAt) {
+		return ""
+	}
+	return e.LastError
+}
+
 // RefreshIdentity asks GitHub for the authenticated user's login and caches
 // it. A failure is recorded beside the previous login, which is kept; a
 // missing token or a cancelled ctx is not recorded.

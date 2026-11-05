@@ -48,6 +48,7 @@ func TestQueries(t *testing.T) {
 	assert.Equal(t, "is:pr is:open archived:false review-requested:alice", Key{"alice", ReviewRequested}.Query(since))
 	assert.Equal(t, "is:pr is:closed archived:false author:alice closed:>=2026-10-02", Key{"alice", ClosedRecent}.Query(since))
 	assert.Equal(t, "alice/closed-recent", Key{"alice", ClosedRecent}.String())
+	assert.Equal(t, "alice/open-authored", Key{"Alice", OpenAuthored}.String(), "one spelling per part name")
 }
 
 func TestClosedWindow(t *testing.T) {
@@ -138,18 +139,78 @@ func TestFailedRefreshKeepsData(t *testing.T) {
 }
 
 // TestPartialDataIsKeptWithItsErrors: errors that came with data are recorded
-// but are not a failed lookup.
+// but are not a failed lookup; the set is kept, fresh, and marked incomplete,
+// since GitHub left out what the token could not read.
 func TestPartialDataIsKeptWithItsErrors(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	partial := &github.GraphQLErrors{Errors: []github.GraphQLError{{Message: "Resource not accessible by integration"}}}
-	f := &fakeFetcher{res: result(github.PRFacts{Repo: "acme/api", Number: 1, State: "open"}), err: partial}
-	res, err := Refresh(context.Background(), f, alice, since)
+	res := result(github.PRFacts{Repo: "acme/api", Number: 1, State: "open"})
+	res.IssueCount, res.Incomplete = 2, true // as github.CLIClient reports a null node
+	got, err := Refresh(context.Background(), &fakeFetcher{res: res, err: partial}, alice, since)
 	require.NoError(t, err)
-	assert.ErrorIs(t, res.Err, partial)
+	assert.ErrorIs(t, got.Err, partial)
+	assert.True(t, got.Incomplete)
 	r := Read(alice, time.Hour, since, time.Now())
 	assert.Equal(t, Fresh, r.State)
+	assert.True(t, r.Incomplete, "the cache keeps the set's incompleteness")
 	require.Len(t, r.PRs, 1)
 	assert.Contains(t, r.Err.Error(), "Resource not accessible")
+
+	_, err = Refresh(context.Background(), &fakeFetcher{res: result()}, alice, since)
+	require.NoError(t, err)
+	assert.False(t, Read(alice, time.Hour, since, time.Now()).Incomplete, "a complete fetch clears it")
+}
+
+// slowFetcher answers after a delay, like a search of many pages.
+type slowFetcher struct {
+	fakeFetcher
+	delay time.Duration
+}
+
+func (f *slowFetcher) SearchPullRequests(ctx context.Context, q string) (*github.PRSearchResult, error) {
+	time.Sleep(f.delay)
+	return f.fakeFetcher.SearchPullRequests(ctx, q)
+}
+
+// TestFetchedAtIsWhenTheSearchStarted: a PR can merge while the pages are
+// read, so a fetch claims only the time it started; the attempt ends later.
+func TestFetchedAtIsWhenTheSearchStarted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	before := time.Now()
+	res, err := Refresh(context.Background(), &slowFetcher{fakeFetcher: fakeFetcher{res: result()}, delay: 30 * time.Millisecond}, alice, since)
+	require.NoError(t, err)
+	assert.False(t, res.FetchedAt.Before(before))
+	assert.GreaterOrEqual(t, res.LastAttemptAt.Sub(res.FetchedAt), 30*time.Millisecond)
+	r := Read(alice, time.Hour, since, time.Now())
+	assert.True(t, r.FetchedAt.Equal(res.FetchedAt))
+}
+
+// writeRaw writes an entry for k as a hand edit or an older wgo might have.
+func writeRaw(t *testing.T, k Key, body string) {
+	t.Helper()
+	path, err := entryPath(k)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+}
+
+// TestOddEntriesAreTolerated: entries the cache never writes itself still
+// read safely and never claim more than they hold.
+func TestOddEntriesAreTolerated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	now := time.Now()
+	at := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+
+	writeRaw(t, alice, `{"schema":1,"fetched_at":"`+at+`","last_attempt_at":"`+at+`","failures":-1}`)
+	r := Read(alice, time.Hour, since, now)
+	assert.NotPanics(t, func() { r.NotBefore() }, "a negative failure count must not shift negatively")
+	assert.True(t, r.NotBefore().IsZero())
+	assert.NotNil(t, r.PRs, "fetched with no list means none found, not never fetched")
+	assert.Empty(t, r.PRs)
+
+	closed := Key{Login: "alice", Set: ClosedRecent}
+	writeRaw(t, closed, `{"schema":1,"prs":[],"fetched_at":"`+at+`"}`)
+	assert.Equal(t, Stale, Read(closed, time.Hour, since, now).State, "closed-recent with no recorded window covers none")
 }
 
 func TestTruncatedIsRecorded(t *testing.T) {
@@ -213,7 +274,10 @@ func TestDroppedOpenPRsAreCarried(t *testing.T) {
 
 	second := refresh(alice, pr(1))
 	require.Len(t, second.Dropped, 2)
-	assert.True(t, second.FetchedAt.Equal(second.DroppedAt))
+	// They dropped some time during the refresh, so closed-recent must start
+	// after it ended to account for them.
+	assert.True(t, second.LastAttemptAt.Equal(second.DroppedAt))
+	assert.False(t, second.DroppedAt.Before(second.FetchedAt))
 	assert.True(t, first.FetchedAt.Equal(second.DroppedFetchedAt), "dropped PRs are as last fetched")
 	r := Read(alice, time.Hour, since, time.Now())
 	assert.Len(t, r.Dropped, 2)
