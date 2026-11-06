@@ -229,19 +229,29 @@ func parseIssuePages(raw string) ([]json.RawMessage, error) {
 }
 
 // SprintTicketsJQL builds a JQL query for a sprint's tickets assigned to
-// any of assignees: account IDs, emails, or currentUser(), which is passed
-// unquoted. The most recently updated come first, so a bounded search keeps
-// the liveliest tickets.
-func SprintTicketsJQL(sprintID int, assignees []string) string {
-	who := make([]string, len(assignees))
-	for i, a := range assignees {
+// any of assignees (account IDs, emails, or currentUser(), which is passed
+// unquoted) and, when unassigned is set, its tickets assigned to no one.
+// Callers name at least one of the two. The most recently updated come
+// first, so a bounded search keeps the liveliest tickets.
+func SprintTicketsJQL(sprintID int, assignees []string, unassigned bool) string {
+	var who []string
+	for _, a := range assignees {
 		if a == "currentUser()" {
-			who[i] = a
+			who = append(who, a)
 		} else {
-			who[i] = quoteJQL(a)
+			who = append(who, quoteJQL(a))
 		}
 	}
-	return fmt.Sprintf("sprint = %d AND assignee in (%s) ORDER BY updated DESC", sprintID, strings.Join(who, ","))
+	var clause string
+	switch {
+	case len(who) > 0 && unassigned:
+		clause = fmt.Sprintf("(assignee in (%s) OR assignee is EMPTY)", strings.Join(who, ","))
+	case len(who) > 0:
+		clause = fmt.Sprintf("assignee in (%s)", strings.Join(who, ","))
+	default:
+		clause = "assignee is EMPTY"
+	}
+	return fmt.Sprintf("sprint = %d AND %s ORDER BY updated DESC", sprintID, clause)
 }
 
 // GetComments fetches up to limit comments for the given ticket, newest last.

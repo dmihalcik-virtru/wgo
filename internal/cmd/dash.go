@@ -94,7 +94,7 @@ count).
 
 With [jira] board set, the dash also shows that board's active and future
 sprints, with their goals and dates, and every ticket in an active sprint
-assigned to those people, even one no PR or workspace leads to. Ticket
+assigned to those people or to no one, even one no PR or workspace leads to. Ticket
 facts (status category, type, sprints, story points, parent, team) come
 from acli; [jira.fields] names the site's custom field IDs.
 

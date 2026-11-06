@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,13 +32,13 @@ var sprintFetcherFn = func() jiracache.SprintFetcher { return sprintFetcher{} }
 
 // FetchSprints implements jiracache.SprintFetcher: the board's active and
 // future sprints, and for each active sprint its tickets assigned to any of
-// assignees, at most jiracache.MaxSprintTickets of them (one more is asked
-// for, to tell a full sprint from a truncated one). A failed ticket search
-// is recorded on its sprint rather than failing the board. Jira rejects a
-// search naming an identity it does not know, so a failed search of several
-// assignees is retried one by one: a stale identity in config then costs
-// only its own tickets, with a note naming its config key, and is left out
-// of the later sprints' searches.
+// assignees or to no one, at most jiracache.MaxSprintTickets of them (one
+// more is asked for, to tell a full sprint from a truncated one). A failed
+// ticket search is recorded on its sprint rather than failing the board.
+// Jira rejects a search naming an identity it does not know, so a failed
+// search is retried in parts: a stale identity in config then costs only
+// its own tickets, with a note naming its config key, and is left out of
+// the later sprints' searches.
 func (sprintFetcher) FetchSprints(board int, assignees []string) (jiracache.BoardSprints, error) {
 	sprints, err := listSprints(board, "active,future", true)
 	if err != nil {
@@ -53,8 +54,12 @@ func (sprintFetcher) FetchSprints(board int, assignees []string) (jiracache.Boar
 				who = append(who, a)
 			}
 		}
-		if e.State == "active" && len(who) > 0 {
-			e.Tickets, e.Truncated, e.Error = sprintTickets(s.ID, who, rejected)
+		if e.State == "active" {
+			var skipped int
+			e.Tickets, e.Truncated, skipped, e.Error = sprintTickets(s.ID, who, rejected)
+			if skipped > 0 {
+				out.Notes = append(out.Notes, fmt.Sprintf("%d of %s's search results could not be read, so its ticket list is incomplete (WGO_DEBUG=1 shows why)", skipped, cmp.Or(s.Name, fmt.Sprintf("sprint %d", s.ID))))
+			}
 		}
 		out.Sprints = append(out.Sprints, e)
 	}
@@ -66,35 +71,35 @@ func (sprintFetcher) FetchSprints(board int, assignees []string) (jiracache.Boar
 	return out, nil
 }
 
-// sprintTickets searches one sprint's tickets assigned to assignees, with
-// the fields acli's search allows. errMsg is set, and tickets nil, when
-// the search failed for every assignee. When it fails for several, each is
-// searched alone, and the ones Jira rejects are added to rejected.
-func sprintTickets(sprint int, assignees []string, rejected map[string]string) (tickets []jiracache.SprintTicket, truncated bool, errMsg string) {
-	raws, err := searchSprint(sprint, assignees)
-	if err != nil && len(assignees) > 1 {
-		var found []json.RawMessage
-		var bad []string
+// sprintTickets searches one sprint's tickets assigned to assignees or to
+// no one, with the fields acli's search allows. skipped counts the results
+// it could not read. errMsg is set, and tickets nil, when the search
+// failed. A failed search is retried in parts: the
+// unassigned tickets alone, which name no identity, so their failure is
+// the search's own; then each assignee alone. Only an assignee Jira says
+// does not exist is added to rejected; any other failure (a rate limit, a
+// timeout) fails the sprint's search, so its earlier tickets are kept.
+func sprintTickets(sprint int, assignees []string, rejected map[string]string) (tickets []jiracache.SprintTicket, truncated bool, skipped int, errMsg string) {
+	raws, err := searchSprint(sprint, assignees, true)
+	if err != nil && len(assignees) > 0 {
+		raws, err = searchSprint(sprint, nil, true)
 		for _, a := range assignees {
-			one, aerr := searchSprint(sprint, []string{a})
-			if aerr != nil {
-				bad = append(bad, a)
-				rejected[a] = acliErrorLine(aerr.Error())
-				continue
+			if err != nil {
+				break
 			}
-			found = append(found, one...)
-		}
-		if len(bad) < len(assignees) {
-			raws, err = found, nil
-		} else {
-			// Every search failed: not an identity, but the search itself.
-			for _, a := range bad {
-				delete(rejected, a)
+			one, aerr := searchSprint(sprint, []string{a}, false)
+			switch {
+			case aerr == nil:
+				raws = append(raws, one...)
+			case identityRejected(aerr):
+				rejected[a] = acliErrorLine(aerr.Error())
+			default:
+				err = aerr
 			}
 		}
 	}
 	if err != nil {
-		return nil, false, acliErrorLine(err.Error())
+		return nil, false, 0, acliErrorLine(err.Error())
 	}
 	seen := map[string]bool{}
 	tickets = []jiracache.SprintTicket{}
@@ -102,6 +107,7 @@ func sprintTickets(sprint int, assignees []string, rejected map[string]string) (
 		f, _, err := jira.ParseFacts(raw, jira.FieldIDs{})
 		if err != nil {
 			debugf("jira sprint %d: skipping an unreadable search result: %v", sprint, err)
+			skipped++
 			continue
 		}
 		if seen[f.Key] {
@@ -114,12 +120,21 @@ func sprintTickets(sprint int, assignees []string, rejected map[string]string) (
 		}
 		tickets = append(tickets, jiracache.SprintTicket{Key: f.Key, Info: infoFromFacts(f)})
 	}
-	return tickets, truncated, ""
+	return tickets, truncated, skipped, ""
 }
 
-// searchSprint runs one sprint's ticket search for assignees.
-func searchSprint(sprint int, assignees []string) ([]json.RawMessage, error) {
-	return searchIssuesJSON(jira.SprintTicketsJQL(sprint, assignees), jira.SearchFactFields, jiracache.MaxSprintTickets+1)
+// searchSprint runs one sprint's ticket search for assignees and, when
+// unassigned is set, its tickets assigned to no one.
+func searchSprint(sprint int, assignees []string, unassigned bool) ([]json.RawMessage, error) {
+	return searchIssuesJSON(jira.SprintTicketsJQL(sprint, assignees, unassigned), jira.SearchFactFields, jiracache.MaxSprintTickets+1)
+}
+
+// identityRejected reports whether a search failed because Jira does not
+// know an assignee it names ("The value 'x' does not exist for the field
+// 'assignee'"), as opposed to failing for another reason.
+func identityRejected(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "does not exist for the field") && strings.Contains(s, "assignee")
 }
 
 // jiraIdentitySource names where a Jira identity in a sprint search comes

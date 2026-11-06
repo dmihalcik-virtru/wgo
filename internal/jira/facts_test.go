@@ -296,8 +296,10 @@ func TestDiscoverFieldIDsAmbiguousSprint(t *testing.T) {
 }
 
 func TestSprintTicketsJQL(t *testing.T) {
-	got := SprintTicketsJQL(1234, []string{"currentUser()", "acct-bob", "o'brien@example.com"})
-	assert.Equal(t, `sprint = 1234 AND assignee in (currentUser(),'acct-bob','o\'brien@example.com') ORDER BY updated DESC`, got)
+	got := SprintTicketsJQL(1234, []string{"currentUser()", "acct-bob", "o'brien@example.com"}, true)
+	assert.Equal(t, `sprint = 1234 AND (assignee in (currentUser(),'acct-bob','o\'brien@example.com') OR assignee is EMPTY) ORDER BY updated DESC`, got)
+	assert.Equal(t, `sprint = 1234 AND assignee in ('acct-bob') ORDER BY updated DESC`, SprintTicketsJQL(1234, []string{"acct-bob"}, false))
+	assert.Equal(t, `sprint = 1234 AND assignee is EMPTY ORDER BY updated DESC`, SprintTicketsJQL(1234, nil, true))
 }
 
 // TestQuoteJQLEscapesBackslash: a configured identity ending in a
@@ -305,7 +307,7 @@ func TestSprintTicketsJQL(t *testing.T) {
 func TestQuoteJQLEscapesBackslash(t *testing.T) {
 	assert.Equal(t, `'acct\\'`, quoteJQL(`acct\`))
 	assert.Equal(t, `'a\\\' OR assignee is EMPTY OR \'b'`, quoteJQL(`a\' OR assignee is EMPTY OR 'b`))
-	got := SprintTicketsJQL(1, []string{`x\`, "currentUser()"})
+	got := SprintTicketsJQL(1, []string{`x\`, "currentUser()"}, false)
 	assert.Equal(t, `sprint = 1 AND assignee in ('x\\',currentUser()) ORDER BY updated DESC`, got)
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -106,24 +107,31 @@ func TestAssembleSprints(t *testing.T) {
 	if sp == nil || sp.Label != "Sprint 12" {
 		t.Fatalf("sprint node: %+v", sp)
 	}
-	want := SprintInfo{ID: 1234, Name: "Sprint 12", State: SprintActive, Start: sprintStart, End: sprintEnd, Goal: "Ship token refresh", Board: 42, Freshness: Fresh}
+	want := SprintInfo{ID: 1234, Name: "Sprint 12", State: SprintActive, Start: sprintStart, End: sprintEnd, Goal: "Ship token refresh", Board: 42, Freshness: Fresh,
+		TicketScope: TicketScopeConfiguredPeopleAndUnassigned, TicketLookup: Fresh}
 	got := *sp.Sprint
-	if got.FetchedAt.IsZero() {
-		t.Fatal("sprint fetched_at not set")
+	if got.FetchedAt.IsZero() || !got.TicketFetchedAt.Equal(got.FetchedAt) {
+		t.Fatalf("sprint fetched_at %v, ticket_fetched_at %v", got.FetchedAt, got.TicketFetchedAt)
 	}
-	got.FetchedAt = time.Time{}
+	got.FetchedAt, got.TicketFetchedAt = time.Time{}, time.Time{}
 	if !got.Start.Equal(want.Start) || !got.End.Equal(want.End) {
 		t.Fatalf("sprint dates: %v..%v", got.Start, got.End)
 	}
 	got.Start, got.End = want.Start, want.End
+	if got.TicketCount == nil || *got.TicketCount != 3 {
+		t.Fatalf("ticket_count %v, want 3", got.TicketCount)
+	}
+	got.TicketCount = nil
 	if got != want {
 		t.Fatalf("sprint info:\n got %+v\nwant %+v", got, want)
 	}
-	if n := s.Node(sprintNodeID(1240)); n == nil || n.Sprint.State != SprintActive {
-		t.Fatalf("each parallel active sprint is a node: %+v", n)
+	if n := s.Node(sprintNodeID(1240)); n == nil || n.Sprint.State != SprintActive || n.Sprint.TicketCount == nil || *n.Sprint.TicketCount != 1 {
+		t.Fatalf("each parallel active sprint is a node with its own count: %+v", n)
 	}
 	if n := s.Node(sprintNodeID(1235)); n == nil || n.Sprint.State != SprintFuture {
 		t.Fatalf("future sprint: %+v", n)
+	} else if n.Sprint.TicketScope != "" || n.Sprint.TicketLookup != "" || n.Sprint.TicketCount != nil {
+		t.Fatalf("a future sprint is not searched, so has no ticket coverage: %+v", n.Sprint)
 	}
 
 	// Tickets nothing else leads to are tracked by their sprint's group.
@@ -199,6 +207,9 @@ func TestAssembleSprintsTruncatedAndFailedSearch(t *testing.T) {
 	s, _ := a.build()
 	if !s.Node(sprintNodeID(1234)).Sprint.Truncated {
 		t.Fatal("truncated sprint not marked")
+	}
+	if sp := s.Node(sprintNodeID(1240)).Sprint; sp.TicketLookup != Error || sp.TicketCount != nil || !sp.TicketFetchedAt.IsZero() {
+		t.Fatalf("a failed search with no earlier result has an unknown count, never zero: %+v", sp)
 	}
 	st := s.Sources[SourceJiraSprints]
 	if st.State != Error || st.Error != 1 {
@@ -389,6 +400,48 @@ func TestRefreshWaitFetchesSprintTicketFacts(t *testing.T) {
 	}
 }
 
+// failingJiraFacts fails every ticket lookup and counts them per ticket.
+type failingJiraFacts struct {
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+func (f *failingJiraFacts) FetchJira(ticket string) (jiracache.Info, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls[ticket]++
+	return jiracache.Info{}, errors.New("unauthorized")
+}
+
+// TestRefreshWaitRunsAFailedTicketLookupOnce: a sprint ticket whose lookup
+// fails is still not fresh after its round, but a waited-for refresh does
+// not run it again: a failure costs one acli call, and is reported once.
+func TestRefreshWaitRunsAFailedTicketLookupOnce(t *testing.T) {
+	f := newFixture(t)
+	jf := &failingJiraFacts{calls: map[string]int{}}
+	r := NewRefresher(Fetchers{Jira: jf, Sprints: &stubSprintFetcher{data: boardFixture()}}, RefresherOptions{Workers: 2, IgnoreLeases: true})
+	defer r.Close()
+	c := f.collector(t, time.Now(), memSource{})
+	c.cfg.JiraBoard = 42
+	d, err := Open(Options{Dir: t.TempDir(), Collector: c, Refresher: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true}); err == nil {
+		t.Fatal("the failed lookups fail the waited-for refresh")
+	}
+	for _, ticket := range []string{"TEAM-1", "TEAM-2", "TEAM-3", "TEAM-4"} {
+		if jf.calls[ticket] == 0 {
+			t.Fatalf("looked up %v, want every sprint ticket", jf.calls)
+		}
+	}
+	for ticket, n := range jf.calls {
+		if n != 1 {
+			t.Errorf("%s looked up %d times, want once", ticket, n)
+		}
+	}
+}
+
 // TestAssembleSprintsKeepsTicketsOfAFailedSearch: a sprint whose search
 // failed still shows the tickets of its last good search, as stale with
 // the error, and the board is refetched once negativeTTL has passed.
@@ -414,6 +467,9 @@ func TestAssembleSprintsKeepsTicketsOfAFailedSearch(t *testing.T) {
 	}
 	if part == nil || part.State != Stale || part.Error == "" || part.FetchedAt.IsZero() {
 		t.Fatalf("kept part: %+v", part)
+	}
+	if sp := s.Node(sprintNodeID(1234)).Sprint; sp.TicketLookup != Stale || !sp.TicketFetchedAt.Equal(part.FetchedAt) || sp.TicketCount == nil || *sp.TicketCount != 3 {
+		t.Fatalf("the kept tickets' coverage is the earlier search's: %+v", sp)
 	}
 	if st.State != Stale {
 		t.Fatalf("jira_sprints: %+v", st)

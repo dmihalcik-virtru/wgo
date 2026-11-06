@@ -165,10 +165,24 @@ func TestFetchTicketFactsFallsBack(t *testing.T) {
 	assert.Contains(t, info.Notes[0], "acli refused to return every Jira field")
 	assert.NotContains(t, info.Notes[0], "TEAM-123", "notes name the cause, not the ticket")
 
-	// When both fail, the first error is returned.
+	// When both fail, both errors are returned.
 	stubIssueJSON(t, map[string]string{})
 	_, err = fetchTicketFacts("TEAM-123")
 	assert.ErrorContains(t, err, "*all")
+
+	// A retry that fails for another reason reports that reason first.
+	old := getIssueJSON
+	getIssueJSON = func(ticket, fields string) ([]byte, error) {
+		if fields == jira.FactFields {
+			return nil, errors.New("Error: field '*all' is not allowed")
+		}
+		return nil, errors.New("Error: unauthorized: use 'acli jira auth login' to authenticate")
+	}
+	t.Cleanup(func() { getIssueJSON = old })
+	_, err = fetchTicketFacts("TEAM-123")
+	require.Error(t, err)
+	assert.True(t, strings.HasPrefix(err.Error(), "Error: unauthorized"), "got %q", err)
+	assert.ErrorContains(t, err, "not allowed")
 }
 
 // TestFetchTicketFactsDoesNotFallBackOnOtherErrors: an expired login fails

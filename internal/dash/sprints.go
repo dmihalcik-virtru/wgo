@@ -97,10 +97,11 @@ func (c *Collector) addSprints(b *builder, effortNode func(string) string, jira 
 			if label == "" {
 				label = "Sprint " + strconv.Itoa(sp.ID)
 			}
-			b.node(Node{ID: nid, Kind: KindSprint, Label: label, Sprint: &SprintInfo{
+			info := &SprintInfo{
 				ID: sp.ID, Name: sp.Name, State: sprintState(sp.State), Start: sp.Start, End: sp.End, Goal: sp.Goal,
 				Board: board, Freshness: boardPart.State, FetchedAt: res.FetchedAt, Truncated: sp.Truncated,
-			}})
+			}
+			b.node(Node{ID: nid, Kind: KindSprint, Label: label, Sprint: info})
 			if sp.State != SprintActive {
 				continue
 			}
@@ -113,6 +114,11 @@ func (c *Collector) addSprints(b *builder, effortNode func(string) string, jira 
 				part.State, part.Error, part.FetchedAt = Error, sp.Error, time.Time{}
 			}
 			parts = append(parts, part)
+			// The ticket search's coverage, apart from the sprint list's.
+			info.TicketScope, info.TicketLookup, info.TicketFetchedAt = TicketScopeConfiguredPeopleAndUnassigned, part.State, part.FetchedAt
+			if sp.Tickets != nil {
+				info.TicketCount = new(len(sp.Tickets))
+			}
 			for _, t := range sp.Tickets {
 				if t.Key == "" {
 					continue

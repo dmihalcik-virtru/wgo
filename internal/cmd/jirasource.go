@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -113,7 +114,9 @@ func fetchTicketFacts(ticket string) (jiracache.Info, error) {
 		debugf("jira %s: acli refused %s: %v", ticket, jira.FactFields, err)
 		var ferr error
 		if raw, ferr = getIssueJSON(ticket, jira.FactFieldList); ferr != nil {
-			return jiracache.Info{}, err
+			// The retry's error is the one to act on (an expired login, say);
+			// the refusal says why there was a retry.
+			return jiracache.Info{}, errors.Join(ferr, err)
 		}
 		partial = true
 		notes = append(notes, "acli refused to return every Jira field ('*all'), so story points, sprints and team are unknown; wgo retries soon")

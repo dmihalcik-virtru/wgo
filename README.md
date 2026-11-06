@@ -1049,8 +1049,8 @@ served under `/review/`. Stop the server with Ctrl-C.
 
 With `[jira] board` set, the dashboard also shows that board's active and
 future sprints, with their goals and dates, and every ticket in an active
-sprint assigned to the people it follows, including tickets no PR or
-workspace leads to; those are grouped under their sprint. See
+sprint assigned to the people it follows or to no one, including tickets no
+PR or workspace leads to; those are grouped under their sprint. See
 [Jira sprints and ticket facts](#jira-sprints-and-ticket-facts).
 
 To open a workspace from a `wgo://open?ws=<id>` link outside the dashboard,
@@ -1244,10 +1244,13 @@ shows a blank as "none". Find a site's IDs in any ticket's JSON:
 
 The board's sprints are cached for 15 minutes in
 `~/.wgo/cache/jira/sprints/board-<id>.json`. Each active sprint's search
-is bounded to 200 tickets assigned to the people `[[dash.people]]` names
-(their `jira` values, plus `currentUser()`); a sprint with more is marked
-truncated. A Jira identity that Jira rejects is reported with the config
-key it came from, and the others' tickets are still shown. A sprint whose
+is bounded to 200 tickets that are unassigned or assigned to the people the
+dashboard follows: the `jira` values of `[[dash.people]]` (or of `[pair]`
+when it is empty), and `currentUser()` unless your own Jira identity is
+configured. A sprint with more is marked truncated. A Jira identity that
+Jira says does not exist is reported with the config key it came from, and
+the others' tickets are still shown; any other failure fails the sprint's
+search. A sprint whose
 search failed keeps its last known tickets, marked stale, and is retried
 after 2 minutes. Without `acli`, or with its login expired, the `jira` and
 `jira_sprints` sources are unknown or failed and say why, and the rest of
