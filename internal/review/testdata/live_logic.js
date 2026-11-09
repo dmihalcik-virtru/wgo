@@ -1,9 +1,15 @@
 // Exercises the pure logic of web/live.js (window.WGOLive / module.exports)
-// under node. Run by TestLiveJSLogic: node live_logic.js <path to live.js>.
-// Prints "ok <n>" on success; any failure exits non-zero with a message.
+// under node. Run by TestLiveJSLogic:
+//
+//	node live_logic.js <live.js> <dash fields.json> <dash query_vectors.json>
+//
+// Prints "ok <n> ..." on success; any failure exits non-zero with a message.
 "use strict";
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const L = require(process.argv[2]);
+const FIELDS = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const VECTORS = JSON.parse(fs.readFileSync(process.argv[4], "utf8"));
 
 let n = 0;
 function test(name, fn) {
@@ -269,4 +275,184 @@ test("Resume is labelled with the configured tool", () => {
   assert.match(r.title, /last codex session/);
 });
 
-console.log("ok " + n);
+// ---------- query language: the vectors shared with internal/dash ----------
+const BASE = L.registry(FIELDS);
+const VREG = L.registry(FIELDS, VECTORS.fields);
+let vectorCases = 0;
+VECTORS.cases.forEach((c) => {
+  test("vector: " + c.name, () => {
+    const reg = c.base ? BASE : VREG;
+    const q = L.parseQuery(c.query, reg);
+    if (c.error) {
+      assert.ok(q.error, "want error " + c.error);
+      assert.ok(q.error.error.includes(c.error), q.error.error + "\n  want " + c.error);
+      assert.equal(q.error.pos, c.pos, q.error.error);
+      if (c.fixed != null) assert.equal(q.error.fixed, c.fixed);
+      vectorCases++;
+      return;
+    }
+    assert.ok(!q.error, q.error && q.error.error);
+    const snap = Object.assign({}, VECTORS.snapshot, c.env || {});
+    const res = L.evaluate(q, L.queryIndex(snap, reg));
+    assert.deepEqual(res.matches.slice().sort(), c.expect.matches, "matches");
+    assert.deepEqual(res.rows.slice().sort(), c.expect.rows, "rows");
+    if (c.expect.visible === "all") assert.equal(res.vis, null, "visible");
+    else if (c.expect.visible) assert.deepEqual(sorted(res.vis), c.expect.visible, "visible");
+    assert.deepEqual(res.warnings, c.warnings || [], "warnings");
+    vectorCases++;
+  });
+});
+
+test("the vector registry knows every catalogue field; the base one only today's", () => {
+  assert.equal(BASE.field("move"), null);
+  assert.equal(BASE.planned.get("move"), "gh-99");
+  assert.ok(VREG.field("move"));
+  assert.equal(VREG.planned.has("move"), false);
+  assert.deepEqual(BASE.names.slice(0, 3), ["kind", "text", "effort"]);
+});
+
+test("chart clicks toggle one clause and keep the others", () => {
+  assert.equal(L.toggleClause("", BASE, "activity", "2026-10-14"), "activity:2026-10-14");
+  assert.equal(L.toggleClause("activity:2026-10-14", BASE, "prstate", "open"), "activity:2026-10-14;prstate:open");
+  assert.equal(L.toggleClause("activity:2026-10-14;prstate:open", BASE, "prstate", "draft"), "activity:2026-10-14;prstate:draft");
+  assert.equal(L.toggleClause("activity:2026-10-14;prstate:draft", BASE, "prstate", "draft"), "activity:2026-10-14");
+  assert.equal(L.toggleClause("kind:pr; prstate:open,draft", BASE, "prstate", "open"), "kind:pr;prstate:open", "a multi-value clause is replaced, not toggled off");
+  assert.equal(L.toggleClause("effort:a;!effort:b", BASE, "effort", "c"), "effort:c");
+  assert.equal(L.toggleClause("", BASE, "effort", "my theme"), "effort:\"my theme\"");
+  assert.ok(L.clauseActive("kind:pr;prstate:open,draft", BASE, "prstate", "draft"));
+  assert.ok(!L.clauseActive("!prstate:draft", BASE, "prstate", "draft"));
+  assert.ok(!L.clauseActive("prstate:", BASE, "prstate", "open"), "an invalid query has no active clause");
+});
+
+test("quoteValue round-trips through the parser", () => {
+  for (const v of ["2026-10-14", "ticket-team-7", "repo:acme/api", "my theme", "a\"b\\c", "@me", "1..2", "*", "unknown"]) {
+    const q = L.parseQuery("effort:" + L.quoteValue(v), BASE);
+    assert.ok(!q.error, v + ": " + (q.error && q.error.error));
+    assert.equal(q.clauses[0].vals[0].text, v);
+  }
+  assert.equal(L.quoteValue("@me"), "\"@me\"", "a literal @ value must not become a macro");
+});
+
+test("the URL hash round-trips and keeps unknown keys", () => {
+  const pairs = L.parseHash("#view=table&x=a%2Fb&q=kind:pr;text:%22a%20b%22&sel=pr:acme%2Fapi%2341,ws-1&sort=-waiting,size");
+  const st = L.hashState(pairs);
+  assert.deepEqual(st, { view: "table", q: "kind:pr;text:\"a b\"", sel: ["pr:acme/api#41", "ws-1"], values: { x: "a/b", sort: "-waiting,size" } });
+  // Unchanged values, and keys the page does not own, keep their spelling;
+  // sort stays the raw multi-key string for the view that owns it.
+  assert.equal(L.buildHash(pairs, st), "#view=table&x=a%2Fb&q=kind:pr;text:%22a%20b%22&sel=pr:acme/api%2341,ws-1&sort=-waiting,size");
+  const h = L.buildHash(pairs, { view: "table", q: st.q, sel: st.sel, values: Object.assign({}, st.values, { cols: "prstate,repo", y: "size", x: "" }) });
+  assert.equal(h, "#view=table&q=kind:pr;text:%22a%20b%22&sel=pr:acme/api%2341,ws-1&sort=-waiting,size&cols=prstate,repo&y=size");
+  assert.deepEqual(L.hashState(L.parseHash(h)).sel, ["pr:acme/api#41", "ws-1"]);
+  assert.equal(L.buildHash(L.parseHash("#view=graph&q=a"), { view: "graph", q: "", sel: [], values: {} }), "", "defaults are dropped");
+  assert.deepEqual(L.hashState(L.parseHash("#view=table")), { view: "table", q: "", sel: [], values: {} }, "old #view=table links still work");
+  assert.deepEqual(L.hashState(L.parseHash("#sel=a%2Cb,c")).sel, ["a,b", "c"], "an ID with a comma survives");
+  assert.equal(L.hashState(L.parseHash("#q=%E0%A4%A")).q, "%E0%A4%A", "a malformed escape is kept, not thrown");
+});
+
+test("history: a drag is one undoable entry, and a commit closes it", () => {
+  const steps = [];
+  let open = false;
+  for (const mode of ["live", "live", "live", "commit", "commit", "live", "normalize", "commit"]) {
+    const st = L.historyStep(open, mode, false);
+    steps.push(st.op); open = st.open;
+  }
+  // The first live change pushes, the next ones replace it, the release
+  // replaces it too; a plain click pushes; tidying the URL never pushes.
+  assert.deepEqual(steps, ["push", "replace", "replace", "replace", "push", "push", "replace", "replace"]);
+  assert.deepEqual(L.historyStep(true, "commit", true), { op: "", open: false }, "a commit with nothing new closes the open entry");
+  assert.deepEqual(L.historyStep(true, "live", true), { op: "", open: true });
+  assert.deepEqual(L.historyStep(false, "normalize", false), { op: "replace", open: false });
+});
+
+test("addons get the bootstrap without the action token", () => {
+  const b = L.addonBoot({ mode: "live", token: "secret", action_api: "/api/action", ack_api: "/api/ack", extract: "/api/extract", me: "alice" });
+  assert.deepEqual(b, { mode: "live", extract: "/api/extract", me: "alice" });
+  assert.ok(Object.isFrozen(b));
+  assert.ok(L.STATE_KEY.test("sprint") && L.STATE_KEY.test("x") && !L.STATE_KEY.test("a=b") && !L.STATE_KEY.test(""));
+});
+
+test("extractURL encodes the page state for /api/extract", () => {
+  assert.equal(L.extractURL("/api/extract", { q: "kind:pr;text:\"a b\"", cols: ["prstate", "repo"], group: "effort", view: "rows" }),
+    "/api/extract?q=kind%3Apr%3Btext%3A%22a%20b%22&cols=prstate%2Crepo&group=effort&view=rows");
+  assert.equal(L.extractURL("/api/extract", { q: "", cols: [] }), "/api/extract");
+});
+
+test("registered views become tabs; re-registering replaces in place", () => {
+  const before = L.views.length;
+  L.registerView({ id: "graph", label: "Graph", render() {} });
+  L.registerView({ id: "table", label: "Table", render() {} });
+  L.registerView({ id: "probe", label: "Probe", question: "Does an addon view show up?", render() {} });
+  L.registerView({ id: "table", label: "Analysis table", render() {} });
+  assert.deepEqual(L.viewTabs(L.views, "probe").map((t) => [t.id, t.label, t.pressed]),
+    [["graph", "Graph", false], ["table", "Analysis table", false], ["probe", "Probe", true]]);
+  assert.equal(L.viewTabs(L.views, "probe")[2].title, "Does an addon view show up?");
+  assert.throws(() => L.registerView({ id: "", render() {} }), /needs a string id/);
+  assert.throws(() => L.registerPanel({ id: "x" }), /render\(ctx\)/);
+  let seen = null;
+  L.onRegister = (what, spec) => { seen = what + ":" + spec.id; };
+  L.registerPanel({ id: "late", render() {} });
+  assert.equal(seen, "panel:late");
+  L.onRegister = null;
+  L.views.length = before;
+  L.panels.length = 0;
+});
+
+test("valueText never prints blank for unknown or empty", () => {
+  const ix = L.queryIndex(VECTORS.snapshot, VREG);
+  assert.equal(L.valueText(ix, "checks", "pr:acme/web#9"), "unknown");
+  assert.equal(L.valueText(ix, "effort", "ticket:jira:TEAM-99"), "sprint:1234");
+  assert.equal(L.valueText(ix, "activity", "ticket:jira:TEAM-99"), "none");
+  assert.equal(L.valueText(ix, "ticket_status", "ticket:jira:TEAM-123"), "In Progress");
+  assert.equal(L.valueText(ix, "updated_ago", "pr:acme/api#41"), "1d");
+  assert.equal(L.valueText(ix, "checks", "ws-0000000000000001"), "", "a field that does not apply is blank, not unknown");
+});
+
+// ---------- performance (requirement 28): logged, not asserted ----------
+// genSnapshot mirrors genSnapshot in internal/dash/query_test.go.
+function genSnapshot(n) {
+  const nodes = [], edges = [], activity = {}, days = [];
+  for (let i = 13; i >= 0; i--) days.push(new Date(Date.UTC(2026, 9, 20 - i)).toISOString().slice(0, 10));
+  const states = ["open", "open", "merged", "closed"], checks = ["success", "failure", "pending", ""];
+  for (let e = 0; nodes.length < n; e++) {
+    const eid = "effort:effort-" + e, ws = "ws-" + e, bm = "bm-" + e, tk = "ticket:jira:TEAM-" + e, ag = "agent:a-" + e, repo = "acme/repo-" + (e % 20);
+    nodes.push({ id: eid, kind: "effort", label: "Effort " + e, effort: { key: "effort-" + e, group: "effort" } },
+      { id: ws, kind: "workspace", label: "repo/ws-" + e, workspace: { slug: "ws", repo: "repo", repo_slug: repo, effort_id: eid } },
+      { id: bm, kind: "bookmark", label: "team-" + e + "-work", bookmark: { name: "b", pr_lookup: "fresh", pr_count: 2 } },
+      { id: tk, kind: "ticket", label: "TEAM-" + e, ticket: { key: "k", system: "jira", status: "In Progress", freshness: "fresh" } },
+      { id: ag, kind: "agent", label: "claude", agent: { liveness: "active", effort_id: eid, workspace_id: ws } });
+    edges.push({ source: eid, target: ws, kind: "contains" }, { source: ws, target: bm, kind: "on" }, { source: eid, target: ag, kind: "runs" });
+    for (let p = 0; p < 2; p++) {
+      const num = e * 2 + p, id = "pr:" + repo + "#" + num;
+      const pr = { number: num, repo: repo, title: "Change " + num, state: states[(e + p) % 4], reviewers_known: true, freshness: "fresh", bookmark_id: bm,
+        updated_at: new Date(Date.UTC(2026, 9, 20, 19) - (e * 7 + p) * 3600000).toISOString() };
+      if ((e + p) % 5 === 0) pr.is_draft = true;
+      if (checks[(e * 3 + p) % 4]) pr.checks = checks[(e * 3 + p) % 4];
+      nodes.push({ id: id, kind: "pr", label: repo + "#" + num, pr: pr });
+      edges.push({ source: bm, target: id, kind: "pr" }, { source: id, target: tk, kind: "ticket" });
+    }
+    const act = new Array(14).fill(0);
+    act[e % 14] = 1 + (e % 3);
+    activity[eid] = act;
+  }
+  return { schema: 1, generated_at: "2026-10-20T15:00:00-04:00", timezone: "America/New_York", days: 14, nodes: nodes, edges: edges, counts: { days: days, activity: activity } };
+}
+const PERF_QUERY = "kind:pr;prstate:open,draft,merged;!checks:pending;freshness:fresh,stale;repo:*;effort:*;activity:*;!text:zzz;review:none,approved;!prstate:closed;text:change;!repo:acme/repo-19";
+let perfLine = "";
+test("12 clauses over 2,000 nodes (timing logged)", () => {
+  const snap = genSnapshot(2000);
+  let t0 = process.hrtime.bigint();
+  const ix = L.queryIndex(snap, BASE);
+  const indexMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  const q = L.parseQuery(PERF_QUERY, BASE);
+  assert.ok(!q.error && q.clauses.length === 12, q.error && q.error.error);
+  for (let i = 0; i < 5; i++) L.evaluate(q, ix); // warm up the JIT
+  const runs = 50;
+  t0 = process.hrtime.bigint();
+  let res;
+  for (let i = 0; i < runs; i++) res = L.evaluate(q, ix);
+  const evalMs = Number(process.hrtime.bigint() - t0) / 1e6 / runs;
+  assert.ok(res.matches.length > 0);
+  perfLine = "perf: " + ix.nodes.length + " nodes, index " + indexMs.toFixed(2) + " ms once, 12 clauses " + evalMs.toFixed(3) + " ms per evaluation (" + res.matches.length + " matches)";
+});
+
+console.log("ok " + n + " (" + vectorCases + " shared query vectors) " + perfLine);

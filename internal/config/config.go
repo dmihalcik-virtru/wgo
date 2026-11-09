@@ -79,6 +79,13 @@ type DashConfig struct {
 	// project_rules projects are used. Local bookmarks' ticket prefixes
 	// always count.
 	TicketPrefixes []string `mapstructure:"ticket_prefixes"`
+	// Filters maps saved filter names to query expressions (gh-100); an
+	// entry overrides a built-in of the same name. Names are read
+	// lowercased. It is decoded loosely — a dotted name arrives as a nested
+	// table, and a value may not be a string — so a bad entry hides that
+	// filter (dash.MergeConfigFilters says why) instead of breaking every
+	// command.
+	Filters map[string]any `mapstructure:"filters"`
 }
 
 // DashPerson is one [[dash.people]] entry.

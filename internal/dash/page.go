@@ -31,7 +31,20 @@ type liveBoot struct {
 	ActionAPI string `json:"action_api,omitempty"`
 	AckAPI    string `json:"ack_api,omitempty"`
 	Resume    string `json:"resume,omitempty"`
+	// Fields is the query field registry and Filters the saved filters
+	// (gh-100). Me and People are what @me and @people mean in the
+	// snapshot being served (queryEnv); Extract is the Markdown route.
+	Fields  *RegistryJSON `json:"fields,omitempty"`
+	Filters []SavedFilter `json:"filters,omitempty"`
+	Me      string        `json:"me,omitempty"`
+	People  []QueryPerson `json:"people,omitempty"`
+	Extract string        `json:"extract,omitempty"`
 }
+
+// liveAddons are the scripts under internal/review/web/ that the live page
+// inlines after live.js, in order; each registers views or panels through
+// window.WGOLive before the page starts. gh-101 to gh-105 append theirs.
+var liveAddons = []string{}
 
 // page is a rendered explorer page with its Content-Security-Policy. The
 // bootstrap element is held apart (prefix, suffix) so a page can be re-served

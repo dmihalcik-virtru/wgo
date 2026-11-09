@@ -1,0 +1,498 @@
+package dash
+
+import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+// updateFields rewrites testdata/fields.json, the registry the JS tests load:
+//
+//	go test ./internal/dash -run TestFieldRegistryGolden -update
+var updateFields = flag.Bool("update", false, "rewrite testdata/fields.json")
+
+// queryVectors is testdata/query_vectors.json, shared with live.js's tests.
+type queryVectors struct {
+	Snapshot json.RawMessage `json:"snapshot"`
+	Fields   []Field         `json:"fields"`
+	Cases    []struct {
+		Name   string         `json:"name"`
+		Query  string         `json:"query"`
+		Base   bool           `json:"base"`
+		Env    map[string]any `json:"env"`
+		Preset string         `json:"preset"`
+		Expect *struct {
+			Matches []string `json:"matches"`
+			Rows    []string `json:"rows"`
+			Visible any      `json:"visible"`
+		} `json:"expect"`
+		Warnings []string `json:"warnings"`
+		Error    string   `json:"error"`
+		Pos      int      `json:"pos"`
+		Fixed    *string  `json:"fixed"`
+	} `json:"cases"`
+}
+
+func loadVectors(t testing.TB) (queryVectors, *Registry) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "query_vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v queryVectors
+	if err := json.Unmarshal(b, &v); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := Fields().With(v.Fields...)
+	if err != nil {
+		t.Fatalf("vector fields: %v", err)
+	}
+	return v, reg
+}
+
+// withEnv returns snap with each top-level key of env replaced.
+func withEnv(t testing.TB, snap json.RawMessage, env map[string]any) []byte {
+	t.Helper()
+	if len(env) == 0 {
+		return snap
+	}
+	var m map[string]any
+	if err := json.Unmarshal(snap, &m); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range env {
+		m[k] = v
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestQueryVectors runs the shared vectors through the Go evaluator. The
+// same file runs under node through live_logic.js (TestLiveJSLogic).
+func TestQueryVectors(t *testing.T) {
+	v, vecReg := loadVectors(t)
+	if len(v.Cases) < 50 {
+		t.Fatalf("only %d vector cases", len(v.Cases))
+	}
+	for _, c := range v.Cases {
+		t.Run(c.Name, func(t *testing.T) {
+			reg := vecReg
+			if c.Base {
+				reg = Fields()
+			}
+			if c.Preset != "" {
+				f, ok := BuiltinFilter(c.Preset)
+				if !ok || f.Expr != c.Query {
+					t.Fatalf("preset %s is %q, the case says %q", c.Preset, f.Expr, c.Query)
+				}
+			}
+			q, err := ParseQuery(c.Query, reg)
+			if c.Error != "" {
+				qe, ok := err.(*QueryError)
+				if !ok {
+					t.Fatalf("want error %q, got %v", c.Error, err)
+				}
+				if !strings.Contains(qe.Msg, c.Error) || qe.Pos != c.Pos {
+					t.Fatalf("error = %q at %d, want %q at %d", qe.Msg, qe.Pos, c.Error, c.Pos)
+				}
+				if want := ""; c.Fixed != nil {
+					want = *c.Fixed
+					if qe.Fixed != want {
+						t.Fatalf("fixed = %q, want %q", qe.Fixed, want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			ix, err := newQueryIndex(withEnv(t, v.Snapshot, c.Env), reg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := ix.evaluate(q)
+			got, rows := slices.Sorted(slices.Values(res.Matches)), slices.Sorted(slices.Values(res.Rows))
+			if !slices.Equal(got, c.Expect.Matches) {
+				t.Errorf("matches = %q\nwant      %q", got, c.Expect.Matches)
+			}
+			if !slices.Equal(rows, c.Expect.Rows) {
+				t.Errorf("rows = %q\nwant   %q", rows, c.Expect.Rows)
+			}
+			switch want := c.Expect.Visible.(type) {
+			case nil:
+			case string:
+				if want != "all" || res.Filtered() {
+					t.Errorf("visible: want %v, query filters = %v", want, res.Filtered())
+				}
+			case []any:
+				var vis []string
+				for _, id := range ix.ids {
+					if res.Filtered() && res.Visible(id) {
+						vis = append(vis, id)
+					}
+				}
+				slices.Sort(vis)
+				var w []string
+				for _, x := range want {
+					w = append(w, x.(string))
+				}
+				if !slices.Equal(vis, w) {
+					t.Errorf("visible = %q\nwant      %q", vis, w)
+				}
+			}
+			if !slices.Equal(res.Warnings, c.Warnings) {
+				t.Errorf("warnings = %q, want %q", res.Warnings, c.Warnings)
+			}
+		})
+	}
+}
+
+// TestQueryVectorSnapshotValidates keeps the vectors' snapshot a valid
+// dash snapshot, so wgo dash --fixture can serve it.
+func TestQueryVectorSnapshotValidates(t *testing.T) {
+	v, _ := loadVectors(t)
+	var s Snapshot
+	if err := json.Unmarshal(v.Snapshot, &s); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestFieldRegistryGolden pins testdata/fields.json, which live_logic.js
+// loads as the page's registry (the page gets it from its bootstrap).
+func TestFieldRegistryGolden(t *testing.T) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", " ")
+	if err := enc.Encode(Fields().JSON()); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("testdata", "fields.json")
+	if *updateFields {
+		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v; run go test ./internal/dash -run TestFieldRegistryGolden -update", err)
+	}
+	if !bytes.Equal(want, buf.Bytes()) {
+		t.Fatalf("%s is out of date with the registry; run go test ./internal/dash -run TestFieldRegistryGolden -update", path)
+	}
+}
+
+// TestQuerySpecExamplesParse parses every query in spec/gh-100.md, with the
+// catalogue fields the vectors register standing in for gh-97/98/99.
+func TestQuerySpecExamplesParse(t *testing.T) {
+	_, reg := loadVectors(t)
+	examples := []string{
+		"move_people:team:web", "mergeable:mergeable,unknown", "activity:2026-10-14;prstate:open",
+		"repo:acme/api;status_category:done", "when:2026-10-01..2026-10-07", "merged:2026-10-01..2026-10-07",
+		"check_failing:vendor-hsm-tests", "effort:repo:acme/api", "prstate:draft", "mismatch:code_merged_ticket_open",
+		"status_category:in_progress", "!move:author", "age:2w..", "kind:pr", "text:\"In Review\"",
+		"sprint:42", "updated_ago:<=30d", "points:>3", "created:>=today", "resolved:..+1w",
+	}
+	for _, f := range builtinFilters {
+		examples = append(examples, f.Expr)
+	}
+	for _, ex := range examples {
+		if _, err := ParseQuery(ex, reg); err != nil {
+			t.Errorf("%s: %v", ex, err)
+		}
+	}
+	if _, err := ParseQuery("prstate:open;status_category:done", reg); err == nil {
+		t.Error("prstate:open;status_category:done must be an incompatible-fields error")
+	}
+}
+
+func TestBuiltinFiltersHiddenUntilTheirFieldsLand(t *testing.T) {
+	merged := MergeFilters(nil, Fields())
+	if len(merged) != len(builtinFilters) {
+		t.Fatalf("got %d filters", len(merged))
+	}
+	for _, f := range merged {
+		if !f.Hidden || !strings.Contains(f.Reason, "not registered yet") || !strings.Contains(f.Reason, "arrives with gh-9") {
+			t.Errorf("%s: hidden=%v reason=%q", f.Name, f.Hidden, f.Reason)
+		}
+	}
+	if f, _ := LookupFilter(merged, "push-reviewers"); f.Reason != "needs fields not registered yet: move, ci (arrives with gh-99)" {
+		t.Errorf("push-reviewers reason = %q", f.Reason)
+	}
+	if f, _ := LookupFilter(merged, "shipped"); f.Reason != "needs fields not registered yet: merged (arrives with gh-97)" {
+		t.Errorf("shipped reason = %q", f.Reason)
+	}
+	_, full := loadVectors(t)
+	for _, f := range MergeFilters(nil, full) {
+		if f.Hidden {
+			t.Errorf("%s hidden with every catalogue field registered: %s", f.Name, f.Reason)
+		}
+	}
+}
+
+func TestConfigFiltersOverrideAndAppend(t *testing.T) {
+	merged := MergeFilters(map[string]string{"shipped": "kind:pr;prstate:merged", "stale-api": "repo:acme/api;!activity:*", "broken": "prstat:open"}, Fields())
+	shipped, _ := LookupFilter(merged, "shipped")
+	if shipped.Builtin || !shipped.Overrides || shipped.Hidden || shipped.Expr != "kind:pr;prstate:merged" {
+		t.Errorf("shipped = %+v", shipped)
+	}
+	names := []string{}
+	for _, f := range merged[len(builtinFilters):] {
+		names = append(names, f.Name)
+	}
+	if !slices.Equal(names, []string{"broken", "stale-api"}) {
+		t.Errorf("configured filters = %v", names)
+	}
+	broken, _ := LookupFilter(merged, "broken")
+	if !broken.Hidden || !strings.Contains(broken.Reason, "[dash.filters] broken in ~/.wgo/config.toml does not parse: unknown field \"prstat\"") {
+		t.Errorf("broken = %+v", broken)
+	}
+	if f, _ := LookupFilter(merged, "stale-api"); f.Hidden {
+		t.Errorf("stale-api hidden: %s", f.Reason)
+	}
+}
+
+func TestQueryEnvReadsPeopleTolerantly(t *testing.T) {
+	env := queryEnv("2026-10-20T15:00:00-04:00", json.RawMessage(`[{"login":"alice","me":true,"name":"Alice"},{"github":"bob"},{"name":"no login"},7]`))
+	if env.Me != "alice" || len(env.People) != 2 || env.People[1].Login != "bob" || env.Now.IsZero() {
+		t.Errorf("env = %+v", env)
+	}
+	if e := queryEnv("not a time", json.RawMessage(`{"login":"x"}`)); e.Me != "" || len(e.People) != 0 || !e.Now.IsZero() {
+		t.Errorf("malformed env = %+v", e)
+	}
+}
+
+func TestQueryIncompatibleFieldsWithoutAPairwiseConflict(t *testing.T) {
+	reg := mustRegistry([]Field{
+		{Name: "a", Type: FieldEnum, Kinds: []NodeKind{KindPR, KindTicket}, Paths: []string{"a"}},
+		{Name: "b", Type: FieldEnum, Kinds: []NodeKind{KindTicket, KindAgent}, Paths: []string{"b"}},
+		{Name: "c", Type: FieldEnum, Kinds: []NodeKind{KindPR, KindAgent}, Paths: []string{"c"}},
+	}, nil)
+	_, err := ParseQuery("a:x;b:y;c:z", reg)
+	want := "fields a, b and c apply to no common node kind (a: pr, ticket; b: ticket, agent; c: pr, agent) at column 9; split them into separate queries"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v\nwant %s", err, want)
+	}
+	if qe := err.(*QueryError); qe.Fixed != "c:z" {
+		t.Errorf("fixed = %q, want the newest clause alone", qe.Fixed)
+	}
+}
+
+// TestNewRegistryRejectsRegistrationTraps: mistakes a data spec could make
+// when it registers a field fail loudly at start-up, not as baffling query
+// errors later.
+func TestNewRegistryRejectsRegistrationTraps(t *testing.T) {
+	for _, tc := range []struct {
+		f    Field
+		want string
+	}{
+		{Field{Name: "priority", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.priority"}, Values: []string{"High", "Low"}}, `value "High" must be lowercase`},
+		{Field{Name: "x", Type: FieldEnum, Kinds: []NodeKind{"tikcet"}, Paths: []string{"ticket.x"}}, `unknown node kind "tikcet"; kinds are effort, workspace, bookmark, pr, ticket, agent`},
+		{Field{Name: "x", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.x"}, Derive: DeriveLinkedRepos, DeriveKinds: []NodeKind{"tickets"}}, `unknown node kind "tickets"`},
+		{Field{Name: "x", Type: FieldEnum, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.x"}, Map: map[string]string{"APPROVED": "approved"}}, `map key "APPROVED" must be lowercase`},
+		{Field{Name: "x", Type: FieldNumber, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.x"}, Scale: "log10"}, `scale "log10" is not linear or log`},
+		{Field{Name: "Bad", Type: FieldText, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.x"}}, "names are lowercase"},
+		{Field{Name: "x", Type: "fuzzy", Kinds: []NodeKind{KindPR}, Paths: []string{"pr.x"}}, `unknown type "fuzzy"`},
+		{Field{Name: "x", Type: FieldText, Kinds: []NodeKind{KindPR}}, "no paths and no derive"},
+		{Field{Name: "x", Type: FieldText, Kinds: []NodeKind{KindPR}, Paths: []string{"pr[state"}}, "unclosed ["},
+	} {
+		if _, err := Fields().With(tc.f); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%+v: err = %v, want %q", tc.f, err, tc.want)
+		}
+	}
+	// Data values may have any case: they are lowercased when indexed.
+	reg, err := Fields().With(Field{Name: "priority", Type: FieldEnum, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.priority"}, Values: []string{"high", "low"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := ParseQuery("priority:High", reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix, err := newQueryIndex([]byte(`{"generated_at":"2026-10-20T15:00:00-04:00","nodes":[{"id":"t","kind":"ticket","ticket":{"priority":"High"}}]}`), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := ix.evaluate(q); len(res.Matches) != 1 {
+		t.Errorf("priority:High against data High: %v", res.Matches)
+	}
+}
+
+func TestMergeConfigFiltersToleratesBadEntries(t *testing.T) {
+	merged := MergeConfigFilters(map[string]any{
+		"release": map[string]any{"v2": "kind:pr;prstate:open"}, // "release.v2" = … in TOML
+		"count":   int64(5),
+		"shipped": []any{"x"},
+		"fine":    "kind:ticket",
+	}, Fields())
+	byName := map[string]SavedFilter{}
+	for _, f := range merged {
+		byName[f.Name] = f
+	}
+	if f := byName["release.v2"]; f.Hidden || f.Expr != "kind:pr;prstate:open" {
+		t.Errorf("dotted name: %+v", f)
+	}
+	if f := byName["count"]; !f.Hidden || !strings.Contains(f.Reason, "[dash.filters] count in ~/.wgo/config.toml is 5, not a query string") {
+		t.Errorf("non-string: %+v", f)
+	}
+	if f := byName["shipped"]; f.Builtin || !f.Overrides || !f.Hidden || !strings.Contains(f.Reason, "not a query string") {
+		t.Errorf("a bad entry overriding a built-in hides it: %+v", f)
+	}
+	if f := byName["fine"]; f.Hidden {
+		t.Errorf("fine: %+v", f)
+	}
+}
+
+// genSnapshot builds an invented snapshot of about n nodes: efforts with a
+// workspace, bookmark, two PRs, a ticket and an agent each. It stands in for
+// gh-97's fixture generator until that lands.
+func genSnapshot(n int) []byte {
+	now := time.Date(2026, 10, 20, 15, 0, 0, 0, time.FixedZone("", -4*3600))
+	var days []string
+	for i := 13; i >= 0; i-- {
+		days = append(days, now.AddDate(0, 0, -i).Format("2006-01-02"))
+	}
+	s := &Snapshot{Schema: SchemaVersion, GeneratedAt: now, Days: 14, Sources: map[string]SourceStatus{}, Timezone: "America/New_York",
+		Counts: Counts{Days: days, Activity: map[string][]int{}}}
+	states := []string{"open", "open", "merged", "closed"}
+	checks := []string{"success", "failure", "pending", ""}
+	for e := 0; len(s.Nodes) < n; e++ {
+		eid := effortNodeID(fmt.Sprintf("effort-%d", e))
+		ws := fmt.Sprintf("ws-%016x", e)
+		bm := fmt.Sprintf("bm-%016x", e)
+		tk := jiraTicketID(fmt.Sprintf("TEAM-%d", e))
+		repo := fmt.Sprintf("acme/repo-%d", e%20)
+		s.Nodes = append(s.Nodes,
+			Node{ID: eid, Kind: KindEffort, Label: fmt.Sprintf("Effort %d", e), Effort: &EffortInfo{Key: fmt.Sprintf("effort-%d", e), Group: GroupEffort}},
+			Node{ID: ws, Kind: KindWorkspace, Label: fmt.Sprintf("repo/ws-%d", e), Workspace: &WorkspaceInfo{Slug: "ws", Repo: "repo", RepoSlug: repo, EffortID: eid, LastActivity: now.Add(-time.Duration(e) * time.Hour)}},
+			Node{ID: bm, Kind: KindBookmark, Label: fmt.Sprintf("team-%d-work", e), Bookmark: &BookmarkInfo{Name: "b", PRLookup: Fresh, PRCount: 2}},
+			Node{ID: tk, Kind: KindTicket, Label: fmt.Sprintf("TEAM-%d", e), Ticket: &TicketInfo{Key: "k", System: "jira", Status: "In Progress", Freshness: Fresh}},
+			Node{ID: agentNodeID(fmt.Sprintf("a-%d", e)), Kind: KindAgent, Label: "claude", Agent: &AgentInfo{Liveness: LivenessActive, EffortID: eid, WorkspaceID: ws}},
+		)
+		s.Edges = append(s.Edges, Edge{eid, ws, EdgeContains}, Edge{ws, bm, EdgeOn}, Edge{eid, agentNodeID(fmt.Sprintf("a-%d", e)), EdgeRuns})
+		for p := 0; p < 2; p++ {
+			id := prNodeID(repo, e*2+p)
+			s.Nodes = append(s.Nodes, Node{ID: id, Kind: KindPR, Label: fmt.Sprintf("%s#%d", repo, e*2+p), PR: &PRInfo{Number: e*2 + p, Repo: repo,
+				Title: fmt.Sprintf("Change %d", e*2+p), State: states[(e+p)%4], IsDraft: (e+p)%5 == 0, Checks: checks[(e*3+p)%4], ReviewersKnown: true,
+				UpdatedAt: now.Add(-time.Duration(e*7+p) * time.Hour), Freshness: Fresh, BookmarkID: bm}})
+			s.Edges = append(s.Edges, Edge{bm, id, EdgePR}, Edge{id, tk, EdgeTicket})
+		}
+		act := make([]int, 14)
+		act[e%14] = 1 + e%3
+		s.Counts.Activity[eid] = act
+	}
+	b, _ := json.Marshal(s)
+	return b
+}
+
+// TestQueryPerformance logs (does not assert) how long indexing and a
+// 12-clause query take over 2,000 nodes (spec/gh-100.md, requirement 28).
+func TestQueryPerformance(t *testing.T) {
+	raw := genSnapshot(2000)
+	t0 := time.Now()
+	ix, err := newQueryIndex(raw, Fields())
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexed := time.Since(t0)
+	q, err := ParseQuery(perfQuery, Fields())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.Clauses) != 12 {
+		t.Fatalf("perf query has %d clauses", len(q.Clauses))
+	}
+	const runs = 50
+	t1 := time.Now()
+	var res *QueryResult
+	for range runs {
+		res = ix.evaluate(q)
+	}
+	per := time.Since(t1) / runs
+	t.Logf("query over %d nodes: index %v once, 12 clauses %v per evaluation (%d matches, %d rows)", ix.total, indexed, per, len(res.Matches), len(res.Rows))
+	if len(res.Matches) == 0 {
+		t.Error("the perf query matches nothing; it should exercise every clause")
+	}
+}
+
+// perfQuery is the 12-clause query both evaluators time; live_logic.js has
+// the same string.
+const perfQuery = "kind:pr;prstate:open,draft,merged;!checks:pending;freshness:fresh,stale;repo:*;effort:*;activity:*;!text:zzz;review:none,approved;!prstate:closed;text:change;!repo:acme/repo-19"
+
+// TestQueryCoverageWarnings checks requirement 15: a merged, closed or when
+// clause that reaches before the closed-recent PR search's cutoff, or into
+// a gap in it, warns even when nothing matches.
+func TestQueryCoverageWarnings(t *testing.T) {
+	v, reg := loadVectors(t)
+	inventory := func(parts ...map[string]any) map[string]any {
+		return map[string]any{"github_inventory": map[string]any{"state": "fresh", "parts": parts}}
+	}
+	// 2026-08-21T00:00Z is 20:00 on the 20th in New York, so the 21st is
+	// the first local day covered in full.
+	alice := map[string]any{"name": "alice/closed-recent", "state": "fresh", "coverage_from": "2026-08-21T00:00:00Z"}
+	bob := map[string]any{"name": "bob/closed-recent", "state": "fresh", "coverage_from": "2026-08-14T00:00:00Z"}
+	covered := inventory(alice, bob, map[string]any{"name": "alice/open-authored", "state": "fresh"})
+	early := "reaches before 2026-08-21, where the closed-recent PR search starts"
+	cases := []struct {
+		name, query string
+		sources     map[string]any
+		want        []string // substrings, one per warning; nil for none
+	}{
+		{"inside the window", "kind:pr;merged:2026-09-01..", covered, nil},
+		{"from the first full day", "merged:2026-08-21..", covered, nil},
+		{"a range before the cutoff", "kind:pr;merged:2026-08-01..2026-08-31", covered, []string{"merged:2026-08-01..2026-08-31 " + early}},
+		{"the cutoff's partial day", "closed:>=2026-08-20", covered, []string{early}},
+		{"an open lower bound", "merged:..2026-10-01", covered, []string{early}},
+		{"a date list", "when:2026-10-01,2026-08-02", covered, []string{early}},
+		{"a negation", "!merged:2026-10-01..", covered, []string{early}},
+		{"any merge date", "merged:*", covered, []string{early}},
+		{"only unknown", "merged:unknown", covered, nil},
+		{"open PRs only", "prstate:open,draft;when:2026-01-01..", covered, nil},
+		{"tickets only", "kind:ticket;when:2026-01-01..", covered, nil},
+		{"no date clause", "prstate:merged", covered, nil},
+		{"no closed-recent search", "merged:-7d..", nil, []string{"merged:-7d..: merged and closed PRs come from the closed-recent PR search, which this snapshot lacks"}},
+		{"a part without a cutoff", "merged:-7d..", inventory(alice, map[string]any{"name": "bob/closed-recent", "state": "fresh"}), []string{"records no cutoff"}},
+		{"a truncated part", "merged:2026-09-01..", inventory(alice, map[string]any{"name": "bob/closed-recent", "state": "fresh", "truncated": true, "coverage_from": "2026-08-14T00:00:00Z"}),
+			[]string{"incomplete (bob/closed-recent truncated)"}},
+		{"an unavailable part before the cutoff", "merged:2026-08-01..", inventory(alice, map[string]any{"name": "bob/closed-recent", "state": "error", "coverage_from": "2026-08-14T00:00:00Z"}),
+			[]string{early, "incomplete (bob/closed-recent unavailable)"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := map[string]any{"sources": c.sources}
+			if c.sources == nil {
+				env["sources"] = map[string]any{}
+			}
+			ix, err := newQueryIndex(withEnv(t, v.Snapshot, env), reg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q, err := ParseQuery(c.query, reg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := ix.evaluate(q).CoverageWarnings
+			if len(got) != len(c.want) {
+				t.Fatalf("coverage warnings = %q, want %d matching %q", got, len(c.want), c.want)
+			}
+			for i, w := range c.want {
+				if !strings.Contains(got[i], w) {
+					t.Errorf("warning %d = %q, want it to contain %q", i, got[i], w)
+				}
+			}
+		})
+	}
+}
