@@ -3,6 +3,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -148,17 +149,30 @@ func (fs *FileStore) lockPath() string {
 	return fs.stateFile + ".lock"
 }
 
+// ErrStateLocked reports that MutateStateWithin gave up waiting for another
+// wgo process to release the state lock.
+var ErrStateLocked = errors.New("state lock is held by another wgo process")
+
 // MutateState runs fn under an exclusive cross-process lock, re-reading state
 // inside the lock so concurrent wgo processes can't lose each other's updates
 // (the whole-document last-writer-wins hazard). It persists the result only when
 // fn reports changed==true and returns no error, so throttled no-op callers
 // (e.g. the agent heartbeat) avoid an unnecessary write.
 func (fs *FileStore) MutateState(fn func(*State) (changed bool, err error)) error {
+	return fs.MutateStateWithin(0, fn)
+}
+
+// MutateStateWithin is MutateState for callers that must not wait
+// indefinitely, such as Claude Code hooks, which hold up the user's prompt
+// while they run: it waits at most timeout for the lock, then returns an
+// error wrapping ErrStateLocked without calling fn. A timeout of zero or less
+// waits for as long as it takes, like MutateState.
+func (fs *FileStore) MutateStateWithin(timeout time.Duration, fn func(*State) (changed bool, err error)) error {
 	if err := fs.EnsureDir(); err != nil {
 		return err
 	}
 
-	unlock, err := acquireStateLock(fs.lockPath())
+	unlock, err := acquireStateLock(fs.lockPath(), timeout)
 	if err != nil {
 		return err
 	}

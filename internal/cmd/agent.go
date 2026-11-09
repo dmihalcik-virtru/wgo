@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -184,7 +185,10 @@ var workspaceRoot = func() (string, error) {
 var errNotJJRepo = errors.New("not a jj repository")
 
 func workspaceRootOf(dir string) (string, error) {
-	jjc := jj.NewCLI()
+	return workspaceRootWith(jj.NewCLI(), dir)
+}
+
+func workspaceRootWith(jjc *jj.CLIClient, dir string) (string, error) {
 	if !jjc.IsRepo(dir) {
 		return "", errNotJJRepo
 	}
@@ -203,21 +207,42 @@ type workspaceInfo struct {
 	BranchKnown bool
 }
 
+// workspaceLookupTimeout bounds the jj calls lookupWorkspace makes. Its
+// callers are Claude Code hooks and the commands they stand in for, and a
+// hook holds up the user's prompt (UserPromptSubmit) or turn end (Stop) until
+// it exits or Claude Code kills it, 10s in contrib/claude-code-hooks.md. jj
+// can block far longer than that on a repo another jj process has locked.
+// A cancelled jj gets up to jj's interruptGrace (5s) to exit, so this plus
+// that grace plus hookLockTimeout stays under the hook timeout.
+var workspaceLookupTimeout = 2 * time.Second
+
 // lookupWorkspace resolves the workspace root, its repository's main root and
 // the current bookmark for dir. These are jj subprocess calls, so callers on
-// a hot path (hook PostToolUse) only make them when creating a session.
+// a hot path (hook PostToolUse) only make them when creating a session. They
+// run with --ignore-working-copy, so recording a session never snapshots the
+// working copy, which would take jj's working-copy lock and race the agent's
+// own jj commands; the bookmark is the one at @ as of jj's last snapshot.
+// Together they give up after workspaceLookupTimeout, returning an error that
+// wraps context.DeadlineExceeded.
 var lookupWorkspace = func(dir string) (workspaceInfo, error) {
-	wsRoot, err := workspaceRootOf(dir)
+	ctx, cancel := context.WithTimeout(context.Background(), workspaceLookupTimeout)
+	defer cancel()
+	jjc := jj.NewCLI().ReadOnly().WithContext(ctx)
+	wsRoot, err := workspaceRootWith(jjc, dir)
 	if err != nil {
 		return workspaceInfo{}, err
 	}
-	jjc := jj.NewCLI()
 	repo, err := jjc.MainWorkspaceRoot(wsRoot)
 	if err != nil {
 		debugf("agent: main workspace root for %s: %v; using the workspace itself, so conflicts with other workspaces of this repo go undetected", wsRoot, err)
 		repo = wsRoot
 	}
 	branch, known := bookmarkOf(jjc, wsRoot)
+	if err := ctx.Err(); err != nil {
+		// The fallbacks above would record the workspace as its own repo
+		// and its bookmark as unknown; a slow jj is not evidence of either.
+		return workspaceInfo{}, fmt.Errorf("jj did not answer within %s: %w", workspaceLookupTimeout, err)
+	}
 	return workspaceInfo{Root: wsRoot, Repo: repo, Branch: branch, BranchKnown: known}, nil
 }
 

@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/jj"
@@ -15,6 +17,12 @@ import (
 )
 
 var agentHookTool string
+
+// hookLockTimeout bounds how long a hook waits for another wgo process to
+// release state.json's lock. Claude Code holds up the user's prompt until the
+// hook exits, so a wedged wgo must cost one session update, not every prompt.
+// See workspaceLookupTimeout for how the two fit Claude Code's hook timeout.
+var hookLockTimeout = 2 * time.Second
 
 var agentHookCmd = &cobra.Command{
 	Use:   "hook [event]",
@@ -46,8 +54,12 @@ Code's PATH), is reported as a JSON systemMessage on stdout, which Claude
 Code shows the user; that is written only on PostToolUse and
 UserPromptSubmit, where Claude Code displays it, and at most once an hour for
 the same problem across all sessions. Otherwise the command prints nothing on
-stdout. Either way it exits 0, so it never disrupts the agent. See
-contrib/claude-code-hooks.md.`,
+stdout. Either way it exits 0, so it never disrupts the agent.
+
+The jj lookups (run with --ignore-working-copy, so they never snapshot) and
+the wait for the state file's lock each give up after 2s, so a busy repo or a
+stuck wgo delays the prompt by seconds, not until Claude Code's hook timeout.
+See contrib/claude-code-hooks.md.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		event := ""
@@ -144,7 +156,7 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		return err
 	}
 	if act.remove {
-		return s.MutateState(func(state *store.State) (bool, error) {
+		return s.MutateStateWithin(hookLockTimeout, func(state *store.State) (bool, error) {
 			return state.RemoveAgentSession(p.SessionID), nil
 		})
 	}
@@ -179,6 +191,14 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			ws = workspaceInfo{}
 		case errors.Is(err, errNotJJRepo):
 			return fmt.Errorf("not tracking session %s: %s: %v: %w", p.SessionID, dir, err, errHookSkipped)
+		case errors.Is(err, context.DeadlineExceeded):
+			// jj is slow or blocked on a lock held by another jj process. A
+			// later event retries, so this is reported, but not as a PATH
+			// problem.
+			return &hookProblem{
+				key: "jj: timed out",
+				err: fmt.Errorf("jj did not resolve the workspace at %s within %s; will retry on the next event: %w", dir, workspaceLookupTimeout, err),
+			}
 		default:
 			// dir is in a jj workspace, but jj failed on it: it is missing from
 			// the PATH Claude Code runs hooks with, too old, or misconfigured.
@@ -200,7 +220,7 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		pid, start = agentProcess(tool, 0)
 	}
 
-	return s.MutateState(func(state *store.State) (bool, error) {
+	return s.MutateStateWithin(hookLockTimeout, func(state *store.State) (bool, error) {
 		now := agentNow()
 		cur := state.GetAgentSession(p.SessionID)
 		if existing != nil && cur == nil {
