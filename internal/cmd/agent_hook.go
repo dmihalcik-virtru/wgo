@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/jj"
@@ -15,6 +17,18 @@ import (
 )
 
 var agentHookTool string
+
+// hookLockTimeout bounds how long a hook waits for another wgo process to
+// release state.json's lock. Claude Code holds up the user's prompt until the
+// hook exits, so a wedged wgo delays each prompt by at most this, not until
+// Claude Code kills the hook. See workspaceLookupTimeout for how it fits
+// Claude Code's hook timeout.
+var hookLockTimeout = 2 * time.Second
+
+// hookRemoveLockTimeout is hookLockTimeout for SessionEnd. It is the last
+// event of a session, so no later one retries a removal it gives up on, and
+// it makes no jj calls, so it can spend most of the hook timeout waiting.
+var hookRemoveLockTimeout = 8 * time.Second
 
 var agentHookCmd = &cobra.Command{
 	Use:   "hook [event]",
@@ -46,8 +60,11 @@ Code's PATH), is reported as a JSON systemMessage on stdout, which Claude
 Code shows the user; that is written only on PostToolUse and
 UserPromptSubmit, where Claude Code displays it, and at most once an hour for
 the same problem across all sessions. Otherwise the command prints nothing on
-stdout. Either way it exits 0, so it never disrupts the agent. See
-contrib/claude-code-hooks.md.`,
+stdout. Either way it exits 0, so it never disrupts the agent.
+
+The jj lookups (run with --ignore-working-copy, so they never snapshot)
+share a 2s budget, and the wait for the state file's lock is also 2s (8s for
+SessionEnd, which is never retried). See contrib/claude-code-hooks.md.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		event := ""
@@ -144,9 +161,10 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		return err
 	}
 	if act.remove {
-		return s.MutateState(func(state *store.State) (bool, error) {
+		err := s.MutateStateWithin(hookRemoveLockTimeout, func(state *store.State) (bool, error) {
 			return state.RemoveAgentSession(p.SessionID), nil
 		})
+		return lockProblem(s, err, "the session stays listed until wgo sees its agent exit")
 	}
 
 	// A lock-free read decides whether this event needs a write at all, and
@@ -179,6 +197,13 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			ws = workspaceInfo{}
 		case errors.Is(err, errNotJJRepo):
 			return fmt.Errorf("not tracking session %s: %s: %v: %w", p.SessionID, dir, err, errHookSkipped)
+		case errors.Is(err, context.DeadlineExceeded):
+			// jj is slow or stuck. A later event retries, so this is
+			// reported, but not as a PATH problem.
+			return &hookProblem{
+				key: "jj: timed out",
+				err: fmt.Errorf("jj did not resolve the workspace at %s within %s; will retry on the next event: %w", dir, workspaceLookupTimeout, err),
+			}
 		default:
 			// dir is in a jj workspace, but jj failed on it: it is missing from
 			// the PATH Claude Code runs hooks with, too old, or misconfigured.
@@ -200,7 +225,7 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		pid, start = agentProcess(tool, 0)
 	}
 
-	return s.MutateState(func(state *store.State) (bool, error) {
+	err = s.MutateStateWithin(hookLockTimeout, func(state *store.State) (bool, error) {
 		now := agentNow()
 		cur := state.GetAgentSession(p.SessionID)
 		if existing != nil && cur == nil {
@@ -243,4 +268,19 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		dropInferredDuplicate(state, tool, saved.WorktreePath, saved.PID, saved.ProcStart)
 		return true, nil
 	})
+	return lockProblem(s, err, "the next event retries")
+}
+
+// lockProblem turns a timed-out wait for the state lock into a hookProblem
+// that says what became of the event (then) and how to find the process
+// holding the lock. Every timeout shares one key, so it warns once an hour
+// however the path or timeout is spelled. Other errors pass through.
+func lockProblem(s *store.FileStore, err error, then string) error {
+	if !errors.Is(err, store.ErrStateLocked) {
+		return err
+	}
+	return &hookProblem{
+		key: "state: locked",
+		err: fmt.Errorf("%w; this event was not recorded and %s (find the process holding the lock with: lsof %s)", err, then, s.LockPath()),
+	}
 }

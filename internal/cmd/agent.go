@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -184,7 +185,10 @@ var workspaceRoot = func() (string, error) {
 var errNotJJRepo = errors.New("not a jj repository")
 
 func workspaceRootOf(dir string) (string, error) {
-	jjc := jj.NewCLI()
+	return workspaceRootWith(jj.NewCLI(), dir)
+}
+
+func workspaceRootWith(jjc *jj.CLIClient, dir string) (string, error) {
 	if !jjc.IsRepo(dir) {
 		return "", errNotJJRepo
 	}
@@ -203,21 +207,45 @@ type workspaceInfo struct {
 	BranchKnown bool
 }
 
+// workspaceLookupTimeout is the budget the jj calls in lookupWorkspace share.
+// Its callers are Claude Code hooks and `wgo agent start`, which non-hook
+// tools call the same way. A hook holds up the user's prompt
+// (UserPromptSubmit) or turn end (Stop) until it exits or Claude Code kills
+// it, 10s in contrib/claude-code-hooks.md, and jj can take far longer than
+// that on a large or busy repo. The worst case is this 2s, plus up to jj's
+// interruptGrace (5s) for the interrupted jj to exit, plus hookLockTimeout
+// (2s): about 9s, leaving under 1s for everything else. Raising any of them
+// means raising the documented hook timeout too.
+var workspaceLookupTimeout = 2 * time.Second
+
 // lookupWorkspace resolves the workspace root, its repository's main root and
-// the current bookmark for dir. These are jj subprocess calls, so callers on
-// a hot path (hook PostToolUse) only make them when creating a session.
+// the nearest bookmark at or below @ for dir. These are jj subprocess calls,
+// so hooks make them only when creating a session or on the events that
+// refresh one (SessionStart, UserPromptSubmit, Stop), never on PostToolUse.
+// They run with --ignore-working-copy, so recording a session never
+// snapshots the working copy, which would take jj's working-copy lock and
+// race the agent's own jj commands. Together they give up after
+// workspaceLookupTimeout (an interrupted jj may take up to interruptGrace
+// more to exit), returning an error that wraps context.DeadlineExceeded.
 var lookupWorkspace = func(dir string) (workspaceInfo, error) {
-	wsRoot, err := workspaceRootOf(dir)
+	ctx, cancel := context.WithTimeout(context.Background(), workspaceLookupTimeout)
+	defer cancel()
+	jjc := jj.NewCLI().ReadOnly().WithContext(ctx)
+	wsRoot, err := workspaceRootWith(jjc, dir)
 	if err != nil {
 		return workspaceInfo{}, err
 	}
-	jjc := jj.NewCLI()
 	repo, err := jjc.MainWorkspaceRoot(wsRoot)
 	if err != nil {
 		debugf("agent: main workspace root for %s: %v; using the workspace itself, so conflicts with other workspaces of this repo go undetected", wsRoot, err)
 		repo = wsRoot
 	}
 	branch, known := bookmarkOf(jjc, wsRoot)
+	if err := ctx.Err(); err != nil {
+		// The fallbacks above would record the workspace as its own repo
+		// and its bookmark as unknown; a slow jj is not evidence of either.
+		return workspaceInfo{}, fmt.Errorf("jj did not answer within %s: %w", workspaceLookupTimeout, err)
+	}
 	return workspaceInfo{Root: wsRoot, Repo: repo, Branch: branch, BranchKnown: known}, nil
 }
 
