@@ -207,23 +207,26 @@ type workspaceInfo struct {
 	BranchKnown bool
 }
 
-// workspaceLookupTimeout bounds the jj calls lookupWorkspace makes. Its
-// callers are Claude Code hooks and the commands they stand in for, and a
-// hook holds up the user's prompt (UserPromptSubmit) or turn end (Stop) until
-// it exits or Claude Code kills it, 10s in contrib/claude-code-hooks.md. jj
-// can block far longer than that on a repo another jj process has locked.
-// A cancelled jj gets up to jj's interruptGrace (5s) to exit, so this plus
-// that grace plus hookLockTimeout stays under the hook timeout.
+// workspaceLookupTimeout is the budget the jj calls in lookupWorkspace share.
+// Its callers are Claude Code hooks and `wgo agent start`, which non-hook
+// tools call the same way. A hook holds up the user's prompt
+// (UserPromptSubmit) or turn end (Stop) until it exits or Claude Code kills
+// it, 10s in contrib/claude-code-hooks.md, and jj can take far longer than
+// that on a large or busy repo. The worst case is this 2s, plus up to jj's
+// interruptGrace (5s) for the interrupted jj to exit, plus hookLockTimeout
+// (2s): about 9s, leaving under 1s for everything else. Raising any of them
+// means raising the documented hook timeout too.
 var workspaceLookupTimeout = 2 * time.Second
 
 // lookupWorkspace resolves the workspace root, its repository's main root and
-// the current bookmark for dir. These are jj subprocess calls, so callers on
-// a hot path (hook PostToolUse) only make them when creating a session. They
-// run with --ignore-working-copy, so recording a session never snapshots the
-// working copy, which would take jj's working-copy lock and race the agent's
-// own jj commands; the bookmark is the one at @ as of jj's last snapshot.
-// Together they give up after workspaceLookupTimeout, returning an error that
-// wraps context.DeadlineExceeded.
+// the nearest bookmark at or below @ for dir. These are jj subprocess calls,
+// so hooks make them only when creating a session or on the events that
+// refresh one (SessionStart, UserPromptSubmit, Stop), never on PostToolUse.
+// They run with --ignore-working-copy, so recording a session never
+// snapshots the working copy, which would take jj's working-copy lock and
+// race the agent's own jj commands. Together they give up after
+// workspaceLookupTimeout (an interrupted jj may take up to interruptGrace
+// more to exit), returning an error that wraps context.DeadlineExceeded.
 var lookupWorkspace = func(dir string) (workspaceInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceLookupTimeout)
 	defer cancel()

@@ -20,8 +20,9 @@ var agentHookTool string
 
 // hookLockTimeout bounds how long a hook waits for another wgo process to
 // release state.json's lock. Claude Code holds up the user's prompt until the
-// hook exits, so a wedged wgo must cost one session update, not every prompt.
-// See workspaceLookupTimeout for how the two fit Claude Code's hook timeout.
+// hook exits, so a wedged wgo delays each prompt by at most this, not until
+// Claude Code kills the hook. See workspaceLookupTimeout for how it fits
+// Claude Code's hook timeout.
 var hookLockTimeout = 2 * time.Second
 
 // hookRemoveLockTimeout is hookLockTimeout for SessionEnd. It is the last
@@ -61,10 +62,9 @@ UserPromptSubmit, where Claude Code displays it, and at most once an hour for
 the same problem across all sessions. Otherwise the command prints nothing on
 stdout. Either way it exits 0, so it never disrupts the agent.
 
-The jj lookups (run with --ignore-working-copy, so they never snapshot) and
-the wait for the state file's lock each give up after 2s, so a busy repo or a
-stuck wgo delays the prompt by seconds, not until Claude Code's hook timeout.
-See contrib/claude-code-hooks.md.`,
+The jj lookups (run with --ignore-working-copy, so they never snapshot)
+share a 2s budget, and the wait for the state file's lock is also 2s (8s for
+SessionEnd, which is never retried). See contrib/claude-code-hooks.md.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		event := ""
@@ -198,9 +198,8 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		case errors.Is(err, errNotJJRepo):
 			return fmt.Errorf("not tracking session %s: %s: %v: %w", p.SessionID, dir, err, errHookSkipped)
 		case errors.Is(err, context.DeadlineExceeded):
-			// jj is slow or blocked on a lock held by another jj process. A
-			// later event retries, so this is reported, but not as a PATH
-			// problem.
+			// jj is slow or stuck. A later event retries, so this is
+			// reported, but not as a PATH problem.
 			return &hookProblem{
 				key: "jj: timed out",
 				err: fmt.Errorf("jj did not resolve the workspace at %s within %s; will retry on the next event: %w", dir, workspaceLookupTimeout, err),

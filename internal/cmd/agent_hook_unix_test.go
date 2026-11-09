@@ -20,8 +20,8 @@ import (
 // realLookupWorkspace is lookupWorkspace before any test stubs it.
 var realLookupWorkspace = lookupWorkspace
 
-// TestLookupWorkspaceTimesOut: a jj that never answers (blocked on a lock
-// another jj holds, say) costs lookupWorkspace workspaceLookupTimeout, not
+// TestLookupWorkspaceTimesOut: a jj that never answers (stuck on a huge or
+// wedged repo, say) costs lookupWorkspace workspaceLookupTimeout, not
 // the hook's whole budget, and jj is run without snapshotting.
 func TestLookupWorkspaceTimesOut(t *testing.T) {
 	sleep, err := exec.LookPath("sleep")
