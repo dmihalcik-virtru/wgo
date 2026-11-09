@@ -1029,7 +1029,10 @@ be shared as-is. Without `--out` it is written to
 
 `wgo dash` shows all your ongoing work in one live page: efforts,
 workspaces, bookmarks and their PRs, tickets and agent sessions, with how
-fresh each source is and what changed since you last looked.
+fresh each source is and what changed since you last looked. It also shows
+every PR you and the [people you follow](#dashboard-configuration) author
+or are asked to review, even with no local bookmark (see
+[PR inventory](#pr-inventory)).
 
 ```
 wgo dash                 # serve http://127.0.0.1:8766 and open it
@@ -1041,8 +1044,14 @@ wgo dash --json          # print one snapshot as JSON and exit
 The server listens on the loopback address only. Every 30 seconds by
 default (`[dash] refresh_seconds`) it re-collects local jj state, reading
 with `--ignore-working-copy` so it never snapshots a workspace. It also
-refreshes stale PR, Jira and GitHub issue data. Year-in-review runs are
+refreshes stale PR, PR inventory, Jira and GitHub issue data. Year-in-review runs are
 served under `/review/`. Stop the server with Ctrl-C.
+
+With `[jira] board` set, the dashboard also shows that board's active and
+future sprints, with their goals and dates, and every ticket in an active
+sprint assigned to the people it follows or to no one, including tickets no
+PR or workspace leads to; those are grouped under their sprint. See
+[Jira sprints and ticket facts](#jira-sprints-and-ticket-facts).
 
 To open a workspace from a `wgo://open?ws=<id>` link outside the dashboard,
 install the optional [macOS URL handler](#wgo-links-with-wgo-setup-url-handler).
@@ -1164,6 +1173,90 @@ an error naming the setting; these are never silently adjusted. `--json`
 ignores `port` and `refresh_seconds`, since it prints one snapshot without
 serving.
 
+`[[dash.people]]` names the people whose PRs and tickets the dashboard
+follows, one table per person:
+
+```toml
+[[dash.people]]
+github = "alice"           # GitHub login (required)
+jira = "alice@example.com" # Jira account ID, email or currentUser() (optional)
+name = "Alice"             # display name (optional)
+```
+
+Without entries it follows `[pair]`'s teammate. You (the authenticated
+GitHub user) are always added once wgo knows your login; until then nobody
+is marked as you, and counts that need your own PRs, such as merges per
+day, stay unknown. A `[pair]` teammate that is not a bare GitHub login is
+not followed, with a warning. An entry without a GitHub
+login, with something else in its place (`@alice`, an email, a team), or
+repeating another entry's login stops `wgo dash` with an error naming the
+entry.
+
+Two more `[dash]` keys tune the [PR inventory](#pr-inventory):
+
+```toml
+[dash]
+inventory_ttl_seconds = 300   # open PR sets stay fresh this long (60 to 86400)
+ticket_prefixes = ["TEAM"]    # Jira keys that count in PR titles and bodies
+```
+
+`inventory_ttl_seconds` sets how long the open sets stay fresh (300
+seconds by default). The closed-recent set changes only when a PR merges
+or closes, so it stays fresh six times as long (1800 seconds by default).
+A value outside 60 to 86400 stops `wgo dash` with an error naming it.
+
+`ticket_prefixes` lists the Jira project keys whose ticket IDs count when
+they appear in a PR's title or body, so `SHA-256`, `AES-256`, `P-384` or
+`UTF-8` are never read as tickets. Without it, the projects in `[jira]`
+(`project`, `default_project` and each `project_rules` entry) count. The
+prefixes of tickets your workspaces' bookmarks name always count too. A
+ticket in the head branch name of a PR your bookmarks lead to counts
+whatever its prefix, as it does for bookmarks; on other PRs it needs a
+known prefix too, once any is known, so GitHub's `patch-1` and
+`revert-45-…` branches are not tickets. A reference to an issue number
+that turns out to be a PR is dropped. A prefix with anything but letters is
+an error.
+
+### Jira sprints and ticket facts
+
+Ticket nodes carry the facts Jira reports through `acli`: summary, status
+category, type, priority, sprints, story points, parent epic, team,
+components, labels, resolution and dates. Story points, sprint and team are
+custom fields whose IDs differ per site. Name yours in `[jira.fields]`:
+
+```toml
+[jira]
+board = 42                          # the board whose sprints wgo dash shows
+
+[jira.fields]
+story_points = "customfield_10016"  # or "none" if the site has no such field
+sprint       = "customfield_10020"
+team         = "customfield_10001"
+epic_link    = "customfield_10014"  # legacy epic link; not needed when epics show as parent
+```
+
+`acli` cannot list a site's fields, so only the sprint field is discovered
+on its own, from a ticket that is in a sprint. The discovery is cached for
+7 days in `~/.wgo/cache/jira/fields.json`. A field that is neither set nor
+discovered stays unknown, and the dashboard says which key to set. It never
+shows a blank as "none". Find a site's IDs in any ticket's JSON:
+`acli jira workitem view TEAM-123 --fields '*all' --json`.
+
+The board's sprints are cached for 15 minutes in
+`~/.wgo/cache/jira/sprints/board-<id>.json`. Each active sprint's search
+is bounded to 200 tickets that are unassigned or assigned to the people the
+dashboard follows: the `jira` values of `[[dash.people]]` (or of `[pair]`
+when it is empty), and `currentUser()` unless your own Jira identity is
+configured. A sprint with more is marked truncated. A Jira identity that
+Jira says does not exist is reported with the config key it came from, and
+the others' tickets are still shown; any other failure fails the sprint's
+search. A sprint whose
+search failed keeps its last known tickets, marked stale, and is retried
+after 2 minutes. Without `acli`, or with its login expired, the `jira` and
+`jira_sprints` sources are unknown or failed and say why, and the rest of
+the dashboard is unaffected. `wgo statusline` still reads only the ticket's
+cache entry.
+
 A `terminal`, `terminal_command` or `resume` value of the right type that
 wgo does not support (an unknown terminal, `terminal = "command"` with no
 command, a resume tool not on the list) does not stop the dashboard. `wgo
@@ -1176,6 +1269,68 @@ other key.
 carry arguments, so `"code --wait"` is not found. Use an editor command
 that returns at once, since wgo waits for it (up to two minutes) before
 reporting.
+
+### PR inventory
+
+Besides the PRs your bookmarks lead to, the dashboard keeps three sets of
+PRs for each person it follows:
+
+| Set | What it holds |
+|-----|---------------|
+| `open-authored` | every open PR the person authored, draft or not |
+| `review-requested` | every open PR asking for the person's review, directly or through one of their teams |
+| `closed-recent` | the person's PRs merged or closed in the last `max(2 × days, 28)` days |
+
+PRs in archived repositories are left out. A PR in several sets, or also
+found through a bookmark, is one node. Each PR carries its author, times
+(created, ready for review, merged, closed), size, mergeability, branch
+names, review requests with when they were made, the latest review per
+reviewer, every check on its head commit (up to 100), its ticket keys,
+and each followed person's part in it (`author`, `review_requested`,
+`reviewed`). A fact GitHub did not report is left out, never shown as zero.
+
+A PR no bookmark leads to joins the graph at the first of:
+
+1. the bookmark of a workspace in the same repository named like the PR's
+   head branch;
+2. the ticket effort (`TEAM-123`) of one of its ticket keys;
+3. the effort of a workspace whose bookmark names one of its ticket keys;
+4. a group per repository, listed after ticket groups and before
+   Ungrouped.
+
+The sets are fetched in the background through GitHub's GraphQL search, 20
+PRs per page, retrying a page that fails with a server error or a timeout
+after 1, 2 and 4 seconds. A set that still fails keeps its last good data,
+marked stale, with the error shown on the `github_inventory` source, and
+is retried after 1, 2, 4… minutes (at most 30), or when GitHub's
+`Retry-After` says. A PR that leaves your open-authored set (it merged or
+closed) stays, marked stale, until the closed-recent set is refetched,
+which then happens at once. GitHub search returns at most 1,000 results, so
+a set with more is marked truncated, with a diagnostic. A set GitHub served
+only partly (a repository or organisation your token cannot read, or
+results that shifted while the pages were read) is kept but marked
+incomplete, also with a diagnostic; like a truncated set it does not prove
+a PR missing from it is gone, and merges are not counted from it. Until your
+own GitHub login is known, `github_inventory` says your PRs are not shown,
+and why. Each set is cached under
+`~/.wgo/cache/inventory/<login>/<set>.json`, and your GitHub login (looked
+up once a day) under `~/.wgo/cache/inventory/identity.json`. Without a
+`GITHUB_TOKEN` or `gh`, nothing is fetched and `github_inventory` says so.
+`wgo dash` checks this when it starts, so restart it after `gh auth login`.
+
+"Since last look" counts a PR found only by the inventory as new when
+every set that would have held it was complete at the last look (for an
+author, both open-authored and closed-recent) and it had not already merged
+or closed by then; otherwise it is unknown, never silently new.
+
+To compare your open PR count with GitHub's (which also counts archived
+repositories):
+
+```sh
+wgo dash --json --refresh | jq '(.snapshot.people[] | select(.me) | .login) as $me
+  | [.snapshot.nodes[] | select(.kind == "pr" and .pr.state == "open" and .pr.author == $me)] | length'
+gh search prs --author @me --state open --limit 1000 --json number | jq length
+```
 
 ## wgo:// links with `wgo setup url-handler`
 

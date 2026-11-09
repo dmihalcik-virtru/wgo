@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -62,6 +63,93 @@ type DashConfig struct {
 	// Days is the activity window of the small multiples, 1 to 366
 	// (dash.DefaultDays when zero).
 	Days int `mapstructure:"days"`
+	// People are the people whose PRs and tickets the dash follows, from
+	// [[dash.people]]. When empty, the dash follows [pair]'s teammate. The
+	// authenticated user is always added once their GitHub login is known
+	// (gh-97 caches it).
+	People []DashPerson `mapstructure:"people"`
+	// InventoryTTLSeconds is how long the PR inventory's open sets
+	// (open-authored, review-requested) stay fresh, 60 to 86400 (300 when
+	// zero). closed-recent, which changes only when a PR merges or closes,
+	// stays fresh six times as long: 1800 by default.
+	InventoryTTLSeconds int `mapstructure:"inventory_ttl_seconds"`
+	// TicketPrefixes are the Jira project keys whose ticket IDs count when
+	// found in PR titles and bodies, so SHA-256 or UTF-8 never read as
+	// tickets. When empty, [jira]'s project, default_project and
+	// project_rules projects are used. Local bookmarks' ticket prefixes
+	// always count.
+	TicketPrefixes []string `mapstructure:"ticket_prefixes"`
+}
+
+// DashPerson is one [[dash.people]] entry.
+type DashPerson struct {
+	// GitHub is the person's GitHub login. Required.
+	GitHub string `mapstructure:"github"`
+	// Jira is a Jira account ID, email or currentUser(). Optional.
+	Jira string `mapstructure:"jira"`
+	// Name is a display name. Optional.
+	Name string `mapstructure:"name"`
+}
+
+// githubLoginRe matches a GitHub login: letters, digits and hyphens, plus the
+// underscore of Enterprise Managed User logins ("mona_octo"). Its length limit
+// is generous because managed logins append a suffix to the 39-character
+// handle. It rejects the usual mistakes: "@alice", an email, a team, a URL.
+var githubLoginRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
+
+// ValidatePeople checks [[dash.people]]: every entry needs a well-formed
+// GitHub login, and no login may repeat (logins are case-insensitive). The error names the
+// entry and says how to fix it.
+func (c DashConfig) ValidatePeople() error {
+	seen := map[string]int{}
+	for i, p := range c.People {
+		n := i + 1
+		switch {
+		case strings.TrimSpace(p.GitHub) == "":
+			return fmt.Errorf("[[dash.people]] entry %d in ~/.wgo/config.toml has no github login; fix it by adding github = \"<login>\", or remove the entry", n)
+		case !githubLoginRe.MatchString(p.GitHub):
+			return fmt.Errorf("[[dash.people]] entry %d in ~/.wgo/config.toml has github = %q, which is not a GitHub login; fix it to the bare login, such as github = %q", n, p.GitHub, SuggestLogin(p.GitHub))
+		}
+		key := strings.ToLower(p.GitHub)
+		if first, dup := seen[key]; dup {
+			return fmt.Errorf("[[dash.people]] entries %d and %d in ~/.wgo/config.toml both have github = %q; fix it by removing one", first, n, p.GitHub)
+		}
+		seen[key] = n
+	}
+	return nil
+}
+
+// IsGitHubLogin reports whether s is a bare GitHub login.
+func IsGitHubLogin(s string) bool { return githubLoginRe.MatchString(s) }
+
+// SuggestLogin guesses the login meant by an invalid GitHub login: without
+// surrounding spaces, a leading @, an email domain, or a URL prefix. A team
+// names a group, not a person, so no login is guessed from its slug.
+func SuggestLogin(s string) string {
+	if isTeamForm(s) {
+		return "<login>"
+	}
+	s = strings.TrimPrefix(strings.TrimSpace(s), "@")
+	if i := strings.IndexByte(s, '@'); i > 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndexAny(s, "/:"); i >= 0 {
+		s = s[i+1:]
+	}
+	if !githubLoginRe.MatchString(s) {
+		return "<login>"
+	}
+	return s
+}
+
+// isTeamForm reports whether s names a team: "team:<slug>", "@org/<slug>" or
+// "org/<slug>", or a GitHub /teams/ URL. Profile URLs are not team forms.
+func isTeamForm(s string) bool {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "@")
+	if strings.HasPrefix(s, "team:") || strings.Contains(s, "/teams/") {
+		return true
+	}
+	return strings.Contains(s, "/") && !strings.Contains(s, "://") && !strings.HasPrefix(s, "github.com/")
 }
 
 // RigConfig controls `wgo rig`, which materialises one pinned checkout per
@@ -143,6 +231,22 @@ type JiraConfig struct {
 	Board           int               `mapstructure:"board"`            // default board id for: wgo standup
 	Site            string            `mapstructure:"site"`             // Jira host; auto-detected from acli when empty
 	StandupStatuses []string          `mapstructure:"standup_statuses"` // in-flight statuses for: wgo standup
+	// Fields maps the site-specific fields wgo dash reads ([jira.fields]).
+	Fields JiraFieldsConfig `mapstructure:"fields"`
+}
+
+// JiraFieldsConfig is [jira.fields]: this Jira site's IDs for the custom
+// fields wgo dash reads, such as "customfield_10016". Each overrides
+// discovery; "none" says the site has no such field, which silences the
+// diagnostic about it. acli cannot list a site's fields, so only the sprint
+// field is discovered and the others need setting here to be known.
+type JiraFieldsConfig struct {
+	StoryPoints string `mapstructure:"story_points"`
+	Sprint      string `mapstructure:"sprint"`
+	Team        string `mapstructure:"team"`
+	// EpicLink is the legacy epic link. Tickets that report their epic as
+	// parent, as Jira Cloud does, do not need it.
+	EpicLink string `mapstructure:"epic_link"`
 }
 
 // StandupStatusesOrDefault returns the configured in-flight statuses, or the
@@ -547,6 +651,16 @@ gh_stack = "auto"
 # editor = "zed"                # Editor/Plan/Spec: one executable, no arguments; tried before code, then xed
 # refresh_seconds = 30          # background re-collection interval (5 to 3600)
 # days = 14                     # activity window (--days overrides)
+# inventory_ttl_seconds = 300   # the people's open PRs stay fresh this long (60 to 86400); merged/closed ones 6x as long
+# ticket_prefixes = ["TEAM"]    # Jira keys that count in PR titles and bodies (default: [jira] projects)
+#
+# People whose PRs and tickets the dash follows. Without any entries it
+# follows [pair]'s teammate. You (the authenticated GitHub user) are always
+# added once wgo knows your login.
+# [[dash.people]]
+# github = "alice"              # GitHub login (required)
+# jira = "alice@example.com"    # Jira account ID, email or currentUser() (optional)
+# name = "Alice"                # display name (optional)
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)
@@ -563,6 +677,17 @@ gh_stack = "auto"
 # board           = 305      # default board id used by: wgo standup (override with --board)
 # site            = "your-org.atlassian.net"  # optional; auto-detected from acli when omitted
 # standup_statuses = ["In Progress", "In Review", "In QA"]  # in-flight states for: wgo standup
+#
+# This site's custom field IDs, for the ticket facts in "wgo dash". Each is
+# optional and overrides discovery; "none" means the site has no such field.
+# acli cannot list fields, so only sprint is discovered (cached for 7 days in
+# ~/.wgo/cache/jira/fields.json). Find an ID in a ticket's JSON:
+#   acli jira workitem view TEAM-123 --fields '*all' --json
+# [jira.fields]
+# story_points = "customfield_10016"
+# sprint       = "customfield_10020"
+# team         = "customfield_10001"
+# epic_link    = "customfield_10014"  # legacy epic link; not needed when epics show as parent
 #
 # Per-repo/path rules — first match wins; either field is sufficient
 # [[jira.project_rules]]

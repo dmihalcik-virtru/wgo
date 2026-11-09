@@ -1,11 +1,14 @@
 package dash
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
@@ -27,6 +30,10 @@ type Baseline struct {
 	Workspaces   map[string]BaselineWorkspace `json:"workspaces"`
 	Bookmarks    map[string]BaselineBookmark  `json:"bookmarks"`
 	PRs          map[string]BaselinePR        `json:"prs"`
+	// InventoryParts lists the github_inventory parts whose PR lists were
+	// complete (inventoryCoverage), sorted. Absent in older baselines,
+	// meaning no inventory set was known.
+	InventoryParts []string `json:"inventory_parts,omitempty"`
 }
 
 // BaselineWorkspace records a workspace's visible changes.
@@ -48,11 +55,15 @@ type BaselineBookmark struct {
 
 // BaselinePR records a PR's state and review requests.
 type BaselinePR struct {
+	// BookmarkID is empty for a PR only the inventory found.
 	BookmarkID         string   `json:"bookmark_id"`
 	State              string   `json:"state"` // open, draft, merged, closed or unknown
 	ReviewDecision     string   `json:"review_decision,omitempty"`
 	RequestedReviewers []string `json:"requested_reviewers,omitempty"`
 	ReviewersKnown     bool     `json:"reviewers_known"`
+	// InventoryParts lists the inventory parts that held or could hold the
+	// PR (inventoryHolders), sorted; empty when the inventory did not find it.
+	InventoryParts []string `json:"inventory_parts,omitempty"`
 }
 
 // baselineFrom records what snapshot s shows.
@@ -65,6 +76,7 @@ func baselineFrom(s *Snapshot, at time.Time) *Baseline {
 		Workspaces:     map[string]BaselineWorkspace{},
 		Bookmarks:      map[string]BaselineBookmark{},
 		PRs:            map[string]BaselinePR{},
+		InventoryParts: slices.Sorted(maps.Keys(inventoryCoverage(s))),
 	}
 	for _, n := range s.Nodes {
 		switch {
@@ -90,12 +102,40 @@ func baselineFrom(s *Snapshot, at time.Time) *Baseline {
 				ReviewDecision:     n.PR.ReviewDecision,
 				RequestedReviewers: sortedCopy(n.PR.RequestedReviewers),
 				ReviewersKnown:     n.PR.ReviewersKnown,
+				InventoryParts:     sortedCopy(slices.Concat(inventoryHolders(n.PR)...)),
 			}
 		}
 	}
 	return b
 }
 
+// inventoryKnew reports whether the inventory, as the baseline saw it, would
+// have found a PR with the given holders: every part of one holder group
+// was complete then.
+func (b *Baseline) inventoryKnew(holders [][]string) bool {
+	for _, parts := range holders {
+		known := len(parts) > 0
+		for _, p := range parts {
+			known = known && slices.Contains(b.InventoryParts, p)
+		}
+		if known {
+			return true
+		}
+	}
+	return false
+}
+
+// closedBefore reports whether p was merged or closed before t, or at an
+// unknown time. Such a PR is never new by the inventory: its absence from
+// the baseline does not show that it appeared, since the closed-recent
+// window may have grown, or the set may have been fetched before it closed.
+func closedBefore(p *PRInfo, t time.Time) bool {
+	if p.State == "open" {
+		return false
+	}
+	closed := cmp.Or(p.ClosedAt, p.MergedAt)
+	return closed.IsZero() || closed.Before(t)
+}
 func sortedCopy(in []string) []string {
 	out := append([]string(nil), in...)
 	sort.Strings(out)
@@ -277,8 +317,10 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 			} else {
 				rd.Status = ItemUnknown
 			}
-		case b.Bookmarks[p.BookmarkID].PRsKnown:
-			// The bookmark's PR list was known then and lacked this PR.
+		case b.Bookmarks[p.BookmarkID].PRsKnown || (b.inventoryKnew(inventoryHolders(p)) && !closedBefore(p, b.AcknowledgedAt)):
+			// The bookmark's PR list, or every inventory set that would
+			// hold this PR for one of its involvements (inventoryKnew), was
+			// known then and lacked it.
 			pd.Status = ItemNew
 			if p.ReviewersKnown {
 				rd.Added = sortedCopy(p.RequestedReviewers)
@@ -308,7 +350,11 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 			d.ReviewRequests = append(d.ReviewRequests, rd)
 		}
 	}
-	// A previously seen PR whose bookmark lookup is now unknown.
+	// A previously seen PR that is gone while its bookmark lookup is now
+	// unknown or failed, or an inventory set that held it is now incomplete
+	// (unknown, failed, truncated, partial or missing), or, attached by a
+	// tracks edge, while no inventory set is complete: it may still be there.
+	covered := inventoryCoverage(s)
 	ids := make([]string, 0, len(b.PRs))
 	for id := range b.PRs {
 		ids = append(ids, id)
@@ -319,8 +365,11 @@ func computeDelta(b *Baseline, s *Snapshot) *Delta {
 			continue
 		}
 		base := b.PRs[id]
-		if bm := s.Node(base.BookmarkID); bm != nil && bm.Bookmark != nil &&
-			(bm.Bookmark.PRLookup == Unknown || bm.Bookmark.PRLookup == Error) {
+		bm := s.Node(base.BookmarkID)
+		lost := bm != nil && bm.Bookmark != nil && (bm.Bookmark.PRLookup == Unknown || bm.Bookmark.PRLookup == Error)
+		lost = lost || slices.ContainsFunc(base.InventoryParts, func(p string) bool { return !covered[p] })
+		lost = lost || (base.BookmarkID == "" && len(covered) == 0)
+		if lost {
 			d.PRs = append(d.PRs, PRDelta{ID: id, Label: id, Status: ItemUnknown, FromState: base.State, FromReview: base.ReviewDecision})
 			d.Summary.Unknown++
 		}

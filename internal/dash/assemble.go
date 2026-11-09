@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,12 @@ import (
 type builder struct {
 	nodes map[string]*Node
 	edges map[Edge]bool
+	// diags are problems found while building; they join the snapshot's
+	// diagnostics. notes are per-ticket notes, such as Jira facts that
+	// could not be read, keyed by cause: each becomes one diagnostic with
+	// the tickets it affects.
+	diags []string
+	notes map[string][]string
 }
 
 func (b *builder) node(n Node) *Node {
@@ -40,7 +47,7 @@ func (b *builder) edge(src, dst string, kind EdgeKind) {
 }
 
 var kindOrder = map[NodeKind]int{
-	KindEffort: 0, KindWorkspace: 1, KindBookmark: 2, KindPR: 3, KindTicket: 4, KindAgent: 5,
+	KindEffort: 0, KindWorkspace: 1, KindBookmark: 2, KindPR: 3, KindTicket: 4, KindAgent: 5, KindSprint: 6,
 }
 
 // remoteTally counts item freshness for one remote source.
@@ -107,6 +114,14 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		case strings.HasPrefix(key, "ticket-"):
 			info.Group = GroupTicket
 			label = strings.ToUpper(strings.TrimPrefix(key, "ticket-"))
+		case strings.HasPrefix(key, repoEffortPrefix):
+			info.Group = GroupRepo
+			label = strings.TrimPrefix(key, repoEffortPrefix)
+		case strings.HasPrefix(key, sprintEffortPrefix):
+			// The sprint's name is not known here; whoever adds the
+			// sprint node may relabel the effort.
+			info.Group = GroupSprint
+			label = "Sprint " + strings.TrimPrefix(key, sprintEffortPrefix)
 		default:
 			info.Group = GroupTheme
 		}
@@ -197,6 +212,10 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 				if repoSlug != "" {
 					label = repoSlug + label
 				}
+				var reviewers []string
+				if res.ReviewersKnown {
+					reviewers = append([]string{}, pr.RequestedReviewers...)
+				}
 				b.node(Node{ID: id, Kind: KindPR, Label: label, PR: &PRInfo{
 					Number:             pr.Number,
 					Repo:               repoKey,
@@ -206,11 +225,13 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 					IsDraft:            pr.IsDraft,
 					ReviewDecision:     pr.ReviewDecision,
 					Checks:             pr.Checks.State,
-					RequestedReviewers: append([]string(nil), pr.RequestedReviewers...),
+					RequestedReviewers: reviewers,
 					ReviewersKnown:     res.ReviewersKnown,
 					UpdatedAt:          pr.UpdatedAt,
 					Freshness:          bi.PRLookup,
 					BookmarkID:         bmID,
+					Sources:            []string{PRSourceBookmark},
+					FetchedAt:          res.FetchedAt,
 				}})
 				b.edge(bmID, id, EdgePR)
 			}
@@ -278,17 +299,33 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		b.edge(id, ai.WorkspaceID, EdgeWorksIn)
 	}
 
+	// The PR inventory (gh-97), after the bookmarks so that it can merge
+	// into their PRs and attach to them.
+	invStatus, invDiags, invMergedKnown := c.addInventory(b, ls, wsEffort, effortNode, &issueTally, &jiraTally, addJob)
+
+	// Sprints of [jira] board and their tickets (gh-98). Keep this after
+	// every other source of ticket nodes: it attaches a sprint ticket to the
+	// sprint's group effort only when nothing else leads to it.
+	sprintStatus := c.addSprints(b, effortNode, &jiraTally, addJob)
 	s := &Snapshot{
 		Schema:      SchemaVersion,
 		GeneratedAt: ls.at,
 		Days:        ls.days,
 		Sources:     map[string]SourceStatus{},
-		Diagnostics: dedupeStrings(ls.diags),
+		Diagnostics: dedupeStrings(slices.Concat(ls.diags, b.diags, b.noteDiagnostics())),
 	}
 	maps.Copy(s.Sources, ls.sources)
+	var login, jira string
+	if c.cfg.Identity != nil {
+		login, jira = c.cfg.Identity()
+	}
+	s.People = ResolvePeople(c.cfg.People, c.cfg.Pair, login, jira)
 	s.Sources[SourceGitHubPRs] = prTally.status()
 	s.Sources[SourceGitHubIssues] = issueTally.status()
 	s.Sources[SourceJira] = jiraTally.status()
+	s.Sources[SourceGitHubInventory] = invStatus
+	s.Diagnostics = dedupeStrings(append(s.Diagnostics, invDiags...))
+	s.Sources[SourceJiraSprints] = sprintStatus
 
 	for _, n := range b.nodes {
 		s.Nodes = append(s.Nodes, *n)
@@ -314,6 +351,9 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		return a.Kind < z.Kind
 	})
 	s.Counts = computeCounts(s, ls, effortBookmarks)
+	if !invMergedKnown {
+		s.Counts.Merged = nil
+	}
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].key() < jobs[j].key() })
 	return s, jobs
 }
@@ -368,7 +408,13 @@ func workspaceInfo(w *wsData, repo, repoSlug, effortID string, annotations map[s
 // directory-derived owner/repo is deliberately not used: a guessed repo would
 // fetch some other project's issue.
 func (c *Collector) ticketNode(b *builder, bookmark, repoName, repoSlug, noGitHub string, issues, jira *remoteTally, addJob func(Job)) string {
-	ticket := spec.ParseTicketFromBranch(bookmark)
+	return c.ticketNodeFor(b, spec.ParseTicketFromBranch(bookmark), repoName, repoSlug, noGitHub, issues, jira, addJob)
+}
+
+// ticketNodeFor adds the node of ticket, as spec.ParseTicketFromBranch
+// returns it ("WGO-12", "GH-70"), and returns its ID, or "" for no ticket.
+// The repository arguments are ticketNode's.
+func (c *Collector) ticketNodeFor(b *builder, ticket, repoName, repoSlug, noGitHub string, issues, jira *remoteTally, addJob func(Job)) string {
 	if ticket == "" {
 		return ""
 	}
@@ -416,6 +462,13 @@ func (c *Collector) ticketNode(b *builder, bookmark, repoName, repoSlug, noGitHu
 		b.node(Node{ID: id, Kind: KindTicket, Label: repoSlug + "#" + n, Ticket: ti})
 		return id
 	}
+	return c.jiraTicketNode(b, ticket, jira, addJob)
+}
+
+// jiraTicketNode adds the Jira ticket with the given key, with its cached
+// status and facts, and returns its ID. A ticket whose cache entry is not
+// fresh is queued for refresh.
+func (c *Collector) jiraTicketNode(b *builder, ticket string, jira *remoteTally, addJob func(Job)) string {
 	id := jiraTicketID(ticket)
 	if _, done := b.nodes[id]; done {
 		return id
@@ -436,7 +489,10 @@ func (c *Collector) ticketNode(b *builder, bookmark, repoName, repoSlug, noGitHu
 		ti.Freshness = Stale
 	}
 	if ti.Freshness.hasData() {
-		ti.Status, ti.Assignee = info.Status, info.Assignee
+		applyJiraFacts(ti, info)
+		for _, n := range info.Notes {
+			b.note(n, ticket)
+		}
 	}
 	site := c.cfg.JiraSite
 	if site == "" {
@@ -506,6 +562,7 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 		Activity: map[string][]int{},
 		PRStates: map[string]map[string]int{},
 		Agents:   map[string]map[string]int{},
+		Merged:   map[string][]int{},
 	}
 	for i := range days {
 		c.Days = append(c.Days, start.AddDate(0, 0, i).Format("2006-01-02"))
@@ -515,17 +572,22 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 			c.Activity[n.ID] = make([]int, days)
 			c.PRStates[n.ID] = map[string]int{}
 			c.Agents[n.ID] = map[string]int{}
+			c.Merged[n.ID] = make([]int, days)
 		}
 	}
 
 	// Activity: distinct changes per effort per local day.
+	// mergedUnknown holds efforts whose merged count cannot be known; a
+	// workspace jj could not read hides its bookmarks, and so their PRs.
 	seen := map[string]bool{}
+	mergedUnknown := map[string]bool{}
 	for _, w := range ls.workspaces {
-		if w.err != nil {
-			continue
-		}
 		n := s.Node(w.id)
 		eff := n.Workspace.EffortID
+		if w.err != nil {
+			mergedUnknown[eff] = true
+			continue
+		}
 		for _, ch := range w.changes {
 			t := ch.AuthorTimestamp.In(loc)
 			day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
@@ -542,28 +604,96 @@ func computeCounts(s *Snapshot, ls *localState, effortBookmarks map[string]map[s
 		}
 	}
 
-	// PR states per effort, over its bookmarks.
-	prsByBookmark := map[string][]*PRInfo{}
+	// PR states per effort, over its bookmarks and the PRs it tracks.
+	// prEfforts records which efforts each PR counted under, for Merged.
+	prsByBookmark := map[string][]*Node{}
+	prByID := map[string]*Node{}
+	prEfforts := map[*Node][]string{}
 	for i := range s.Nodes {
 		if p := s.Nodes[i].PR; p != nil {
-			prsByBookmark[p.BookmarkID] = append(prsByBookmark[p.BookmarkID], p)
+			prByID[s.Nodes[i].ID] = &s.Nodes[i]
+			if p.BookmarkID != "" {
+				prsByBookmark[p.BookmarkID] = append(prsByBookmark[p.BookmarkID], &s.Nodes[i])
+			}
 		}
+	}
+	countPR := func(eff string, n *Node) {
+		if slices.Contains(prEfforts[n], eff) {
+			return
+		}
+		prEfforts[n] = append(prEfforts[n], eff)
+		c.PRStates[eff][prBucket(n.PR)]++
 	}
 	for eff, bms := range effortBookmarks {
 		for bm := range bms {
 			n := s.Node(bm)
+			if n == nil {
+				continue
+			}
+			for _, p := range prsByBookmark[bm] {
+				countPR(eff, p)
+			}
+			// A PR the inventory attached to a bookmark does not make the
+			// bookmark's own lookup known: it may have missed others.
 			switch {
-			case n == nil:
 			case n.Bookmark.PRLookup == Unknown || n.Bookmark.PRLookup == Error:
 				c.PRStates[eff]["unknown"]++
+				mergedUnknown[eff] = true
 			case len(prsByBookmark[bm]) == 0:
 				c.PRStates[eff]["none"]++
-			default:
-				for _, p := range prsByBookmark[bm] {
-					c.PRStates[eff][prBucket(p)]++
-				}
 			}
 		}
+	}
+	for _, e := range s.Edges {
+		if e.Kind != EdgeTracks || c.PRStates[e.Source] == nil {
+			continue
+		}
+		if n := prByID[e.Target]; n != nil {
+			countPR(e.Source, n)
+		}
+	}
+
+	// Merged PRs per effort per local day of merge. An effort with a PR of
+	// unknown state, a bookmark whose lookup is unknown or failed, or a
+	// workspace jj could not read has no series rather than a misleading
+	// zero. So does one with a merged PR whose merge time is unknown, unless
+	// its last update (never before the merge) precedes the window.
+	for n, effs := range prEfforts {
+		if n.PR.State == "" {
+			for _, eff := range effs {
+				mergedUnknown[eff] = true
+			}
+		}
+	}
+	for n, effs := range prEfforts {
+		if n.PR.State != "merged" {
+			continue
+		}
+		if n.PR.MergedAt.IsZero() {
+			if n.PR.UpdatedAt.IsZero() || !n.PR.UpdatedAt.Before(start) {
+				for _, eff := range effs {
+					mergedUnknown[eff] = true
+				}
+			}
+			continue
+		}
+		t := n.PR.MergedAt.In(loc)
+		day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+		idx := int(day.Sub(start).Hours()/24 + 0.5)
+		if day.Before(start) || idx < 0 || idx >= days {
+			continue
+		}
+		for _, eff := range effs {
+			if c.Merged[eff] != nil {
+				c.Merged[eff][idx]++
+			}
+		}
+	}
+	for eff := range mergedUnknown {
+		delete(c.Merged, eff)
+	}
+	if !mergedKnown(s) {
+		c.Merged = nil
 	}
 
 	for _, n := range s.Nodes {

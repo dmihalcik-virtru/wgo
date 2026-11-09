@@ -56,12 +56,14 @@
     return pr.state || "unknown";
   };
 
-  // bookmarkBucket is the PR-state bucket of a bookmark that has no PR node:
-  // "unknown" when the lookup has no data, "none" only when it is known empty,
-  // and "" (no bucket) when it has PRs, which are counted by their own nodes.
-  L.bookmarkBucket = function (bm) {
+  // bookmarkBucket is the PR-state bucket of a bookmark, as counts.pr_states
+  // counts it: "unknown" when the lookup has no data, even if the inventory
+  // attached a PR; "none" only when it is known empty and nothing is
+  // attached; and "" (no bucket) when it has PRs, which are counted by their
+  // own nodes. hasPRs says whether any PR node hangs off it.
+  L.bookmarkBucket = function (bm, hasPRs) {
     if (!bm || bm.pr_lookup === "unknown" || bm.pr_lookup === "error" || !bm.pr_lookup) return "unknown";
-    return bm.pr_count > 0 ? "" : "none";
+    return bm.pr_count > 0 || hasPRs ? "" : "none";
   };
 
   // seeds lists the nodes a small-multiple filter selects.
@@ -74,7 +76,7 @@
     } else if (f.by === "prstate") {
       idx.byId.forEach(function (n) {
         if (n.kind === "pr" && L.prBucket(n.pr) === f.value) out.push(n.id);
-        else if (n.kind === "bookmark" && L.bookmarkBucket(n.bookmark) === f.value) out.push(n.id);
+        else if (n.kind === "bookmark" && L.bookmarkBucket(n.bookmark, L.childrenOf(idx, n.id, "pr").length > 0) === f.value) out.push(n.id);
       });
     } else if (f.by === "effort") {
       if (idx.byId.has(f.value)) out.push(f.value);
@@ -290,9 +292,10 @@
     return (links.efforts && links.efforts[id]) || (links.entities && links.entities[id]) || null;
   };
 
-  // effortOrder sorts efforts: named efforts, then ticket groups, themes, Ungrouped last.
+  // effortOrder sorts efforts: named efforts, then ticket groups, themes,
+  // repository and sprint groups, Ungrouped last (dash.CompareEfforts).
   L.effortOrder = function (a, b) {
-    var g = { effort: 0, ticket: 1, theme: 2, ungrouped: 3 };
+    var g = { effort: 0, ticket: 1, theme: 2, repo: 3, sprint: 4, ungrouped: 5 };
     var ga = g[(a.effort || {}).group] != null ? g[a.effort.group] : 2, gb = g[(b.effort || {}).group] != null ? g[b.effort.group] : 2;
     return ga - gb || cmp(a.label.toLowerCase(), b.label.toLowerCase()) || cmp(a.id, b.id);
   };
@@ -300,6 +303,14 @@
   // childrenOf lists the targets of id's outgoing edges of one kind.
   L.childrenOf = function (idx, id, kind) {
     return (idx.out.get(id) || []).filter(function (a) { return !kind || a.kind === kind; }).map(function (a) { return idx.byId.get(a.o); }).filter(Boolean);
+  };
+
+  // sortTracked orders an effort's tracked nodes for the list: PRs, then
+  // tickets, each by label, so a ticket a tracked PR links to is listed under
+  // that PR before it could be listed on its own.
+  L.sortTracked = function (nodes) {
+    var rank = function (n) { return n.kind === "pr" ? 0 : 1; };
+    return nodes.slice().sort(function (a, b) { return rank(a) - rank(b) || cmp(a.label, b.label) || cmp(a.id, b.id); });
   };
 
   // fetchFailure names why a GET failed: an HTTP error status, a body that is
@@ -844,8 +855,9 @@
         if (rl.matches && rl.matches.length) xl.appendChild(document.createTextNode(" (" + plural(rl.matches.length, "exact match") + ")"));
       }
       var wss = L.childrenOf(idx, e.id, "contains").filter(function (w) { return store.isVisible(w.id); });
+      var tracked = L.childrenOf(idx, e.id, "tracks").filter(function (n) { return store.isVisible(n.id); });
       var ul = el("ul", null, null, sec);
-      if (!wss.length) el("li", "meta", "No workspaces discovered for this effort.", ul);
+      if (!wss.length && !tracked.length) el("li", "meta", "No workspaces discovered for this effort.", ul);
       wss.sort(function (a, b) { return a.label < b.label ? -1 : a.label > b.label ? 1 : 0; }).forEach(function (w) {
         var wi = w.workspace || {}, li = el("li", "ws", null, ul);
         button(li, w.label, null, function () { store.select([w.id], false); }, "Select workspace " + w.label);
@@ -861,7 +873,8 @@
         var sub = el("ul", null, null, li);
         L.childrenOf(idx, w.id, "on").forEach(function (bm) {
           var prs = L.childrenOf(idx, bm.id, "pr").filter(function (p) { return store.isVisible(p.id); });
-          if (!prs.length) {
+          // A PR the inventory attached does not make an unknown lookup known.
+          if (!prs.length || L.bookmarkBucket(bm.bookmark) === "unknown") {
             var bli = el("li", "sub", null, sub);
             el("span", "meta", L.bookmarkPRText(bm.bookmark), bli);
             freshBadge(bli, bm.bookmark && bm.bookmark.pr_lookup);
@@ -873,6 +886,19 @@
           tickets.forEach(function (t) { renderTicket(sub, t); });
         });
       });
+      // PRs and tickets no local bookmark leads to (repo and sprint groups,
+      // or any effort tracking an inventory PR), each PR with its tickets.
+      if (tracked.length) {
+        var tul = el("ul", null, null, sec), shown = new Set();
+        L.sortTracked(tracked).forEach(function (n) {
+          if (n.kind === "pr") {
+            renderPR(tul, n);
+            L.childrenOf(idx, n.id, "ticket").forEach(function (t) {
+              if (!shown.has(t.id) && store.isVisible(t.id)) { shown.add(t.id); renderTicket(tul, t); }
+            });
+          } else if (!shown.has(n.id)) { shown.add(n.id); renderTicket(tul, n); }
+        });
+      }
       var agents = L.childrenOf(idx, e.id, "runs").filter(function (a) { return store.isVisible(a.id); });
       if (agents.length) {
         var aul = el("ul", null, null, sec);

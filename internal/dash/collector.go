@@ -43,6 +43,35 @@ type Config struct {
 	JiraSite string
 	// Now is the clock (time.Now when nil).
 	Now func() time.Time
+	// People is [[dash.people]] and Pair is [pair]'s teammate, both without
+	// Me; assemble joins them with Identity through ResolvePeople.
+	People []Person
+	Pair   Person
+	// Identity returns the authenticated GitHub login and Jira identity
+	// from a cache, either empty when unknown. assemble calls it on every
+	// collection, so it must never make a network call or start a process.
+	// Nil means unknown.
+	Identity func() (login, jira string)
+	// IdentityError returns why the cached identity's last lookup failed,
+	// or "", from the same cache; nil means unknown. It explains a missing
+	// login on github_inventory.
+	IdentityError func() string
+	// InventoryTTL is the freshness window of the open PR inventory sets,
+	// InventoryClosedTTL that of closed-recent (gh-97).
+	InventoryTTL, InventoryClosedTTL time.Duration
+	// TicketPrefixes are the Jira project prefixes whose keys count when
+	// found in PR titles and bodies: [dash] ticket_prefixes, else [jira]'s
+	// projects. The prefixes of the tickets your workspaces' bookmarks name
+	// always count too.
+	TicketPrefixes []string
+	// GitHubUnavailable says why GitHub cannot be asked at all, such as
+	// github.ErrNoAuth's message; empty when it can. The inventory then
+	// queues no inventory or identity lookups and reports it as
+	// github_inventory's detail. Cached PRs' tickets are still looked up.
+	GitHubUnavailable string
+	// JiraBoard is [jira] board, whose sprints the dash shows (gh-98);
+	// zero means none is configured.
+	JiraBoard int
 }
 
 // Collector builds snapshots. It runs outside HTTP request handling.
@@ -83,6 +112,12 @@ func NewCollector(cfg Config) *Collector {
 	}
 	if cfg.IssueTTL <= 0 {
 		cfg.IssueTTL = 10 * time.Minute
+	}
+	if cfg.InventoryTTL <= 0 {
+		cfg.InventoryTTL = DefaultInventoryTTL
+	}
+	if cfg.InventoryClosedTTL <= 0 {
+		cfg.InventoryClosedTTL = ClosedInventoryTTL(cfg.InventoryTTL)
 	}
 	c := &Collector{cfg: cfg}
 	if cfg.JJ != nil {

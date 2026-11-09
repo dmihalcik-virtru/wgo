@@ -219,6 +219,50 @@ test("localURL accepts only same-origin paths", () => {
   }
 });
 
+test("effortOrder puts repo and sprint groups after themes and before Ungrouped", () => {
+  const e = (id, group, label) => ({ id, kind: "effort", label: label || id, effort: { group } });
+  const list = [e("u", "ungrouped"), e("s", "sprint"), e("r2", "repo", "acme/web"), e("r1", "repo", "acme/api"),
+    e("th", "theme"), e("t", "ticket"), e("n", "effort"), e("x", "mystery")];
+  assert.deepEqual(list.sort(L.effortOrder).map((n) => n.id), ["n", "t", "th", "x", "r1", "r2", "s", "u"]);
+});
+
+test("prstate filter treats a known-empty bookmark with an attached PR as having one, like the Go counts", () => {
+  const sn = {
+    nodes: [
+      { id: "bm-empty", kind: "bookmark", label: "a", bookmark: { pr_lookup: "fresh", pr_count: 0 } },
+      { id: "bm-att", kind: "bookmark", label: "b", bookmark: { pr_lookup: "fresh", pr_count: 0 } },
+      { id: "bm-unk", kind: "bookmark", label: "c", bookmark: { pr_lookup: "unknown", pr_count: 0 } },
+      { id: "pr-att", kind: "pr", label: "#1", pr: { state: "open" } },
+      { id: "pr-unk", kind: "pr", label: "#2", pr: { state: "open" } },
+    ],
+    edges: [{ source: "bm-att", target: "pr-att", kind: "pr" }, { source: "bm-unk", target: "pr-unk", kind: "pr" }],
+  };
+  const ix = L.index(sn);
+  assert.deepEqual(L.seeds(sn, ix, { by: "prstate", value: "none" }), ["bm-empty"]);
+  // An attached PR does not make an unknown lookup known.
+  assert.deepEqual(L.seeds(sn, ix, { by: "prstate", value: "unknown" }), ["bm-unk"]);
+});
+
+test("sortTracked lists PRs before tickets, each by label", () => {
+  const list = [{ id: "t2", kind: "ticket", label: "WGO-2" }, { id: "p9", kind: "pr", label: "acme/web#9" },
+    { id: "t1", kind: "ticket", label: "WGO-1" }, { id: "p3", kind: "pr", label: "acme/api#3" }];
+  assert.deepEqual(L.sortTracked(list).map((n) => n.id), ["p3", "p9", "t1", "t2"]);
+  assert.equal(list[0].id, "t2", "the input is not reordered");
+});
+
+test("every repo and sprint group in the analysis fixture has tracked PRs or tickets to list", () => {
+  const fx = JSON.parse(require("node:fs").readFileSync(require("node:path").join(__dirname, "../../dash/testdata/analysis_fixture.json"), "utf8"));
+  const idx = L.index(fx);
+  const groups = fx.nodes.filter((n) => n.kind === "effort" && (n.effort.group === "repo" || n.effort.group === "sprint"));
+  assert.ok(groups.length > 0, "the fixture has repo or sprint groups");
+  groups.forEach((g) => {
+    assert.equal(L.childrenOf(idx, g.id, "contains").length, 0, g.id + " has no workspaces");
+    const tracked = L.sortTracked(L.childrenOf(idx, g.id, "tracks"));
+    assert.ok(tracked.length > 0, g.id + " tracks nothing");
+    assert.ok(tracked.every((n) => n.kind === "pr" || n.kind === "ticket"), g.id + " tracks only PRs and tickets");
+  });
+});
+
 test("Resume is labelled with the configured tool", () => {
   const r = L.actionButtons({ token: "t", action_api: "/api/action", resume: "codex" }).find((a) => a.kind === "resume");
   assert.equal(r.label, "Resume codex");
