@@ -72,7 +72,21 @@ per-tool cost stays small.
   `systemMessage` on the other events, and never shows stderr from a hook
   that exits 0). The same problem is repeated at most once an hour across
   all your sessions, tracked in `~/.wgo/agent-hook-warning.json`; a jj
-  failure counts as one problem whichever workspace it happens in.
+  failure counts as one problem whichever workspace it happens in (a jj
+  timeout and a busy state file are each their own problem).
+- **It never holds up your prompt for long.** Claude Code waits for
+  `UserPromptSubmit` before sending your prompt and for `Stop` before ending
+  the turn. The hook's jj calls share a 2-second budget, and its wait for
+  another wgo to release `~/.wgo/state.json` also gives up after 2 seconds.
+  If either gives up, that event's update is skipped, with a warning: a
+  session wgo already tracks keeps its recorded workspace if jj is slow, and
+  the next event records the session's current status. `SessionEnd` is never
+  retried, so it waits up to 8 seconds for the state file; if even that runs
+  out, the session stays listed until wgo sees Claude has exited. The jj
+  calls use `--ignore-working-copy`, so the hook never snapshots your working
+  copy or competes with the agent's own jj commands for its lock. Keep the
+  `timeout` at 10 or more: that leaves room for jj to exit cleanly when it is
+  interrupted.
 - **Liveness without timers.** wgo walks up from the hook's parent process to
   the `claude` process and records its PID and start time; it does this on
   each event until the process is found, and again when the recorded one has
