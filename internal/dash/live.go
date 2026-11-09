@@ -399,9 +399,12 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 		if err != nil {
 			return err
 		}
-		remoteErr := res.Err()
-		d.recordRefreshError(remoteErr)
+		// Every problem is shown; only failed lookups fail the command. Jobs
+		// beyond the queue bound were not run, so their data stays stale or
+		// unknown, which the snapshot already says.
+		d.recordRefreshError(res.Err())
 		d.recordSkipped(d.opts.Refresher.skipSummary(res))
+		remoteErr := res.failedErr()
 		if err := d.Publish(s); err != nil {
 			return errors.Join(err, remoteErr)
 		}
@@ -433,7 +436,8 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 // maxFollowUps bounds the extra rounds of lookups a waited-for refresh runs
 // for jobs that only fetched data reveals: once the authenticated login is
 // known, that person's inventory; once the inventory is in, the tickets its
-// PRs name. A background refresh leaves them to its next collection.
+// PRs name; once a sprint's search is in, its tickets' own facts (gh-98). A
+// background refresh leaves them to its next collection.
 const maxFollowUps = 2
 
 // awaitRounds waits for the batch done of jobs, then assembles ls again. Jobs

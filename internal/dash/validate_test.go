@@ -240,6 +240,10 @@ func TestValidateAnalysisRules(t *testing.T) {
 		{"status category", func(s *Snapshot) { node(s, tTicketTwo).Ticket.StatusCategory = "blocked" }, "status_category"},
 		{"ticket sprint state", func(s *Snapshot) { node(s, tTicketTwo).Ticket.Sprints[0].State = "open" }, "sprint state"},
 		{"ticket sprint id", func(s *Snapshot) { node(s, tTicketTwo).Ticket.Sprints[0].ID = 0 }, "sprint with no id"},
+		{"story points not known", func(s *Snapshot) {
+			five := 5.0
+			node(s, tTicketTwo).Ticket.StoryPoints, node(s, tTicketTwo).Ticket.StoryPointsKnown = &five, false
+		}, "story_points without story_points_known"},
 		{"merged length", func(s *Snapshot) { s.Counts.Merged[tEffortRepo] = []int{1} }, "counts merged"},
 		{"merged key", func(s *Snapshot) { s.Counts.Merged[tPR] = []int{0, 0, 0} }, "merged key"},
 		{"person without login", func(s *Snapshot) { s.People[1].Login = "" }, "has no login"},
@@ -269,6 +273,16 @@ func TestValidateInventoryPRMayAlsoHaveABookmark(t *testing.T) {
 	s.Node(tPRInventory).PR.BookmarkID = tBM
 	s.Edges = slices.DeleteFunc(s.Edges, func(e Edge) bool { return e.Target == tPRInventory })
 	s.Edges = append(s.Edges, Edge{tBM, tPRInventory, EdgePR})
+	if err := s.Validate(); err != nil {
+		t.Fatalf("valid snapshot rejected: %v", err)
+	}
+}
+
+// TestValidateInSprintWithUnknownSprints: a ticket whose sprints are unknown
+// may be in_sprint of a sprint whose ticket search found it.
+func TestValidateInSprintWithUnknownSprints(t *testing.T) {
+	s := validAnalysisSnapshot()
+	s.Node(tTicketTwo).Ticket.Sprints = nil
 	if err := s.Validate(); err != nil {
 		t.Fatalf("valid snapshot rejected: %v", err)
 	}

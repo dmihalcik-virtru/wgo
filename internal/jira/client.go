@@ -164,8 +164,11 @@ func inFlightClause(assignee string, statuses []string) string {
 }
 
 // quoteJQL wraps a value in single quotes, escaping any embedded single quotes.
+// A backslash is escaped first, so a value ending in one cannot escape the
+// closing quote.
 func quoteJQL(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "\\'") + "'"
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	return "'" + strings.ReplaceAll(s, "'", `\'`) + "'"
 }
 
 // GetIssue fetches summary, description, status, priority, and assignee for the given ticket.
@@ -180,6 +183,75 @@ func GetIssue(ticket string) (*Issue, error) {
 		return nil, fmt.Errorf("parse issue %s: %w", ticket, err)
 	}
 	return &issue, nil
+}
+
+// GetIssueJSON returns acli's JSON for one work item, with fields (a
+// comma-separated --fields value, such as FactFields) requested. Parse it
+// with ParseFacts.
+func GetIssueJSON(ticket, fields string) ([]byte, error) {
+	out, err := run("workitem", "view", ticket, "--json", "--fields", fields)
+	if err != nil {
+		return nil, fmt.Errorf("get issue %s: %w\n%s", ticket, err, out)
+	}
+	return []byte(out), nil
+}
+
+// SearchIssuesJSON runs a JQL search for up to limit work items and
+// returns each one's JSON, for ParseFacts. fields is limited to what acli
+// allows, as for SearchIssues. It asks acli to paginate, since Jira serves
+// at most a page of issues per request; acli may then print one JSON array
+// per page, and every page is read. acli may return more than limit, so a
+// caller that bounds its results cuts them itself.
+func SearchIssuesJSON(jql string, fields []string, limit int) ([]json.RawMessage, error) {
+	args := []string{"workitem", "search", "--jql", jql, "--json", "--paginate", "--limit", fmt.Sprintf("%d", limit)}
+	if len(fields) > 0 {
+		args = append(args, "--fields", strings.Join(fields, ","))
+	}
+	out, err := run(args...)
+	if err != nil {
+		return nil, fmt.Errorf("search issues: %w\n%s", err, out)
+	}
+	return parseIssuePages(out)
+}
+
+// parseIssuePages decodes one or more concatenated JSON arrays of issues.
+func parseIssuePages(raw string) ([]json.RawMessage, error) {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	var issues []json.RawMessage
+	for dec.More() {
+		var page []json.RawMessage
+		if err := dec.Decode(&page); err != nil {
+			return nil, fmt.Errorf("parse search results: %w", err)
+		}
+		issues = append(issues, page...)
+	}
+	return issues, nil
+}
+
+// SprintTicketsJQL builds a JQL query for a sprint's tickets assigned to
+// any of assignees (account IDs, emails, or currentUser(), which is passed
+// unquoted) and, when unassigned is set, its tickets assigned to no one.
+// Callers name at least one of the two. The most recently updated come
+// first, so a bounded search keeps the liveliest tickets.
+func SprintTicketsJQL(sprintID int, assignees []string, unassigned bool) string {
+	var who []string
+	for _, a := range assignees {
+		if a == "currentUser()" {
+			who = append(who, a)
+		} else {
+			who = append(who, quoteJQL(a))
+		}
+	}
+	var clause string
+	switch {
+	case len(who) > 0 && unassigned:
+		clause = fmt.Sprintf("(assignee in (%s) OR assignee is EMPTY)", strings.Join(who, ","))
+	case len(who) > 0:
+		clause = fmt.Sprintf("assignee in (%s)", strings.Join(who, ","))
+	default:
+		clause = "assignee is EMPTY"
+	}
+	return fmt.Sprintf("sprint = %d AND %s ORDER BY updated DESC", sprintID, clause)
 }
 
 // GetComments fetches up to limit comments for the given ticket, newest last.

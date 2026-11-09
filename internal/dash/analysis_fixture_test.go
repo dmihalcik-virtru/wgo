@@ -507,8 +507,11 @@ func TestAnalysisFixtureScenarios(t *testing.T) {
 				t.Errorf("no ticket in the active sprint is %s", what)
 			}
 		}
-		want("unestimated", func(x tk) bool { return x.t.StoryPoints == nil })
-		want("estimated", func(x tk) bool { return x.t.StoryPoints != nil })
+		// gh-105 counts unestimated tickets apart from those whose
+		// estimate is unknown.
+		want("unestimated", func(x tk) bool { return x.t.StoryPointsKnown && x.t.StoryPoints == nil })
+		want("estimated", func(x tk) bool { return x.t.StoryPointsKnown && x.t.StoryPoints != nil })
+		want("of unknown estimate", func(x tk) bool { return !x.t.StoryPointsKnown && x.t.StoryPoints == nil })
 		want("without a PR, tracked by the sprint group", func(x tk) bool {
 			return len(linked(x.id)) == 0 && slices.ContainsFunc(into(x.id, EdgeTracks), func(e string) bool { return group(e) == GroupSprint })
 		})
@@ -537,6 +540,9 @@ func TestAnalysisFixtureScenarios(t *testing.T) {
 		}
 		if st := s.Sources[SourceGitHubInventory]; st.State != Stale || !slices.ContainsFunc(st.Parts, func(p SourcePart) bool { return p.State == Stale && p.Error != "" }) {
 			t.Errorf("github_inventory should be stale with a failed part: %+v", st)
+		}
+		if sp := s.Node("sprint:1234").Sprint; sp.TicketScope != TicketScopeConfiguredPeopleAndUnassigned || sp.TicketLookup != Fresh || sp.TicketCount == nil {
+			t.Errorf("the active sprint should record its ticket search's scope, freshness and count: %+v", sp)
 		}
 	})
 }

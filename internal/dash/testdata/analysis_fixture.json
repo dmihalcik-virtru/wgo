@@ -24,10 +24,11 @@
     "jira": {"state": "fresh", "fresh": 7},
     "jira_sprints": {
       "state": "fresh",
-      "fresh": 1,
+      "fresh": 2,
       "oldest_fetch": "2026-10-30T15:52:00Z",
       "parts": [
-        {"name": "board 42", "state": "fresh", "fetched_at": "2026-10-30T15:52:00Z"}
+        {"name": "board 42", "state": "fresh", "fetched_at": "2026-10-30T15:52:00Z"},
+        {"name": "sprint 1234", "state": "fresh", "fetched_at": "2026-10-30T15:52:00Z"}
       ]
     },
     "jj": {"state": "fresh", "fresh": 5},
@@ -929,6 +930,7 @@
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
         "story_points": 5,
+        "story_points_known": true,
         "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
         "team": "Platform",
         "components": ["api", "web"],
@@ -957,6 +959,7 @@
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
         "story_points": 3,
+        "story_points_known": true,
         "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
         "team": "Platform",
         "components": ["api"],
@@ -987,6 +990,7 @@
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
         "story_points": 2,
+        "story_points_known": true,
         "team": "Platform",
         "components": ["api"],
         "labels": [],
@@ -1013,6 +1017,7 @@
         "sprints": [
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
+        "story_points_known": true,
         "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
         "team": "Platform",
         "components": [],
@@ -1041,6 +1046,7 @@
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
         "story_points": 8,
+        "story_points_known": true,
         "parent": {"key": "TEAM-100", "summary": "Token lifecycle", "type": "Epic"},
         "team": "Platform",
         "components": ["api"],
@@ -1067,7 +1073,6 @@
         "sprints": [
           {"id": 1234, "name": "Sprint 12", "state": "active"}
         ],
-        "story_points": 1,
         "team": "Platform",
         "components": ["api"],
         "labels": ["observability"],
@@ -1094,6 +1099,7 @@
           {"id": 1235, "name": "Sprint 13", "state": "future"}
         ],
         "story_points": 3,
+        "story_points_known": true,
         "team": "Platform",
         "components": ["web"],
         "labels": [],
@@ -1112,7 +1118,7 @@
       "id": "sprint:1234",
       "kind": "sprint",
       "label": "Sprint 12",
-      "sprint": {"id": 1234, "name": "Sprint 12", "state": "active", "start": "2026-10-20T08:00:00Z", "end": "2026-11-03T08:00:00Z", "goal": "Ship token refresh and rate limits", "board": 42, "freshness": "fresh", "fetched_at": "2026-10-30T15:52:00Z"}
+      "sprint": {"id": 1234, "name": "Sprint 12", "state": "active", "start": "2026-10-20T08:00:00Z", "end": "2026-11-03T08:00:00Z", "goal": "Ship token refresh and rate limits", "board": 42, "freshness": "fresh", "fetched_at": "2026-10-30T15:52:00Z", "ticket_scope": "configured_people_and_unassigned", "ticket_lookup": "fresh", "ticket_fetched_at": "2026-10-30T15:52:00Z", "ticket_count": 6}
     },
     {
       "id": "sprint:1235",
