@@ -10,7 +10,8 @@
     "bookmark",
     "pr",
     "ticket",
-    "agent"
+    "agent",
+    "sprint"
    ],
    "paths": [
     "kind"
@@ -21,7 +22,8 @@
     "bookmark",
     "pr",
     "ticket",
-    "agent"
+    "agent",
+    "sprint"
    ]
   },
   {
@@ -34,7 +36,8 @@
     "bookmark",
     "pr",
     "ticket",
-    "agent"
+    "agent",
+    "sprint"
    ],
    "paths": [
     "label",
@@ -53,7 +56,8 @@
     "bookmark",
     "pr",
     "ticket",
-    "agent"
+    "agent",
+    "sprint"
    ],
    "derive": "efforts"
   },
@@ -163,7 +167,8 @@
     "bookmark",
     "pr",
     "ticket",
-    "agent"
+    "agent",
+    "sprint"
    ],
    "derive": "activity_days",
    "unit": "day",
@@ -213,52 +218,407 @@
    "type": "date",
    "kinds": [
     "effort",
-    "workspace"
+    "workspace",
+    "pr",
+    "ticket"
+   ],
+   "paths": [
+    "pr[state=merged].merged_at",
+    "pr[state=closed].closed_at",
+    "pr[state=open].updated_at",
+    "ticket.resolved_at",
+    "ticket[!resolved_at].updated_at"
    ],
    "derive": "activity_days",
+   "derive_kinds": [
+    "effort",
+    "workspace"
+   ],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "author",
+   "label": "Author",
+   "type": "enum",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.author"
+   ]
+  },
+  {
+   "name": "requested_from",
+   "label": "Review requested from",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr[reviewers_known=true].requested_reviewers",
+    "pr.review_requests.reviewer",
+    "pr.involvement[role=review_requested].person"
+   ]
+  },
+  {
+   "name": "reviewed_by",
+   "label": "Reviewed by",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.reviews.author"
+   ]
+  },
+  {
+   "name": "reviewer",
+   "label": "Reviewer (requested or reviewed)",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr[reviewers_known=true].requested_reviewers",
+    "pr.review_requests.reviewer",
+    "pr.involvement[role=review_requested].person",
+    "pr.reviews.author"
+   ]
+  },
+  {
+   "name": "created",
+   "label": "Created",
+   "type": "date",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.created_at"
+   ],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "merged",
+   "label": "Merged",
+   "type": "date",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.merged_at"
+   ],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "closed",
+   "label": "Closed",
+   "type": "date",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.closed_at"
+   ],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "updated",
+   "label": "Updated",
+   "type": "date",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.updated_at"
+   ],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "ready",
+   "label": "Ready for review",
+   "type": "date",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.ready_at"
+   ],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "age",
+   "label": "Age",
+   "type": "duration",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.created_at"
+   ],
+   "derive": "days_since",
+   "unit": "days",
+   "scale": "log"
+  },
+  {
+   "name": "updated_ago",
+   "label": "Since update",
+   "type": "duration",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.updated_at"
+   ],
+   "derive": "days_since",
+   "unit": "days",
+   "scale": "log"
+  },
+  {
+   "name": "additions",
+   "label": "Additions",
+   "type": "number",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.additions"
+   ],
+   "unit": "lines",
+   "scale": "log"
+  },
+  {
+   "name": "deletions",
+   "label": "Deletions",
+   "type": "number",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.deletions"
+   ],
+   "unit": "lines",
+   "scale": "log"
+  },
+  {
+   "name": "files",
+   "label": "Files changed",
+   "type": "number",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.changed_files"
+   ],
+   "unit": "files",
+   "scale": "log"
+  },
+  {
+   "name": "mergeable",
+   "label": "Mergeable",
+   "type": "enum",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.mergeable"
+   ],
+   "values": [
+    "mergeable",
+    "conflicting",
+    "unknown"
+   ]
+  },
+  {
+   "name": "check_failing",
+   "label": "Failing checks",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.check_details[state=failure].name"
+   ]
+  },
+  {
+   "name": "ticket",
+   "label": "Tickets",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.ticket_keys"
+   ]
+  },
+  {
+   "name": "source",
+   "label": "Found through",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.sources"
+   ],
+   "values": [
+    "bookmark",
+    "inventory"
+   ]
+  },
+  {
+   "name": "status_category",
+   "label": "Status category",
+   "type": "enum",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.status_category"
+   ],
+   "values": [
+    "todo",
+    "in_progress",
+    "done"
+   ]
+  },
+  {
+   "name": "sprint",
+   "label": "Sprint (ID or name)",
+   "type": "set",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.sprints.id",
+    "ticket.sprints.name"
+   ]
+  },
+  {
+   "name": "sprint_state",
+   "label": "Sprint state",
+   "type": "set",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.sprints.state"
+   ],
+   "values": [
+    "active",
+    "future",
+    "closed"
+   ]
+  },
+  {
+   "name": "points",
+   "label": "Story points",
+   "type": "number",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket[story_points_known=true].story_points",
+    "ticket[story_points_known=true][!story_points].story_points_known"
+   ],
+   "unit": "points",
+   "scale": "linear"
+  },
+  {
+   "name": "epic",
+   "label": "Epic (parent)",
+   "type": "enum",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.parent.key"
+   ]
+  },
+  {
+   "name": "team",
+   "label": "Team",
+   "type": "enum",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.team"
+   ]
+  },
+  {
+   "name": "type",
+   "label": "Type",
+   "type": "enum",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.type"
+   ]
+  },
+  {
+   "name": "priority",
+   "label": "Priority",
+   "type": "enum",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.priority"
+   ]
+  },
+  {
+   "name": "component",
+   "label": "Components",
+   "type": "set",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.components"
+   ]
+  },
+  {
+   "name": "label",
+   "label": "Labels",
+   "type": "set",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.labels"
+   ]
+  },
+  {
+   "name": "resolved",
+   "label": "Resolved",
+   "type": "date",
+   "kinds": [
+    "ticket"
+   ],
+   "paths": [
+    "ticket.resolved_at"
+   ],
    "unit": "day",
    "scale": "linear"
   }
  ],
  "planned": {
-  "additions": "gh-97",
-  "age": "gh-97",
-  "author": "gh-97",
-  "check_failing": "gh-97",
   "ci": "gh-99",
-  "closed": "gh-97",
-  "component": "gh-98",
-  "created": "gh-97",
-  "deletions": "gh-97",
-  "epic": "gh-98",
-  "files": "gh-97",
-  "label": "gh-98",
   "linked_prs": "gh-99",
-  "mergeable": "gh-97",
-  "merged": "gh-97",
   "mismatch": "gh-99",
   "move": "gh-99",
   "move_people": "gh-99",
-  "points": "gh-98",
-  "priority": "gh-98",
-  "ready": "gh-97",
   "reason": "gh-99",
-  "requested_from": "gh-97",
-  "resolved": "gh-98",
-  "reviewed_by": "gh-97",
-  "reviewer": "gh-97",
   "size": "gh-99",
   "size_bucket": "gh-99",
-  "source": "gh-97",
-  "sprint": "gh-98",
-  "sprint_state": "gh-98",
   "stale": "gh-99",
-  "status_category": "gh-98",
-  "team": "gh-98",
-  "ticket": "gh-97",
-  "type": "gh-98",
-  "updated": "gh-97",
-  "updated_ago": "gh-97",
   "waiting": "gh-99",
   "waiting_on": "gh-99"
  }

@@ -200,6 +200,18 @@ async function runChecks() {
   const fb = await evaluate("(() => { const t = document.querySelector('.copyout textarea'); return { same: t.value, active: document.activeElement === t, selected: t.selectionStart === 0 && t.selectionEnd === t.value.length } })()");
   check(fb.same === clip && fb.active && fb.selected, "fallback text area: " + JSON.stringify({ active: fb.active, selected: fb.selected }));
 
+  // 5b. Sprints and tracked work (gh-97, gh-98): the sprint group's card
+  // shows the sprint's dates and lists the ticket it tracks, with its
+  // points, and sprints have a legend entry naming their shape.
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: pageURL + "#view=graph" });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the snapshot");
+  const card = await evaluate("(() => { const s = Array.from(document.querySelectorAll('.efforts section.effort')).find(s => s.querySelector('header button.name').textContent === 'Sprint 12'); return s ? s.textContent : '' })()");
+  check(card.includes("active sprint · 2026-10-12 to 2026-10-26") && card.includes("TEAM-99") && card.includes("unestimated") && !card.includes("No workspaces discovered"), "sprint group card: " + card);
+  check(card.split("Ship the widget API").length === 2, "the sprint's goal, also its group's description, shows once: " + card);
+  const legend = await evaluate("Array.from(document.querySelectorAll('.legend li')).map(li => li.textContent)");
+  check(legend.includes("Sprint (a time box) (2)"), "sprint legend entry: " + legend.join(" | "));
+
   // 6. Nothing was refused by the CSP and nothing threw.
   // The browser's own favicon request is the only 404 the page may cause.
   const problems = events.filter((e) => (e.method === "Log.entryAdded" && e.params.entry.level === "error" && !/\/favicon\.ico$/.test(e.params.entry.url || "")) || e.method === "Runtime.exceptionThrown")

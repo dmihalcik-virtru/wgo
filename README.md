@@ -1067,7 +1067,11 @@ clauses joined by `;`, all of which must hold. Each clause is
 - `*`, any known value: `repo:*`
 - a range: `activity:2026-10-01..2026-10-07`, `activity:-7d..`, `>=30`
 
-`@me` and `@people` stand for the configured people. A clause never
+Fields cover local work (`kind`, `text`, `effort`, `repo`, `activity`,
+`when`, …), PRs (`author`, `requested_from`, `reviewer`, `merged`, `age`,
+`mergeable`, `check_failing`, …) and Jira tickets (`status_category`,
+`sprint`, `sprint_state`, `points`, `epic`, …); a misspelt field lists them
+all. `@me` and `@people` stand for the configured people. A clause never
 matches a node whose value is unknown, negated or not; add `unknown` to a
 list to include those. `kind:` clauses choose which matches are rows.
 
