@@ -144,14 +144,14 @@ func (fs *FileStore) checkWritable(state *State) error {
 	return nil
 }
 
-// lockPath is the advisory-lock file guarding read-modify-write of state.json.
-func (fs *FileStore) lockPath() string {
+// LockPath is the advisory-lock file guarding read-modify-write of state.json.
+func (fs *FileStore) LockPath() string {
 	return fs.stateFile + ".lock"
 }
 
 // ErrStateLocked reports that MutateStateWithin gave up waiting for another
-// wgo process to release the state lock.
-var ErrStateLocked = errors.New("state lock is held by another wgo process")
+// process, normally another wgo, to release the state lock.
+var ErrStateLocked = errors.New("state lock is busy")
 
 // MutateState runs fn under an exclusive cross-process lock, re-reading state
 // inside the lock so concurrent wgo processes can't lose each other's updates
@@ -172,7 +172,7 @@ func (fs *FileStore) MutateStateWithin(timeout time.Duration, fn func(*State) (c
 		return err
 	}
 
-	unlock, err := acquireStateLock(fs.lockPath(), timeout)
+	unlock, err := acquireStateLock(fs.LockPath(), timeout)
 	if err != nil {
 		return err
 	}

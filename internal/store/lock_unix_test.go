@@ -18,7 +18,7 @@ import (
 func TestMutateStateWithinGivesUp(t *testing.T) {
 	s := NewWithDir(t.TempDir())
 	require.NoError(t, s.EnsureDir())
-	unlock, err := acquireStateLock(s.lockPath(), 0)
+	unlock, err := acquireStateLock(s.LockPath(), 0)
 	require.NoError(t, err)
 
 	called := false
@@ -28,7 +28,7 @@ func TestMutateStateWithinGivesUp(t *testing.T) {
 		return true, nil
 	})
 	assert.ErrorIs(t, err, ErrStateLocked)
-	assert.Contains(t, err.Error(), s.lockPath())
+	assert.Contains(t, err.Error(), s.LockPath())
 	assert.False(t, called, "fn must not run without the lock")
 	assert.Less(t, time.Since(start), 2*time.Second)
 

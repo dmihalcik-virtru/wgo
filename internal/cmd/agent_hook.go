@@ -24,6 +24,11 @@ var agentHookTool string
 // See workspaceLookupTimeout for how the two fit Claude Code's hook timeout.
 var hookLockTimeout = 2 * time.Second
 
+// hookRemoveLockTimeout is hookLockTimeout for SessionEnd. It is the last
+// event of a session, so no later one retries a removal it gives up on, and
+// it makes no jj calls, so it can spend most of the hook timeout waiting.
+var hookRemoveLockTimeout = 8 * time.Second
+
 var agentHookCmd = &cobra.Command{
 	Use:   "hook [event]",
 	Short: "Update agent sessions from Claude Code hook JSON on stdin",
@@ -156,9 +161,10 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		return err
 	}
 	if act.remove {
-		return s.MutateStateWithin(hookLockTimeout, func(state *store.State) (bool, error) {
+		err := s.MutateStateWithin(hookRemoveLockTimeout, func(state *store.State) (bool, error) {
 			return state.RemoveAgentSession(p.SessionID), nil
 		})
+		return lockProblem(s, err, "the session stays listed until wgo sees its agent exit")
 	}
 
 	// A lock-free read decides whether this event needs a write at all, and
@@ -220,7 +226,7 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		pid, start = agentProcess(tool, 0)
 	}
 
-	return s.MutateStateWithin(hookLockTimeout, func(state *store.State) (bool, error) {
+	err = s.MutateStateWithin(hookLockTimeout, func(state *store.State) (bool, error) {
 		now := agentNow()
 		cur := state.GetAgentSession(p.SessionID)
 		if existing != nil && cur == nil {
@@ -263,4 +269,19 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		dropInferredDuplicate(state, tool, saved.WorktreePath, saved.PID, saved.ProcStart)
 		return true, nil
 	})
+	return lockProblem(s, err, "the next event retries")
+}
+
+// lockProblem turns a timed-out wait for the state lock into a hookProblem
+// that says what became of the event (then) and how to find the process
+// holding the lock. Every timeout shares one key, so it warns once an hour
+// however the path or timeout is spelled. Other errors pass through.
+func lockProblem(s *store.FileStore, err error, then string) error {
+	if !errors.Is(err, store.ErrStateLocked) {
+		return err
+	}
+	return &hookProblem{
+		key: "state: locked",
+		err: fmt.Errorf("%w; this event was not recorded and %s (find the process holding the lock with: lsof %s)", err, then, s.LockPath()),
+	}
 }
