@@ -362,7 +362,8 @@ func cell(s string) string {
 }
 
 // writeFooter states the provenance: snapshot time and generation, how
-// many rows of how many nodes, the query, and each source's freshness.
+// many rows of how many nodes, the query, each source's freshness, and
+// any query and coverage warnings.
 func (x *extractInput) writeFooter(b *strings.Builder) {
 	s := x.v.Snapshot
 	b.WriteString("---\n\n")
@@ -399,6 +400,9 @@ func (x *extractInput) writeFooter(b *strings.Builder) {
 	b.WriteString("Sources: " + strings.Join(parts, " · ") + "\n")
 	for _, w := range x.res.Warnings {
 		b.WriteString("\nNote: " + mdText(w) + "\n")
+	}
+	for _, w := range x.res.CoverageWarnings {
+		b.WriteString("\nCoverage: " + mdText(w) + "\n")
 	}
 }
 

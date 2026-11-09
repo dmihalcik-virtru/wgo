@@ -778,6 +778,19 @@ type queryIndex struct {
 	nowMs    int64
 	today    string // local day of generated_at; "" when unknown
 	total    int
+	closed   closedCoverage
+}
+
+// closedCoverage is how far the closed-recent PR inventory (gh-97) reaches:
+// merged and closed PRs come only from it, so a PR that closed before its
+// cutoff, or that a gap in it missed, is absent from the snapshot.
+type closedCoverage struct {
+	parts int // closed-recent parts in the snapshot
+	// from is the first local day every part covers in full; "" when a
+	// part records no cutoff.
+	from string
+	// gaps name the parts whose search is not complete, and why.
+	gaps []string
 }
 
 type rawSnapshot struct {
@@ -792,7 +805,10 @@ type rawSnapshot struct {
 		Days     []string             `json:"days"`
 		Activity map[string][]float64 `json:"activity"`
 	} `json:"counts"`
-	People json.RawMessage `json:"people"`
+	People  json.RawMessage `json:"people"`
+	Sources map[string]struct {
+		Parts []SourcePart `json:"parts"`
+	} `json:"sources"`
 }
 
 // newQueryIndex decodes a snapshot's JSON and indexes reg's fields over it.
@@ -820,6 +836,7 @@ func newQueryIndex(raw []byte, reg *Registry) (*queryIndex, error) {
 		ix.kinds = append(ix.kinds, NodeKind(kind))
 	}
 	ix.total = len(ix.nodes)
+	ix.closed = closedCoverageOf(doc.Sources[SourceGitHubInventory].Parts, ix.loc)
 	ix.out = make([][]int, ix.total)
 	ix.inc = make([][]int, ix.total)
 	for _, e := range doc.Edges {
@@ -852,6 +869,45 @@ func newQueryIndex(raw []byte, reg *Registry) (*queryIndex, error) {
 		ix.values[f.Name] = vals
 	}
 	return ix, nil
+}
+
+// closedCoverageOf reads the closed-recent parts of the github_inventory
+// source. loc is the zone days are counted in; nil means UTC.
+func closedCoverageOf(parts []SourcePart, loc *time.Location) closedCoverage {
+	if loc == nil {
+		loc = time.UTC
+	}
+	var c closedCoverage
+	var latest time.Time
+	noCutoff := false
+	for _, p := range parts {
+		if !strings.HasSuffix(strings.ToLower(p.Name), "/"+InventoryClosedRecent) {
+			continue
+		}
+		c.parts++
+		switch {
+		case !p.State.hasData():
+			c.gaps = append(c.gaps, p.Name+" unavailable")
+		case p.Truncated:
+			c.gaps = append(c.gaps, p.Name+" truncated")
+		case p.Incomplete:
+			c.gaps = append(c.gaps, p.Name+" incomplete")
+		}
+		if p.CoverageFrom.IsZero() {
+			noCutoff = true
+		} else if p.CoverageFrom.After(latest) {
+			latest = p.CoverageFrom
+		}
+	}
+	if c.parts > 0 && !noCutoff {
+		t := latest.In(loc)
+		day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+		if !t.Equal(day) {
+			day = day.AddDate(0, 0, 1) // the cutoff's own day is only partly covered
+		}
+		c.from = day.Format("2006-01-02")
+	}
+	return c
 }
 
 // snapshotLocation is the time zone local days are counted in: the
@@ -1169,8 +1225,12 @@ type QueryResult struct {
 	// Warnings name operands that could not be resolved, such as @me in a
 	// snapshot that lists no people.
 	Warnings []string `json:"warnings,omitempty"`
-	matchIdx []int
-	rowIdx   []int
+	// CoverageWarnings say when the query could match merged or closed PRs
+	// the snapshot never searched for (requirement 15), so few or no
+	// matches are not read as proof that none merged or closed.
+	CoverageWarnings []string `json:"coverage_warnings,omitempty"`
+	matchIdx         []int
+	rowIdx           []int
 	// visible is the closure of the matches, or nil when the query has no
 	// non-kind clause (no filter).
 	visible map[string]bool
@@ -1405,6 +1465,7 @@ func (ix *queryIndex) evaluate(q *Query) *QueryResult {
 			res.Rows = append(res.Rows, ix.ids[i])
 		}
 	}
+	res.CoverageWarnings = ix.coverageWarnings(q)
 	if len(filters) > 0 {
 		res.visible = map[string]bool{}
 		for _, i := range reach(ix.out, res.matchIdx) {
@@ -1423,4 +1484,99 @@ func jsNumber(x float64) string {
 		return strconv.FormatFloat(x, 'f', -1, 64)
 	}
 	return strconv.FormatFloat(x, 'g', -1, 64)
+}
+
+// coverageWarnings reports the merged, closed and when clauses of q that
+// reach past what the closed-recent PR inventory covers: before its cutoff,
+// or into a part of it that is missing or incomplete.
+func (ix *queryIndex) coverageWarnings(q *Query) []string {
+	if !canMatchClosedPRs(q) {
+		return nil
+	}
+	var clauses, early []string
+	for _, c := range q.Clauses {
+		if c.Name != "merged" && c.Name != "closed" && c.Name != "when" {
+			continue
+		}
+		day, open, ok := ix.earliestDay(c)
+		if !ok {
+			continue
+		}
+		clauses = append(clauses, c.raw)
+		if ix.closed.from != "" && (open || day < ix.closed.from) {
+			early = append(early, c.raw)
+		}
+	}
+	if len(clauses) == 0 {
+		return nil
+	}
+	var out []string
+	switch {
+	case ix.closed.parts == 0:
+		return []string{fmt.Sprintf("%s: merged and closed PRs come from the closed-recent PR search, which this snapshot lacks, so they are missing", strings.Join(clauses, ", "))}
+	case ix.closed.from == "":
+		out = append(out, fmt.Sprintf("%s: the closed-recent PR search records no cutoff, so PRs merged or closed before it may be missing", strings.Join(clauses, ", ")))
+	case len(early) > 0:
+		out = append(out, fmt.Sprintf("%s reaches before %s, where the closed-recent PR search starts, so PRs merged or closed earlier are missing", strings.Join(early, ", "), ix.closed.from))
+	}
+	if len(ix.closed.gaps) > 0 {
+		out = append(out, fmt.Sprintf("%s: the closed-recent PR search is incomplete (%s), so merged and closed PRs may be missing", strings.Join(clauses, ", "), strings.Join(ix.closed.gaps, ", ")))
+	}
+	return out
+}
+
+// earliestDay is the earliest day a date clause can match: open when it
+// has no lower bound (a negation, *, an open or unresolvable lower bound).
+// ok is false for a list with no dates in it, such as merged:unknown.
+func (ix *queryIndex) earliestDay(c Clause) (day string, open, ok bool) {
+	if c.Neg || c.op == opAny {
+		return "", true, true
+	}
+	if c.op == opRange {
+		if c.lo == nil {
+			return "", true, true
+		}
+		d, resolved := ix.resolveDay(c.lo.text)
+		return d, !resolved, true
+	}
+	for _, v := range c.vals {
+		if isUnknownWord(v) {
+			continue
+		}
+		d, resolved := ix.resolveDay(v.text)
+		if !resolved {
+			return "", true, true
+		}
+		if day == "" || d < day {
+			day = d
+		}
+	}
+	return day, false, day != ""
+}
+
+// canMatchClosedPRs reports whether q could match a merged or closed PR:
+// every clause applies to PRs, the kind clauses keep them, and no prstate
+// clause rules both states out.
+func canMatchClosedPRs(q *Query) bool {
+	for _, c := range q.Clauses {
+		if !slices.Contains(c.field.Kinds, KindPR) {
+			return false
+		}
+		if c.op != opList || (c.Name != "kind" && c.Name != "prstate") {
+			continue
+		}
+		var has []string
+		for _, v := range c.vals {
+			has = append(has, strings.ToLower(v.text))
+		}
+		switch {
+		case c.Name == "kind" && slices.Contains(has, string(KindPR)) == c.Neg:
+			return false
+		case c.Name == "prstate" && !c.Neg && !slices.Contains(has, "merged") && !slices.Contains(has, "closed"):
+			return false
+		case c.Name == "prstate" && c.Neg && slices.Contains(has, "merged") && slices.Contains(has, "closed"):
+			return false
+		}
+	}
+	return true
 }

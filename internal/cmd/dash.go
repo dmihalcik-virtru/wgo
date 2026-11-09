@@ -121,8 +121,8 @@ every view is a link; the same text works here:
 
   wgo dash --query 'kind:pr;prstate:open'    open the dashboard at it
   wgo dash --json --query EXPR               add {"query": {expr, matches,
-                                             rows}} and keep only the
-                                             nodes it shows
+                                             rows, coverage_warnings}} and
+                                             keep only the nodes it shows
   wgo dash --md --query EXPR                 print its rows as Markdown,
                                              with --cols, --group,
                                              --layout table

@@ -351,3 +351,73 @@ func TestExtractRouteIsGETOnly(t *testing.T) {
 		t.Errorf("POST %s = %d", ExtractPath, resp.StatusCode)
 	}
 }
+
+// TestCoverageWarningInJSONAndMarkdown checks the requirement 15 criterion:
+// a merged-date query outside the closed-recent window warns in JSON and
+// Markdown even with zero matches. merged is the vectors' stand-in until
+// gh-97's fields are registered.
+func TestCoverageWarningInJSONAndMarkdown(t *testing.T) {
+	vec, reg := loadVectors(t)
+	snap := withEnv(t, vec.Snapshot, map[string]any{"sources": map[string]any{
+		"github_inventory": map[string]any{"state": "fresh", "parts": []map[string]any{
+			{"name": "alice/closed-recent", "state": "fresh", "coverage_from": "2026-08-21T00:00:00Z"},
+		}},
+	}})
+	path := filepath.Join(t.TempDir(), "snapshot.json")
+	if err := os.WriteFile(path, snap, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v, err := LoadFixture(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const query = "kind:pr;merged:2026-01-01..2026-02-01"
+	const want = "merged:2026-01-01..2026-02-01 reaches before 2026-08-21, where the closed-recent PR search starts, so PRs merged or closed earlier are missing"
+
+	ix, err := v.queryIndex(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(expr string) *QueryResult {
+		t.Helper()
+		q, err := ParseQuery(expr, reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ix.evaluate(q)
+	}
+	res := run(query)
+	var buf bytes.Buffer
+	if err := v.WriteQueryJSON(&buf, time.Now(), res, nil); err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Query struct {
+			Matches          []string `json:"matches"`
+			CoverageWarnings []string `json:"coverage_warnings"`
+		} `json:"query"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Query.Matches) != 0 || len(out.Query.CoverageWarnings) != 1 || out.Query.CoverageWarnings[0] != want {
+		t.Errorf("query = %+v, want no matches and the coverage warning", out.Query)
+	}
+
+	md, err := Extract(v, reg, nil, ExtractArgs{Query: query})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(md, "No rows match.") || !strings.Contains(md, "\nCoverage: "+mdText(want)+"\n") {
+		t.Errorf("extract lacks the coverage note:\n%s", md)
+	}
+
+	// Inside the window there is nothing to warn about, and the key is
+	// omitted.
+	res = run("kind:pr;merged:2026-09-01..")
+	buf.Reset()
+	_ = v.WriteQueryJSON(&buf, time.Now(), res, nil)
+	if strings.Contains(buf.String(), "coverage_warnings") {
+		t.Errorf("coverage_warnings present inside the window")
+	}
+}

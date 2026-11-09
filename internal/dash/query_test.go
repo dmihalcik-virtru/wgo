@@ -431,3 +431,68 @@ func TestQueryPerformance(t *testing.T) {
 // perfQuery is the 12-clause query both evaluators time; live_logic.js has
 // the same string.
 const perfQuery = "kind:pr;prstate:open,draft,merged;!checks:pending;freshness:fresh,stale;repo:*;effort:*;activity:*;!text:zzz;review:none,approved;!prstate:closed;text:change;!repo:acme/repo-19"
+
+// TestQueryCoverageWarnings checks requirement 15: a merged, closed or when
+// clause that reaches before the closed-recent PR search's cutoff, or into
+// a gap in it, warns even when nothing matches.
+func TestQueryCoverageWarnings(t *testing.T) {
+	v, reg := loadVectors(t)
+	inventory := func(parts ...map[string]any) map[string]any {
+		return map[string]any{"github_inventory": map[string]any{"state": "fresh", "parts": parts}}
+	}
+	// 2026-08-21T00:00Z is 20:00 on the 20th in New York, so the 21st is
+	// the first local day covered in full.
+	alice := map[string]any{"name": "alice/closed-recent", "state": "fresh", "coverage_from": "2026-08-21T00:00:00Z"}
+	bob := map[string]any{"name": "bob/closed-recent", "state": "fresh", "coverage_from": "2026-08-14T00:00:00Z"}
+	covered := inventory(alice, bob, map[string]any{"name": "alice/open-authored", "state": "fresh"})
+	early := "reaches before 2026-08-21, where the closed-recent PR search starts"
+	cases := []struct {
+		name, query string
+		sources     map[string]any
+		want        []string // substrings, one per warning; nil for none
+	}{
+		{"inside the window", "kind:pr;merged:2026-09-01..", covered, nil},
+		{"from the first full day", "merged:2026-08-21..", covered, nil},
+		{"a range before the cutoff", "kind:pr;merged:2026-08-01..2026-08-31", covered, []string{"merged:2026-08-01..2026-08-31 " + early}},
+		{"the cutoff's partial day", "closed:>=2026-08-20", covered, []string{early}},
+		{"an open lower bound", "merged:..2026-10-01", covered, []string{early}},
+		{"a date list", "when:2026-10-01,2026-08-02", covered, []string{early}},
+		{"a negation", "!merged:2026-10-01..", covered, []string{early}},
+		{"any merge date", "merged:*", covered, []string{early}},
+		{"only unknown", "merged:unknown", covered, nil},
+		{"open PRs only", "prstate:open,draft;when:2026-01-01..", covered, nil},
+		{"tickets only", "kind:ticket;when:2026-01-01..", covered, nil},
+		{"no date clause", "prstate:merged", covered, nil},
+		{"no closed-recent search", "merged:-7d..", nil, []string{"merged:-7d..: merged and closed PRs come from the closed-recent PR search, which this snapshot lacks"}},
+		{"a part without a cutoff", "merged:-7d..", inventory(alice, map[string]any{"name": "bob/closed-recent", "state": "fresh"}), []string{"records no cutoff"}},
+		{"a truncated part", "merged:2026-09-01..", inventory(alice, map[string]any{"name": "bob/closed-recent", "state": "fresh", "truncated": true, "coverage_from": "2026-08-14T00:00:00Z"}),
+			[]string{"incomplete (bob/closed-recent truncated)"}},
+		{"an unavailable part before the cutoff", "merged:2026-08-01..", inventory(alice, map[string]any{"name": "bob/closed-recent", "state": "error", "coverage_from": "2026-08-14T00:00:00Z"}),
+			[]string{early, "incomplete (bob/closed-recent unavailable)"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := map[string]any{"sources": c.sources}
+			if c.sources == nil {
+				env["sources"] = map[string]any{}
+			}
+			ix, err := newQueryIndex(withEnv(t, v.Snapshot, env), reg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q, err := ParseQuery(c.query, reg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := ix.evaluate(q).CoverageWarnings
+			if len(got) != len(c.want) {
+				t.Fatalf("coverage warnings = %q, want %d matching %q", got, len(c.want), c.want)
+			}
+			for i, w := range c.want {
+				if !strings.Contains(got[i], w) {
+					t.Errorf("warning %d = %q, want it to contain %q", i, got[i], w)
+				}
+			}
+		})
+	}
+}

@@ -1077,14 +1077,17 @@ remove a clause. **Copy as Markdown** copies the current rows.
 
 ```
 wgo dash --query 'kind:pr;prstate:open'           # open the page at this query
-wgo dash --json --query 'repo:acme/api;kind:pr'   # adds "query": {expr, matches, rows}
+wgo dash --json --query 'repo:acme/api;kind:pr'   # adds "query": {expr, matches, rows, coverage_warnings}
 wgo dash --md --query 'kind:pr' --cols prstate,checks --group repo
 wgo dash --md --preset shipped --layout table     # a saved filter as a Markdown table
 ```
 
 A malformed query fails with the column, the fix and a corrected command.
 `GET /api/extract?q=…&cols=…&group=…&layout=…` serves the same Markdown as
-`--md`, byte for byte.
+`--md`, byte for byte. Merged and closed PRs come from a search that
+reaches back a limited time, so a `merged`, `closed` or `when` query that
+reaches further back carries a coverage warning in `--json` and in the
+Markdown footer, even when nothing matches.
 
 Saved filters are built in (`my-move`, `review-inbox`, `shipped`, …) or
 set under `[dash.filters]`, where they override built-ins of the same name.
