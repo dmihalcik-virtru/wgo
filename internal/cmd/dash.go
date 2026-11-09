@@ -632,19 +632,11 @@ func dashLaunchConfig(who string, dc config.DashConfig, errOut io.Writer) launch
 // listenDash binds the loopback address only. A busy port is an error
 // naming --port; it never falls back to another port or address.
 func listenDash(port int) (net.Listener, error) {
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
-			return nil, busyPortError(addr, port)
-		}
-		return nil, fmt.Errorf("wgo dash: listen on %s: %w. Pick another port with --port", addr, err)
-	}
 	// On macOS and the BSDs, SO_REUSEADDR (which Go sets) lets 127.0.0.1:P
 	// bind beside a socket on the wildcard address 0.0.0.0:P or [::]:P, and
-	// the two then split loopback traffic. A wildcard bind collides with such
-	// a holder but not with our own specific one, so probing it finds the
-	// port shared rather than free.
+	// the two then split loopback traffic. Probing the wildcard address finds
+	// such a holder. Probe before binding: on Linux a wildcard bind collides
+	// with our own 127.0.0.1:P listener, so probing after would always fail.
 	if port != 0 {
 		for _, wild := range []string{"0.0.0.0", "::"} {
 			probe, err := net.Listen("tcp", net.JoinHostPort(wild, strconv.Itoa(port)))
@@ -653,11 +645,18 @@ func listenDash(port int) (net.Listener, error) {
 				continue
 			}
 			if errors.Is(err, syscall.EADDRINUSE) {
-				ln.Close()
 				return nil, busyPortError(net.JoinHostPort(wild, strconv.Itoa(port)), port)
 			}
 			// Any other failure (no IPv6, say) says nothing about the port.
 		}
+	}
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return nil, busyPortError(addr, port)
+		}
+		return nil, fmt.Errorf("wgo dash: listen on %s: %w. Pick another port with --port", addr, err)
 	}
 	return ln, nil
 }
