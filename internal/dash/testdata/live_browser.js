@@ -2,16 +2,38 @@
 // built-in WebSocket; no dependencies). Run by TestLivePageInBrowser when
 // WGO_BROWSER_TESTS is set:
 //
-//	node live_browser.js <chrome> <page URL> [--perf=<URL>] [--perf-table=<URL>] [--shots=<dir>] [--set=query|table] [--no-checks]
+//	node live_browser.js <chrome> <page URL> [--perf=<URL>] [--perf-table=<URL>] [--<suite flag>=<URL>…] [--shots=<dir>] [--set=<shot set>] [--no-checks]
 //
 // The page must serve the shared query vectors' snapshot with the probe
 // addon (see page_browser_test.go). Prints "ok <checks> ..." or exits
 // non-zero naming the failure. --perf times filter changes on a page that
 // serves a 2,000-node snapshot; --perf-table times the analysis table on a
-// page that serves the analysis fixture scaled to 2,000 nodes; --shots saves light and dark screenshots,
-// of the query views or (--set=table, on the analysis fixture) of the
-// analysis table's PR and ticket defaults; --no-checks skips the checks (for
-// wgo dash --fixture, which has no probe).
+// page that serves the analysis fixture scaled to 2,000 nodes; --shots saves
+// light and dark screenshots of a SHOT_SETS entry (--set: query, the default,
+// table, or an addon's); --no-checks skips the checks (for wgo dash
+// --fixture, which has no probe).
+//
+// Suites. Every check runs as a suite in SUITES, in order. An addon adds
+// its own in a block of its own at the end of this file, its names inside
+// the block's { } so sibling blocks cannot collide:
+//
+//	SUITES.push({ name, flag, checks, perf, deadlineMs })
+//
+//   - name labels the suite's failures and timeouts.
+//   - flag is the option, without "--", whose value is the URL of the page
+//     the suite drives; page_browser_test.go serves that page from the
+//     addon's browserSuites entry and passes --<flag>=<URL>. A suite whose
+//     flag is absent is skipped. The core suites' flag "" is the page URL.
+//   - checks(url) and perf(url), both async and optional: checks call
+//     check(); perf returns a summary for the "ok" line, or "". Every
+//     suite's checks run before any suite's perf; --no-checks skips checks.
+//   - deadlineMs (60000 by default) bounds checks and perf each, instead of
+//     one watchdog for the whole run.
+//
+// Screenshots are SHOT_SETS entries: [file, scheme, hash, extra] rows,
+// where extra "columns" opens the table's chooser and "cvd:<type>" shoots
+// under a colour-vision-deficiency simulation; an entry may carry
+// .viewport = { width, height }.
 "use strict";
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
@@ -20,7 +42,14 @@ const path = require("node:path");
 
 const [chrome, pageURL] = process.argv.slice(2);
 const flag = (name) => { const a = process.argv.slice(4).find((x) => x === name || x.startsWith(name + "=")); return a == null ? null : a.includes("=") ? a.slice(a.indexOf("=") + 1) : true; };
-const shotDir = flag("--shots"), perfURL = flag("--perf"), noChecks = flag("--no-checks"), shotSet = flag("--set") || "query", tableURL = flag("--perf-table");
+const shotDir = flag("--shots"), noChecks = flag("--no-checks"), shotSet = flag("--set") || "query";
+const SUITES = [];
+// within runs fn, failing with label if it takes longer than ms.
+function within(label, ms, fn) {
+  let timer;
+  const late = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(label + " timed out after " + ms / 1000 + " s")), ms); });
+  return Promise.race([Promise.resolve().then(fn), late]).finally(() => clearTimeout(timer));
+}
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "wgo-chrome-"));
 const proc = spawn(chrome, ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + profile, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", "--window-size=1400,900", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
@@ -30,7 +59,6 @@ function finish(code, msg) {
   try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { /* best effort */ }
   process.exit(code);
 }
-setTimeout(() => finish(1, "FAIL timed out"), 60000);
 
 const wsURL = new Promise((resolve) => {
   let buf = "";
@@ -69,7 +97,7 @@ async function key(k, shift) {
 }
 
 (async () => {
-  ws = new WebSocket(await wsURL);
+  ws = new WebSocket(await within("starting Chrome", 30000, () => wsURL));
   await new Promise((r) => ws.addEventListener("open", r));
   ws.addEventListener("message", (ev) => {
     const m = JSON.parse(ev.data);
@@ -86,11 +114,25 @@ async function key(k, shift) {
   const origin = new URL(pageURL).origin;
   await send("Browser.grantPermissions", { origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] }, null);
 
-  if (!noChecks) await runChecks();
-  const perf = [perfURL ? await timeRenders() : "", tableURL ? await timeTable() : ""].filter(Boolean).join("; ");
-  if (shotDir) await screenshots();
-  finish(0, "ok " + checks + (perf ? " " + perf : ""));
+  const urlOf = (s) => s.flag ? flag("--" + s.flag) : pageURL;
+  for (const s of SUITES) {
+    const url = urlOf(s);
+    if (url && s.checks && !noChecks) await within(s.name + " checks", s.deadlineMs || 60000, () => s.checks(url));
+  }
+  const perf = [];
+  for (const s of SUITES) {
+    const url = urlOf(s);
+    if (url && s.perf) perf.push(await within(s.name + " timing", s.deadlineMs || 60000, () => s.perf(url)));
+  }
+  if (shotDir) await within("screenshots", 300000, screenshots);
+  finish(0, "ok " + checks + (perf.filter(Boolean).length ? " " + perf.filter(Boolean).join("; ") : ""));
 })().catch((e) => finish(1, "FAIL " + e.message));
+
+// The core suites: the query language, URL state and the analysis table on
+// the page URL (gh-100, gh-101), and their latency.
+SUITES.push({ name: "query and table", flag: "", checks: runChecks, deadlineMs: 90000 });
+SUITES.push({ name: "filter latency", flag: "perf", perf: timeRenders });
+SUITES.push({ name: "table latency", flag: "perf-table", perf: timeTable });
 
 async function runChecks() {
   // 1. A URL restores view, query and selection; the addon view is a tab.
@@ -99,7 +141,11 @@ async function runChecks() {
   const st = await evaluate("(() => { const s = window.__wgoStore; return { view: s.view, q: s.query, sel: Array.from(s.selection), rows: s.qres && s.qres.rows } })()");
   check(st.view === "table" && st.q === "prstate:open" && st.sel.join() === "pr:acme/api#41", "hash not restored: " + JSON.stringify(st));
   const tabs = await evaluate("Array.from(document.querySelectorAll('.view-tabs button')).map(b => b.textContent + ':' + b.getAttribute('aria-pressed'))");
-  check(tabs.join() === "Graph:false,Table:true,Probe:false", "tabs: " + tabs);
+  // Graph and Table lead, the probe (inlined last) ends, and every view an
+  // addon registered has its tab, whatever their order.
+  const viewLabels = await evaluate("WGOLive.views.map(v => v.label || v.id)");
+  check(tabs[0] === "Graph:false" && tabs[1] === "Table:true" && tabs[tabs.length - 1] === "Probe:false" && tabs.length === viewLabels.length &&
+    viewLabels.every((l) => tabs.includes(l + (l === "Table" ? ":true" : ":false"))), "tabs: " + tabs + " for views " + viewLabels);
   check((await evaluate("Array.from(document.querySelectorAll('.mult')).map(m => m.textContent).includes('probe panel')")), "the addon panel renders");
   const table = await evaluate("({ rows: document.querySelectorAll('table.live tbody tr').length, ctx: document.querySelectorAll('table.live tbody tr.ctx').length, sel: document.querySelectorAll('table.live tbody tr.sel').length })");
   check(table.rows > 2 && table.ctx > 0 && table.sel === 1, "table: " + JSON.stringify(table));
@@ -107,19 +153,20 @@ async function runChecks() {
   check((await evaluate("document.querySelector('.qmsg .qinfo').textContent")).startsWith("2 rows"), "query summary");
 
   // 2. Chart clicks become clauses, combine with AND, toggle off, and are history.
+  // (gh-102 made the day chart the when facet: a day bar sets when:<day>.)
   const clickBar = (prefix) => evaluate("(() => { const g = Array.from(document.querySelectorAll('.mult .mbar')).find(g => g.getAttribute('aria-label').startsWith(" + JSON.stringify(prefix) + ")); g.dispatchEvent(new MouseEvent('click', { bubbles: true })); return window.__wgoStore.query })()");
   check((await clickBar("draft:")) === "prstate:draft", "PR-state bar");
-  check((await clickBar("2026-10-14:")) === "prstate:draft;activity:2026-10-14", "day bar ANDs");
-  check((await clickBar("API widgets:")) === "prstate:draft;activity:2026-10-14;effort:api-widgets", "effort bar ANDs");
+  check((await clickBar("2026-10-14:")) === "prstate:draft;when:2026-10-14", "day bar ANDs");
+  check((await clickBar("API widgets:")) === "prstate:draft;when:2026-10-14;effort:api-widgets", "effort bar ANDs");
   check((await clickBar("2026-10-14:")) === "prstate:draft;effort:api-widgets", "day bar toggles off");
   check((await evaluate("location.hash")).includes("q=prstate:draft;effort:api-widgets"), "hash follows the query");
   check((await evaluate("document.querySelector('.mult .mbar.on') !== null")), "the active bar is marked");
   await evaluate("history.back()"); await sleep(300);
-  check((await evaluate("window.__wgoStore.query")) === "prstate:draft;activity:2026-10-14;effort:api-widgets", "back restores the previous query");
+  check((await evaluate("window.__wgoStore.query")) === "prstate:draft;when:2026-10-14;effort:api-widgets", "back restores the previous query");
   await evaluate("history.back()"); await sleep(300);
-  check((await evaluate("window.__wgoStore.query")) === "prstate:draft;activity:2026-10-14", "back again");
+  check((await evaluate("window.__wgoStore.query")) === "prstate:draft;when:2026-10-14", "back again");
   await evaluate("history.forward()"); await sleep(300);
-  check((await evaluate("window.__wgoStore.query")) === "prstate:draft;activity:2026-10-14;effort:api-widgets", "forward re-applies");
+  check((await evaluate("window.__wgoStore.query")) === "prstate:draft;when:2026-10-14;effort:api-widgets", "forward re-applies");
 
   // 2b. A drag: live changes open one entry, the release commits it, and
   // Back returns to the state before the drag.
@@ -375,7 +422,7 @@ async function runChecks() {
 
 // timeRenders times filter changes on the 2,000-node page: the synchronous
 // re-render, and to the next frame (style, layout, paint), median of 7.
-async function timeRenders() {
+async function timeRenders(perfURL) {
   await send("Page.navigate", { url: "about:blank" });
   await send("Page.navigate", { url: perfURL });
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the 2,000-node snapshot");
@@ -424,7 +471,10 @@ const SHOT_SETS = {
 // 2,000 nodes (median of 7, synchronous and to the next frame): switching
 // to it, re-sorting every row, and a kind:pr query; and checks that only
 // the rows in view are in the DOM, following the scroll.
-async function timeTable() {
+// The table's PR columns need a wider window than the graph.
+SHOT_SETS.table.viewport = { width: 2200, height: 1000 };
+
+async function timeTable(tableURL) {
   await send("Page.navigate", { url: "about:blank" });
   await send("Page.navigate", { url: tableURL + "#view=graph" });
   await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the scaled analysis fixture");
@@ -505,8 +555,7 @@ async function screenshots() {
   const shots = SHOT_SETS[shotSet];
   const shotURL = flag("--shots-data") || pageURL;
   if (!shots) throw new Error("unknown --set " + shotSet + "; use " + Object.keys(SHOT_SETS).join(" or "));
-  // The table's PR columns need a wider window than the graph.
-  if (shotSet === "table") await send("Emulation.setDeviceMetricsOverride", { width: 2200, height: 1000, deviceScaleFactor: 1, mobile: false });
+  if (shots.viewport) await send("Emulation.setDeviceMetricsOverride", Object.assign({ deviceScaleFactor: 1, mobile: false }, shots.viewport));
   for (const [file, scheme, hash, open] of shots) {
     await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
     await send("Page.navigate", { url: "about:blank" }); // a fresh document, not a same-page hash change
@@ -514,7 +563,274 @@ async function screenshots() {
     await waitFor("!!(window.__wgoStore && window.__wgoStore.snap)", "the snapshot");
     await sleep(1500);
     if (open === "columns") { await evaluate("document.querySelector('.atable-bar button[aria-controls]').click()"); await sleep(300); }
+    if (open && open.startsWith("cvd:")) await send("Emulation.setEmulatedVisionDeficiency", { type: open.slice(4) });
     const shot = await send("Page.captureScreenshot", { format: "png" });
+    if (open && open.startsWith("cvd:")) await send("Emulation.setEmulatedVisionDeficiency", { type: "none" });
     fs.writeFileSync(path.join(shotDir, file), Buffer.from(shot.data, "base64"));
   }
 }
+
+// ---------- gh-102: linked filters ----------
+// The facet panel, the attention summary, the brushable when chart and the
+// saved filter chips on the analysis fixture (--facets), by pointer and by
+// keyboard, with the history model; then their latency at 2,000 nodes on
+// the --perf-table page. --set=facets and facets-cvd shoot them on the
+// analysis fixture, the latter under each colour-vision-deficiency
+// simulation.
+{
+const FACET_SHOTS = "#q=kind:pr;!repo:acme/infra;ci:green,systemic_only,pending;when:2026-10-20..2026-10-30&sel=pr:acme/api%23101";
+SHOT_SETS.facets = [
+  ["facets-light.png", "light", FACET_SHOTS],
+  ["facets-dark.png", "dark", FACET_SHOTS],
+  ["shipped-week-light.png", "light", "#view=table&q=kind:pr;prstate:merged;merged:2026-10-16..2026-10-22"],
+  ["shipped-week-dark.png", "dark", "#view=table&q=kind:pr;prstate:merged;merged:2026-10-16..2026-10-22"],
+  ["not-covered-light.png", "light", "#q=kind:pr;prstate:merged;merged:2026-10-03..2026-10-09"],
+  ["ranges-dark.png", "dark", "#view=table&q=kind:pr;size:30..299;age:..13;!author:carol&facets=size_bucket,created"],
+];
+SHOT_SETS["facets-cvd"] = [];
+for (const type of ["protanopia", "deuteranopia", "tritanopia", "achromatopsia"]) {
+  for (const scheme of ["light", "dark"]) SHOT_SETS["facets-cvd"].push(["cvd-" + type + "-" + scheme + ".png", scheme, FACET_SHOTS, "cvd:" + type]);
+}
+SHOT_SETS.facets.viewport = SHOT_SETS["facets-cvd"].viewport = { width: 1600, height: 1500 }; // every facet in view
+SUITES.push({ name: "linked filters", flag: "facets", checks: facetChecks, perf: () => flag("--perf-table") ? timeFacets(flag("--perf-table")) : "", deadlineMs: 90000 });
+
+// keyMod presses k with modifiers (Alt 1, Ctrl 2, Meta 4, Shift 8).
+const MOD_KEYS = Object.assign({ ArrowLeft: [37, "ArrowLeft", ""], ArrowRight: [39, "ArrowRight", ""], Shift: [16, "ShiftLeft", ""], Home: [36, "Home", ""] }, KEYS);
+async function keyMod(k, modifiers, type) {
+  const [vk, code, text] = MOD_KEYS[k];
+  if (type !== "up") await send("Input.dispatchKeyEvent", Object.assign({ type: text && !(modifiers & 1) ? "keyDown" : "rawKeyDown", key: k, code, windowsVirtualKeyCode: vk, modifiers: modifiers || 0 }, text ? { text } : {}));
+  if (type !== "down") await send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: vk, modifiers: type === "up" ? 0 : modifiers || 0 });
+  await sleep(60);
+}
+// center is the middle of the element expr finds, in page coordinates.
+async function center(expr) {
+  const r = await evaluate("(() => { const e = " + expr + "; if (!e) return null; e.scrollIntoView({ block: 'nearest' }); const b = e.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()");
+  if (!r) throw new Error("no element for " + expr);
+  return r;
+}
+async function mouse(type, x, y, modifiers, buttons) {
+  await send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" && !buttons ? "none" : "left", buttons: buttons == null ? (type === "mousePressed" ? 1 : 0) : buttons, clickCount: type === "mouseMoved" ? 0 : 1, modifiers: modifiers || 0 });
+}
+async function clickAt(expr, modifiers) {
+  const [x, y] = await center(expr);
+  await mouse("mouseMoved", x, y, modifiers, 0); await mouse("mousePressed", x, y, modifiers); await mouse("mouseReleased", x, y, modifiers);
+  await sleep(120);
+}
+// dragFromTo presses on the first element, moves in steps to the second,
+// and releases there.
+async function dragFromTo(from, to) {
+  const [x0, y0] = await center(from), [x1] = await center(to);
+  await mouse("mouseMoved", x0, y0, 0, 0); await mouse("mousePressed", x0, y0);
+  for (let i = 1; i <= 8; i++) { await mouse("mouseMoved", x0 + (x1 - x0) * i / 8, y0, 0, 1); await sleep(15); }
+  await mouse("mouseReleased", x1, y0);
+  await sleep(200);
+}
+const Q = () => evaluate("window.__wgoStore.query");
+const row = (facet, key) => "document.querySelector('.lv-left section[data-facet=" + facet + "] [data-fk=\"" + facet + "\\u0001" + key + "\"]')";
+const dayBar = (field, k) => "document.querySelector('.mult.fx-chart [data-fk=\"" + field + "\\u0001d" + k + "\"]')";
+
+async function facetChecks(facetsURL) {
+  await send("Browser.grantPermissions", { origin: new URL(facetsURL).origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] }, null);
+  await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: facetsURL });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('.lv-left section.fx')", "the facet panel");
+  // 1. The panel lists the default facets in order, left of the views; the
+  // overview leads with the attention summary, then at most three charts.
+  check((await evaluate("Array.from(document.querySelectorAll('.lv-left section.fx')).map(s => s.dataset.facet).join()")) === "move,ci,prstate,repo,author,reviewer,waiting,age,size,ticket_status,sprint,mismatch", "default facets in order");
+  check((await evaluate("document.querySelector('.lv-main').firstElementChild.className")) === "lv-left", "the panel is left of the views");
+  const over = await evaluate("Array.from(document.querySelectorAll('.multiples > .mult')).filter(m => !m.hidden).map(m => m.querySelector('h2').firstChild.textContent)");
+  check(over.join() === "Attention,When,PRs by state,Agent sessions by effort", "overview: " + over);
+  check(!(await evaluate("!!document.querySelector('select.presets')")) && (await evaluate("document.querySelectorAll('.fchips button.fchip').length")) >= 9, "chips replace the saved filter menu");
+
+  // 2. Ghost and coupled counts: a filter on PR state changes the repo
+  // facet's dark bars, not its ghosts; the PR-state facet ignores its own.
+  await evaluate("window.__wgoStore.setQuery('prstate:open', { commit: true })");
+  await sleep(100);
+  check((await evaluate(row("repo", "acme/web") + ".querySelector('.fx-n').textContent")) === "4/11", "repo acme/web under prstate:open: " + (await evaluate(row("repo", "acme/web") + ".textContent")));
+  check((await evaluate(row("prstate", "merged") + ".querySelector('.fx-n').textContent")) === "6", "prstate's own clause is ignored");
+  check((await evaluate(row("repo", "acme/web") + ".querySelector('.fx-solid').style.width")) !== (await evaluate(row("repo", "acme/web") + ".querySelector('.fx-ghost').style.width")), "solid and ghost bars differ");
+
+  // 3. Pointer gestures, with ✓ and ✕ and aria-pressed, never colour alone.
+  await clickAt(row("repo", "acme/api"));
+  check((await Q()) === "prstate:open;repo:acme/api", "click: only this value: " + (await Q()));
+  await clickAt(row("repo", "acme/web"), 8);
+  check((await Q()) === "prstate:open;repo:acme/api,acme/web", "Shift-click adds: " + (await Q()));
+  await clickAt(row("repo", "acme/web"), 4);
+  check((await Q()) === "prstate:open;repo:acme/api", "⌘-click removes: " + (await Q()));
+  await clickAt(row("repo", "acme/infra"), 1);
+  check((await Q()) === "prstate:open;repo:acme/api;!repo:acme/infra", "Alt-click excludes: " + (await Q()));
+  const marks = await evaluate("[" + row("repo", "acme/api") + ", " + row("repo", "acme/infra") + "].map(r => [r.className, r.querySelector('.fx-g').textContent, r.getAttribute('aria-pressed'), getComputedStyle(r.querySelector('.fx-l')).textDecorationLine])");
+  check(marks[0][0].includes("sel") && marks[0][1] === "✓" && marks[0][2] === "true" && marks[1][0].includes("exc") && marks[1][1] === "✕" && marks[1][3] === "line-through", "chosen ✓, excluded ✕ and struck: " + JSON.stringify(marks));
+  check((await evaluate("document.querySelector('.lv-left section[data-facet=repo] .fx-q').textContent")) === "repo:acme/api;!repo:acme/infra", "the facet shows its clauses");
+  await clickAt(row("repo", "acme/api"));
+  check((await Q()) === "prstate:open;!repo:acme/infra", "click again clears: " + (await Q()));
+  // Back and forward step through the committed facet changes.
+  await evaluate("history.back()"); await sleep(250);
+  check((await Q()) === "prstate:open;repo:acme/api;!repo:acme/infra", "Back: " + (await Q()));
+  await evaluate("history.back()"); await sleep(250);
+  check((await Q()) === "prstate:open;repo:acme/api", "Back again: " + (await Q()));
+  await evaluate("history.forward()"); await sleep(250);
+  check((await Q()) === "prstate:open;repo:acme/api;!repo:acme/infra", "Forward: " + (await Q()));
+
+  // 4. The same gestures by keyboard: Enter, Shift+Enter, Alt+Enter, arrows.
+  await evaluate("window.__wgoStore.setQuery('kind:pr', { commit: true })"); await sleep(100);
+  await evaluate(row("author", "alice") + ".focus()");
+  await keyMod("Enter", 0);
+  check((await Q()) === "kind:pr;author:alice", "Enter: " + (await Q()));
+  check((await evaluate("document.activeElement.getAttribute('data-fk')")) === "author\u0001alice", "focus stays on the row");
+  await keyMod("ArrowDown", 0);
+  check((await evaluate("document.activeElement.getAttribute('data-fk')")) === "author\u0001bob", "ArrowDown moves");
+  await keyMod("Enter", 8);
+  check((await Q()) === "kind:pr;author:alice,bob", "Shift+Enter adds: " + (await Q()));
+  await keyMod("ArrowDown", 0);
+  await keyMod("Enter", 1);
+  check((await Q()) === "kind:pr;author:alice,bob;!author:carol", "Alt+Enter excludes: " + (await Q()));
+  await keyMod(" ", 0);
+  check((await Q()) === "kind:pr;author:carol", "Space chooses only this value: " + (await Q()));
+  await evaluate("window.__wgoStore.select(['pr:acme/web#203'], false)"); await sleep(100);
+  check((await evaluate("document.activeElement.getAttribute('data-fk')")) === "author\u0001carol", "a re-render from elsewhere keeps the keyboard focus");
+
+  // 5. A histogram: a bin click sets its range; dragging a handle is live
+  // and one history entry; handles by keyboard; exact bounds.
+  await evaluate("window.__wgoStore.setQuery('kind:pr', { commit: true })"); await sleep(100);
+  await clickAt("document.querySelector('.lv-left section[data-facet=size] g.hb[data-fk=\"size\\u0001b4\"]')");
+  check((await Q()) === "kind:pr;size:30..99", "a bin click: " + (await Q()));
+  await dragFromTo("document.querySelector('.lv-left section[data-facet=size] .fx-handle-hi')", "document.querySelector('.lv-left section[data-facet=size] g.hb[data-fk=\"size\\u0001b6\"]')");
+  const dragged = await Q();
+  check(/^kind:pr;size:30\.\.(299|999)$/.test(dragged), "a handle drag sets the range: " + dragged);
+  await evaluate("history.back()"); await sleep(250);
+  check((await Q()) === "kind:pr;size:30..99", "one Back undoes the drag: " + (await Q()));
+  await evaluate("document.querySelector('.lv-left section[data-facet=size] .fx-handle-lo').focus()");
+  await keyMod("ArrowLeft", 0);
+  check((await Q()) === "kind:pr;size:10..99", "ArrowLeft on the low handle: " + (await Q()));
+  check((await evaluate("document.activeElement.getAttribute('data-fk')")) === "size\u0001lo", "the handle keeps focus");
+  await evaluate("(() => { const i = document.querySelector('.lv-left section[data-facet=size] .fx-inputs input'); i.focus(); i.value = '50'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()");
+  await sleep(100);
+  check((await Q()) === "kind:pr;size:50..99", "exact bounds: " + (await Q()));
+  await clickAt("document.querySelector('.lv-left section[data-facet=size] .fx-clear')");
+  check((await Q()) === "kind:pr", "a facet's Clear: " + (await Q()));
+  // A press, key or drag that moves no handle changes nothing: no rewrite,
+  // no history entry.
+  await evaluate("window.__wgoStore.setQuery('kind:pr;size:5', { commit: true })"); await sleep(100);
+  await evaluate("document.querySelector('.lv-left section[data-facet=size] .fx-handle-lo').focus()");
+  await keyMod("Home", 0);
+  check((await Q()) === "kind:pr;size:5", "Home on a handle already there keeps size:5: " + (await Q()));
+  await evaluate("history.back()"); await sleep(250);
+  check((await Q()) === "kind:pr", "and pushes no history entry: " + (await Q()));
+  await evaluate("window.__wgoStore.setQuery('kind:pr;size:50..99', { commit: true })"); await sleep(100);
+  await evaluate("document.querySelector('.lv-left section[data-facet=size] .fx-handle-lo').focus()");
+  await keyMod("ArrowRight", 0);
+  check((await Q()) === "kind:pr;size:50..99", "a clamped handle keeps exact bounds: " + (await Q()));
+  const [hx, hy] = await center("document.querySelector('.lv-left section[data-facet=size] .fx-handle-hi')");
+  await mouse("mouseMoved", hx, hy, 0, 0); await mouse("mousePressed", hx, hy);
+  await mouse("mouseMoved", hx + 6, hy, 0, 1); await sleep(30); await mouse("mouseReleased", hx + 6, hy); await sleep(150);
+  check((await Q()) === "kind:pr;size:50..99", "a drag under half a bin changes nothing: " + (await Q()));
+
+  // 6. Time: brushing a past week from shipped replaces merged:-7d.. and
+  // lists exactly that week's merges, one updated later; the previous
+  // period is compared, or the page says the data does not cover it.
+  await clickAt("Array.from(document.querySelectorAll('.fchips button.fchip')).find(b => b.textContent === 'shipped')");
+  check((await Q()) === "kind:pr;prstate:merged;merged:-7d..", "the shipped chip");
+  check((await evaluate("Array.from(document.querySelectorAll('.fchips button[aria-pressed=true]')).map(b => b.textContent).join()")) === "shipped", "its chip is pressed");
+  check((await evaluate("document.querySelector('.mult.fx-chart h2').firstChild.textContent")) === "Merged per day", "the when chart shows merges");
+  check((await evaluate("document.querySelector('.att-period').textContent")) === "2 merged · previous 3", "the attention summary compares: " + (await evaluate("document.querySelector('.att-period') && document.querySelector('.att-period').textContent")));
+  // The window is 2026-10-03..2026-10-30, so 2026-10-16 is day 13.
+  await dragFromTo(dayBar("merged", 13), dayBar("merged", 19));
+  check((await Q()) === "kind:pr;prstate:merged;merged:2026-10-16..2026-10-22", "the brush: " + (await Q()));
+  check((await evaluate("window.__wgoStore.qres.rows.slice().sort().join()")) === "pr:acme/api#108,pr:acme/web#204,pr:acme/web#205", "exactly the week's merges");
+  check((await evaluate("document.querySelector('.att-period').textContent")) === "3 merged · previous 0" && (await evaluate("document.querySelector('.fx-period').textContent")) === "3 merged · previous 0", "previous period in the summary and the PR-state chart");
+  check((await evaluate("getComputedStyle(document.querySelector('.mult.fx-chart .fx-band')).display")) !== "none", "the brushed band shows");
+  await evaluate("history.back()"); await sleep(250);
+  check((await Q()) === "kind:pr;prstate:merged;merged:-7d..", "one Back undoes the brush: it was one history entry");
+  // By keyboard: Shift+arrows from a day, committed when Shift is released.
+  await evaluate(dayBar("merged", 0) + ".focus()");
+  for (let i = 0; i < 6; i++) await keyMod("ArrowRight", 8, "down");
+  await keyMod("Shift", 0, "up");
+  check((await Q()) === "kind:pr;prstate:merged;merged:2026-10-03..2026-10-09", "Shift+arrows brush: " + (await Q()));
+  check((await evaluate("document.querySelector('.att-period').textContent")) === "1 merged · previous 7 days not covered: merges are known from 2026-10-02", "uncovered: " + (await evaluate("document.querySelector('.att-period').textContent")));
+  await evaluate("history.back()"); await sleep(250);
+  check((await Q()) === "kind:pr;prstate:merged;merged:-7d..", "the keyboard brush is one entry: " + (await Q()));
+  // Without shipped, the chart is when, and a brush sets when:a..b.
+  await evaluate("window.__wgoStore.setQuery('kind:pr', { commit: true })"); await sleep(100);
+  await dragFromTo(dayBar("when", 20), dayBar("when", 27));
+  check((await Q()) === "kind:pr;when:2026-10-23..2026-10-30", "a when brush: " + (await Q()));
+  await clickAt(dayBar("when", 17));
+  check((await Q()) === "kind:pr;when:2026-10-20", "a day click: " + (await Q()));
+  // The When chart's own Clear; local activity is hatched where it was not
+  // recorded, and each recorded day names its jj changes.
+  await clickAt("document.querySelector('.mult.fx-chart .fx-clear')");
+  check((await Q()) === "kind:pr", "the When chart's Clear: " + (await Q()));
+  check((await evaluate("document.querySelector('.mult.fx-chart .fx-hatch-text').textContent")) === "local activity not recorded before 10-17", "the unrecorded days say so");
+  check((await evaluate("!!document.querySelector('.mult.fx-chart rect.fx-hatch')")) && /local activity not recorded/.test(await evaluate(dayBar("when", 0) + ".getAttribute('aria-label')")), "and are hatched, not zero");
+  check(/; \d+ local changes?/.test(await evaluate(dayBar("when", 26) + ".getAttribute('aria-label')")), "a recorded day names its changes: " + (await evaluate(dayBar("when", 26) + ".getAttribute('aria-label')")));
+  // From shipped, a merge day click keeps the chart on merges; a second
+  // click replaces it.
+  await evaluate("window.__wgoStore.setQuery('kind:pr;prstate:merged;merged:-7d..', { commit: true })"); await sleep(100);
+  await clickAt(dayBar("merged", 25));
+  check((await Q()) === "kind:pr;prstate:merged;merged:2026-10-28", "a merge day click: " + (await Q()));
+  check((await evaluate("document.querySelector('.mult.fx-chart h2').firstChild.textContent")) === "Merged per day" && (await evaluate("document.activeElement.getAttribute('data-fk')")) === "merged\u0001d25", "the chart and the focus stay on merges");
+  check((await evaluate("document.querySelector('.att-period').textContent")) === "1 merged · previous 0", "the previous period stays: " + (await evaluate("document.querySelector('.att-period') && document.querySelector('.att-period').textContent")));
+  await clickAt(dayBar("merged", 26));
+  check((await Q()) === "kind:pr;prstate:merged;merged:2026-10-29" && (await evaluate("window.__wgoStore.qres.rows.join()")) === "pr:acme/infra#303", "a second day click replaces the first: " + (await Q()));
+
+  // 7. The attention summary: each count is its saved filter's row count,
+  // and its link applies the filter; only "your move" takes the accent.
+  for (const name of ["my-move", "waiting-reviewers", "nobody"]) {
+    const n = await evaluate("document.querySelector('[data-fk=\"\\u0001att" + name + "\"] .att-n').textContent");
+    await clickAt("document.querySelector('[data-fk=\"\\u0001att" + name + "\"]')");
+    const got = await evaluate("({ q: window.__wgoStore.query, rows: window.__wgoStore.qres.rows.length, chip: Array.from(document.querySelectorAll('.fchips button[aria-pressed=true]')).map(b => b.textContent).join() })");
+    check(got.chip === name && String(got.rows) === n, name + ": shows " + n + ", applies " + JSON.stringify(got));
+  }
+  const accent = await evaluate("Array.from(document.querySelectorAll('.att-link')).map(a => a.classList.contains('mine'))");
+  check(accent.join() === "true,false,false", "the accent is for your move only");
+
+  // 8. Copy as config, More filters, the selection's share, Clear all.
+  await send("Runtime.evaluate", { expression: "Array.from(document.querySelectorAll('.fchips button')).find(b => b.textContent === 'Copy as config').click()", userGesture: true });
+  await sleep(200);
+  check((await evaluate("navigator.clipboard.readText()", { userGesture: true })) === "my-filter = \"kind:pr;move:nobody\"", "Copy as config");
+  await evaluate("(() => { const s = document.querySelector('.lv-left select.fx-more'); s.value = 'size_bucket'; s.dispatchEvent(new Event('change', { bubbles: true })); })()");
+  await sleep(150);
+  check((await evaluate("!!document.querySelector('.lv-left section[data-facet=size_bucket]')")) && (await evaluate("location.hash")).includes("facets=size_bucket"), "More filters adds a facet, in the URL");
+  await evaluate("history.back()"); await sleep(250);
+  check(!(await evaluate("!!document.querySelector('.lv-left section[data-facet=size_bucket]')")), "Back removes it");
+  await evaluate("window.__wgoStore.select(['pr:acme/api#101'], false)"); await sleep(100);
+  check((await evaluate("document.querySelectorAll('.lv-left .fx-part').length")) > 3 && (await evaluate("document.querySelectorAll('.mult.fx-chart rect.part').length")) >= 2, "the selection shows as inner bars in every facet");
+  await clickAt("document.querySelector('.lv-left .fx-clearall')");
+  check((await Q()) === "", "Clear all");
+  const problems = events.filter((e) => (e.method === "Log.entryAdded" && e.params.entry.level === "error" && !/\/favicon\.ico$/.test(e.params.entry.url || "")) || e.method === "Runtime.exceptionThrown");
+  check(problems.length === 0, "console errors: " + JSON.stringify(problems.slice(0, 2)));
+  await send("Emulation.setDeviceMetricsOverride", { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false });
+}
+
+// timeFacets times facet changes on the analysis fixture scaled to 2,000
+// nodes (median of 7, synchronous and to the next frame): a committed
+// facet click and a live drag step, re-rendering the facets, the overview
+// and the active view (graph, then table).
+async function timeFacets(tableURL) {
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: tableURL + "#view=graph" });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('.lv-left section.fx')", "the scaled analysis fixture");
+  await sleep(1500);
+  const out = [];
+  for (const view of ["graph", "table"]) {
+    const r = await evaluate(`(async () => {
+      const s = window.__wgoStore, frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+      const med = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+      s.setState({ view: ${JSON.stringify(view)} }, { commit: true }); await frame(); await frame();
+      const t = { click: [], clickF: [], drag: [], dragF: [] };
+      for (let i = 0; i < 7; i++) {
+        for (const [k, q, opts] of [["click", "kind:pr;repo:acme/api;!ci:failing", { commit: true }], ["drag", "kind:pr;repo:acme/api;!ci:failing;size:30..299", {}], ["drag", "kind:pr;repo:acme/api;!ci:failing;size:30..999", {}], ["click", "kind:pr", { commit: true }]]) {
+          const t0 = performance.now(); s.setQuery(q, opts); const t1 = performance.now(); await frame();
+          t[k].push(t1 - t0); t[k + "F"].push(performance.now() - t0);
+        }
+      }
+      return { n: s.idx.byId.size, facets: document.querySelectorAll('.lv-left section.fx').length, click: med(t.click), clickF: med(t.clickF), drag: med(t.drag), dragF: med(t.dragF) };
+    })()`);
+    out.push(view + ": facet click " + r.click.toFixed(1) + " ms (" + r.clickF.toFixed(1) + " to frame), drag step " + r.drag.toFixed(1) + " ms (" + r.dragF.toFixed(1) + " to frame)");
+    if (view === "graph") out.unshift("facets on the scaled analysis fixture (" + r.n + " nodes, " + r.facets + " facets)");
+  }
+  return out.join("; ");
+}
+}
+// ---------- end gh-102 ----------

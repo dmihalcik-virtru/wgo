@@ -89,6 +89,10 @@ type DashConfig struct {
 	// Facts are the thresholds of the derived attention facts (gh-99), from
 	// [dash.facts].
 	Facts DashFactsConfig `mapstructure:"facts"`
+	// Facets are the query fields the live page's facet panel lists, in
+	// order (gh-102); empty means the built-in order. A name that is not a
+	// field is reported and left out (dash.ResolveFacets), never fatal.
+	Facets []string `mapstructure:"facets"`
 }
 
 // DashPerson is one [[dash.people]] entry.

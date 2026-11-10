@@ -95,8 +95,7 @@ table.live tbody tr:focus { outline: 2px solid var(--accent); outline-offset: -2
 .qbar input.query { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid var(--axis); border-radius: 6px; background: var(--plane); color: var(--ink); font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .qbar input.query[aria-invalid=true] { border-color: var(--s-critical); border-style: dotted; }
 .qbar .qclear { padding: 2px 7px; }
-.qbar .qclear[hidden], .presets[hidden] { display: none; }
-.presets { font: inherit; padding: 3px 6px; border: 1px solid var(--axis); border-radius: 6px; background: var(--plane); color: var(--ink); }
+.qbar .qclear[hidden] { display: none; }
 .qmsg { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--ink2); }
 .qmsg[hidden], .copyout[hidden] { display: none; }
 .qmsg > div { display: flex; flex-wrap: wrap; gap: 2px 12px; }
@@ -111,4 +110,18 @@ table.live tbody tr.ctx td { color: var(--ink2); font-style: italic; }
 .copyout .meta { color: var(--ink2); }
 .copyout textarea { width: 100%; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--plane); color: var(--ink); border: 1px solid var(--axis); border-radius: 6px; padding: 4px 6px; resize: vertical; }
 .copyout button { align-self: flex-start; }
-@media (max-width: 1000px) { .lv-main { flex-direction: column; } .efforts { width: auto; max-height: 35%; border-right: 0; border-bottom: 1px solid var(--border); } }
+/* gh-102: saved filter chips, and the column left of the views that
+ * slot: "left" panels (the facet panel) draw in. The chip matching the
+ * query is pressed: outlined in ink and marked ✓, not told by colour. */
+.fchips { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 12px; }
+.fchips[hidden] { display: none; }
+.fchips .fchips-h { color: var(--ink2); }
+.fchips button { font-size: 12px; padding: 1px 8px; border-radius: 10px; }
+.fchips button.fchip { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.fchips button[aria-pressed=true] { border: 2px solid var(--ink); padding: 0 7px; font-weight: 600; }
+.fchips button[aria-pressed=true]::before { content: "✓ "; }
+.fchips button.fchip-copy { margin-left: 6px; }
+.fchips button[disabled] { opacity: .5; cursor: not-allowed; }
+.lv-left { width: 264px; flex: none; overflow: auto; background: var(--surface); border-right: 1px solid var(--border); }
+.lv-main.has-left .efforts { width: 300px; }
+@media (max-width: 1000px) { .lv-main { flex-direction: column; } .efforts, .lv-main.has-left .efforts { width: auto; max-height: 35%; border-right: 0; border-bottom: 1px solid var(--border); } .lv-left { width: auto; max-height: 40%; border-right: 0; border-bottom: 1px solid var(--border); } }
