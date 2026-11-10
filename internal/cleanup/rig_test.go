@@ -17,6 +17,7 @@ import (
 type stubJJ struct {
 	jj.Client
 	workspaces []jj.Workspace
+	local      []jj.Bookmark
 }
 
 func (s *stubJJ) RemoteURLs(string) (map[string]string, error) { return nil, nil }
@@ -27,7 +28,7 @@ func (s *stubJJ) ListWorkspaces(string) ([]jj.Workspace, error) { return s.works
 func (s *stubJJ) CountRevset(string, string) (int, error) { return 0, nil }
 
 func (s *stubJJ) BookmarkList(string, jj.BookmarkListOpts) ([]jj.Bookmark, error) {
-	return nil, nil
+	return s.local, nil
 }
 
 // removeAll classifies every workspace as removable, so a test sees exactly
@@ -67,7 +68,7 @@ func TestFindRepoCandidateSkipsRigWorkspaces(t *testing.T) {
 		},
 	}
 
-	got, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll, rigDir: rigDir})
+	got, _, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll, rigDir: rigDir})
 	require.NoError(t, err)
 
 	require.Len(t, got, 1, "only the ordinary worktree is a candidate")
@@ -89,7 +90,7 @@ func TestFindRepoCandidateWithoutRigExclusion(t *testing.T) {
 		},
 	}
 
-	got, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll})
+	got, _, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, rigWS, got[0].Path)

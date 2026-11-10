@@ -46,12 +46,15 @@ func (k CandidateKind) String() string {
 // Candidate represents a cleanup candidate.
 type Candidate struct {
 	Kind          CandidateKind
-	Path          string         // filesystem path (worktree or repo); "" for a workspace whose directory is gone
-	RepoPath      string         // main repo root
-	WorkspaceName string         // jj workspace name, for worktrees and orphaned workspaces
-	Branch        string         // branch name
-	Reason        string         // human-readable reason, e.g. "merged PR #42"
-	PRInfo        *github.PRInfo // non-nil if a PR was found
+	Path          string // filesystem path (worktree or repo); "" for a workspace whose directory is gone
+	RepoPath      string // main repo root
+	WorkspaceName string // jj workspace name, for worktrees and orphaned workspaces
+	Branch        string // branch name
+	// OrphanCommitID is set for a bookmark that became eligible because its
+	// workspace was orphaned. Removal rechecks this evidence before deletion.
+	OrphanCommitID string
+	Reason         string         // human-readable reason, e.g. "merged PR #42"
+	PRInfo         *github.PRInfo // non-nil if a PR was found
 	// Class is why a workspace (KindWorktree) is offered: its Tier says
 	// whether --yes may remove it or the user must decide.
 	Class *Classification
@@ -64,6 +67,9 @@ type Scan struct {
 	Candidates []Candidate
 	// Kept are workspaces classified TierKeep, reported but never offered.
 	Kept []Candidate
+	// Warnings name workspaces whose state could not be checked, so they
+	// are neither offered for removal nor silently omitted.
+	Warnings []string
 }
 
 // classifyWorkers bounds how many workspaces are classified at once, across
@@ -143,7 +149,10 @@ func FindCandidates(cfg *config.Config, jjc jj.Client, ghClient github.Client, k
 	// on jj and GitHub — while their workspaces share one pool of classifier
 	// workers. Results keep the discovery order.
 	pass.workers = make(chan struct{}, classifyWorkers())
-	type repoResult struct{ found, kept []Candidate }
+	type repoResult struct {
+		found, kept []Candidate
+		warnings    []string
+	}
 	results := make([]repoResult, len(mains))
 	repoSlots := make(chan struct{}, repoWorkers)
 	var wg sync.WaitGroup
@@ -153,9 +162,9 @@ func FindCandidates(cfg *config.Config, jjc jj.Client, ghClient github.Client, k
 		go func() {
 			defer wg.Done()
 			defer func() { <-repoSlots }()
-			found, kept, err := findRepoCandidate(path, jjc, ghClient, pass)
+			found, kept, warnings, err := findRepoCandidate(path, jjc, ghClient, pass)
 			if err == nil {
-				results[i] = repoResult{found, kept}
+				results[i] = repoResult{found, kept, warnings}
 			}
 		}()
 	}
@@ -163,6 +172,7 @@ func FindCandidates(cfg *config.Config, jjc jj.Client, ghClient github.Client, k
 	for _, r := range results {
 		scan.Candidates = append(scan.Candidates, r.found...)
 		scan.Kept = append(scan.Kept, r.kept...)
+		scan.Warnings = append(scan.Warnings, r.warnings...)
 	}
 
 	return scan, nil
@@ -221,50 +231,68 @@ type repoPass struct {
 }
 
 // findRepoCandidate inspects one main repo.
-func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, pass repoPass) (candidates, kept []Candidate, err error) {
+func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, pass repoPass) (candidates, kept []Candidate, warnings []string, err error) {
 	defaultBranch := repoDefaultBranch(jjc, repoPath)
 
 	// --- Workspaces (the jj equivalent of git worktrees) ---
 	// The workspace list is read even for a bookmark-only pass: a bookmark on
 	// a workspace's @ is left to the workspace.
 	workspaces, err := jjc.ListWorkspaces(repoPath)
-	// onWorkspace holds the commit each non-default workspace's @ sits on, so
-	// a bookmark there is left to the workspace rather than offered alone.
+	// onWorkspace holds the commit of each live (or uncheckable) workspace's
+	// @, so a bookmark there is left to the workspace rather than offered
+	// alone. An orphan cannot cover a bookmark.
 	onWorkspace := map[string]bool{}
+	orphanCommits := map[string]bool{}
 	if err == nil {
 		var live []jj.Workspace
 		for _, ws := range workspaces {
 			if ws.Name == "default" {
 				continue
 			}
-			if ws.CommitID != "" {
-				onWorkspace[ws.CommitID] = true
-			}
-			if !pass.workspaces {
-				continue
-			}
 			// A rig workspace is pinned to a released tag and deliberately
 			// carries no bookmark, which is exactly the shape the checks below
 			// read as an abandoned worktree. Rigs are owned by `wgo rig rm`.
-			if rig.IsWorkspace(pass.rigDir, ws.Path, ws.Name) {
-				continue
-			}
+			isRig := rig.IsWorkspace(pass.rigDir, ws.Path, ws.Name)
 			// An orphaned workspace has no working copy to read, so it must be
 			// caught before it is classified: reading "" would read whichever
 			// repo wgo was run from. One that cannot be checked at all is left
 			// alone rather than guessed at.
 			reason, orphaned, err := jj.OrphanReason(ws)
 			if err != nil {
+				// It may still be live. Keep its bookmark out of the cleanup
+				// candidates, but tell the user why the workspace is missing.
+				if ws.CommitID != "" {
+					onWorkspace[ws.CommitID] = true
+				}
+				if !isRig {
+					warnings = append(warnings, fmt.Sprintf("repo %s: skipped workspace %q at %s: could not check whether it exists: %v", repoPath, ws.Name, ws.Path, err))
+				}
 				continue
 			}
 			if orphaned {
-				candidates = append(candidates, Candidate{
-					Kind:          KindOrphanWorkspace,
-					Path:          ws.Path,
-					RepoPath:      repoPath,
-					WorkspaceName: ws.Name,
-					Reason:        reason,
-				})
+				if ws.CommitID != "" && !isRig {
+					orphanCommits[ws.CommitID] = true
+				}
+				if isRig && ws.CommitID != "" {
+					// Rig workspaces are owned by wgo rig rm, including
+					// their bookmarks when their directory is gone.
+					onWorkspace[ws.CommitID] = true
+				}
+				if pass.workspaces && !isRig {
+					candidates = append(candidates, Candidate{
+						Kind:          KindOrphanWorkspace,
+						Path:          ws.Path,
+						RepoPath:      repoPath,
+						WorkspaceName: ws.Name,
+						Reason:        reason,
+					})
+				}
+				continue
+			}
+			if ws.CommitID != "" {
+				onWorkspace[ws.CommitID] = true
+			}
+			if !pass.workspaces || isRig {
 				continue
 			}
 			live = append(live, ws)
@@ -296,13 +324,13 @@ func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, p
 	}
 
 	if !pass.bookmarks {
-		return candidates, kept, nil
+		return candidates, kept, warnings, nil
 	}
 
 	// --- Local bookmarks ---
 	localBookmarks, err := jjc.BookmarkList(repoPath, jj.BookmarkListOpts{Local: true})
 	if err != nil {
-		return candidates, kept, nil
+		return candidates, kept, warnings, nil
 	}
 
 	for _, bm := range localBookmarks {
@@ -319,6 +347,9 @@ func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, p
 			Kind:     KindLocalBranch,
 			RepoPath: repoPath,
 			Branch:   branch,
+		}
+		if orphanCommits[bm.CommitID] {
+			c.OrphanCommitID = bm.CommitID
 		}
 
 		// Check PR status
@@ -389,7 +420,7 @@ func findRepoCandidate(repoPath string, jjc jj.Client, ghClient github.Client, p
 		}
 	}
 
-	return candidates, kept, nil
+	return candidates, kept, warnings, nil
 }
 
 // classifyAll classifies refs concurrently, at most cap(workers) at a time,

@@ -115,6 +115,7 @@ func runOpenLogged(ctx context.Context, raw string, st *store.FileStore, lg *url
 	collector := dash.NewCollector(dash.Config{
 		JJ:       jj.NewCLI(),
 		Discover: discovery.FromConfig(cfg).DiscoverAll,
+		RigDir:   cfg.Rig.Dir,
 	})
 	// The applet's stdin is /dev/null, never a terminal; a terminal means a
 	// person ran wgo open, which skips the decline cooldown.
