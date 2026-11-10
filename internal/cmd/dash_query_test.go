@@ -144,7 +144,7 @@ func TestDashMDMatchesExtractRoute(t *testing.T) {
 
 func TestDashJSONQueryAddsMatchesAndLimitsTheSnapshot(t *testing.T) {
 	saveQueryFlags(t)
-	goldenHome(t, "")
+	goldenHome(t, "[dash.filters]\nbroken = \"prstat:x\"\n")
 	dashFixture, dashJSON = vectorFixturePath(t), true
 
 	plain, err := runDashOut(t, noDashFlags)
@@ -182,8 +182,8 @@ func TestDashJSONQueryAddsMatchesAndLimitsTheSnapshot(t *testing.T) {
 	if n := len(got.Snapshot.Nodes); n == 0 || n >= 26 {
 		t.Errorf("snapshot has %d nodes; it should keep only the visible set", n)
 	}
-	if len(got.Query.Filters) == 0 || !got.Query.Filters[0].Hidden || got.Query.Filters[0].Reason == "" {
-		t.Errorf("--json reports why built-in filters are hidden: %+v", got.Query.Filters)
+	if f := got.Query.Filters; len(f) == 0 || f[0].Name != "my-move" || f[0].Hidden || !f[len(f)-1].Hidden || !strings.Contains(f[len(f)-1].Reason, "does not parse") {
+		t.Errorf("--json lists the filters and says why one is hidden: %+v", got.Query.Filters)
 	}
 }
 
@@ -226,8 +226,7 @@ func TestDashQueryFlagCombinations(t *testing.T) {
 		{"json and md", func() { dashJSON, dashMD = true, true }, nil, "--json and --md are alternatives"},
 		{"sprint view", func() { dashMD, dashView = true, "sprint" }, []string{"view"}, "the sprint view is not available yet: it arrives with gh-105"},
 		{"sprint id", func() { dashMD, dashSprint = true, "42" }, []string{"sprint"}, "not available yet"},
-		{"unknown preset", func() { dashMD, dashPreset = true, "nope" }, nil, `no saved filter named "nope" (available: review-inbox, shipped, close-candidates, sprint, web)`},
-		{"hidden built-in", func() { dashMD, dashPreset = true, "my-move" }, nil, "saved filter my-move cannot run: needs fields not registered yet: move_people (arrives with gh-99)"},
+		{"unknown preset", func() { dashMD, dashPreset = true, "nope" }, nil, `no saved filter named "nope" (available: my-move, waiting-reviewers, push-reviewers, nobody, review-inbox, shipped, close-candidates, jira-out-of-sync, sprint, web)`},
 		{"broken config filter", func() { dashMD, dashPreset = true, "broken" }, nil, "[dash.filters] broken in ~/.wgo/config.toml does not parse"},
 		{"bad fixture", func() { dashJSON, dashFixture = true, filepath.Join(t.TempDir(), "none.json") }, nil, "wgo dash --fixture:"},
 	} {

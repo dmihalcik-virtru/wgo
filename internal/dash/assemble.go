@@ -356,6 +356,9 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	if !invMergedKnown {
 		s.Counts.Merged = nil
 	}
+	// The derived attention facts (gh-99) read the whole snapshot, so they
+	// come last.
+	ComputeFacts(s, s.People, c.cfg.Facts, s.GeneratedAt).apply(s)
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].key() < jobs[j].key() })
 	return s, jobs
 }
