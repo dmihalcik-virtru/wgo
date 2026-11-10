@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -65,8 +66,18 @@ func TestExecuteRemoval_OrphanThatCameBack(t *testing.T) {
 
 	err := executeRemoval(orphanCandidate(repo, "back", ws), c, nil, nil)
 	require.Error(t, err)
+	var skip *skipRemoval
+	assert.True(t, errors.As(err, &skip))
 	assert.Contains(t, err.Error(), "is back")
 	assert.Contains(t, workspaceNames(t, c, repo), "back")
+}
+
+func TestExecuteRemoval_OrphanAlreadyForgotten(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	err := executeRemoval(orphanCandidate(repo, "gone", ""), c, nil, nil)
+	var skip *skipRemoval
+	require.ErrorAs(t, err, &skip)
+	assert.Contains(t, skip.why, "already forgotten")
 }
 
 // Forgetting a workspace must not lose edits in its working-copy commit: jj
