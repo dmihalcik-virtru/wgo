@@ -79,7 +79,7 @@ func TestRefreshWritesAndReadAges(t *testing.T) {
 	r := Read(alice, time.Hour, since, now)
 	assert.Equal(t, Fresh, r.State)
 	require.Len(t, r.PRs, 1)
-	assert.Equal(t, []string{"TEAM-1", "gh-2"}, r.PRs[0].Refs)
+	assert.Equal(t, []string{"TEAM-1", "#2"}, r.PRs[0].Refs)
 	assert.Empty(t, r.PRs[0].Body, "bodies are not cached")
 	assert.Equal(t, Stale, Read(alice, time.Hour, since, now.Add(2*time.Hour)).State)
 	assert.Equal(t, Fresh, Read(Key{Login: "alice", Set: OpenAuthored}, time.Hour, since, now).State, "logins are case-insensitive")
@@ -201,7 +201,7 @@ func TestOddEntriesAreTolerated(t *testing.T) {
 	now := time.Now()
 	at := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
 
-	writeRaw(t, alice, `{"schema":1,"fetched_at":"`+at+`","last_attempt_at":"`+at+`","failures":-1}`)
+	writeRaw(t, alice, `{"schema":2,"fetched_at":"`+at+`","last_attempt_at":"`+at+`","failures":-1}`)
 	r := Read(alice, time.Hour, since, now)
 	assert.NotPanics(t, func() { r.NotBefore() }, "a negative failure count must not shift negatively")
 	assert.True(t, r.NotBefore().IsZero())
@@ -209,7 +209,7 @@ func TestOddEntriesAreTolerated(t *testing.T) {
 	assert.Empty(t, r.PRs)
 
 	closed := Key{Login: "alice", Set: ClosedRecent}
-	writeRaw(t, closed, `{"schema":1,"prs":[],"fetched_at":"`+at+`"}`)
+	writeRaw(t, closed, `{"schema":2,"prs":[],"fetched_at":"`+at+`"}`)
 	assert.Equal(t, Stale, Read(closed, time.Hour, since, now).State, "closed-recent with no recorded window covers none")
 }
 
@@ -401,17 +401,88 @@ func TestRefs(t *testing.T) {
 		{name: "jira keys in title then body", title: "TEAM-12: fix", body: "Also OPS-3 and TEAM-12 again", want: []string{"TEAM-12", "OPS-3"}},
 		{name: "false positives kept for the reader", title: "Use SHA-256 and P-384", want: []string{"SHA-256", "P-384"}},
 		{name: "lowercase is not a key", title: "fix team-12 and utf-8", want: nil},
-		{name: "hash refs", body: "Fixes #12, see (#13) and #12", want: []string{"gh-12", "gh-13"}},
-		{name: "self is dropped", body: "Follow-up to #7, reverts #8", want: []string{"gh-8"}},
+		{name: "hash refs are bare", body: "Fixes #12, see (#13) and #12", want: []string{"#12", "#13"}},
+		{name: "self is dropped", body: "Follow-up to #7, reverts #8 and gh-7", want: []string{"#8"}},
+		{name: "written out wins, in place", title: "#14 and TEAM-1", body: "acme/api#14, gh-15 then #15", want: []string{"gh-14", "TEAM-1", "gh-15"}},
 		{name: "gh refs any case", body: "GH-4 and gh-5 and Gh-6", want: []string{"gh-4", "gh-5", "gh-6"}},
 		{name: "same repo full refs", body: "acme/api#20 and ACME/API#21 but not acme/web#22", want: []string{"gh-20", "gh-21"}},
 		{name: "issue urls", body: "https://github.com/acme/api/issues/30 https://github.com/acme/web/issues/31", want: []string{"gh-30"}},
 		{name: "not refs", body: "a#1 &#123; docs/x.md#5 ##6 #12abc color #fff", want: nil},
 		{name: "leading zeros", body: "#012 and gh-12", want: []string{"gh-12"}},
+		{name: "leading zeros, bare", body: "#012 and #12", want: []string{"#12"}},
 		{name: "link text of other repositories' issues", body: `<a href="https://redirect.github.com/dep/lib/issues/456">#456</a> and [#457](https://redirect.github.com/dep/lib/issues/457)`, want: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, Refs("acme/api", 7, tc.title, tc.body))
 		})
 	}
+}
+
+// TestRefreshRecordsAnInterruption: a fetch cancelled with ErrInterrupted
+// is recorded, when and on which page, keeping the earlier PRs and the
+// failure count; one cancelled otherwise (wgo exiting) is not. The next
+// success clears it.
+func TestRefreshRecordsAnInterruption(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	good := &fakeFetcher{res: result(github.PRFacts{Repo: "acme/api", Number: 1, State: "open"})}
+	_, err := Refresh(context.Background(), good, alice, since)
+	require.NoError(t, err)
+	before := Read(alice, time.Hour, since, time.Now())
+
+	cut := &fakeFetcher{err: &github.PRSearchError{Page: 7, Err: context.Canceled}}
+	exiting, stop := context.WithCancel(context.Background())
+	stop()
+	_, err = Refresh(exiting, cut, alice, since)
+	require.Error(t, err)
+	assert.Equal(t, before.LastAttemptAt, Read(alice, time.Hour, since, time.Now()).LastAttemptAt, "a plain cancellation is not recorded")
+
+	deadline, interrupt := context.WithCancelCause(context.Background())
+	interrupt(ErrInterrupted)
+	res, err := Refresh(deadline, cut, alice, since)
+	require.Error(t, err)
+	assert.True(t, res.Interrupted)
+	r := Read(alice, time.Hour, since, time.Now())
+	assert.True(t, r.Interrupted)
+	assert.Len(t, r.PRs, 1, "the earlier PRs are kept")
+	assert.Equal(t, 0, r.Failures, "an interruption is no failure: no back-off")
+	assert.Equal(t, before.LastAttemptAt, r.LastAttemptAt, "nor an attempt")
+	assert.True(t, r.InterruptedAt.After(before.LastAttemptAt))
+	require.Error(t, r.Err)
+	assert.Equal(t, "cancelled at the refresh deadline on page 7 (fetched again on the next refresh)", r.Err.Error())
+
+	_, err = Refresh(context.Background(), good, alice, since)
+	require.NoError(t, err)
+	r = Read(alice, time.Hour, since, time.Now())
+	assert.False(t, r.Interrupted)
+	assert.NoError(t, r.Err)
+}
+
+// TestInterruptionLeavesTheBackOffAlone: a set backing off after failures
+// keeps its back-off when a waited refresh interrupts a fetch of it, so
+// refreshes every few minutes cannot keep pushing back the served
+// dashboard's next try.
+func TestInterruptionLeavesTheBackOffAlone(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	failing := &fakeFetcher{err: &github.PRSearchError{Page: 3, Err: errors.New("HTTP 502")}}
+	for range 2 {
+		_, _ = Refresh(context.Background(), failing, alice, since)
+	}
+	before := Read(alice, time.Hour, since, time.Now())
+	require.Equal(t, 2, before.Failures)
+
+	deadline, interrupt := context.WithCancelCause(context.Background())
+	interrupt(ErrInterrupted)
+	_, _ = Refresh(deadline, &fakeFetcher{err: &github.PRSearchError{Page: 1, Err: context.Canceled}}, alice, since)
+	after := Read(alice, time.Hour, since, time.Now())
+	assert.True(t, after.Interrupted)
+	assert.Equal(t, before.Failures, after.Failures)
+	assert.Equal(t, before.LastAttemptAt, after.LastAttemptAt)
+	assert.Equal(t, before.NotBefore(), after.NotBefore(), "the back-off is unchanged")
+
+	// The next failure is an attempt again, and clears the interruption.
+	_, _ = Refresh(context.Background(), failing, alice, since)
+	again := Read(alice, time.Hour, since, time.Now())
+	assert.False(t, again.Interrupted)
+	assert.True(t, again.InterruptedAt.IsZero())
+	assert.Equal(t, 3, again.Failures)
 }

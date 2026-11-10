@@ -106,14 +106,16 @@ type PR struct {
 	github.PRFacts
 	// Refs are ticket references in the title, then the body, in order and
 	// deduplicated: Jira-shaped keys as written ("TEAM-123", but also
-	// "SHA-256"), and same-repository issues as "gh-<n>". Which Jira-shaped
-	// keys count is the reader's choice (gh-97 requirement 5).
+	// "SHA-256"), same-repository issues written out as "gh-<n>", and bare
+	// "#<n>" numbers as such (see Refs). Which of them count is the
+	// reader's choice (gh-97 requirement 5).
 	Refs []string `json:"refs,omitempty"`
 }
 
 // SchemaVersion is the entry layout Write produces. An entry of another
-// version reads as a Miss, so the next refresh rewrites it.
-const SchemaVersion = 1
+// version reads as a Miss, so the next refresh rewrites it. Version 2 marks
+// bare #<n> references in Refs and adds the PRs' closing issues.
+const SchemaVersion = 2
 
 type entry struct {
 	Schema int    `json:"schema"`
@@ -145,7 +147,20 @@ type entry struct {
 	Dropped          []PR      `json:"dropped,omitempty"`
 	DroppedAt        time.Time `json:"dropped_at,omitzero"`
 	DroppedFetchedAt time.Time `json:"dropped_fetched_at,omitzero"`
+	// Interrupted marks LastError as a fetch cancelled at a refresh's
+	// deadline (ErrInterrupted), at InterruptedAt. It is no failure and no
+	// attempt: Failures and LastAttemptAt, which drive the background
+	// back-off, stay as they were, so frequent waited refreshes cannot push
+	// back the served dashboard's next try. Any later fetch clears it.
+	Interrupted   bool      `json:"interrupted,omitempty"`
+	InterruptedAt time.Time `json:"interrupted_at,omitzero"`
 }
+
+// ErrInterrupted is the context cause with which a refresh that ran out of
+// time cancels a fetch. Refresh records such a fetch as interrupted, so the
+// dash can say why the set is unknown or stale; other cancellations (wgo
+// exiting) are not recorded.
+var ErrInterrupted = errors.New("cancelled at the refresh deadline")
 
 // Result is what a lookup served plus its provenance.
 type Result struct {
@@ -178,6 +193,10 @@ type Result struct {
 	Dropped          []PR
 	DroppedAt        time.Time
 	DroppedFetchedAt time.Time
+	// Interrupted is set when Err is the note of a fetch cancelled at a
+	// refresh's deadline, at InterruptedAt, not a failure.
+	Interrupted   bool
+	InterruptedAt time.Time
 }
 
 // Failure back-off: after n consecutive failures a set waits
@@ -227,6 +246,8 @@ func Read(k Key, ttl time.Duration, since, now time.Time) Result {
 		Dropped:          e.Dropped,
 		DroppedAt:        e.DroppedAt,
 		DroppedFetchedAt: e.DroppedFetchedAt,
+		Interrupted:      e.Interrupted,
+		InterruptedAt:    e.InterruptedAt,
 	}
 	if e.LastError != "" {
 		r.Err = errors.New(e.LastError)
@@ -300,12 +321,29 @@ func writeFailure(k Key, at time.Time, cause error) error {
 	}
 	e.LastAttemptAt = at
 	e.LastError = cause.Error()
+	e.Interrupted, e.InterruptedAt = false, time.Time{}
 	e.Failures++
 	e.RetryAt = time.Time{}
 	var rl *github.RateLimitError
 	if errors.As(cause, &rl) && rl.ResetAt.After(at) {
 		e.RetryAt = rl.ResetAt
 	}
+	return writeEntry(k, e)
+}
+
+// writeInterrupted records a fetch cancelled at a refresh's deadline, at
+// at, with note. It keeps any earlier good data, the failure count and the
+// last attempt's time, so neither the data nor the background back-off
+// (Result.NotBefore) changes.
+func writeInterrupted(k Key, at time.Time, note string) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	e, ok := readEntry(k)
+	if !ok {
+		e = entry{}
+	}
+	e.LastError = note
+	e.Interrupted, e.InterruptedAt = true, at
 	return writeEntry(k, e)
 }
 
@@ -329,7 +367,10 @@ type Fetcher interface {
 // succeeded with partial-data errors is not a failure: the errors are
 // recorded on the entry and returned in Result.Err only. A missing token,
 // or a fetch stopped because ctx was cancelled, is returned but not
-// recorded: neither says anything about the set.
+// recorded: neither says anything about the set. A fetch cancelled with the
+// cause ErrInterrupted is recorded as interrupted, with when and on which
+// page, so the dash can say why the set is still unknown or stale; it
+// changes neither the last attempt's time nor the failure count.
 func Refresh(ctx context.Context, f Fetcher, k Key, since time.Time) (Result, error) {
 	if f == nil {
 		return Read(k, 0, since, time.Now()), errors.New("inventory: no fetcher")
@@ -348,6 +389,19 @@ func Refresh(ctx context.Context, f Fetcher, k Key, since time.Time) (Result, er
 		}
 		prior := Read(k, 0, since, now)
 		prior.Err = err
+		if ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrInterrupted) {
+			note := ErrInterrupted.Error()
+			var se *github.PRSearchError
+			if errors.As(err, &se) {
+				note += fmt.Sprintf(" on page %d", se.Page)
+			}
+			note += " (fetched again on the next refresh)"
+			if werr := writeInterrupted(k, now, note); werr != nil {
+				logf("inventory cache: record interruption for %s: %v", k, werr)
+			}
+			prior.Err, prior.Interrupted, prior.InterruptedAt = errors.New(note), true, now
+			return prior, err
+		}
 		if errors.Is(err, github.ErrNoAuth) || ctx.Err() != nil {
 			return prior, err
 		}

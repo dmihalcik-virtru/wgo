@@ -399,11 +399,15 @@ func TestAssembleFreshnessGitHubIssues(t *testing.T) {
 	a.ws(asmMain, "gh-1-fresh")
 	a.ws("/w/acme/widgets-two", "gh-2-err")
 	a.ws("/w/acme/widgets-three", "gh-3-miss")
+	a.ws("/w/acme/widgets-four", "gh-4-gone")
 	k := func(n int) issuecache.Key { return issuecache.Key{Owner: "acme", Repo: "widgets", Number: n} }
 	if err := issuecache.Write(k(1), issuecache.Info{Number: 1, Title: "T", State: "open", URL: "https://github.com/acme/widgets/issues/1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := issuecache.WriteFailure(k(2), errors.New("gh: HTTP 404")); err != nil {
+	if err := issuecache.WriteFailure(k(2), errors.New("gh: HTTP 502")); err != nil {
+		t.Fatal(err)
+	}
+	if err := issuecache.WriteNotFound(k(4)); err != nil {
 		t.Fatal(err)
 	}
 	tk := func(s *Snapshot, n int) *TicketInfo { return s.Node(githubTicketID(asmSlug, n)).Ticket }
@@ -412,14 +416,19 @@ func TestAssembleFreshnessGitHubIssues(t *testing.T) {
 	if t1 := tk(s, 1); t1.Freshness != Fresh || t1.Status != "open" || t1.Title != "T" || t1.FetchedAt.IsZero() {
 		t.Fatalf("fresh issue: %+v", t1)
 	}
-	if t2 := tk(s, 2); t2.Freshness != Error || !strings.Contains(t2.Error, "404") || t2.Status != "" {
+	if t2 := tk(s, 2); t2.Freshness != Error || !strings.Contains(t2.Error, "502") || t2.Status != "" {
 		t.Fatalf("failed issue: %+v", t2)
 	}
 	if t3 := tk(s, 3); t3.Freshness != Unknown || t3.Status != "" || t3.URL != "https://github.com/acme/widgets/issues/3" {
 		t.Fatalf("missing issue: %+v", t3)
 	}
+	// GitHub's 404 is an answer, not a failure: fresh, shown as not found,
+	// and not looked up again.
+	if t4 := tk(s, 4); t4.Freshness != Fresh || !t4.NotFound || t4.Status != TicketNotFound || t4.Error != "" || t4.URL != "https://github.com/acme/widgets/issues/4" {
+		t.Fatalf("issue not found: %+v", t4)
+	}
 	st := s.Sources[SourceGitHubIssues]
-	if st.State != Error || st.Fresh != 1 || st.Error != 1 || st.Unknown != 1 || st.OldestFetch.IsZero() {
+	if st.State != Error || st.Fresh != 1 || st.NotFound != 1 || st.Error != 1 || st.Unknown != 1 || st.OldestFetch.IsZero() {
 		t.Fatalf("issue source: %+v", st)
 	}
 	if n := countJobs(jobs, JobIssue); n != 2 {

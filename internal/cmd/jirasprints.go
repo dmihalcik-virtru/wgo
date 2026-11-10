@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,8 +19,8 @@ import (
 // searchIssuesJSON and listSprints are the acli seams of the sprint
 // fetcher; tests replace them.
 var (
-	searchIssuesJSON = jira.SearchIssuesJSON
-	listSprints      = jira.ListSprints
+	searchIssuesJSON = jira.SearchIssuesJSONContext
+	listSprints      = jira.ListSprintsContext
 )
 
 // sprintFetcher adapts the acli-backed jira client to
@@ -39,8 +40,14 @@ var sprintFetcherFn = func() jiracache.SprintFetcher { return sprintFetcher{} }
 // search is retried in parts: a stale identity in config then costs only
 // its own tickets, with a note naming its config key, and is left out of
 // the later sprints' searches.
-func (sprintFetcher) FetchSprints(board int, assignees []string) (jiracache.BoardSprints, error) {
-	sprints, err := listSprints(board, "active,future", true)
+func (f sprintFetcher) FetchSprints(board int, assignees []string) (jiracache.BoardSprints, error) {
+	return f.FetchSprintsContext(context.Background(), board, assignees)
+}
+
+// FetchSprintsContext implements jiracache.SprintContextFetcher:
+// FetchSprints, with acli killed when ctx is done.
+func (sprintFetcher) FetchSprintsContext(ctx context.Context, board int, assignees []string) (jiracache.BoardSprints, error) {
+	sprints, err := listSprints(ctx, board, "active,future", true)
 	if err != nil {
 		return jiracache.BoardSprints{}, errors.New(acliErrorLine(err.Error()))
 	}
@@ -56,12 +63,16 @@ func (sprintFetcher) FetchSprints(board int, assignees []string) (jiracache.Boar
 		}
 		if e.State == "active" {
 			var skipped int
-			e.Tickets, e.Truncated, skipped, e.Error = sprintTickets(s.ID, who, rejected)
+			e.Tickets, e.Truncated, skipped, e.Error = sprintTickets(ctx, s.ID, who, rejected)
 			if skipped > 0 {
 				out.Notes = append(out.Notes, fmt.Sprintf("%d of %s's search results could not be read, so its ticket list is incomplete (WGO_DEBUG=1 shows why)", skipped, cmp.Or(s.Name, fmt.Sprintf("sprint %d", s.ID))))
 			}
 		}
 		out.Sprints = append(out.Sprints, e)
+	}
+	if err := ctx.Err(); err != nil {
+		// acli was killed part way: the failed searches say nothing.
+		return jiracache.BoardSprints{}, err
 	}
 	for _, a := range slices.Sorted(maps.Keys(rejected)) {
 		out.Notes = append(out.Notes, fmt.Sprintf("Jira rejected the sprint search for %q (%s), so that person's sprint tickets are missing: %s; fix it in ~/.wgo/config.toml, or remove it",
@@ -74,20 +85,24 @@ func (sprintFetcher) FetchSprints(board int, assignees []string) (jiracache.Boar
 // sprintTickets searches one sprint's tickets assigned to assignees or to
 // no one, with the fields acli's search allows. skipped counts the results
 // it could not read. errMsg is set, and tickets nil, when the search
-// failed. A failed search is retried in parts: the
-// unassigned tickets alone, which name no identity, so their failure is
-// the search's own; then each assignee alone. Only an assignee Jira says
-// does not exist is added to rejected; any other failure (a rate limit, a
-// timeout) fails the sprint's search, so its earlier tickets are kept.
-func sprintTickets(sprint int, assignees []string, rejected map[string]string) (tickets []jiracache.SprintTicket, truncated bool, skipped int, errMsg string) {
-	raws, err := searchSprint(sprint, assignees, true)
-	if err != nil && len(assignees) > 0 {
-		raws, err = searchSprint(sprint, nil, true)
+// failed. A failed search is retried in parts: the unassigned tickets
+// alone, which name no identity, so their failure is the search's own;
+// then each assignee alone. A cancelled search names no bad identity.
+// Only an assignee Jira says does not exist is
+// added to rejected; any other failure (a rate limit, a timeout) fails
+// the sprint's search, so its earlier tickets are kept.
+func sprintTickets(ctx context.Context, sprint int, assignees []string, rejected map[string]string) (tickets []jiracache.SprintTicket, truncated bool, skipped int, errMsg string) {
+	raws, err := searchSprint(ctx, sprint, assignees, true)
+	if err != nil && len(assignees) > 0 && ctx.Err() == nil {
+		raws, err = searchSprint(ctx, sprint, nil, true)
 		for _, a := range assignees {
 			if err != nil {
 				break
 			}
-			one, aerr := searchSprint(sprint, []string{a}, false)
+			one, aerr := searchSprint(ctx, sprint, []string{a}, false)
+			if aerr != nil && ctx.Err() != nil {
+				return nil, false, 0, acliErrorLine(aerr.Error())
+			}
 			switch {
 			case aerr == nil:
 				raws = append(raws, one...)
@@ -125,8 +140,8 @@ func sprintTickets(sprint int, assignees []string, rejected map[string]string) (
 
 // searchSprint runs one sprint's ticket search for assignees and, when
 // unassigned is set, its tickets assigned to no one.
-func searchSprint(sprint int, assignees []string, unassigned bool) ([]json.RawMessage, error) {
-	return searchIssuesJSON(jira.SprintTicketsJQL(sprint, assignees, unassigned), jira.SearchFactFields, jiracache.MaxSprintTickets+1)
+func searchSprint(ctx context.Context, sprint int, assignees []string, unassigned bool) ([]json.RawMessage, error) {
+	return searchIssuesJSON(ctx, jira.SprintTicketsJQL(sprint, assignees, unassigned), jira.SearchFactFields, jiracache.MaxSprintTickets+1)
 }
 
 // identityRejected reports whether a search failed because Jira does not

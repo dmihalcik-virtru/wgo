@@ -415,6 +415,9 @@ func (x *extractInput) writeSources(b *strings.Builder) {
 				detail = append(detail, fmt.Sprintf("%d %s", c.n, freshText(c.f)))
 			}
 		}
+		if st.NotFound > 0 {
+			detail = append(detail, fmt.Sprintf("%d not found", st.NotFound))
+		}
 		if !st.OldestFetch.IsZero() {
 			detail = append(detail, "oldest fetch "+st.OldestFetch.In(s.GeneratedAt.Location()).Format("2006-01-02 15:04 -07:00"))
 		}

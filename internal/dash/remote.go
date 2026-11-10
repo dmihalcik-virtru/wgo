@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -110,6 +110,12 @@ type Fetchers struct {
 	// Missing optionally says why a kind has no fetcher ("acli not on
 	// PATH"), so a skipped batch can explain itself.
 	Missing map[JobKind]string
+	// JiraLogin optionally says whether acli is logged in: nil when it is,
+	// an error wrapping jira.ErrNotLoggedIn when it is not, any other
+	// error when it cannot tell. It confirms that Jira lookups failing
+	// without saying why (acli's `workitem view` does not) failed for a
+	// lapsed login, so the rest are paused (see jiraPause).
+	JiraLogin func(context.Context) error
 }
 
 // describe names j for a failure message.
@@ -149,6 +155,12 @@ type RefresherOptions struct {
 	// IgnoreLeases fetches even when a lease is held, and takes none: the
 	// explicit `wgo dash --refresh`, matching --refresh elsewhere in wgo.
 	IgnoreLeases bool
+	// CloseWait bounds how long Close waits for running lookups once it
+	// has cancelled them; zero waits until they end. They stop at once
+	// unless a fetcher ignores its context (a test's, or one between two
+	// requests). A one-shot command sets it: with IgnoreLeases and atomic
+	// cache writes, leaving a lookup behind at exit is safe.
+	CloseWait time.Duration
 }
 
 // Refresher warms remote caches in the background with a bounded worker
@@ -158,16 +170,24 @@ type Refresher struct {
 	opts RefresherOptions
 	// ctx is cancelled by Close, so the long fetches that can take it (an
 	// inventory set is many pages, each retried) stop instead of holding
-	// shutdown up.
+	// shutdown up. Each running job's context derives from it.
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	queue chan *inflight
-	wg    sync.WaitGroup
+	wg sync.WaitGroup
+
+	// jira pauses Jira lookups while acli is logged out.
+	jira *jiraPause
 
 	mu      sync.Mutex
 	pending map[string]*inflight
-	closed  bool
+	// queue holds the jobs waiting for a worker, one list per priority
+	// rank (jobRank), each first come first served; queued counts them.
+	// ready wakes the workers. All under mu.
+	queue  [numRanks][]*inflight
+	queued int
+	ready  *sync.Cond
+	closed bool
 }
 
 // inflight is one queued or running job and every batch waiting on it. A
@@ -176,19 +196,131 @@ type Refresher struct {
 type inflight struct {
 	job     Job
 	waiters []*batch
+	// cancel, set while the job runs, cancels its context with a cause.
+	cancel context.CancelCauseFunc
+}
+
+// expired reports whether every batch waiting on f has passed its deadline,
+// so f need not start. r.mu is held.
+func (f *inflight) expired() bool {
+	for _, b := range f.waiters {
+		if !b.expired {
+			return false
+		}
+	}
+	return len(f.waiters) > 0
 }
 
 type batch struct {
 	wg  sync.WaitGroup
 	mu  sync.Mutex
 	res BatchResult
+	// left counts the accepted jobs not yet finished, under mu.
+	left int
+	// done yields res once every accepted job has finished, then closes.
+	done chan BatchResult
+	// progressed is signalled, without blocking, as each job finishes.
+	progressed chan struct{}
+	// expired is set, under the Refresher's mu, once the batch's waited-for
+	// refresh has passed its deadline: its jobs that have not started do
+	// not start.
+	expired bool
+}
+
+// Job priority ranks, most urgent first. A waited-for refresh with a
+// deadline gets as far down the list as it can. The PR inventory comes
+// first: it is the backbone of the snapshot, and the attention facts need
+// it. Open-authored and review-requested come before closed-recent because
+// whose move an open PR is depends on them alone; closed-recent feeds the
+// shipped counts. The GitHub login comes before all, since the inventory of
+// "me" needs it; the board's sprints, which name more tickets, next; then
+// the bookmarks' PRs; then PR timelines and their pruning; the ticket
+// lookups, which the inventory and the sprints reveal by the hundred, last.
+//
+// There is no aging: a job of a lower rank waits while higher ones keep
+// coming. So the timelines come before the tickets: each is one deduped job
+// (see Job.key), which cannot flood the queue, whereas the served
+// dashboard's tickets, resubmitted every refresh, can outpace the workers
+// and would starve them for good. A waited-for refresh runs neither
+// (waitedJobs).
+const (
+	rankIdentity = iota
+	rankOpenAuthored
+	rankReviewRequested
+	rankClosedRecent
+	rankSprints
+	rankPR
+	rankTimelines
+	rankTicket
+	numRanks
+)
+
+// jobRank is j's priority rank.
+func jobRank(j Job) int {
+	switch j.Kind {
+	case JobIdentity:
+		return rankIdentity
+	case JobInventory:
+		switch j.Inventory.Set {
+		case inventory.OpenAuthored:
+			return rankOpenAuthored
+		case inventory.ReviewRequested:
+			return rankReviewRequested
+		}
+		return rankClosedRecent
+	case JobSprints:
+		return rankSprints
+	case JobPR:
+		return rankPR
+	case JobJira, JobIssue:
+		return rankTicket
+	}
+	return rankTimelines
+}
+
+// accept counts one more job this batch waits for. r.mu is held.
+func (b *batch) accept() {
+	b.wg.Add(1)
+	b.mu.Lock()
+	b.left++
+	b.mu.Unlock()
+}
+
+// progress is the batch's result so far and how many of its jobs have not
+// finished yet.
+func (b *batch) progress() (BatchResult, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	res := b.res
+	res.Failed = slices.Clone(res.Failed)
+	res.Skipped = maps.Clone(res.Skipped)
+	return res, b.left
 }
 
 func (b *batch) finish(j Job, err error) {
-	if err != nil {
-		b.mu.Lock()
+	var paused *pausedError
+	b.mu.Lock()
+	switch {
+	case errors.As(err, &paused):
+		b.res.JiraSkipped++
+		if b.res.JiraSkipReason == "" {
+			b.res.JiraSkipReason = paused.reason
+		}
+	case errors.Is(err, errNotStarted):
+		b.res.Unfinished++
+	case errors.Is(err, errInterrupted):
+		b.res.Unfinished++
+		if j.Kind == JobInventory {
+			b.res.Interrupted++
+		}
+	case err != nil:
 		b.res.Failed = append(b.res.Failed, j.describe()+": "+err.Error())
-		b.mu.Unlock()
+	}
+	b.left--
+	b.mu.Unlock()
+	select {
+	case b.progressed <- struct{}{}:
+	default:
 	}
 	b.wg.Done()
 }
@@ -206,6 +338,29 @@ type BatchResult struct {
 	// Dropped counts jobs that never ran: beyond the queue bound, or
 	// submitted after Close.
 	Dropped int
+	// JiraSkipped counts the Jira ticket and sprint lookups the Jira pause
+	// accounted for: not run while acli was logged out, or run into the
+	// lapsed login that paused the rest. Not failures: the jira source
+	// carries JiraSkipReason, the pause's reason.
+	JiraSkipped    int
+	JiraSkipReason string
+	// Unfinished counts the jobs a waited-for refresh left when its
+	// deadline, Deadline, passed: not started, interrupted, or still
+	// running when it stopped waiting. Not failures: the snapshot printed
+	// shows their data as it was.
+	Unfinished int
+	Deadline   time.Duration
+	// Finishing counts the PR inventory fetches that were running at the
+	// deadline, which the refresh waited for, Overrun past it, up to
+	// deadlineGrace times the deadline; Finished counts those that ended on
+	// their own then, cached or failed. Interrupted counts those cancelled,
+	// recorded as such in the inventory cache; Capped is set when the wait
+	// reached deadlineGrace times the deadline.
+	Finishing   int
+	Finished    int
+	Overrun     time.Duration
+	Interrupted int
+	Capped      bool
 }
 
 // add folds another batch's result into r.
@@ -213,6 +368,19 @@ func (r *BatchResult) add(o BatchResult) {
 	r.Jobs += o.Jobs
 	r.Dropped += o.Dropped
 	r.Failed = append(r.Failed, o.Failed...)
+	r.JiraSkipped += o.JiraSkipped
+	if r.JiraSkipReason == "" {
+		r.JiraSkipReason = o.JiraSkipReason
+	}
+	r.Unfinished += o.Unfinished
+	if o.Deadline != 0 {
+		r.Deadline = o.Deadline
+	}
+	r.Finishing += o.Finishing
+	r.Finished += o.Finished
+	r.Overrun += o.Overrun
+	r.Interrupted += o.Interrupted
+	r.Capped = r.Capped || o.Capped
 	for k, n := range o.Skipped {
 		if r.Skipped == nil {
 			r.Skipped = map[JobKind]int{}
@@ -261,7 +429,8 @@ func NewRefresher(f Fetchers, opts RefresherOptions) *Refresher {
 	if opts.Backoff <= 0 {
 		opts.Backoff = 30 * time.Second
 	}
-	r := &Refresher{f: f, opts: opts, queue: make(chan *inflight, opts.Queue), pending: map[string]*inflight{}}
+	r := &Refresher{f: f, opts: opts, pending: map[string]*inflight{}, jira: newJiraPause(f.JiraLogin)}
+	r.ready = sync.NewCond(&r.mu)
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	for i := 0; i < opts.Workers; i++ {
 		r.wg.Add(1)
@@ -274,8 +443,15 @@ func NewRefresher(f Fetchers, opts RefresherOptions) *Refresher {
 // batch's result, then closes, once every accepted job has finished. A job
 // already pending from an earlier batch is not fetched again, but this batch
 // waits for it too. Jobs beyond the queue bound are dropped and counted.
+// Workers take queued jobs by priority (jobRank), in submission order within
+// a rank.
 func (r *Refresher) Submit(jobs []Job) <-chan BatchResult {
-	b := &batch{}
+	return r.submit(jobs).done
+}
+
+// submit is Submit, returning the batch so that its progress can be read.
+func (r *Refresher) submit(jobs []Job) *batch {
+	b := &batch{done: make(chan BatchResult, 1), progressed: make(chan struct{}, 1)}
 	r.mu.Lock()
 	for _, j := range jobs {
 		if !r.supports(j) {
@@ -293,32 +469,34 @@ func (r *Refresher) Submit(jobs []Job) <-chan BatchResult {
 		k := j.key()
 		if f := r.pending[k]; f != nil {
 			if !slices.Contains(f.waiters, b) {
-				b.wg.Add(1)
+				b.accept()
 				f.waiters = append(f.waiters, b)
 			}
 			continue
 		}
-		f := &inflight{job: j, waiters: []*batch{b}}
-		select {
-		case r.queue <- f:
-			// Workers finish a job under r.mu, so this Add lands first.
-			b.wg.Add(1)
-			r.pending[k] = f
-		default:
+		if r.queued >= r.opts.Queue {
 			b.res.Dropped++
+			continue
 		}
+		f := &inflight{job: j, waiters: []*batch{b}}
+		// Workers take jobs under r.mu, so this Add lands first.
+		b.accept()
+		r.pending[k] = f
+		rank := jobRank(j)
+		r.queue[rank] = append(r.queue[rank], f)
+		r.queued++
+		r.ready.Signal()
 	}
 	r.mu.Unlock()
-	done := make(chan BatchResult, 1)
 	go func() {
 		b.wg.Wait()
 		b.mu.Lock()
 		res := b.res
 		b.mu.Unlock()
-		done <- res
-		close(done)
+		b.done <- res
+		close(b.done)
 	}()
-	return done
+	return b
 }
 
 func (r *Refresher) supports(j Job) bool {
@@ -344,11 +522,17 @@ func (r *Refresher) supports(j Job) bool {
 // errRefresherClosed fails a job that was still queued when Close was called.
 var errRefresherClosed = errors.New("not run: the refresher was closed")
 
+// errNotStarted ends a job whose batches had all passed their deadline
+// before a worker took it.
+var errNotStarted = errors.New("not run: refresh deadline reached")
+
+// errInterrupted ends a job cancelled at its batch's hard deadline.
+var errInterrupted = errors.New("interrupted at the refresh deadline")
+
 // Close stops accepting jobs, fails the ones still queued without fetching
-// them, cancels the running fetches that take a context (inventory and
-// identity lookups), and waits for the running ones. The other fetches cannot
-// be cancelled, so letting the queue drain would hold shutdown hostage to
-// every pending network call.
+// them, cancels the running fetches (acli is killed, GitHub requests are
+// abandoned), and waits for the running ones, at most CloseWait when set. Letting the queue drain would hold
+// shutdown hostage to every pending network call.
 func (r *Refresher) Close() {
 	r.mu.Lock()
 	if r.closed {
@@ -356,54 +540,150 @@ func (r *Refresher) Close() {
 		return
 	}
 	r.closed = true
-	close(r.queue)
+	r.ready.Broadcast()
 	r.mu.Unlock()
 	r.cancel()
-	r.wg.Wait()
+	if r.opts.CloseWait <= 0 {
+		r.wg.Wait()
+		return
+	}
+	stopped := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(r.opts.CloseWait):
+		logf("dash: leaving lookups that are still running after %v", r.opts.CloseWait)
+	}
+}
+
+// next takes the most urgent queued job, waiting for one; nil once the
+// Refresher is closed and the queue is empty. r.mu is held.
+func (r *Refresher) next() *inflight {
+	for r.queued == 0 && !r.closed {
+		r.ready.Wait()
+	}
+	for rank := range r.queue {
+		if q := r.queue[rank]; len(q) > 0 {
+			f := q[0]
+			q[0] = nil
+			r.queue[rank] = q[1:]
+			r.queued--
+			return f
+		}
+	}
+	return nil
 }
 
 func (r *Refresher) work() {
 	defer r.wg.Done()
-	for f := range r.queue {
-		r.mu.Lock()
-		closed := r.closed
-		r.mu.Unlock()
-		err := errRefresherClosed
-		if !closed {
-			err = r.run(f.job)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for {
+		f := r.next()
+		if f == nil {
+			return
 		}
-		r.mu.Lock()
+		var err error
+		switch {
+		case r.closed:
+			err = errRefresherClosed
+		case f.expired():
+			err = errNotStarted
+		default:
+			ctx, cancel := context.WithCancelCause(r.ctx)
+			f.cancel = cancel
+			r.mu.Unlock()
+			err = r.run(ctx, f.job)
+			if err != nil && errors.Is(context.Cause(ctx), errInterrupted) {
+				err = fmt.Errorf("%w: %w", errInterrupted, err)
+			}
+			cancel(nil)
+			r.mu.Lock()
+		}
 		delete(r.pending, f.job.key())
 		waiters := f.waiters
 		r.mu.Unlock()
 		for _, b := range waiters {
 			b.finish(f.job, err)
 		}
+		r.mu.Lock()
+	}
+}
+
+// expire marks b past its deadline: its jobs that have not started will not,
+// unless another batch waits on them, and its running jobs are cancelled,
+// all but the PR inventory fetches (see interrupt). It returns how many of
+// those run on.
+func (r *Refresher) expire(b *batch) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b.expired = true
+	n := 0
+	for _, f := range r.pending {
+		switch {
+		case f.cancel == nil || !slices.Contains(f.waiters, b):
+		case f.job.Kind == JobInventory:
+			n++
+		case f.expired():
+			f.cancel(errInterrupted)
+		}
+	}
+	return n
+}
+
+// runningInventory counts the PR inventory fetches b waits on that are
+// running.
+func (r *Refresher) runningInventory(b *batch) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, f := range r.pending {
+		if f.cancel != nil && f.job.Kind == JobInventory && slices.Contains(f.waiters, b) {
+			n++
+		}
+	}
+	return n
+}
+
+// interrupt cancels the running jobs that only expired batches wait on, b's
+// among them, with errInterrupted. A PR inventory fetch records the
+// interruption (inventory.ErrInterrupted).
+func (r *Refresher) interrupt(b *batch) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, f := range r.pending {
+		if f.cancel != nil && slices.Contains(f.waiters, b) && f.expired() {
+			f.cancel(fmt.Errorf("%w (%w)", errInterrupted, inventory.ErrInterrupted))
+		}
 	}
 }
 
 // run performs one job, behind the shared refresh lease unless IgnoreLeases
-// is set. A held lease is not a failure: another refresher has the key.
-func (r *Refresher) run(j Job) error {
+// is set. A held lease is not a failure: another refresher has the key. ctx
+// is the job's: Close, or interrupt, cancels it.
+func (r *Refresher) run(ctx context.Context, j Job) error {
 	switch j.Kind {
 	case JobPR:
 		if r.opts.IgnoreLeases || prcache.LockRefresh(j.RemoteURL, j.RepoPath, j.Branch, r.opts.Backoff) {
-			res := prcache.Resolve(r.f.PR, j.RemoteURL, j.RepoPath, j.Branch, prcache.Opts{Synchronous: true})
+			res := prcache.RefreshContext(ctx, r.f.PR, j.RemoteURL, j.RepoPath, j.Branch)
 			return errors.Join(res.Err, res.WriteErr)
 		}
 	case JobJira:
-		if r.opts.IgnoreLeases || jiracache.LockRefresh(j.Ticket, r.opts.Backoff) {
-			_, _, err := jiracache.Resolve(r.f.Jira, j.Ticket, jiracache.Opts{Synchronous: true})
+		return r.jiraLookup(ctx, func() bool { return jiracache.LockRefresh(j.Ticket, r.opts.Backoff) }, func() error {
+			_, _, err := jiracache.RefreshContext(ctx, r.f.Jira, j.Ticket)
 			return err
-		}
+		})
 	case JobIssue:
 		if r.opts.IgnoreLeases || issuecache.LockRefresh(j.Issue, r.opts.Backoff) {
-			return issuecache.Refresh(r.f.Issue, j.Issue).Err
+			return issuecache.RefreshContext(ctx, r.f.Issue, j.Issue).Err
 		}
 	case JobInventory:
 		if r.opts.IgnoreLeases {
-			_, err := inventory.Refresh(r.ctx, r.f.Inventory, j.Inventory, j.Since)
-			r.refreshStaleIdentity()
+			_, err := inventory.Refresh(ctx, r.f.Inventory, j.Inventory, j.Since)
+			r.refreshStaleIdentity(ctx)
 			return err
 		}
 		// A set that keeps failing (often on a late page, or rate limited)
@@ -415,22 +695,22 @@ func (r *Refresher) run(j Job) error {
 			// Pages and retries can outlast the lease window; keep it held
 			// so another wgo process does not fetch the set too.
 			stop := inventory.KeepLease(j.Inventory, r.opts.Backoff/3)
-			_, err := inventory.Refresh(r.ctx, r.f.Inventory, j.Inventory, j.Since)
+			_, err := inventory.Refresh(ctx, r.f.Inventory, j.Inventory, j.Since)
 			stop()
-			r.refreshStaleIdentity()
+			r.refreshStaleIdentity(ctx)
 			return err
 		}
 	case JobIdentity:
 		if r.opts.IgnoreLeases || inventory.LockIdentityRefresh(r.opts.Backoff) {
-			_, err := inventory.RefreshIdentity(r.ctx, r.f.Inventory)
+			_, err := inventory.RefreshIdentity(ctx, r.f.Inventory)
 			return err
 		}
 	case JobSprints:
-		if r.opts.IgnoreLeases || jiracache.LockSprintsRefresh(j.Board, r.opts.Backoff) {
-			return jiracache.RefreshSprints(r.f.Sprints, j.Board, j.Assignees)
-		}
+		return r.jiraLookup(ctx, func() bool { return jiracache.LockSprintsRefresh(j.Board, r.opts.Backoff) }, func() error {
+			return jiracache.RefreshSprintsContext(ctx, r.f.Sprints, j.Board, j.Assignees)
+		})
 	case JobTimelines:
-		return r.runTimelines(j.Timelines)
+		return r.runTimelines(ctx, j.Timelines)
 	case JobTimelinePrune:
 		if r.opts.IgnoreLeases || inventory.LockTimelinePrune(timelinePruneEvery) {
 			seen := make([]inventory.TimelineKey, len(j.Timelines))
@@ -447,6 +727,26 @@ func (r *Refresher) run(j Job) error {
 	return nil
 }
 
+// jiraLookup runs a Jira ticket or sprint lookup through the Jira pause:
+// skipped while lookups are paused, behind its lease (taken by lease) unless
+// IgnoreLeases is set. A lookup cut short by ctx tells the pause nothing.
+func (r *Refresher) jiraLookup(ctx context.Context, lease func() bool, lookup func() error) error {
+	ok, probe, reason := r.jira.admit()
+	if !ok {
+		return &pausedError{reason: reason}
+	}
+	if !r.opts.IgnoreLeases && !lease() {
+		r.jira.release(probe)
+		return nil
+	}
+	err := lookup()
+	if err != nil && ctx.Err() != nil {
+		r.jira.release(probe)
+		return err
+	}
+	return r.jira.done(ctx, err, probe)
+}
+
 // timelinePruneEvery is how often cached PR timelines are pruned.
 const timelinePruneEvery = 24 * time.Hour
 
@@ -455,15 +755,9 @@ const timelinePruneEvery = 24 * time.Hour
 // retries: GitHub is struggling, and the rest can wait for a later cycle.
 const maxTransientTimelineFailures = 3
 
-// transientFailure reports whether err is a server error or a timeout.
-func transientFailure(err error) bool {
-	var apiErr *github.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.StatusCode >= 500
-	}
-	var ne net.Error
-	return (errors.As(err, &ne) && ne.Timeout()) || errors.Is(err, context.DeadlineExceeded)
-}
+// transientFailure reports whether err is a server error, a timeout or an
+// incomplete response (github.Transient).
+func transientFailure(err error) bool { return github.Transient(err) }
 
 // runTimelines fetches each PR's history in turn, serially as GitHub asks of
 // API clients. A PR already fetched for its updated_at is skipped; without
@@ -471,11 +765,11 @@ func transientFailure(err error) bool {
 // refresher holds. A rate limit, maxTransientTimelineFailures server errors
 // or timeouts in a row, or Close, stops the batch: the rest wait for a later
 // cycle.
-func (r *Refresher) runTimelines(reqs []TimelineRequest) error {
+func (r *Refresher) runTimelines(ctx context.Context, reqs []TimelineRequest) error {
 	var failed []string
 	transient, stopped := 0, ""
 	for _, req := range reqs {
-		if r.ctx.Err() != nil || time.Now().Before(inventory.TimelinesPausedUntil()) {
+		if ctx.Err() != nil || time.Now().Before(inventory.TimelinesPausedUntil()) {
 			break
 		}
 		if transient >= maxTransientTimelineFailures {
@@ -489,11 +783,11 @@ func (r *Refresher) runTimelines(reqs []TimelineRequest) error {
 		if !r.opts.IgnoreLeases && (time.Now().Before(prior.NotBefore()) || !inventory.LockTimelineRefresh(req.Key, r.opts.Backoff)) {
 			continue
 		}
-		_, err := inventory.RefreshTimeline(r.ctx, r.f.Timelines, req.Key)
+		_, err := inventory.RefreshTimeline(ctx, r.f.Timelines, req.Key)
 		switch {
 		case err == nil:
 			transient = 0
-		case r.ctx.Err() == nil:
+		case ctx.Err() == nil:
 			failed = append(failed, err.Error())
 			if transientFailure(err) {
 				transient++
@@ -521,14 +815,14 @@ func (r *Refresher) runTimelines(reqs []TimelineRequest) error {
 // the refresher ignores leases, as its jobs do. A failure keeps the old
 // login, is recorded on the identity cache (inventory.IdentityError) and
 // logged: the inventory job it rides on did not fail.
-func (r *Refresher) refreshStaleIdentity() {
+func (r *Refresher) refreshStaleIdentity(ctx context.Context) {
 	if _, st := inventory.ReadIdentity(inventory.IdentityTTL, time.Now()); st == inventory.Fresh {
 		return
 	}
 	if !r.opts.IgnoreLeases && !inventory.LockIdentityRefresh(r.opts.Backoff) {
 		return
 	}
-	if _, err := inventory.RefreshIdentity(r.ctx, r.f.Inventory); err != nil {
+	if _, err := inventory.RefreshIdentity(ctx, r.f.Inventory); err != nil {
 		logf("dash: refresh GitHub identity: %v", err)
 	}
 }
@@ -566,5 +860,49 @@ func (r *Refresher) skipSummary(res BatchResult) string {
 		}
 		parts = append(parts, p)
 	}
+	if n := res.JiraSkipped; n > 0 {
+		parts = append(parts, fmt.Sprintf("%s; %d Jira %s skipped", res.JiraSkipReason, n, plural(n, "lookup", "lookups")))
+	}
 	return strings.Join(parts, "; ")
+}
+
+// deadlineSummary says what a waited-for refresh left unfinished at its
+// deadline, and which PR inventory fetches it finished past it, or nil. It
+// is informational, never an error.
+func (res BatchResult) deadlineSummary() []string {
+	var out []string
+	dl := FormatSeconds(res.Deadline)
+	if n := res.Unfinished; n > 0 {
+		out = append(out, fmt.Sprintf("not run: refresh deadline (%s) reached; %d %s left", dl, n, plural(n, "lookup", "lookups")))
+	}
+	n, done := res.Finishing, res.Finished
+	if n == 0 {
+		return out
+	}
+	finished := fmt.Sprintf("finished %d PR inventory %s started before the refresh deadline (%s)", n, plural(n, "fetch", "fetches"), dl)
+	if done < n {
+		finished = fmt.Sprintf("finished %d of %d PR inventory fetches started before the refresh deadline (%s)", done, n, dl)
+	}
+	switch left := n - done; {
+	case left == 0:
+		out = append(out, fmt.Sprintf("%s, %s past it", finished, res.Overrun.Round(100*time.Millisecond)))
+	case res.Capped:
+		out = append(out, fmt.Sprintf("%s; cancelled %d at %s, %d times the deadline (fetched again on the next refresh)",
+			finished, left, FormatSeconds((1+deadlineGrace)*res.Deadline), 1+deadlineGrace))
+	default:
+		out = append(out, fmt.Sprintf("%s; stopped waiting for %d after %s", finished, left, res.Overrun.Round(100*time.Millisecond)))
+	}
+	return out
+}
+
+// FormatSeconds writes a duration as --refresh-timeout takes it: whole hours
+// as "1h", whole seconds as "60s", any other as time.Duration does.
+func FormatSeconds(d time.Duration) string {
+	switch {
+	case d > 0 && d%time.Hour == 0:
+		return strconv.FormatInt(int64(d/time.Hour), 10) + "h"
+	case d%time.Second == 0:
+		return strconv.FormatInt(int64(d/time.Second), 10) + "s"
+	}
+	return d.String()
 }

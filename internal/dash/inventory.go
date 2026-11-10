@@ -77,6 +77,8 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 
 	var tally remoteTally
 	var diags []string
+	// notFresh says, per set not fresh, why: github_inventory's detail.
+	var notFresh []partReason
 	since := inventory.ClosedSince(ls.at, ls.days)
 	y, m, d := ls.at.Date()
 	countsStart := time.Date(y, m, d, 0, 0, 0, 0, ls.at.Location()).AddDate(0, 0, -(ls.days - 1))
@@ -121,6 +123,9 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 			}
 			if res.Err != nil {
 				part.Error = res.Err.Error()
+			}
+			if f != Fresh {
+				notFresh = append(notFresh, partReason{k.String(), inventoryReason(f, res)})
 			}
 			tally.add(f, res.FetchedAt)
 			tally.Parts = append(tally.Parts, part)
@@ -185,6 +190,8 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 		}
 		st.Detail = "your GitHub login is not known yet, so your own PRs are not shown; " + why
 		diags = append(diags, "github_inventory: "+st.Detail)
+	default:
+		st.Detail = reasonsDetail(notFresh)
 	}
 	if covered {
 		st.CoveredSince = coveredSince
@@ -226,7 +233,10 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 		bookmarked := n != nil && n.PR != nil
 		// Someone else's branch name ("patch-1", "revert-45-fix") is held to
 		// the known prefixes too; a bookmark's PR keeps its branch ticket.
-		keys := ticketKeys(f.HeadRef, ip.pr.Refs, known, refIsPR, !bookmarked && len(known) > 0)
+		// Bare #N in titles and bodies counts only on a bookmark's PR: on
+		// the inventory's (often other people's) it mostly names no issue
+		// of the repository, and GitHub's closing issues say which do.
+		keys := ticketKeys(f.HeadRef, f.Repo, f.ClosingIssues, ip.pr.Refs, known, refIsPR, !bookmarked && len(known) > 0, bookmarked)
 		var p *PRInfo
 		invNewer := true
 		if bookmarked {
@@ -249,7 +259,9 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 	return st, diags, mergedKnown
 }
 
-// inventoryFreshness maps an inventory cache result onto a Freshness.
+// inventoryFreshness maps an inventory cache result onto a Freshness. A set
+// whose only fetch was cancelled at a refresh's deadline is unknown, not in
+// error.
 func inventoryFreshness(r inventory.Result) Freshness {
 	switch r.State {
 	case inventory.Fresh:
@@ -257,7 +269,47 @@ func inventoryFreshness(r inventory.Result) Freshness {
 	case inventory.Stale:
 		return Stale
 	}
+	if r.Interrupted {
+		return Unknown
+	}
 	return missFreshness(r.Err)
+}
+
+// partReason is why one inventory set is not fresh.
+type partReason struct{ name, why string }
+
+// inventoryReason says why a set at freshness f is not fresh.
+func inventoryReason(f Freshness, r inventory.Result) string {
+	switch {
+	case r.Interrupted && r.Err != nil:
+		return r.Err.Error()
+	case f == Error && r.Err != nil:
+		return "failed: " + r.Err.Error()
+	case r.Err != nil && r.Failures > 0:
+		return "last refresh failed: " + r.Err.Error()
+	case f == Unknown:
+		return "not fetched yet"
+	}
+	return "due for a refresh"
+}
+
+// reasonsDetail lists the sets not fresh, grouped by reason in the order
+// first seen: "alice/open-authored, alice/review-requested: not fetched
+// yet". It is "" when every set is fresh.
+func reasonsDetail(rs []partReason) string {
+	var order []string
+	names := map[string][]string{}
+	for _, r := range rs {
+		if names[r.why] == nil {
+			order = append(order, r.why)
+		}
+		names[r.why] = append(names[r.why], r.name)
+	}
+	parts := make([]string, 0, len(order))
+	for _, why := range order {
+		parts = append(parts, strings.Join(names[why], ", ")+": "+why)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // knownTicketPrefixes are the Jira prefixes whose keys count in PR titles and
@@ -278,13 +330,15 @@ func (c *Collector) knownTicketPrefixes(ls *localState) map[string]bool {
 }
 
 // ticketKeys are a PR's ticket keys: its head branch's ticket by
-// spec.ParseTicketFromBranch's rules, then the title and body references
-// whose Jira prefix is known, and same-repository issues that are not
-// themselves PRs (isPR). With filterHead the branch's Jira ticket counts
-// only for a known prefix too: GitHub names branches "patch-1" and
-// "revert-45-x". Ordered and deduplicated; GitHub issues are "gh-<n>", like
-// TicketInfo.Key. Never nil: an inventory PR with no ticket reported none.
-func ticketKeys(headRef string, refs []string, known map[string]bool, isPR func(int) bool, filterHead bool) []string {
+// spec.ParseTicketFromBranch's rules; then the title and body references
+// (refs) whose Jira prefix is known, and same-repository issues that are not
+// themselves PRs (isPR), bare "#<n>" ones only with keepBare; then the
+// issues of its repository (repo) that GitHub says it closes (closing).
+// With filterHead the branch's Jira ticket counts only for a known prefix
+// too: GitHub names branches "patch-1" and "revert-45-x". Ordered and
+// deduplicated; GitHub issues are "gh-<n>", like TicketInfo.Key. Never nil:
+// an inventory PR with no ticket reported none.
+func ticketKeys(headRef, repo string, closing []github.IssueRef, refs []string, known map[string]bool, isPR func(int) bool, filterHead, keepBare bool) []string {
 	keys := []string{}
 	seen := map[string]bool{}
 	add := func(k string) {
@@ -300,6 +354,12 @@ func ticketKeys(headRef string, refs []string, known map[string]bool, isPR func(
 		}
 	}
 	for _, r := range refs {
+		if n, ok := strings.CutPrefix(r, "#"); ok {
+			if !keepBare {
+				continue
+			}
+			r = "gh-" + n
+		}
 		if n, ok := strings.CutPrefix(r, "gh-"); ok {
 			if num, err := strconv.Atoi(n); err == nil && !isPR(num) {
 				add(r)
@@ -308,6 +368,12 @@ func ticketKeys(headRef string, refs []string, known map[string]bool, isPR func(
 		}
 		if prefix, _, _ := strings.Cut(r, "-"); known[prefix] {
 			add(r)
+		}
+	}
+	for _, is := range closing {
+		// An issue elsewhere has no gh-<n> key; GitHub links those too.
+		if strings.EqualFold(is.Repo, repo) && is.Number > 0 {
+			add("gh-" + strconv.Itoa(is.Number))
 		}
 	}
 	return keys

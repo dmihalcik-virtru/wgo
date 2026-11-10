@@ -128,6 +128,10 @@ type SourceStatus struct {
 	// GitHub's search limit, or lags their open-authored set: then no
 	// period is known to be complete.
 	CoveredSince time.Time `json:"covered_since,omitzero"`
+	// NotFound, on github_issues, counts the issues GitHub answered 404 or
+	// 410 for within issuecache.NotFoundTTL: answered, so neither fresh data
+	// nor a failure.
+	NotFound int `json:"not_found,omitempty"`
 }
 
 // Node is a snapshot node. Exactly one of the kind-specific fields is set.
@@ -369,7 +373,14 @@ type TicketInfo struct {
 	// followed people, so it says whose ticket it is when the assignee's
 	// account ID cannot; see SprintInfo.Searched.
 	SprintSearch []int `json:"sprint_search,omitempty"`
+	// NotFound is set on a GitHub issue GitHub answered 404 or 410 for: it
+	// does not exist, or the token cannot see it. Status is then
+	// TicketNotFound; the answer is cached for issuecache.NotFoundTTL.
+	NotFound bool `json:"not_found,omitempty"`
 }
+
+// TicketNotFound is the Status of a GitHub issue GitHub did not find.
+const TicketNotFound = "not found"
 
 // AgentInfo describes a gh-72 agent session, read only.
 type AgentInfo struct {

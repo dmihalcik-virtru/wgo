@@ -1,6 +1,7 @@
 package prcache
 
 import (
+	"context"
 	"flag"
 	"os"
 	"os/exec"
@@ -14,6 +15,30 @@ import (
 // github -> prcache -> github import cycle and lets tests count calls.
 type Fetcher interface {
 	FetchPRs(repoPath, branch string) ([]models.PRRef, error)
+}
+
+// ContextFetcher is a Fetcher whose lookup also stops when a context is
+// done; RefreshContext prefers it.
+type ContextFetcher interface {
+	FetchPRsContext(ctx context.Context, repoPath, branch string) ([]models.PRRef, error)
+}
+
+// RefreshContext fetches the branch's PRs now and writes the result through
+// the cache, as Resolve does with Synchronous, through f's FetchPRsContext
+// when it has one. A lookup cut short because ctx is done records nothing:
+// it says nothing about the branch.
+func RefreshContext(ctx context.Context, f Fetcher, remoteURL, repoPath, branch string) Result {
+	cf, ok := f.(ContextFetcher)
+	if !ok {
+		return fetchAndStore(f, remoteURL, repoPath, branch)
+	}
+	refs, err := cf.FetchPRsContext(ctx, repoPath, branch)
+	if err != nil && ctx.Err() != nil {
+		prior := readAsStale(remoteURL, repoPath, branch)
+		prior.Err = err
+		return prior
+	}
+	return storeFetch(remoteURL, repoPath, branch, refs, err)
 }
 
 // Opts controls how Resolve reconciles the on-disk cache with the network.
@@ -84,6 +109,11 @@ func fetchAndStore(f Fetcher, remoteURL, repoPath, branch string) Result {
 		return readAsStale(remoteURL, repoPath, branch)
 	}
 	refs, err := f.FetchPRs(repoPath, branch)
+	return storeFetch(remoteURL, repoPath, branch, refs, err)
+}
+
+// storeFetch writes a fetch's outcome through the cache; see fetchAndStore.
+func storeFetch(remoteURL, repoPath, branch string, refs []models.PRRef, err error) Result {
 	if err != nil {
 		// A failed cache write must not fail the command; it is reported in
 		// WriteErr for callers that care.

@@ -31,6 +31,9 @@ type searchServer struct {
 	fail func(page, attempt int) int
 	// extra is merged into a served page's top level (say, an errors array).
 	extra func(page int) map[string]any
+	// cut, when it returns true for attempt n of page p, serves that
+	// attempt with HTTP 200 and only the first half of its body.
+	cut func(page, attempt int) bool
 
 	mu       sync.Mutex
 	attempts map[int]int
@@ -82,6 +85,11 @@ func (s *searchServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for k, v := range s.extra(page) {
 			resp[k] = v
 		}
+	}
+	if s.cut != nil && s.cut(page, attempt) {
+		body, _ := json.Marshal(resp)
+		_, _ = w.Write(body[:len(body)/2])
+		return
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -155,6 +163,58 @@ func TestSearchPullRequestsGivesUpAfterThreeRetries(t *testing.T) {
 	var apiErr *APIError
 	require.ErrorAs(t, err, &apiErr)
 	assert.Equal(t, 4, s.attempts[2], "one attempt and three retries")
+}
+
+// TestSearchPullRequestsRetriesCutOffPages: a page served with HTTP 200 but
+// a body cut off part way is retried like a 502, rather than failing the
+// whole set.
+func TestSearchPullRequestsRetriesCutOffPages(t *testing.T) {
+	s := &searchServer{cut: func(page, attempt int) bool { return page == 5 && attempt == 1 }}
+	for i := 1; i <= 110; i++ {
+		s.nodes = append(s.nodes, minimalPR("acme/api", i))
+	}
+	res, err := newSearchClient(t, s).SearchPullRequests(context.Background(), "q")
+	require.NoError(t, err)
+	require.Len(t, res.PRs, 110)
+	assert.Equal(t, 2, s.attempts[5], "the cut-off page was fetched again")
+	assert.Equal(t, 7, s.requests(), "6 pages plus one retry")
+}
+
+// TestSearchPullRequestsGivesUpOnPagesAlwaysCutOff: a page cut off on every
+// attempt fails the set after the usual three retries, naming the cause.
+func TestSearchPullRequestsGivesUpOnPagesAlwaysCutOff(t *testing.T) {
+	s := &searchServer{cut: func(page, _ int) bool { return page == 2 }}
+	for i := 1; i <= 30; i++ {
+		s.nodes = append(s.nodes, minimalPR("acme/api", i))
+	}
+	res, err := newSearchClient(t, s).SearchPullRequests(context.Background(), "q")
+	assert.Nil(t, res)
+	var incomplete *IncompleteResponseError
+	require.ErrorAs(t, err, &incomplete)
+	assert.Equal(t, http.StatusOK, incomplete.StatusCode)
+	assert.Contains(t, err.Error(), "unexpected end of JSON input")
+	assert.Contains(t, err.Error(), "on page 2 after 3 retries")
+	assert.Equal(t, 4, s.attempts[2])
+}
+
+// TestSearchPullRequestsRetriesGraphQLTimeouts: GitHub answers a query that
+// ran too long with HTTP 200, no data and a timeout error; that is retried.
+func TestSearchPullRequestsRetriesGraphQLTimeouts(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"data": null, "errors": [{"message": "Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug."}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"search":{"issueCount":1,"pageInfo":{"hasNextPage":false},"nodes":[` +
+			mustJSON(t, minimalPR("acme/api", 7)) + `]}}}`))
+	}))
+	defer srv.Close()
+	c := NewClient(WithBaseURL(srv.URL), WithToken("t"), WithRetryBackoff(0))
+	res, err := c.SearchPullRequests(context.Background(), "q")
+	require.NoError(t, err)
+	require.Len(t, res.PRs, 1)
+	assert.EqualValues(t, 2, calls.Load())
 }
 
 func TestSearchPullRequestsDoesNotRetryClientErrors(t *testing.T) {
@@ -292,6 +352,11 @@ const fullPRNode = `{
     {"__typename": "ReviewRequestedEvent", "createdAt": "2026-10-26T10:00:00Z", "requestedReviewer": {"__typename": "User", "login": "bob"}},
     {"__typename": "ReviewRequestedEvent", "createdAt": "2026-10-22T08:00:00Z", "requestedReviewer": {"__typename": "Team", "slug": "web"}}
   ]},
+  "closingIssuesReferences": {"nodes": [
+    {"number": 12, "repository": {"nameWithOwner": "acme/api"}},
+    {"number": 3, "repository": {"nameWithOwner": "acme/web"}},
+    null
+  ]},
   "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE", "contexts": {"totalCount": 7, "nodes": [
     {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://ci.example/1"},
     {"__typename": "CheckRun", "name": "vendor-hsm-tests", "status": "COMPLETED", "conclusion": "TIMED_OUT", "detailsUrl": "https://ci.example/2"},
@@ -329,6 +394,7 @@ func TestSearchPullRequestsFacts(t *testing.T) {
 	merged["commits"] = map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"statusCheckRollup": nil}}}}
 	merged["reviewRequests"] = map[string]any{"nodes": []any{}}
 	merged["latestReviews"] = map[string]any{"nodes": []any{}}
+	merged["closingIssuesReferences"] = map[string]any{"nodes": []any{}}
 	s := &searchServer{nodes: []any{full, minimalPR("acme/api", 102), draft, merged}}
 	res, err := newSearchClient(t, s).SearchPullRequests(context.Background(), "q")
 	require.NoError(t, err)
@@ -359,6 +425,7 @@ func TestSearchPullRequestsFacts(t *testing.T) {
 			{Name: "ci/legacy", State: "failure", URL: "https://ci.example/4"},
 		},
 		ChecksTruncated: true, // totalCount 7, 6 served
+		ClosingIssues:   []IssueRef{{Repo: "acme/api", Number: 12}, {Repo: "acme/web", Number: 3}},
 		Body:            "Fixes #12",
 	}
 	assert.Equal(t, want, res.PRs[0])
@@ -384,6 +451,7 @@ func TestSearchPullRequestsFacts(t *testing.T) {
 	b, err = json.Marshal(m)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), `"review_requests":[]`)
+	assert.Contains(t, string(b), `"closing_issues":[]`, "GitHub links no issue: an empty list, not unknown")
 	assert.NotContains(t, string(b), "body")
 }
 

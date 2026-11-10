@@ -50,6 +50,18 @@ var (
 	dashFixture string
 	// gh-101: the analysis table's sort, for --md.
 	dashSort string
+	// gh-96: how long --refresh waits for remote lookups.
+	dashRefreshTimeout = DefaultDashRefreshTimeout
+)
+
+// DefaultDashRefreshTimeout is how long wgo dash --refresh waits for remote
+// lookups by default.
+const DefaultDashRefreshTimeout = 60 * time.Second
+
+// Bounds of --refresh-timeout besides 0, which waits for every lookup.
+const (
+	minDashRefreshTimeout = time.Second
+	maxDashRefreshTimeout = time.Hour
 )
 
 // DefaultDashPort is the default loopback port `wgo dash` serves on.
@@ -82,7 +94,18 @@ workspace, and reads PR, PR inventory, Jira and GitHub issue data from
 wgo's caches only: anything not cached is reported as unknown. Add
 --refresh to also try to fetch the missing or stale remote data before
 printing; lookups that fail are listed in the output's diagnostics and make
-the command exit non-zero.
+the command exit non-zero. --refresh starts lookups for at most
+--refresh-timeout (default 60s; 0 waits for every lookup), PR inventory
+sets first, then prints what it has: the lookups left are listed as not
+run, not as failed, and the running ones are cancelled. PR inventory
+fetches already running get up to twice that again to finish, so a large
+set is cached rather than lost; one still running then is cancelled, and
+the github_inventory source says so. The command exits within about
+three times the timeout.
+Once acli turns out to be logged out, the remaining Jira lookups are
+skipped instead: one diagnostic says so, the jira source is in error with
+the reason, and the exit status is unaffected. The served dashboard then
+pauses Jira lookups for 5 minutes, doubling up to 30, until one succeeds.
 
 The page's buttons open a workspace in a new Ghostty tab (or the terminal
 configured in [dash]), resume an agent there, open it in an editor or
@@ -163,6 +186,7 @@ func init() {
 	dashCmd.Flags().BoolVar(&dashJSON, "json", false, "print the snapshot and delta as JSON")
 	dashCmd.Flags().IntVar(&dashDays, "days", dash.DefaultDays, "activity window in days")
 	dashCmd.Flags().BoolVar(&dashRefresh, "refresh", false, "with --json, also fetch missing or stale PR, PR inventory, Jira and GitHub issue data")
+	dashCmd.Flags().Var(secondsFlag{&dashRefreshTimeout}, "refresh-timeout", "with --refresh, start remote lookups for at most this long, then print what was fetched (seconds, or a duration such as 2m; 0 waits for every lookup); PR inventory fetches already running get up to twice as long again")
 	dashCmd.Flags().IntVar(&dashPort, "port", DefaultDashPort, "loopback port to serve the dashboard on")
 	dashCmd.Flags().BoolVar(&dashNoOpen, "no-open", false, "serve without opening a browser")
 	dashCmd.Flags().StringVar(&dashQuery, "query", "", "filter with a query: with --json add the matches and keep only what it shows, with --md choose the rows, alone open the dashboard at it")
@@ -192,6 +216,13 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	}
 	if dashRefresh && !dashJSON && !dashMD {
 		return errors.New("--refresh only applies with --json or --md; the dashboard server refreshes remote data in the background by itself. Run wgo dash --json --refresh to print a refreshed snapshot")
+	}
+	if flagChanged("refresh-timeout") && !dashRefresh {
+		return fmt.Errorf("--refresh-timeout only applies with --refresh, which it bounds; run wgo dash --json --refresh --refresh-timeout %s", FormatDashTimeout(dashRefreshTimeout))
+	}
+	if t := dashRefreshTimeout; t != 0 && (t < minDashRefreshTimeout || t > maxDashRefreshTimeout) {
+		return fmt.Errorf("--refresh-timeout must be 0 (wait for every lookup) or between %s and %s, got %s; for example --refresh-timeout %s",
+			FormatDashTimeout(minDashRefreshTimeout), FormatDashTimeout(maxDashRefreshTimeout), FormatDashTimeout(t), FormatDashTimeout(DefaultDashRefreshTimeout))
 	}
 	if flagChanged("query") && dashPreset != "" {
 		return errors.New("give --query or --preset, not both: --preset NAME stands for --query with that saved filter's expression")
@@ -361,7 +392,9 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		})
 	}
 	if dashRefresh {
-		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, Queue: dashQueue, IgnoreLeases: true})
+		// One waited-for batch: queue it whole (see dashQueue). Exit soon
+		// after the output, rather than when the slowest lookup ends.
+		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, Queue: dashQueue, IgnoreLeases: true, CloseWait: dashCloseWait})
 		defer r.Close()
 		opts.Refresher = r
 	}
@@ -369,7 +402,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	if err != nil {
 		return err
 	}
-	refreshErr := d.Refresh(ctx, dash.RefreshOptions{Remote: dashRefresh, Wait: true})
+	refreshErr := d.Refresh(ctx, dash.RefreshOptions{Remote: dashRefresh, Wait: true, Timeout: dashRefreshTimeout})
 	v := d.Current()
 	if v == nil {
 		if refreshErr != nil {
@@ -385,6 +418,45 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	// error makes it visible to scripts through the exit status.
 	return refreshErr
 }
+
+// secondsFlag is a duration flag that also takes a bare number of seconds,
+// so --refresh-timeout 90 means 90s.
+type secondsFlag struct{ d *time.Duration }
+
+func (f secondsFlag) String() string {
+	if f.d == nil {
+		return ""
+	}
+	return FormatDashTimeout(*f.d)
+}
+
+func (f secondsFlag) Set(s string) error {
+	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+		*f.d = time.Duration(n) * time.Second
+		return nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(s))
+	if err != nil {
+		return errors.New("want a number of seconds (90) or a duration (90s, 2m)")
+	}
+	*f.d = d
+	return nil
+}
+
+func (secondsFlag) Type() string { return "duration" }
+
+// FormatDashTimeout writes a duration as --refresh-timeout takes it, "0"
+// for none, as the diagnostics do (dash.FormatSeconds).
+func FormatDashTimeout(d time.Duration) string {
+	if d == 0 {
+		return "0"
+	}
+	return dash.FormatSeconds(d)
+}
+
+// dashCloseWait is how long wgo dash --json --refresh waits, once its
+// output is written, for the lookups it cancelled to stop.
+const dashCloseWait = time.Second
 
 // dashQueue bounds a refresh's pending lookups. The PR inventory can bring a
 // few hundred PRs, each naming a ticket to look up, and two full sprints'
@@ -516,6 +588,7 @@ func dashFetchers() dash.Fetchers {
 	if _, err := exec.LookPath("acli"); err == nil {
 		f.Jira = jiraFetcherFn()
 		f.Sprints = sprintFetcherFn()
+		f.JiraLogin = jiraLoginFn
 	} else {
 		f.Missing[dash.JobJira] = "acli not on PATH"
 		f.Missing[dash.JobSprints] = "acli not on PATH"
@@ -880,7 +953,13 @@ type ghIssueFetcher struct {
 
 // FetchIssue implements issuecache.Fetcher.
 func (g ghIssueFetcher) FetchIssue(k issuecache.Key) (issuecache.Info, error) {
-	is, err := g.c.GetIssue(k.Owner, k.Repo, k.Number)
+	return g.FetchIssueContext(context.Background(), k)
+}
+
+// FetchIssueContext implements issuecache.ContextFetcher: FetchIssue,
+// abandoned when ctx is done.
+func (g ghIssueFetcher) FetchIssueContext(ctx context.Context, k issuecache.Key) (issuecache.Info, error) {
+	is, err := g.c.GetIssueContext(ctx, k.Owner, k.Repo, k.Number)
 	if err != nil {
 		return issuecache.Info{}, err
 	}

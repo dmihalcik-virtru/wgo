@@ -4,7 +4,9 @@
 package jira
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -77,6 +79,37 @@ func CheckAuth() error {
 	return nil
 }
 
+// ErrNotLoggedIn says acli is not logged in to Jira, or its login expired.
+var ErrNotLoggedIn = errors.New("acli is not authenticated: run `acli jira auth login`")
+
+// IsAuthError reports whether acli's output, or an error carrying it, says
+// acli is not logged in or its login expired. acli 1.3 prints "unauthorized:
+// use 'acli jira auth login' to authenticate" (or "acli [product] auth
+// login") for auth status, searches and sprint lists. `workitem view` says
+// only "failed to fetch work item details", which a missing ticket may say
+// too; LoginStatus tells those apart.
+func IsAuthError(msg string) bool {
+	s := strings.ToLower(msg)
+	return strings.Contains(s, "unauthorized") || strings.Contains(s, "auth login") ||
+		strings.Contains(s, "not authenticated") || strings.Contains(s, "unauthenticated")
+}
+
+// LoginStatus runs `acli jira auth status`, stopped when ctx is done. It
+// returns nil when acli is logged in, an error wrapping ErrNotLoggedIn when
+// acli says it is not, and another error when acli failed without saying
+// (no network, say).
+func LoginStatus(ctx context.Context) error {
+	out, err := runContext(ctx, "auth", "status")
+	if IsAuthError(out) {
+		// Whatever the exit status: an acli that says so is logged out.
+		return ErrNotLoggedIn
+	}
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("acli jira auth status: %w: %s", err, strings.Join(strings.Fields(out), " "))
+}
+
 // SiteHost returns the Jira site host (e.g. "virtru.atlassian.net") parsed from
 // `acli jira auth status`. It lets callers build browse/board URLs without any
 // configuration. Returns an error if not authenticated or the site cannot be found.
@@ -99,6 +132,11 @@ func SiteHost() (string, error) {
 // for the acli default (active). When paginate is true all pages are fetched —
 // necessary for closed sprints, which acli returns oldest-first across many pages.
 func ListSprints(boardID int, state string, paginate bool) ([]Sprint, error) {
+	return ListSprintsContext(context.Background(), boardID, state, paginate)
+}
+
+// ListSprintsContext is ListSprints, stopped when ctx is done.
+func ListSprintsContext(ctx context.Context, boardID int, state string, paginate bool) ([]Sprint, error) {
 	args := []string{"board", "list-sprints", "--id", fmt.Sprintf("%d", boardID), "--json"}
 	if state != "" {
 		args = append(args, "--state", state)
@@ -106,7 +144,7 @@ func ListSprints(boardID int, state string, paginate bool) ([]Sprint, error) {
 	if paginate {
 		args = append(args, "--paginate")
 	}
-	out, err := run(args...)
+	out, err := runContext(ctx, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list sprints for board %d: %w\n%s", boardID, err, out)
 	}
@@ -189,7 +227,12 @@ func GetIssue(ticket string) (*Issue, error) {
 // comma-separated --fields value, such as FactFields) requested. Parse it
 // with ParseFacts.
 func GetIssueJSON(ticket, fields string) ([]byte, error) {
-	out, err := run("workitem", "view", ticket, "--json", "--fields", fields)
+	return GetIssueJSONContext(context.Background(), ticket, fields)
+}
+
+// GetIssueJSONContext is GetIssueJSON, stopped when ctx is done.
+func GetIssueJSONContext(ctx context.Context, ticket, fields string) ([]byte, error) {
+	out, err := runContext(ctx, "workitem", "view", ticket, "--json", "--fields", fields)
 	if err != nil {
 		return nil, fmt.Errorf("get issue %s: %w\n%s", ticket, err, out)
 	}
@@ -203,11 +246,16 @@ func GetIssueJSON(ticket, fields string) ([]byte, error) {
 // per page, and every page is read. acli may return more than limit, so a
 // caller that bounds its results cuts them itself.
 func SearchIssuesJSON(jql string, fields []string, limit int) ([]json.RawMessage, error) {
+	return SearchIssuesJSONContext(context.Background(), jql, fields, limit)
+}
+
+// SearchIssuesJSONContext is SearchIssuesJSON, stopped when ctx is done.
+func SearchIssuesJSONContext(ctx context.Context, jql string, fields []string, limit int) ([]json.RawMessage, error) {
 	args := []string{"workitem", "search", "--jql", jql, "--json", "--paginate", "--limit", fmt.Sprintf("%d", limit)}
 	if len(fields) > 0 {
 		args = append(args, "--fields", strings.Join(fields, ","))
 	}
-	out, err := run(args...)
+	out, err := runContext(ctx, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search issues: %w\n%s", err, out)
 	}
@@ -359,8 +407,19 @@ func MapSpecStatus(specStatus string) string {
 // run executes `acli jira <args>` and returns stdout. Stderr is included in
 // any returned error so auth failures are surfaced clearly.
 func run(args ...string) (string, error) {
+	return runContext(context.Background(), args...)
+}
+
+// acliWaitDelay bounds how long a cancelled acli call may hold on to its
+// output once killed (a child process it started could keep the pipes
+// open).
+const acliWaitDelay = 2 * time.Second
+
+// runContext is run, killing acli when ctx is done.
+func runContext(ctx context.Context, args ...string) (string, error) {
 	fullArgs := append([]string{"jira"}, args...)
-	cmd := exec.Command("acli", fullArgs...)
+	cmd := exec.CommandContext(ctx, "acli", fullArgs...)
+	cmd.WaitDelay = acliWaitDelay
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

@@ -73,7 +73,7 @@ func (t *remoteTally) add(f Freshness, fetchedAt time.Time) {
 func (t remoteTally) status() SourceStatus {
 	s := t.SourceStatus
 	s.State = aggregate(s)
-	if s.Fresh+s.Stale+s.Unknown+s.Error == 0 {
+	if s.Fresh+s.Stale+s.Unknown+s.Error+s.NotFound == 0 {
 		s.Detail = "nothing to look up"
 	}
 	return s
@@ -461,11 +461,18 @@ func (c *Collector) ticketNodeFor(b *builder, ticket, repoName, repoSlug, noGitH
 		}
 		if ti.Freshness.hasData() {
 			ti.Status, ti.Title, ti.URL = res.Info.State, res.Info.Title, res.Info.URL
+			if res.NotFound {
+				ti.Status, ti.NotFound = TicketNotFound, true
+			}
 		}
 		if ti.URL == "" {
 			ti.URL = "https://github.com/" + repoSlug + "/issues/" + n
 		}
-		issues.add(ti.Freshness, res.FetchedAt)
+		if ti.NotFound && ti.Freshness == Fresh {
+			issues.NotFound++
+		} else {
+			issues.add(ti.Freshness, res.FetchedAt)
+		}
 		if ti.Freshness != Fresh {
 			addJob(Job{Kind: JobIssue, Issue: k})
 		}

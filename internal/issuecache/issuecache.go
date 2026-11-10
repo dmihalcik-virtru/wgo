@@ -12,10 +12,12 @@
 package issuecache
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -56,7 +58,14 @@ type entry struct {
 	FetchedAt     time.Time `json:"fetched_at,omitzero"`
 	LastAttemptAt time.Time `json:"last_attempt_at,omitzero"`
 	LastError     string    `json:"last_error,omitempty"`
+	// NotFound records that GitHub answered, at FetchedAt, that the issue
+	// does not exist or the token cannot see it (HTTP 404 or 410).
+	NotFound bool `json:"not_found,omitempty"`
 }
+
+// NotFoundTTL is how long a "not found" answer stays fresh, whatever TTL a
+// reader asks for: an issue number that names nothing seldom starts to.
+const NotFoundTTL = 24 * time.Hour
 
 // Result is what a lookup served plus its provenance.
 type Result struct {
@@ -68,6 +77,10 @@ type Result struct {
 	// last-known-good Info. After Refresh it can also accompany fresh data,
 	// meaning the fetch worked but the result could not be cached.
 	Err error
+	// NotFound is set when GitHub's answer was that the issue does not
+	// exist or the token cannot see it. Info is then empty; State says how
+	// fresh the answer is, by NotFoundTTL.
+	NotFound bool
 }
 
 // Key identifies an issue.
@@ -86,9 +99,12 @@ func Read(k Key, ttl time.Duration) Result {
 	if !ok {
 		return Result{State: Miss}
 	}
-	r := Result{Info: e.Info, FetchedAt: e.FetchedAt, LastAttemptAt: e.LastAttemptAt}
+	r := Result{Info: e.Info, FetchedAt: e.FetchedAt, LastAttemptAt: e.LastAttemptAt, NotFound: e.NotFound}
 	if e.LastError != "" {
 		r.Err = errors.New(e.LastError)
+	}
+	if e.NotFound {
+		ttl = NotFoundTTL
 	}
 	switch {
 	case e.FetchedAt.IsZero():
@@ -134,6 +150,15 @@ func Write(k Key, info Info) error {
 	return writeEntry(k, entry{Info: info, FetchedAt: now, LastAttemptAt: now})
 }
 
+// WriteNotFound stores GitHub's answer that the issue does not exist or the
+// token cannot see it, replacing any earlier data.
+func WriteNotFound(k Key) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	now := time.Now()
+	return writeEntry(k, entry{Info: Info{Number: k.Number}, FetchedAt: now, LastAttemptAt: now, NotFound: true})
+}
+
 // WriteFailure records a failed attempt, keeping any earlier good data.
 func WriteFailure(k Key, cause error) error {
 	writeMu.Lock()
@@ -174,17 +199,53 @@ type Fetcher interface {
 	FetchIssue(k Key) (Info, error)
 }
 
+// ContextFetcher is a Fetcher whose lookup also stops when a context is
+// done; RefreshContext prefers it.
+type ContextFetcher interface {
+	FetchIssueContext(ctx context.Context, k Key) (Info, error)
+}
+
 // Refresh fetches the issue now and writes the result through the cache. It
 // is for background workers and explicit refreshes only, never a read path.
 //
 // Result.Err can be set in two shapes: with State == Fresh, when the fetch
 // succeeded but the cache write failed (the data is valid, not persisted); or
 // alongside prior stale data, when the fetch itself failed.
+//
+// GitHub answering 404 or 410 is no failure but an answer: the issue does
+// not exist, or the token cannot see it. It is cached as a fresh
+// Result.NotFound for NotFoundTTL.
 func Refresh(f Fetcher, k Key) Result {
+	return RefreshContext(context.Background(), f, k)
+}
+
+// RefreshContext is Refresh through f's FetchIssueContext when it has one. A
+// lookup cut short because ctx is done records nothing.
+func RefreshContext(ctx context.Context, f Fetcher, k Key) Result {
 	if f == nil {
 		return Read(k, 0)
 	}
-	info, err := f.FetchIssue(k)
+	var info Info
+	var err error
+	if cf, ok := f.(ContextFetcher); ok {
+		info, err = cf.FetchIssueContext(ctx, k)
+	} else {
+		info, err = f.FetchIssue(k)
+	}
+	if err != nil && ctx.Err() != nil {
+		prior := Read(k, 0)
+		prior.Err = err
+		return prior
+	}
+	if notFound(err) {
+		now := time.Now()
+		res := Result{Info: Info{Number: k.Number}, State: Fresh, FetchedAt: now, LastAttemptAt: now, NotFound: true}
+		if werr := WriteNotFound(k); werr != nil {
+			logf("issue cache: write %s: %v", k, werr)
+			res.Err = fmt.Errorf("issue cache write: %w", werr)
+		}
+		return res
+	}
 	if err != nil {
 		prior := Read(k, 0)
 		prior.Err = err
@@ -207,6 +268,13 @@ func Refresh(f Fetcher, k Key) Result {
 		res.Err = fmt.Errorf("issue cache write: %w", werr)
 	}
 	return res
+}
+
+// notFound reports whether err is GitHub saying the issue does not exist or
+// the token cannot see it: HTTP 404, or 410 for a deleted issue.
+func notFound(err error) bool {
+	var apiErr *github.APIError
+	return errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusGone)
 }
 
 // LockRefresh takes the refresh lease for k, returning false while another
