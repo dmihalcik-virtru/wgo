@@ -29,7 +29,7 @@ func TestFindRepoCandidateOrphanedWorkspaces(t *testing.T) {
 		},
 	}
 
-	got, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll})
+	got, _, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll})
 	require.NoError(t, err)
 	require.Len(t, got, 2, "rig workspaces stay owned by `wgo rig rm`, even orphaned")
 
@@ -63,9 +63,87 @@ func TestFindRepoCandidateOrphanIsNeverClassified(t *testing.T) {
 		return removeAll(ref)
 	}
 
-	got, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: classify})
+	got, _, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: classify})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, KindOrphanWorkspace, got[0].Kind)
 	assert.Empty(t, got[0].Branch)
+}
+
+func TestFindRepoCandidateOrphanDoesNotHideLocalBookmark(t *testing.T) {
+	repoPath := liveWorkspace(t, t.TempDir(), "main")
+	jjc := &stubJJ{
+		workspaces: []jj.Workspace{
+			{Name: "default", Path: repoPath},
+			{Name: "gone", CommitID: "same-commit"},
+		},
+		local: []jj.Bookmark{{Name: "feature", CommitID: "same-commit"}},
+	}
+
+	for _, pass := range []repoPass{
+		{workspaces: true, bookmarks: true, classify: removeAll},
+		{bookmarks: true},
+	} {
+		got, _, warnings, err := findRepoCandidate(repoPath, jjc, nil, pass)
+		require.NoError(t, err)
+		assert.Empty(t, warnings)
+		assert.Equal(t, cleanupKinds(pass.workspaces), candidateKinds(got))
+	}
+}
+
+func cleanupKinds(withWorkspaces bool) []CandidateKind {
+	if withWorkspaces {
+		return []CandidateKind{KindOrphanWorkspace, KindLocalBranch}
+	}
+	return []CandidateKind{KindLocalBranch}
+}
+
+func candidateKinds(candidates []Candidate) []CandidateKind {
+	kinds := make([]CandidateKind, len(candidates))
+	for i, c := range candidates {
+		kinds[i] = c.Kind
+	}
+	return kinds
+}
+
+func TestFindRepoCandidateLiveWorkspaceCoversBookmark(t *testing.T) {
+	home := t.TempDir()
+	repoPath := liveWorkspace(t, home, "main")
+	wsPath := liveWorkspace(t, home, "feature")
+	jjc := &stubJJ{
+		workspaces: []jj.Workspace{
+			{Name: "default", Path: repoPath},
+			{Name: "feature", Path: wsPath, CommitID: "same-commit"},
+		},
+		local: []jj.Bookmark{{Name: "feature", CommitID: "same-commit"}},
+	}
+
+	got, _, _, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, KindWorktree, got[0].Kind)
+}
+
+func TestFindRepoCandidateUncheckableWorkspaceWarnsAndKeepsBookmark(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	home := t.TempDir()
+	repoPath := liveWorkspace(t, home, "main")
+	locked := liveWorkspace(t, home, "locked")
+	require.NoError(t, os.Chmod(locked, 0))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	jjc := &stubJJ{
+		workspaces: []jj.Workspace{
+			{Name: "default", Path: repoPath},
+			{Name: "locked", Path: locked, CommitID: "same-commit"},
+		},
+		local: []jj.Bookmark{{Name: "feature", CommitID: "same-commit"}},
+	}
+
+	got, _, warnings, err := findRepoCandidate(repoPath, jjc, nil, repoPass{workspaces: true, bookmarks: true, classify: removeAll})
+	require.NoError(t, err)
+	assert.Empty(t, got)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], `skipped workspace "locked"`)
 }

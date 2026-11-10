@@ -327,6 +327,33 @@ func TestMissingWorkspaceDirIsReported(t *testing.T) {
 	}
 }
 
+func TestMissingRigWorkspaceDoesNotSuggestClean(t *testing.T) {
+	f := newFixture(t)
+	if err := os.RemoveAll(f.ws); err != nil {
+		t.Fatal(err)
+	}
+	c := f.collector(t, time.Now(), memSource{})
+	rigDir, err := filepath.EvalSymlinks(filepath.Dir(f.ws))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.cfg.RigDir = rigDir
+	ls, err := c.collectLocal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := c.assemble(ls)
+	for _, d := range s.Diagnostics {
+		if strings.Contains(d, `workspace "two"`) && strings.Contains(d, "workspace forget two") {
+			if !strings.Contains(d, "rig workspace") || strings.Contains(d, "wgo clean --worktrees") {
+				t.Fatalf("rig workspace suggested the wrong cleanup command: %s", d)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing rig workspace was not reported: %v", s.Diagnostics)
+}
+
 // gatedPRs counts PR fetches and blocks each until release is closed.
 type gatedPRs struct {
 	release chan struct{}

@@ -17,6 +17,7 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/plan"
+	"github.com/virtru/wgo/internal/rig"
 	"github.com/virtru/wgo/internal/store"
 )
 
@@ -41,6 +42,8 @@ type Config struct {
 	PRTTL, JiraTTL, IssueTTL time.Duration
 	// JiraSite is the Jira host used for browse links, when configured.
 	JiraSite string
+	// RigDir identifies rig-owned workspaces, which wgo clean leaves alone.
+	RigDir string
 	// Now is the clock (time.Now when nil).
 	Now func() time.Time
 	// People is [[dash.people]] and Pair is [pair]'s teammate, both without
@@ -239,8 +242,12 @@ func (c *Collector) discoverWorkspaces() (workspaceSet, error) {
 					continue
 				}
 				if orphaned {
-					set.diags = append(set.diags, fmt.Sprintf("repo %s: workspace %q is listed by jj but %s; if it was deleted, run: wgo clean --worktrees (or: jj -R %s workspace forget %s)",
-						main, w.Name, reason, main, w.Name))
+					fix := fmt.Sprintf("wgo clean --worktrees (or: jj -R %s workspace forget %s)", main, w.Name)
+					if rig.IsWorkspace(c.cfg.RigDir, w.Path, w.Name) {
+						fix = fmt.Sprintf("jj -R %s workspace forget %s (rig workspace; wgo clean leaves it alone)", main, w.Name)
+					}
+					set.diags = append(set.diags, fmt.Sprintf("repo %s: workspace %q is listed by jj but %s; if it was deleted, run: %s",
+						main, w.Name, reason, fix))
 					continue
 				}
 				add(w.Path, main)
