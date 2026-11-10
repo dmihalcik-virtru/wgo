@@ -347,24 +347,10 @@
       return !(Array.isArray(facts.reasons) ? facts.reasons : []).some(function (r) { return r && r.code === "changes_requested"; });
     };
 
-    // moveWord is the Move column: the word, "you" when the move is the
-    // operator's (move_people holds @me), and mine to earn the accent.
-    T.moveWord = function (facts, me) {
-      var m = facts && typeof facts.move === "string" ? facts.move : "";
-      if (!m || m === "unknown") return { word: "unknown", move: "unknown", mine: false, unknown: true };
-      var meL = String(me || "").toLowerCase(), people = facts && Array.isArray(facts.move_people) ? facts.move_people : [];
-      var mine = !!meL && people.some(function (p) { return String(p).toLowerCase() === meL; });
-      return { word: mine ? "you" : m, move: m, mine: mine, unknown: false };
-    };
-    // moveTitle is the details behind the word: who holds it and why.
-    T.moveTitle = function (facts) {
-      if (!facts) return "Whose move is unknown: no derived facts for this PR";
-      var lines = [];
-      if (Array.isArray(facts.move_people) && facts.move_people.length) lines.push("Held by " + facts.move_people.join(", "));
-      (Array.isArray(facts.reasons) ? facts.reasons : []).forEach(function (r) { if (r && r.code) lines.push(String(r.code).replace(/_/g, " ") + (r.evidence ? ": " + r.evidence : "")); });
-      if (Array.isArray(facts.uncertain) && facts.uncertain.length) lines.push("Uncertain: " + facts.uncertain.join(", "));
-      return lines.join("\n");
-    };
+    // moveWord and moveTitle, the Move column's word and the details behind
+    // it, are WGOLive's: the sprint view's PR tooltips use them too.
+    T.moveWord = L.moveWord;
+    T.moveTitle = L.moveTitle;
     return T;
   }
 

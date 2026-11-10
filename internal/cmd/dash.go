@@ -131,6 +131,13 @@ every view is a link; the same text works here:
                                              (-waiting,size: the table's
                                              order, unknown last)
   wgo dash --md --preset NAME                the same for a saved filter
+  wgo dash --md --view sprint [--sprint ID]  summarize an active sprint
+                                             (default: the one with the
+                                             most tickets for the
+                                             configured people): goal,
+                                             dates, points by status and
+                                             Jira mismatches; --query
+                                             limits the mismatches listed
 
 Saved filters are built in (my-move, review-inbox, shipped, … — each hidden
 until the fields it needs exist) or named under [dash.filters] in
@@ -164,8 +171,8 @@ func init() {
 	dashCmd.Flags().StringVar(&dashCols, "cols", "", "with --md, comma-separated fields to show per row, e.g. prstate,repo")
 	dashCmd.Flags().StringVar(&dashGroup, "group", "", "with --md, section the rows by effort (default), repo or none")
 	dashCmd.Flags().StringVar(&dashLayout, "layout", "", "with --md, bullets (default) or table")
-	dashCmd.Flags().StringVar(&dashView, "view", "", "with --md, the extract view: rows (default); sprint arrives with the sprint view")
-	dashCmd.Flags().StringVar(&dashSprint, "sprint", "", "with --md --view sprint, the sprint to summarize (arrives with the sprint view)")
+	dashCmd.Flags().StringVar(&dashView, "view", "", "with --md, the extract view: rows (default) or sprint (an active sprint's summary)")
+	dashCmd.Flags().StringVar(&dashSprint, "sprint", "", "with --md --view sprint, the ID of the active sprint to summarize (default: the one with the most tickets for the configured people)")
 	dashCmd.Flags().StringVar(&dashSort, "sort", "", "with --md, sort rows by these fields as the table does, e.g. -waiting,size (- sorts descending; unknown values sort last)")
 	// --fixture serves or prints a saved snapshot instead of collecting one:
 	// for screenshots and for comparing the CLI with the page. Hidden.

@@ -23,7 +23,10 @@ type ExtractArgs struct {
 	Group string
 	// Layout is bullets (the default) or table (GitHub-flavoured Markdown).
 	Layout string
-	// View is rows (the default). gh-105 adds sprint, with Sprint naming one.
+	// View is rows (the default) or sprint (gh-105), the summary of the
+	// active sprint Sprint names by ID, or by default of the one with the
+	// most tickets for the configured people. Cols, Group, Layout and Sort
+	// apply to rows only.
 	View   string
 	Sprint string
 	// Sort orders the rows by query fields, each optionally prefixed with
@@ -52,14 +55,14 @@ type extractInput struct {
 	filters []SavedFilter
 }
 
-// extractRenderers maps each extract view to its renderer. gh-105 registers
-// "sprint" here, beside "rows".
+// extractRenderers maps each extract view to its renderer.
 var extractRenderers = map[string]func(*extractInput) (string, error){
-	"rows": renderRows,
+	"rows":   renderRows,
+	"sprint": renderSprint, // gh-105, extract_sprint.go
 }
 
-// pendingViews names extract views a later spec provides.
-var pendingViews = map[string]string{"sprint": "gh-105 (the sprint view)"}
+// pendingViews names extract views a later spec provides, with that spec.
+var pendingViews = map[string]string{}
 
 // Extract renders v's snapshot as Markdown for args, resolving saved filter
 // names for the heading from filters.
@@ -93,13 +96,26 @@ func CheckExtractArgs(reg *Registry, args ExtractArgs) error {
 		if owner, pending := pendingViews[view]; pending {
 			return extractArgsError("the %s view is not available yet: it arrives with %s. The rows view (the default) is available", view, owner)
 		}
-		return extractArgsError("unknown view %q; the available view is rows", view)
+		return extractArgsError("unknown view %q; the available views are %s", view, strings.Join(slices.Sorted(maps.Keys(extractRenderers)), " and "))
 	}
 	if args.Sprint != "" && view != "sprint" {
-		if _, ok := extractRenderers["sprint"]; !ok {
-			return extractArgsError("a sprint is chosen for the sprint view, which is not available yet: it arrives with %s", pendingViews["sprint"])
+		return extractArgsError("a sprint only applies to the sprint view; ask for view sprint (--view sprint) to summarize sprint %s", args.Sprint)
+	}
+	if view == "sprint" {
+		// The summary has fixed sections; rows' options do not apply.
+		for _, o := range []struct {
+			name string
+			set  bool
+		}{{"cols", len(args.Cols) > 0}, {"group", args.Group != ""}, {"layout", args.Layout != ""}, {"sort", len(args.Sort) > 0}} {
+			if o.set {
+				return extractArgsError("%s only applies to the rows view; the sprint view's summary has fixed sections", o.name)
+			}
 		}
-		return extractArgsError("a sprint only applies to the sprint view")
+		if args.Sprint != "" {
+			_, err := parseSprintArg(args.Sprint)
+			return err
+		}
+		return nil
 	}
 	switch args.Group {
 	case "", "effort", "none":
@@ -200,6 +216,12 @@ func (x *extractInput) url(i int) string {
 	if u == "" {
 		u = x.str(i, "ticket.url")
 	}
+	return safeMDURL(u)
+}
+
+// safeMDURL is u when it is an http(s) URL, escaped for a Markdown link
+// target; else "".
+func safeMDURL(u string) string {
 	l := strings.ToLower(u)
 	if !strings.HasPrefix(l, "https://") && !strings.HasPrefix(l, "http://") {
 		return ""
@@ -373,6 +395,13 @@ func (x *extractInput) writeFooter(b *strings.Builder) {
 	if len(x.args.Sort) > 0 {
 		b.WriteString("Sort: " + mdCode(strings.Join(x.args.Sort, ",")) + " (unknown values last)\n\n")
 	}
+	x.writeSources(b)
+}
+
+// writeSources ends a footer: each source's freshness, then the query's
+// warnings.
+func (x *extractInput) writeSources(b *strings.Builder) {
+	s := x.v.Snapshot
 	var parts []string
 	for _, name := range slices.Sorted(maps.Keys(s.Sources)) {
 		st := s.Sources[name]
