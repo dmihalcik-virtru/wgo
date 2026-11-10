@@ -1,0 +1,48 @@
+/* wgo dash scatterplot (live-scatter.js, spec/gh-103.md). Inlined after
+ * style.css and live.css as the addon's own stylesheet, reusing their tokens.
+ * Marks are neutral (--muted, 10 px, with a 1.5 px surface ring so overlaps
+ * stay legible); the accent fills only "your move" marks, which also carry a
+ * surface dot so they read in grey scale; the critical red is only the × of
+ * a failing CI; an unknown move is a hollow ring. Gridlines are solid
+ * hairlines; the median lines, the one dashed stroke, are reference lines. */
+.viewwrap.scatter-host { padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.viewwrap.scatter-host[hidden] { display: none; }
+.sc-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 5px 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--ink2); }
+.sc-bar label { display: inline-flex; align-items: center; gap: 4px; }
+.sc-bar select { font: inherit; padding: 1px 4px; border: 1px solid var(--axis); border-radius: 6px; background: var(--plane); color: var(--ink); }
+.sc-bar button { font-size: 12px; padding: 1px 8px; }
+.sc-bar button[disabled] { opacity: .45; cursor: default; }
+.sc-bar .sc-sum { margin-left: auto; }
+.sc-key { display: flex; flex-wrap: wrap; gap: 2px 14px; padding: 3px 12px 4px; font-size: 11px; color: var(--ink2); border-bottom: 1px solid var(--grid); }
+.sc-key .sc-ki { display: inline-flex; align-items: center; gap: 3px; }
+.sc-key svg { flex: none; overflow: visible; }
+.sc-chart { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.sc-chart > svg, .sc-chart > canvas { position: absolute; left: 0; top: 0; }
+.sc-chart .sc-over { touch-action: none; cursor: crosshair; }
+.sc-chart .sc-over.hot { cursor: pointer; }
+.sc-chart .sc-empty { position: absolute; left: 110px; top: 16px; margin: 0; font-size: 12px; }
+.sc-chart .sc-empty[hidden] { display: none; }
+.sc-grid { stroke: var(--grid); stroke-width: 1; }
+.sc-axis { stroke: var(--axis); stroke-width: 1; }
+.sc-tick { fill: var(--ink2); font-size: 10px; font-variant-numeric: tabular-nums; }
+.sc-title { fill: var(--ink2); font-size: 11px; }
+.sc-strip { fill: color-mix(in srgb, var(--ink) 4%, var(--surface)); }
+.sc-stripl { fill: var(--ink2); font-size: 10px; font-style: italic; }
+.sc-med { stroke: var(--ink2); stroke-width: 1; stroke-dasharray: 4 3; }
+.sc-medl { fill: var(--ink2); font-size: 10px; }
+.sc-mk .b { fill: var(--muted); stroke: var(--surface); stroke-width: 1.5px; }
+.sc-mk.s-ring .b { fill: var(--surface); stroke: var(--ink2); stroke-width: 1.6px; }
+.sc-mk.mine .b { fill: var(--accent); }
+.sc-mk .dot { fill: var(--surface); }
+.sc-mk .x, .sc-key .x { fill: none; stroke: var(--s-critical); stroke-width: 1.8px; stroke-linecap: round; }
+.sc-mk .xh { fill: none; stroke: var(--surface); stroke-width: 4px; stroke-linecap: round; }
+.sc-marks .sc-mk:focus { outline: none; }
+.sc-marks .sc-mk:focus .b, .sc-marks .sc-mk:focus .pr { stroke: var(--ink); stroke-width: 2.5px; }
+.sc-proxy .pr { fill: none; stroke: none; }
+.sc-selring { fill: none; stroke: var(--ink); stroke-width: 2px; }
+.sc-hovring { fill: none; stroke: var(--ink2); stroke-width: 1px; }
+.sc-lbl { fill: var(--ink); font-size: 11px; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
+.sc-lbl.sel { font-weight: 600; }
+.sc-brush { fill: color-mix(in srgb, var(--ink) 6%, transparent); stroke: var(--ink2); stroke-width: 1px; stroke-dasharray: 3 2; }
+.sc-brushl { fill: var(--ink2); font-size: 10px; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
+.sc-tip .dim { white-space: pre-line; }

@@ -75,6 +75,9 @@ var liveAddons = []liveAddon{
 	{Script: "web/live-table.js", Style: "web/live-table.css"}, // gh-101: the analysis table, replacing the built-in one
 	// gh-102: linked filters, the attention summary and the overview charts.
 	{Script: "web/live-facets.js", Style: "web/live-facets.css"},
+	// gh-103: the scatterplot of PRs and the CI grid.
+	{Script: "web/live-scatter.js", Style: "web/live-scatter.css"},
+	{Script: "web/live-cigrid.js", Style: "web/live-cigrid.css"},
 }
 
 // liveAddonFiles returns the addons' scripts and stylesheets, in order.

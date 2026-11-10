@@ -822,9 +822,9 @@ test("facets: coupled counts ignore the facet's own clauses and honour all other
   // counts only acme/api's (the repo clause holds).
   const qm = FX.queryMasks(aix, "repo:acme/api;prstate:open");
   const repo = FX.facetCounts(FX.fieldIndex(aix, "repo"), FX.others(qm, "repo"), null).values.find((v) => v.key === "acme/web");
-  assert.deepEqual([repo.coupled, repo.ghost], [4, 11]);
+  assert.deepEqual([repo.coupled, repo.ghost], [5, 12]);
   const st = FX.facetCounts(FX.fieldIndex(aix, "prstate"), FX.others(qm, "prstate"), null).values;
-  assert.deepEqual(st.map((v) => v.key + ":" + v.coupled + "/" + v.ghost).sort(), ["closed:1/1", "draft:1/2", "merged:2/6", "none:0/1", "open:5/10"]);
+  assert.deepEqual(st.map((v) => v.key + ":" + v.coupled + "/" + v.ghost).sort(), ["closed:1/1", "draft:1/2", "merged:2/6", "none:0/1", "open:5/11"]);
 });
 
 test("facets: ghosts are the whole snapshot; the selection's share is its own", () => {
@@ -998,5 +998,264 @@ test("facets: days before the local activity window are unknown, not zero", () =
 });
 }
 // ---------- end gh-102 ----------
+
+// ---------- gh-103: the scatterplot and the CI grid ----------
+{
+// web/live-scatter.js and web/live-cigrid.js, beside live.js, on
+// internal/dash/testdata/analysis_fixture.json, beside fields.json.
+const path = require("node:path");
+const SC = require(path.join(path.dirname(process.argv[2]), "live-scatter.js"))(L, T);
+const CG = require(path.join(path.dirname(process.argv[2]), "live-cigrid.js"))(L);
+const AFX = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[3]), "analysis_fixture.json"), "utf8"));
+const aix = L.queryIndex(AFX, BASE);
+const aprs = L.runQuery("kind:pr", aix).res.rowIdx;
+const F = (name) => BASE.field(name);
+const near = (a, b) => Math.abs(a - b) < 1e-9;
+const refs = (marks) => marks.map((m) => m.ref);
+
+test("scatter: the symmetric log puts zero at zero and undoes itself", () => {
+  assert.equal(SC.fwd(0), 0);
+  assert.ok(near(SC.fwd(9), 1) && near(SC.fwd(99), 2) && near(SC.fwd(-9), -1), "log10(1 + |v|), signed");
+  for (const v of [0, 0.5, 7, 1234, -3]) assert.ok(Math.abs(SC.inv(SC.fwd(v)) - v) < 1e-9, String(v));
+  assert.ok(SC.fwd(1) > SC.fwd(0) && SC.fwd(10) > SC.fwd(1), "monotonic through zero");
+});
+
+test("scatter: axes are PR number and duration fields; log for log scales and durations, said in the title", () => {
+  const names = SC.axisFields(BASE).map((f) => f.name);
+  for (const n of ["waiting", "size", "age", "updated_ago", "additions", "deletions", "files"]) assert.ok(names.includes(n), n);
+  for (const n of ["points", "activity", "created", "move"]) assert.ok(!names.includes(n), n + " is not a PR number or duration");
+  assert.equal(SC.axisField(BASE, "", SC.DEFAULT_X).name, "waiting");
+  assert.equal(SC.axisField(BASE, "", SC.DEFAULT_Y).name, "size");
+  assert.equal(SC.axisField(BASE, "age", "waiting").name, "age");
+  assert.equal(SC.axisField(BASE, "points", "waiting").name, "waiting", "a ticket field falls back to the default");
+  assert.equal(SC.axisField(BASE, "nope", "size").name, "size");
+  assert.equal(SC.axisField(PRE99, "", "waiting").name, "age", "before gh-99 the first field that can be an axis");
+  assert.equal(SC.axisField(L.registry({ fields: [] }), "", "waiting"), null);
+  assert.ok(SC.isLog(F("waiting")) && SC.isLog(F("size")) && SC.isLog(F("files")) && !SC.isLog(F("points")));
+  assert.equal(SC.axisTitle(F("waiting")), "Waiting (days, log scale)");
+  assert.equal(SC.axisTitle(F("size")), "Size (lines changed, log scale)", "the unit the label names is not repeated");
+  assert.equal(SC.axisTitle(F("additions")), "Additions (lines, log scale)");
+  assert.equal(SC.axisTitle(F("points")), "Story points", "linear: no log scale");
+  assert.equal(SC.shortLabel(F("size")), "Size");
+});
+
+test("scatter: gridlines at 1, 10, 100, 1,000 lines and 1, 7, 30, 90 days; the axis ends on them", () => {
+  const size = F("size"), age = F("age"), waiting = F("waiting");
+  const d = SC.niceDomain(size, [16, 2230]);
+  assert.ok(near(SC.inv(d[0]), 10) && Math.abs(SC.inv(d[1]) - 10000) < 1e-6, "16 to 2,230 lines: 10 to 10,000");
+  assert.deepEqual(SC.ticks(size, d).map((t) => t.label), ["10", "100", "1,000", "10,000"]);
+  const a = SC.niceDomain(age, [0, 200]);
+  assert.deepEqual(SC.ticks(age, a).map((t) => t.label), ["0", "1d", "7d", "30d", "90d", "365d"]);
+  const w = SC.niceDomain(waiting, [2, 5]);
+  assert.ok(near(SC.inv(w[0]), 1) && Math.abs(SC.inv(w[1]) - 7) < 1e-9);
+  assert.deepEqual(SC.ticks(waiting, w).map((t) => t.label), ["1d", "2d", "3d", "5d", "7d"], "a narrow range takes the denser steps");
+  assert.deepEqual(SC.ticks(size, [SC.fwd(15), SC.fwd(80)]).map((t) => t.label), ["20", "50"], "zoomed in between two decades");
+  assert.ok(near(SC.inv(SC.niceDomain(size, [10])[1]), 100), "a value on a gridline gets the next one");
+  assert.deepEqual(SC.niceDomain(waiting, []).map((t) => Math.round(SC.inv(t))), [0, 7], "no values: a week");
+  const pts = { name: "points", label: "Story points", type: "number", scale: "linear" }, lin = SC.niceDomain(pts, [1, 13]);
+  assert.deepEqual(lin, [0, 15], "the step the widened range takes");
+  assert.deepEqual(SC.ticks(pts, lin).map((t) => t.v), [0, 5, 10, 15]);
+  assert.deepEqual(SC.ticks(pts, SC.niceDomain(pts, [2, 9])).map((t) => t.v), [2, 4, 6, 8, 10]);
+  assert.deepEqual(SC.zoomDomain([0, 10], 5, 0.5), [2.5, 7.5]);
+  assert.equal(SC.tickText(waiting, 0.1 + 0.2), "0.3d", "no floating-point noise in a narrow zoom's labels");
+  assert.equal(SC.tickText(size, 0.1 + 0.2), "0.3");
+  assert.equal(SC.tickText(size, 12000), "12,000");
+});
+
+test("scatter: zooming stays inside the marks' range: in at one edge, then out at the other", () => {
+  const base = [0, 4];
+  let r = SC.zoomWithin(base, base, 0, 0.5);
+  assert.deepEqual(r, [0, 2], "zoom in at the low edge");
+  r = SC.zoomWithin(base, r, 4, 1.5);
+  assert.deepEqual(r, [0, 3], "zooming out at the far edge would start at -2: it slides back to 0");
+  assert.deepEqual(SC.zoomWithin(base, [3, 4], 4, 1.5), [2.5, 4]);
+  const past = SC.zoomWithin(base, [2, 4.5], 4.4, 1.2);
+  assert.ok(near(past[0], 1) && past[1] === 4, "a range past the high end slides back below it: " + past);
+  assert.deepEqual(SC.zoomWithin(base, [0, 3], 1, 2), [0, 4], "never wider than every mark");
+  const size = F("size"), dom = SC.niceDomain(size, [16, 2230]);
+  let z = SC.zoomWithin(dom, dom, dom[0], 0.5);
+  z = SC.zoomWithin(dom, z, dom[1], 1.8);
+  assert.ok(z[0] >= dom[0] && z[1] <= dom[1], "inside 10 to 10,000 lines");
+  assert.ok(SC.ticks(size, z).every((t) => t.v >= 10), "no gridline below the axis's first: " + SC.ticks(size, z).map((t) => t.label));
+});
+
+test("scatter: a mark with an unknown value sits in that axis's strip, never at zero", () => {
+  const marks = SC.marks(aix, aprs, F("waiting"), F("size")), z = SC.partition(marks);
+  assert.equal(marks.length, 20, "every PR row is a mark");
+  assert.deepEqual(refs(z.plot), ["acme/api#101", "acme/api#102", "acme/api#104", "acme/web#201", "acme/web#202"]);
+  assert.deepEqual(refs(z.corner), ["acme/web#207"], "neither value known");
+  assert.equal(z.ystrip.length, 0);
+  assert.equal(z.xstrip.length, 14);
+  for (const m of z.xstrip.concat(z.corner)) assert.notEqual(m.xv.k, "v", m.ref + " has no x to plot");
+  assert.deepEqual(SC.value(aix, F("waiting"), aix.byId.get("pr:acme/web#208")), { k: "unknown" }, "an unknown move: waiting unknown");
+  assert.deepEqual(SC.value(aix, F("waiting"), aix.byId.get("pr:acme/api#103")), { k: "na", tag: "not waiting" }, "the author's move waits on no reviewer");
+  assert.deepEqual(SC.value(aix, F("waiting"), aix.byId.get("pr:acme/api#107")), { k: "na", tag: "not waiting" }, "merged");
+  assert.equal(SC.stripText(z.xstrip.map((m) => m.xv)), "unknown: 1 · not waiting: 13");
+  assert.deepEqual(SC.value(aix, F("waiting"), aix.byId.get("pr:acme/web#202")), { k: "v", v: 4, lower: true });
+  const byAge = SC.partition(SC.marks(aix, aprs, F("age"), F("size")));
+  assert.equal(byAge.plot.length, 19);
+  assert.deepEqual(refs(byAge.corner), ["acme/web#207"]);
+  assert.deepEqual(SC.marks(aix, L.runQuery("kind:ticket", aix).res.rowIdx, F("age"), F("size")), [], "only PR rows are marks");
+});
+
+test("scatter: shape by move, the accent only for my move, × only for a failing CI of its own", () => {
+  const marks = new Map(SC.marks(aix, aprs, F("waiting"), F("size")).map((m) => [m.ref, m.info]));
+  const shape = (r) => marks.get(r).shape;
+  assert.deepEqual(["acme/api#101", "acme/api#105", "acme/web#201", "acme/web#208", "acme/api#107"].map(shape), ["circle", "triangle", "square", "ring", "diamond"]);
+  assert.deepEqual(marks.get("acme/api#103"), { move: "author", shape: "triangle", mine: true, failing: true }, "alice's own draft, failing");
+  assert.equal(marks.get("acme/api#104").mine, true, "a review asked of alice through a team");
+  assert.equal(marks.get("acme/api#105").mine, false, "carol's move");
+  assert.equal(marks.get("acme/api#101").failing, false, "a check failing everywhere is not this PR's failure");
+  assert.equal(marks.get("acme/web#203").failing, true);
+  assert.deepEqual(SC.markInfo(undefined, "alice"), { move: "unknown", shape: "ring", mine: false, failing: false }, "no facts: unknown");
+  assert.equal(new Set(["circle", "triangle", "square", "ring", "diamond"].map((s) => SC.shapePath(s, 5))).size, 4, "ring and circle share a path; the ring is hollow");
+  assert.deepEqual(SC.KEY.map((k) => k.shape), ["circle", "triangle", "square", "ring", "diamond"], "one key names every shape");
+});
+
+test("scatter: each mark's aria-label says its ref, both values and the move", () => {
+  const lbl = new Map(SC.marks(aix, aprs, F("waiting"), F("size")).map((m) => [m.ref, m.label]));
+  assert.equal(lbl.get("acme/api#101"), "acme/api#101: Waiting 4 days, Size 222 lines, reviewer's move");
+  assert.equal(lbl.get("acme/api#103"), "acme/api#103: Waiting n/a (not waiting), Size 630 lines, author's move (yours), CI failing");
+  assert.equal(lbl.get("acme/web#202"), "acme/web#202: Waiting at least 4 days, Size 25 lines, reviewer's move (yours)");
+  assert.equal(lbl.get("acme/web#207"), "acme/web#207: Waiting unknown, Size unknown, nobody's move");
+  assert.equal(lbl.get("acme/web#208"), "acme/web#208: Waiting unknown, Size 350 lines, move unknown");
+  assert.equal(SC.shortText(F("waiting"), { k: "v", v: 4.7, lower: true }), "≥4d");
+  assert.equal(SC.valueText(F("files"), { k: "v", v: 1 }), "1 file");
+});
+
+test("scatter: at most five outlier labels, by the largest rank sum on the two axes", () => {
+  assert.deepEqual(SC.ranks([3, 1, 3, 2]), [3.5, 1, 3.5, 2], "ties share their average rank");
+  const pt = (ref, x, y) => ({ ref, id: ref, xv: { k: "v", v: x }, yv: { k: "v", v: y } });
+  const pts = [pt("a#1", 1, 1), pt("a#2", 9, 9), pt("a#3", 8, 2), pt("a#4", 2, 8), pt("a#10", 5, 5), pt("a#9", 5, 5), pt("a#5", 7, 7)];
+  assert.deepEqual(refs(SC.outliers(pts)), ["a#2", "a#5", "a#3", "a#4", "a#9"], "rank sums 14, 10, 8, 8, 7 (a#9 and a#10 tie: natural order)");
+  assert.equal(SC.outliers(pts, 2).length, 2);
+  assert.deepEqual(refs(SC.outliers(pts.concat([pt("a#2b", 9, 9)]), 2)), ["a#2", "a#5"], "one label per point: a#2b sits on a#2");
+  assert.deepEqual(SC.outliers([]), []);
+  const plot = SC.partition(SC.marks(aix, aprs, F("age"), F("size"))).plot;
+  assert.deepEqual(refs(SC.outliers(plot)), ["acme/api#105", "acme/web#206", "acme/api#109", "acme/web#208", "acme/api#101"]);
+  assert.equal(SC.median([1, 3, 2]), 2);
+  assert.equal(SC.median([4, 1, 2, 3]), 2.5);
+  assert.equal(SC.median([]), null);
+});
+
+test("scatter: the keyboard walks the marks in the table's sort order", () => {
+  const marks = SC.marks(aix, aprs, F("waiting"), F("size"));
+  const bySize = refs(SC.order(aix, BASE, marks, "-size"));
+  assert.equal(bySize[0], "acme/api#105");
+  assert.equal(bySize[bySize.length - 1], "acme/web#207", "unknown sorts last, as in the table");
+  const idx = marks.map((m) => m.i);
+  for (const sort of ["", "-size,waiting", "author,-age", "bogus,-waiting"]) {
+    assert.deepEqual(SC.order(aix, BASE, marks, sort).map((m) => m.i), T.sortRows(aix, idx, T.sortKeys(BASE, sort)), "the table's own comparator: " + sort);
+  }
+  assert.deepEqual(T.sortKeys(BASE, "bogus,-size,name"), [{ key: "size", desc: true }, { key: "name", desc: false }], "a stale key is dropped");
+  const noTable = require(path.join(path.dirname(process.argv[2]), "live-scatter.js"))(L, null);
+  assert.deepEqual(refs(noTable.order(aix, BASE, marks, "-size")).slice(0, 2), ["acme/api#101", "acme/api#102"], "without the table: by ref");
+});
+
+test("scatter: the brush, label placement and strip jitter", () => {
+  const m = (id, px, py, vis) => ({ id, px, py, vis });
+  const ms = [m("a", 10, 10, true), m("b", 50, 50, true), m("c", 20, 30, false), m("d", 30, 20, true)];
+  assert.deepEqual(SC.inRect(ms, { x0: 40, y0: 5, x1: 5, y1: 40 }).map((x) => x.id), ["a", "d"], "either corner first; hidden marks are out");
+  const box = { x0: 0, y0: 0, x1: 200, y1: 100 };
+  const placed = SC.placeLabels([{ key: "p", x: 50, y: 50, w: 40, h: 12, r: 5 }, { key: "q", x: 52, y: 50, w: 40, h: 12, r: 5 }, { key: "r", x: 198, y: 2, w: 40, h: 12, r: 5 }], box);
+  assert.deepEqual(placed.map((p) => p.key), ["p", "q", "r"]);
+  assert.ok(placed[0].x > 50 && placed[1].x + placed[1].w < 52, "the second label goes to the left");
+  assert.ok(placed[2].x + placed[2].w <= 200 && placed[2].y >= 0, "a label at the edge stays inside");
+  assert.equal(SC.placeLabels([{ key: "z", x: 5, y: 5, w: 300, h: 12, r: 5 }], box).length, 0, "a label that fits nowhere is left to the tooltip");
+  const j = SC.jitter("pr:acme/api#101");
+  assert.ok(j >= 0 && j <= 1 && j === SC.jitter("pr:acme/api#101"));
+});
+
+test("CI grid: columns by failing checks then number; rows by failures then name", () => {
+  const grids = CG.grids(aix, aprs, AFX.check_stats);
+  assert.deepEqual(grids.map((g) => g.repo), ["acme/api", "acme/infra", "acme/web"]);
+  const api = grids[0];
+  assert.deepEqual(api.columns.map((c) => c.number), [103, 101, 102, 104, 106, 105, 107, 108, 109]);
+  assert.deepEqual(api.rows.map((r) => r.name + ":" + r.failures), ["vendor-hsm-tests:5", "unit-tests:1", "build:0", "codecov:0", "lint:0"]);
+  assert.deepEqual(grids[2].columns.map((c) => c.number), [203, 201, 202, 204, 205, 206, 208], "#207's checks were not read");
+  assert.deepEqual(grids[2].unread.map((i) => aix.ids[i]), ["pr:acme/web#207"]);
+  assert.ok(CG.compareColumns({ failures: 2, number: 9 }, { failures: 1, number: 1 }) < 0 && CG.compareColumns({ failures: 1, number: 9, label: "", id: "" }, { failures: 1, number: 10, label: "", id: "" }) < 0);
+  assert.ok(CG.compareRows({ failures: 0, name: "e2e" }, { failures: 0, name: "lint" }) < 0);
+});
+
+test("CI grid: the systemic check is a labelled solid row in acme/api, not in acme/web; its PRs have no isolated failing cells", () => {
+  const grids = CG.grids(aix, aprs, AFX.check_stats), api = grids[0], web = grids[2];
+  const sys = api.rows.filter((r) => r.systemic);
+  assert.deepEqual(sys.map((r) => r.name), ["vendor-hsm-tests"]);
+  assert.equal(CG.systemicText(sys[0].systemic), "fails everywhere — 5 of 6 PRs");
+  assert.deepEqual(api.columns.map((c) => CG.cell(c, "vendor-hsm-tests")), ["failure", "failure", "failure", "failure", "failure", "success", "success", "absent", "absent"], "a solid run of failures from the left");
+  assert.ok(!web.rows.some((r) => r.systemic), "fails on 1 of 3 in acme/web: not systemic there");
+  for (const c of api.columns) {
+    const ci = aix.nodes[c.i].pr.facts.ci;
+    if (ci === "systemic_only") {
+      assert.equal(c.failures, 1);
+      assert.deepEqual(CG.isolated(api, c), [], c.label + " fails only the systemic check");
+    }
+  }
+  assert.deepEqual(CG.isolated(api, api.columns[0]), ["unit-tests"], "acme/api#103's own failure");
+  assert.deepEqual(CG.isolated(web, web.columns[0]), ["vendor-hsm-tests"], "in acme/web the same check is acme/web#203's own failure");
+  assert.match(CG.cellLabel(api.columns[1], sys[0], "failure"), /^acme\/api#101, vendor-hsm-tests: failing \(fails everywhere — 5 of 6 PRs\)$/);
+  assert.match(CG.cellLabel(api.columns[0], api.rows[1], "failure"), /this PR's own failure/);
+});
+
+test("CI grid: cell states, truncated check lists and unread checks", () => {
+  const grids = CG.grids(aix, aprs, AFX.check_stats), api = grids[0], web = grids[2];
+  const col = (g, n) => g.columns.find((c) => c.number === n);
+  assert.equal(CG.cell(col(web, 201), "docs-preview"), "skipped");
+  assert.equal(CG.cell(col(api, 105), "codecov"), "neutral");
+  assert.equal(CG.cell(col(api, 103), "lint"), "pending");
+  assert.equal(CG.cell(col(api, 101), "codecov"), "absent", "did not run");
+  assert.equal(col(web, 202).truncated, true);
+  assert.equal(CG.cell(col(web, 202), "docs-preview"), "unknown", "missing from a truncated list: unknown, not absent");
+  assert.equal(CG.checkStates({}), null, "checks not read");
+  const dup = CG.checkStates({ check_details: [{ name: "a", state: "success" }, { name: "a", state: "FAILURE" }, { name: "b", state: "weird" }, { state: "failure" }] });
+  assert.deepEqual(Array.from(dup.entries()).map(([k, v]) => k + ":" + v.state), ["a:failure", "b:pending"], "the worst state of a repeated name; an unknown state is in flight");
+  for (const st of Object.keys(CG.CELL)) assert.ok(CG.CELL[st].text, st + " has words for its aria-label");
+  assert.ok(["failure", "success", "pending", "unknown"].every((st) => CG.CELL[st].glyph), "failing, passing, pending and unknown have glyphs, never colour alone");
+});
+
+test("CI grid: past 60 PRs in a repository, the 60 with the most failures and n more", () => {
+  const nodes = [];
+  for (let k = 1; k <= 65; k++) nodes.push({ id: "pr:acme/api#" + k, kind: "pr", label: "acme/api#" + k, pr: { number: k, repo: "acme/api", state: "open", check_details: [{ name: "unit", state: k % 13 === 0 ? "failure" : "success" }] } });
+  const ix = L.queryIndex({ nodes, edges: [] }, BASE), all = nodes.map((nd, i) => i);
+  const g = CG.grids(ix, all, {})[0];
+  assert.equal(g.columns.length, 60);
+  assert.equal(g.more, 5);
+  assert.equal(g.total, 65);
+  assert.deepEqual(g.columns.slice(0, 5).map((c) => c.number), [13, 26, 39, 52, 65], "the failing PRs first");
+  assert.deepEqual(g.columns.slice(-1).map((c) => c.number), [59], "then by number, cut at 60");
+  assert.equal(CG.grids(ix, all, {}, 10)[0].more, 55);
+});
+
+test("detail panel: check= names a check of the selected PR", () => {
+  const pr = (id) => aix.nodes[aix.byId.get(id)].pr;
+  assert.deepEqual(L.checkDetail(pr("pr:acme/api#101"), "vendor-hsm-tests"), { text: "failure", url: "https://github.com/acme/api/actions/runs/7100004" });
+  assert.equal(L.checkDetail(pr("pr:acme/api#101"), ""), null);
+  assert.equal(L.checkDetail(pr("pr:acme/api#101"), "codecov").text, "did not run on this PR's head");
+  assert.match(L.checkDetail(pr("pr:acme/web#202"), "docs-preview").text, /^unknown: not among the checks read/);
+  assert.match(L.checkDetail(pr("pr:acme/web#207"), "build").text, /^unknown: this PR's checks were not read/);
+  assert.equal(L.checkDetail({ check_details: [{ name: "x", state: "failure", url: "javascript:alert(1)" }] }, "x").url, "", "only http(s) links");
+  const raw = L.checkValue("pr:acme/api#101", "lint|strict");
+  assert.deepEqual(L.parseCheck(raw), { pr: "pr:acme/api#101", name: "lint|strict" }, "the PR ID, then the name, which may hold |");
+  for (const bad of ["", "vendor-hsm-tests", "|x", "pr:a#1|"]) assert.equal(L.parseCheck(bad), null, JSON.stringify(bad));
+  assert.equal(L.checkShown(raw, "pr:acme/api#101", "ci"), "lint|strict");
+  assert.equal(L.checkShown(raw, "pr:acme/web#208", "ci"), "", "never for another PR");
+  assert.equal(L.checkShown(raw, "pr:acme/api#101", "scatter"), "", "only in the CI grid");
+  assert.equal(L.checkShown("vendor-hsm-tests", "pr:acme/api#101", "ci"), "", "a bare name (an old link) names no PR");
+});
+
+{
+  // The analysis fixture's PRs forty times over (about 800 marks, as the
+  // scaled fixture), for the logged timing of the two views' pure parts.
+  const nodes = [], copies = 40;
+  for (let k = 0; k < copies; k++) AFX.nodes.forEach((nd) => { if (nd.kind === "pr") nodes.push(Object.assign({}, nd, { id: nd.id + "~" + k })); });
+  const big = Object.assign({}, AFX, { nodes, edges: [] }), bix = L.queryIndex(big, BASE), all = nodes.map((nd, i) => i);
+  const time = (fn) => { for (let i = 0; i < 3; i++) fn(); const t0 = process.hrtime.bigint(); for (let i = 0; i < 10; i++) fn(); return Number(process.hrtime.bigint() - t0) / 1e6 / 10; };
+  const sc = time(() => { const ms = SC.marks(bix, all, F("waiting"), F("size")); SC.order(bix, BASE, ms, "-size"); SC.outliers(SC.partition(ms).plot); });
+  const cg = time(() => CG.grids(bix, all, big.check_stats));
+  perfLine += "; gh-103 on " + nodes.length + " PRs: scatter marks, order and outliers " + sc.toFixed(2) + " ms, CI grids " + cg.toFixed(2) + " ms";
+}
+}
+// ---------- end gh-103 ----------
 
 console.log("ok " + n + " (" + vectorCases + " shared query vectors) " + perfLine);
