@@ -101,10 +101,11 @@ func TestHandlerReadPathIsPure(t *testing.T) {
 	}
 }
 
-// TestHandlerReadPathIsPureWithInventory: with a warm PR inventory and a
-// cached identity, collecting reads only caches, and GET / and GET
-// /api/snapshot are served without collecting, reading the identity or
-// touching the network; /api/snapshot carries the inventory PRs. No t.Parallel: it swaps global state.
+// TestHandlerReadPathIsPureWithInventory: with a warm PR inventory, a cached
+// PR timeline (gh-104) and a cached identity, collecting reads only caches,
+// and GET / and GET /api/snapshot serve the inventory PRs and the timeline
+// without collecting, reading the identity or touching the network, though
+// another PR's timeline is missing. No t.Parallel: it swaps global state.
 func TestHandlerReadPathIsPureWithInventory(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
@@ -112,6 +113,11 @@ func TestHandlerReadPathIsPureWithInventory(t *testing.T) {
 		"alice/open-authored":    {openPR(1, "alice", "feat-a")},
 		"alice/review-requested": {openPR(2, "carol", "feat-b")},
 	})
+	pr1 := openPR(1, "alice", "feat-a")
+	if _, err := inventory.RefreshTimeline(context.Background(), cannedTimelines{&github.PRTimeline{State: "open", CreatedAt: pr1.CreatedAt, UpdatedAt: pr1.UpdatedAt,
+		Events: []github.TimelineEvent{{Type: github.TimelineReviewRequested, At: pr1.CreatedAt.Add(time.Hour), Reviewer: "bob"}}}}, inventory.TimelineKey{Repo: asmSlug, Number: 1}); err != nil {
+		t.Fatal(err)
+	}
 	ft := &failingTransport{}
 	old := http.DefaultTransport
 	http.DefaultTransport = ft
@@ -155,6 +161,9 @@ func TestHandlerReadPathIsPureWithInventory(t *testing.T) {
 			}
 			if p == "/api/snapshot" && !strings.Contains(string(body), `"id":"pr:acme/widgets#2"`) {
 				t.Fatalf("%s does not serve the inventory PR", p)
+			}
+			if p == "/api/snapshot" && (!strings.Contains(string(body), `"timeline":{"freshness":"fresh"`) || !strings.Contains(string(body), `"github_timelines":{"state":"unknown"`)) {
+				t.Fatalf("%s does not serve the cached timeline and its source", p)
 			}
 		}
 	}

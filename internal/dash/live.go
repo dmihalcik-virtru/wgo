@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -560,6 +561,9 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 	if !opts.Remote || d.opts.Refresher == nil {
 		return persistErr
 	}
+	if opts.Wait {
+		jobs = waitedJobs(jobs)
+	}
 	if len(jobs) == 0 {
 		d.recordRefreshError(nil) // everything is fresh: nothing failed
 		return persistErr
@@ -604,6 +608,14 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 	return persistErr
 }
 
+// waitedJobs leaves out of jobs those a waited-for refresh neither runs nor
+// waits for: PR timelines are refreshed by the background Refresher only
+// (gh-104 requirement 2), so `wgo dash --json --refresh` never waits on
+// dozens of serial timeline fetches.
+func waitedJobs(jobs []Job) []Job {
+	return slices.DeleteFunc(slices.Clone(jobs), func(j Job) bool { return j.Kind == JobTimelines || j.Kind == JobTimelinePrune })
+}
+
 // maxFollowUps bounds the extra rounds of lookups a waited-for refresh runs
 // for jobs that only fetched data reveals: once the authenticated login is
 // known, that person's inventory (gh-97) and a sprint search for their own
@@ -632,7 +644,7 @@ func (d *Dash) awaitRounds(ctx context.Context, ls *localState, jobs []Job, done
 		}
 		s, next := d.opts.Collector.assemble(ls)
 		var more []Job
-		for _, j := range next {
+		for _, j := range waitedJobs(next) {
 			if !tried[j.key()] {
 				tried[j.key()] = true
 				more = append(more, j)

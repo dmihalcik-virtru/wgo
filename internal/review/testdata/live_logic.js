@@ -1438,4 +1438,188 @@ test("detail panel: check= names a check of the selected PR", () => {
 }
 // ---------- end gh-103 ----------
 
+// ---------- gh-104: PR timelines (web/live-timeline.js) ----------
+// The view's pure logic on internal/dash/testdata/analysis_fixture.json,
+// whose PRs carry timelines (TestAnalysisFixtureTimelines keeps them in step
+// with their histories). live-timeline.js sits beside live-table.js.
+{
+  const path = require("node:path");
+  const TL = require(path.join(path.dirname(process.argv[5]), "live-timeline.js"))(L, T);
+  const AF = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[3]), "analysis_fixture.json"), "utf8"));
+  const aix = L.queryIndex(AF, BASE);
+  const env = aix.env, now = env.nowMs;
+  const apr = (id) => aix.nodes[aix.byId.get(id)].pr;
+  const H = 3600000, D = 24 * H, at = (iso) => Date.parse(iso);
+
+  test("timeline: rows are the query's PR rows in the table's sort order", () => {
+    const all = TL.rows(aix, null, "");
+    assert.equal(all.rows.length, aix.kinds.filter((k) => k === "pr").length, "every PR without a query");
+    assert.ok(all.rows.every((i) => aix.kinds[i] === "pr"));
+    assert.deepEqual(all.rows, T.sortRows(aix, all.rows, []), "the table's default order");
+    const res = L.runQuery("repo:acme/api", aix).res;
+    const r = TL.rows(aix, res, "-waiting,nope");
+    assert.deepEqual(r.sort, [{ key: "waiting", desc: true }], "keys the table would drop are dropped");
+    assert.deepEqual(r.rows, T.sortRows(aix, res.rowIdx.filter((i) => aix.kinds[i] === "pr"), r.sort));
+    assert.equal(aix.ids[r.rows[0]], "pr:acme/api#104", "the longest wait first, as the table sorts");
+    const apiPRs = AF.nodes.filter((nd) => nd.kind === "pr" && nd.pr.repo === "acme/api").length;
+    assert.ok(r.rows.length === apiPRs && res.rowIdx.length > apiPRs, "only PR rows, not the tickets the query matches too");
+  });
+
+  test("timeline: t= and when: ranges are local days at the snapshot's offset", () => {
+    assert.deepEqual(TL.parseRange("2026-10-20..2026-10-22", env), { a: at("2026-10-20T00:00:00Z"), b: at("2026-10-23T00:00:00Z") });
+    for (const bad of ["", "2026-10-22..2026-10-20", "2026-10-20", "-7d..", "2026-10-20..x"]) assert.equal(TL.parseRange(bad, env), null, bad);
+    assert.equal(TL.formatRange(at("2026-10-20T00:00:00Z"), at("2026-10-23T00:00:00Z"), env), "2026-10-20..2026-10-22");
+    const ny = { offsetMs: -4 * H, dayOf: (t) => new Date(t - 4 * H).toISOString().slice(0, 10) };
+    assert.deepEqual(TL.parseRange("2026-10-20..2026-10-20", ny), { a: at("2026-10-20T04:00:00Z"), b: at("2026-10-21T04:00:00Z") });
+    const d = TL.domain("", now, 14, env);
+    assert.equal(d.zoomed, false);
+    assert.equal(d.a, at("2026-10-03T00:00:00Z"), "the default: the last 28 days, closed-recent's window, from a day's start");
+    assert.ok(d.b > now && d.b - now < D, "a little room after now");
+    assert.equal(TL.domain("", now, 30, env).a, at("2026-09-01T00:00:00Z"), "max(2 × days, 28)");
+    assert.deepEqual(TL.domain("2026-10-20..2026-10-22", now, 14, env), { a: at("2026-10-20T00:00:00Z"), b: at("2026-10-23T00:00:00Z"), zoomed: true });
+  });
+
+  test("timeline: brushing zooms to whole days; the zoom becomes a when: filter on request", () => {
+    const dom = { a: at("2026-10-01T00:00:00Z"), b: at("2026-10-31T00:00:00Z") };
+    assert.equal(TL.brushRange(300, 100, dom, 600, env), "2026-10-06..2026-10-15");
+    assert.equal(TL.brushRange(100, 102, dom, 600, env), null, "a click is not a brush");
+    assert.equal(TL.brushRange(-50, 30, dom, 600, env), "2026-10-01..2026-10-02", "clamped to the axis");
+    assert.equal(TL.pan(dom, -0.5, env), "2026-09-16..2026-10-15");
+    assert.equal(TL.zoomOut(dom, env), "2026-09-16..2026-11-14");
+    assert.equal(TL.applyWhen("kind:pr;when:2026-01-01..2026-01-02;repo:acme/api", BASE, "2026-10-06..2026-10-15"), "kind:pr;repo:acme/api;when:2026-10-06..2026-10-15");
+    assert.equal(TL.applyWhen("", BASE, "2026-10-06..2026-10-15"), "when:2026-10-06..2026-10-15");
+    const q = L.parseQuery(TL.applyWhen("kind:pr", BASE, "2026-10-06..2026-10-15"), BASE);
+    assert.ok(!q.error, "the filter parses");
+    const res = L.evaluate(q, aix);
+    assert.ok(res.rowIdx.length > 0 && res.rowIdx.every((i) => aix.kinds[i] === "pr"));
+  });
+
+  test("timeline: segments end where the next starts; a PR without a history gets one bar", () => {
+    const s = TL.segments(apr("pr:acme/api#101"), now);
+    assert.deepEqual(s.map((x) => x.state), ["draft", "waiting", "unattended", "waiting"]);
+    assert.equal(s[0].b, s[1].a);
+    assert.equal(s[3].b, now, "the last lasts until now");
+    assert.deepEqual(s[1].reviewers, ["carol"]);
+    assert.equal(TL.segments(apr("pr:acme/api#103"), now), null);
+    assert.deepEqual(TL.fallback(apr("pr:acme/api#103"), now), { a: at("2026-10-28T08:00:00Z"), b: now, end: "" });
+    assert.deepEqual(TL.fallback(apr("pr:acme/web#204"), now), { a: at("2026-10-19T09:00:00Z"), b: at("2026-10-20T11:00:00Z"), end: "merged" }, "a merged PR's bar ends at its merge");
+    assert.equal(TL.fallback(apr("pr:acme/web#207"), now), null, "created_at unknown");
+  });
+
+  test("timeline: the accent is exactly the time spent waiting on the operator", () => {
+    const op = TL.operator(aix);
+    assert.equal(op.me, "alice");
+    assert.deepEqual(Object.keys(op.teams), ["team:web"], "the only team requested where alice is asked through a team");
+    assert.ok(TL.isMine("Alice", op) && TL.isMine("team:web", op) && !TL.isMine("bob", op));
+    const spans = (id) => TL.mineSpans(apr(id), TL.segments(apr(id), now), op, now);
+    assert.deepEqual(spans("pr:acme/api#106"), [{ a: at("2026-10-23T09:30:00Z"), b: at("2026-10-28T11:45:00Z") }], "a past wait on alice, ended by her approval");
+    assert.deepEqual(spans("pr:acme/api#104"), [{ a: at("2026-10-25T12:55:00Z"), b: now }], "a wait on her team");
+    assert.deepEqual(spans("pr:acme/api#105"), [{ a: at("2026-06-03T09:00:00Z"), b: now }], "not before she was asked, though bob was");
+    assert.deepEqual(spans("pr:acme/api#101"), [], "nothing waits on alice");
+    assert.deepEqual(spans("pr:acme/api#102"), [], "alice's own PR waiting on bob");
+    assert.deepEqual(TL.mineSpans(apr("pr:acme/api#106"), TL.segments(apr("pr:acme/api#106"), now), { me: "", teams: {} }, now), [], "no accent without @me");
+  });
+
+  test("timeline: each row has a text summary and its current state", () => {
+    const op = TL.operator(aix), sum = (id) => TL.summary(apr(id), TL.segments(apr(id), now), op, now);
+    assert.equal(sum("pr:acme/api#101"), "draft 1d, waiting on carol 2d, unattended 3d, waiting on bob 4d");
+    assert.equal(sum("pr:acme/api#102"), "waiting on bob 2d, changes requested by bob 3d, waiting on bob 3d");
+    assert.equal(sum("pr:acme/api#108"), "unattended 5h, draft 20h, waiting on bob 3d, approved 1h, merged");
+    assert.equal(sum("pr:acme/api#109"), "unattended 1d, closed 21h, unattended 2d, closed");
+    assert.equal(sum("pr:acme/api#105"), "waiting on bob and you 150d");
+    assert.equal(sum("pr:acme/api#103"), "history not fetched yet; 2d since creation");
+    assert.equal(sum("pr:acme/web#204"), "history not fetched yet; 1d from creation to merge");
+    assert.equal(sum("pr:acme/web#207"), "history not fetched yet; created at an unknown time");
+    const st = (id) => TL.stateText(apr(id), TL.segments(apr(id), now), op, now, env);
+    assert.equal(st("pr:acme/api#105"), "waiting on you 149d", "whoever is waited on now, since their request (Jun 3), not the segment's start");
+    assert.equal(st("pr:acme/api#104"), "waiting on team:web (you) 5d");
+    assert.equal(st("pr:acme/api#107"), "merged Oct 28");
+    assert.equal(st("pr:acme/api#103"), "draft · no history");
+    assert.deepEqual(TL.tip(TL.segments(apr("pr:acme/api#106"), now)[0], TL.mineSpans(apr("pr:acme/api#106"), TL.segments(apr("pr:acme/api#106"), now), op, now), op, env),
+      ["waiting on you", "Oct 23 09:30 – Oct 28 11:45 · 5d", "waiting on you for 5d"]);
+    const s107 = TL.segments(apr("pr:acme/api#107"), now);
+    assert.deepEqual(TL.tip(s107[2], [], op, env), ["merged", "Oct 28 13:00"], "a merge is a moment");
+    assert.deepEqual(TL.tip(s107[0], [], op, env), ["waiting on bob and carol", "Oct 21 10:00 – Oct 27 17:00 · 6d"]);
+    assert.equal(TL.dur(30 * 60000), "<1h");
+    assert.equal(TL.dur(5 * H), "5h");
+    assert.equal(TL.dur(36 * H), "2d");
+  });
+
+  // A PR built from segments and lanes, at the fixture's now.
+  const synth = (segs, lanes) => ({ state: "open", timeline: { freshness: "fresh", segments: segs, lanes: lanes } });
+  test("timeline: the current wait counts from the requests still open, and the label sits on the accent", () => {
+    const op = TL.operator(aix);
+    // bob asked Oct 21, alice Oct 28, then bob commented: alice waited 2d,
+    // though the waiting segment began with bob.
+    const pr = synth([{ state: "waiting", start: "2026-10-21T09:00:00Z", reviewers: ["bob", "alice"] }],
+      [{ reviewer: "bob", waits: [{ start: "2026-10-21T09:00:00Z", end: "2026-10-29T09:00:00Z" }] }, { reviewer: "alice", waits: [{ start: "2026-10-28T09:00:00Z" }] }]);
+    const segs = TL.segments(pr, now), mine = TL.mineSpans(pr, segs, op, now);
+    assert.deepEqual(TL.currentWait(pr, segs, now), { state: "waiting", reviewers: ["alice"], a: at("2026-10-28T09:00:00Z") });
+    assert.equal(TL.stateText(pr, segs, op, now, env), "waiting on you 2d", "Oct 28 09:00 to Oct 30 16:00, not 9d from bob's request");
+    assert.deepEqual(mine, [{ a: at("2026-10-28T09:00:00Z"), b: now }]);
+    assert.deepEqual(TL.labels(segs[0], mine, op), [
+      { a: at("2026-10-21T09:00:00Z"), b: at("2026-10-28T09:00:00Z"), text: "waiting on bob", short: "waiting", mine: false },
+      { a: at("2026-10-28T09:00:00Z"), b: now, text: "waiting on you", short: "you", mine: true }]);
+    // bob's request swapped for carol's in the same second.
+    const sw = synth([{ state: "unattended", start: "2026-10-20T09:00:00Z" }, { state: "waiting", start: "2026-10-21T09:00:00Z", reviewers: ["bob", "carol"] }],
+      [{ reviewer: "bob", waits: [{ start: "2026-10-21T09:00:00Z", end: "2026-10-25T10:00:00Z" }] }, { reviewer: "carol", waits: [{ start: "2026-10-25T10:00:00Z" }] }]);
+    assert.equal(TL.stateText(sw, TL.segments(sw, now), op, now, env), "waiting on carol 5d");
+    assert.equal(TL.stateText(apr("pr:acme/api#101"), TL.segments(apr("pr:acme/api#101"), now), op, now, env), "waiting on bob 4d");
+  });
+
+  test("timeline: no accent outside waiting, on the row or the operator's lane", () => {
+    const op = TL.operator(aix);
+    // alice is asked; bob then requests changes while her request is open.
+    const pr = synth([{ state: "waiting", start: "2026-10-21T09:00:00Z", reviewers: ["alice"] }, { state: "changes_requested", start: "2026-10-24T09:00:00Z", reviewers: ["bob"] }],
+      [{ reviewer: "alice", waits: [{ start: "2026-10-21T09:00:00Z" }] }]);
+    const segs = TL.segments(pr, now), mine = TL.mineSpans(pr, segs, op, now);
+    assert.deepEqual(mine, [{ a: at("2026-10-21T09:00:00Z"), b: at("2026-10-24T09:00:00Z") }], "her lane is open until now, the accent stops at the change request");
+    assert.deepEqual(TL.labels(segs[1], mine, op).map((l) => l.text), ["changes requested by bob"]);
+    assert.equal(TL.stateText(pr, segs, op, now, env), "changes requested by bob 6d");
+  });
+
+  test("timeline: layout clips to the axis, caps a merge, and labels only what fits", () => {
+    const dom = { a: at("2026-10-22T00:00:00Z"), b: at("2026-10-30T00:00:00Z") };
+    const laid = TL.layout(TL.segments(apr("pr:acme/api#107"), now), dom, 800);
+    assert.deepEqual(laid.map((q) => q.s.state), ["waiting", "approved", "merged"]);
+    assert.ok(laid[0].cutL && laid[0].x === 0, "a wait begun before the axis runs off its left edge");
+    assert.ok(laid[2].cap && Math.abs(laid[2].x - (6 + 13 / 24) * 100) < 1e-6, "the merge is a cap at its time");
+    assert.ok(Math.abs(laid[1].x + laid[1].w - laid[2].x) < 1e-6);
+    assert.deepEqual(TL.layout(TL.segments(apr("pr:acme/api#108"), now), dom, 800), [], "nothing on the axis");
+    assert.equal(TL.at(laid, laid[1].x + 2), laid[1]);
+    assert.equal(TL.at(laid, -40), null);
+    assert.ok(TL.fits("waiting", 60) && !TL.fits("waiting on bob and carol", 60));
+    const ticks = TL.ticks(dom, 800, env);
+    assert.ok(ticks.length >= 4 && ticks.length <= 10, ticks.length + " ticks");
+    assert.equal(ticks[0].label, "Oct 22");
+    assert.ok(ticks.every((t, i) => i === 0 || t.t > ticks[i - 1].t));
+    const hours = TL.ticks({ a: at("2026-10-22T00:00:00Z"), b: at("2026-10-22T12:00:00Z") }, 800, env);
+    assert.deepEqual(hours.slice(0, 3).map((t) => t.label), ["Oct 22", "03:00", "06:00"]);
+  });
+
+  // The analysis fixture scaled as scaleAnalysisFixture does, for timing.
+  test("timeline: layout of every PR row of the scaled fixture (timing logged)", () => {
+    const nodes = [];
+    for (let k = 0; nodes.length < 2000; k++) AF.nodes.forEach((nd) => nodes.push(Object.assign({}, nd, { id: k ? nd.id + "~" + k : nd.id })));
+    const big = Object.assign({}, AF, { nodes: nodes, edges: [] });
+    const bix = L.queryIndex(big, BASE);
+    const t0 = process.hrtime.bigint();
+    const runs = 5;
+    let rowsN = 0, marks = 0;
+    for (let i = 0; i < runs; i++) {
+      const op = TL.operator(bix), r = TL.rows(bix, null, "-waiting"), dom = TL.domain("", bix.env.nowMs, 14, bix.env);
+      rowsN = r.rows.length; marks = 0;
+      r.rows.forEach((idx) => {
+        const pr = bix.nodes[idx].pr, segs = TL.segments(pr, bix.env.nowMs);
+        TL.mineSpans(pr, segs, op, bix.env.nowMs); TL.summary(pr, segs, op, bix.env.nowMs);
+        if (segs) marks += TL.layout(segs, dom, 900).length;
+      });
+    }
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6 / runs;
+    assert.ok(rowsN === bix.kinds.filter((k) => k === "pr").length && rowsN > 400 && marks > 0);
+    perfLine += "; timeline model of " + rowsN + " PR rows (" + bix.nodes.length + " nodes) " + ms.toFixed(1) + " ms";
+  });
+}
+// ---------- end gh-104 ----------
+
 console.log("ok " + n + " (" + vectorCases + " shared query vectors) " + perfLine);

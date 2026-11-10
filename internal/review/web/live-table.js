@@ -360,7 +360,7 @@
   // ---------- the view ----------
   var L = window.WGOLive, T = logic(L);
   // Views that order their marks as the table orders its rows (gh-103's
-  // scatterplot) use this same logic rather than a copy.
+  // scatterplot, gh-104's timeline) use this same logic rather than a copy.
   L.tableLogic = T;
   var VIRTUAL_MIN = 500, MARGIN = 15, SHOW_REVIEWERS = 3, SHOW_ITEMS = 2;
   var cur = null; // the latest ctx: handlers read the live store through it

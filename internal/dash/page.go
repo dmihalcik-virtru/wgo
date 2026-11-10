@@ -80,6 +80,8 @@ var liveAddons = []liveAddon{
 	{Script: "web/live-cigrid.js", Style: "web/live-cigrid.css"},
 	// gh-105: the sprint view.
 	{Script: "web/live-sprint.js", Style: "web/live-sprint.css"},
+	// gh-104: PR timelines; after the table, whose sort it reuses.
+	{Script: "web/live-timeline.js", Style: "web/live-timeline.css"},
 }
 
 // liveAddonFiles returns the addons' scripts and stylesheets, in order.
