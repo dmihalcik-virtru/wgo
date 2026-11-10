@@ -47,11 +47,14 @@ func saveQueryFlags(t *testing.T) {
 	t.Helper()
 	saveDashFlags(t)
 	oq, op, om, oc, og, ol, ov, os2, of, on := dashQuery, dashPreset, dashMD, dashCols, dashGroup, dashLayout, dashView, dashSprint, dashFixture, dashNoOpen
+	osort := dashSort
 	t.Cleanup(func() {
 		dashQuery, dashPreset, dashMD, dashCols, dashGroup, dashLayout, dashView, dashSprint, dashFixture, dashNoOpen = oq, op, om, oc, og, ol, ov, os2, of, on
+		dashSort = osort
 	})
 	dashJSON, dashDays, dashPort, dashRefresh = false, dash.DefaultDays, DefaultDashPort, false
 	dashQuery, dashPreset, dashMD, dashCols, dashGroup, dashLayout, dashView, dashSprint, dashFixture, dashNoOpen = "", "", false, "", "", "", "", "", "", false
+	dashSort = ""
 }
 
 // passedFlags reports the named flags as passed on the command line.
@@ -96,19 +99,23 @@ func TestDashMDMatchesExtractRoute(t *testing.T) {
 	for _, tc := range []struct {
 		query, cols, group, layout string
 		preset                     string
+		sort                       string
 	}{
 		{query: "kind:pr;prstate:open,draft", cols: "checks,review,repo"},
 		{query: "repo:acme/api", cols: "kind,freshness", group: "repo", layout: "table"},
 		{preset: "api-work", group: "none"},
 		{},
+		// The analysis table's sort (gh-101): unknown last, then label.
+		{query: "kind:pr", cols: "updated_ago,checks", group: "none", sort: "-updated_ago,checks"},
+		{query: "kind:pr,ticket", sort: "repo,-kind", layout: "table"},
 	} {
 		dashFixture, dashMD = fixture, true
-		dashQuery, dashPreset, dashCols, dashGroup, dashLayout = tc.query, tc.preset, tc.cols, tc.group, tc.layout
+		dashQuery, dashPreset, dashCols, dashGroup, dashLayout, dashSort = tc.query, tc.preset, tc.cols, tc.group, tc.layout, tc.sort
 		var passed []string
 		if tc.query != "" {
 			passed = append(passed, "query")
 		}
-		for name, val := range map[string]string{"cols": tc.cols, "group": tc.group, "layout": tc.layout} {
+		for name, val := range map[string]string{"cols": tc.cols, "group": tc.group, "layout": tc.layout, "sort": tc.sort} {
 			if val != "" {
 				passed = append(passed, name)
 			}
@@ -122,7 +129,7 @@ func TestDashMDMatchesExtractRoute(t *testing.T) {
 			q = "repo:acme/api"
 		}
 		p := url.Values{}
-		for k, val := range map[string]string{"q": q, "cols": tc.cols, "group": tc.group, "layout": tc.layout} {
+		for k, val := range map[string]string{"q": q, "cols": tc.cols, "group": tc.group, "layout": tc.layout, "sort": tc.sort} {
 			if val != "" {
 				p.Set(k, val)
 			}

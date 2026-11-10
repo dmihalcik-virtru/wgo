@@ -44,8 +44,13 @@ type Page struct {
 	// e.g. web/served.js for review pages served by `wgo dash`, or the
 	// live-*.js views of the live page.
 	Addons []string
-	// AddonFS, when set, is where Addons are read from instead of the
-	// embedded files; tests use it to inline a probe addon.
+	// AddonStyles names embedded stylesheets under web/ (outside vendor/)
+	// that addons bring, each inlined in its own <style> element right
+	// after the mode's stylesheets, in order. Like every inline element
+	// they are hashed into the page's policy by whoever serves it.
+	AddonStyles []string
+	// AddonFS, when set, is where Addons and AddonStyles are read from
+	// instead of the embedded files; tests use it to inline a probe addon.
 	AddonFS fs.FS
 }
 
@@ -138,17 +143,27 @@ func renderShell(shellName string, styleNames []string, appName string, p Page, 
 			extra.WriteString("\n")
 		}
 	}
+	var addonStyles strings.Builder
+	for _, name := range p.AddonStyles {
+		if !strings.HasPrefix(name, "web/") || !strings.HasSuffix(name, ".css") || strings.Contains(name, "/vendor/") {
+			return nil, fmt.Errorf("explorer addon stylesheet %q is not a web/*.css file", name)
+		}
+		b, err := addonFile(p, name)
+		if err != nil {
+			return nil, err
+		}
+		if containsFold(b, "</style") {
+			return nil, fmt.Errorf("%s contains a literal </style; rewrite it (e.g. \"<\\/style\") so the page stays well-formed", name)
+		}
+		addonStyles.WriteString("\n<style>\n")
+		addonStyles.WriteString(b)
+		addonStyles.WriteString("\n</style>")
+	}
 	for _, name := range p.Addons {
 		if !strings.HasPrefix(name, "web/") || !strings.HasSuffix(name, ".js") || strings.Contains(name, "/vendor/") {
 			return nil, fmt.Errorf("explorer addon %q is not a web/*.js script", name)
 		}
-		var b string
-		if p.AddonFS != nil {
-			raw, rerr := fs.ReadFile(p.AddonFS, name)
-			b, err = string(raw), rerr
-		} else {
-			b, err = webFile(name)
-		}
+		b, err := addonFile(p, name)
 		if err != nil {
 			return nil, err
 		}
@@ -177,6 +192,16 @@ func renderShell(shellName string, styleNames []string, appName string, p Page, 
 	} else {
 		out = r.Replace(shell)
 	}
+	if addonStyles.Len() > 0 {
+		// The shell's own <style> holds the mode's stylesheets, none of which
+		// may contain </style (checked above), so its first </style> ends it.
+		i := strings.Index(out, "</style>")
+		if i < 0 {
+			return nil, fmt.Errorf("%s has no <style> element for addon stylesheets to follow", shellName)
+		}
+		i += len("</style>")
+		out = out[:i] + addonStyles.String() + out[i:]
+	}
 	if extra.Len() > 0 {
 		i := strings.LastIndex(out, "</body>")
 		if i < 0 {
@@ -185,6 +210,16 @@ func renderShell(shellName string, styleNames []string, appName string, p Page, 
 		out = out[:i] + extra.String() + out[i:]
 	}
 	return []byte(out), nil
+}
+
+// addonFile reads an addon script or stylesheet from p.AddonFS, or the
+// embedded files when it is nil.
+func addonFile(p Page, name string) (string, error) {
+	if p.AddonFS != nil {
+		raw, err := fs.ReadFile(p.AddonFS, name)
+		return string(raw), err
+	}
+	return webFile(name)
 }
 
 // bootMarker marks where a shell wants the bootstrap element.

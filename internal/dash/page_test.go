@@ -244,12 +244,14 @@ func TestLiveAppKeepsTheTokenInAHeader(t *testing.T) {
 // TestLiveAddonsFollowTheLiveAppRules holds every live-*.js addon (gh-101
 // to gh-105 add them) to live.js's rules: no markup from strings, no eval,
 // no storage or beacons, no POST and no token; and it must register through
-// WGOLive rather than reach into the page.
+// WGOLive rather than reach into the page. Each live-*.css is an addon's
+// stylesheet: listed with it, loading nothing and staying a stylesheet.
 func TestLiveAddonsFollowTheLiveAppRules(t *testing.T) {
 	addons, err := filepath.Glob(filepath.Join("..", "review", "web", "live-*.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	scripts, styles := liveAddonFiles(liveAddons)
 	for _, path := range addons {
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -266,13 +268,38 @@ func TestLiveAddonsFollowTheLiveAppRules(t *testing.T) {
 		if !strings.Contains(src, "WGOLive.register") {
 			t.Errorf("%s does not register through WGOLive.registerView/registerPanel", path)
 		}
-		if !slices.Contains(liveAddons, "web/"+filepath.Base(path)) {
+		if !slices.Contains(scripts, "web/"+filepath.Base(path)) {
 			t.Errorf("%s is not listed in liveAddons, so the page never inlines it", path)
 		}
 	}
-	for _, name := range liveAddons {
-		if !strings.HasPrefix(name, "web/live-") {
-			t.Errorf("addon %s: live page addons are web/live-*.js", name)
+	sheets, err := filepath.Glob(filepath.Join("..", "review", "web", "live-*.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range sheets {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// No imports, fonts or images from anywhere (the policy would refuse
+		// most, but an addon should not try), no legacy script hooks, and
+		// nothing that would close the page's <style> element.
+		for _, bad := range []string{`(?i)@import`, `(?i)url\(`, `(?i)@font-face`, `(?i)expression\(`, `(?i)behavior\s*:`, `(?i)-moz-binding`, `(?i)</style`, `(?i)<script`} {
+			if regexp.MustCompile(bad).Match(b) {
+				t.Errorf("%s matches %s", path, bad)
+			}
+		}
+		if !slices.Contains(styles, "web/"+filepath.Base(path)) {
+			t.Errorf("%s is not listed as an addon's Style in liveAddons, so the page never inlines it", path)
+		}
+	}
+	for _, a := range liveAddons {
+		name := strings.TrimSuffix(strings.TrimPrefix(a.Script, "web/live-"), ".js")
+		if !strings.HasPrefix(a.Script, "web/live-") || !strings.HasSuffix(a.Script, ".js") || name == "" {
+			t.Errorf("addon %s: live page addon scripts are web/live-<name>.js", a.Script)
+		}
+		if a.Style != "" && a.Style != "web/live-"+name+".css" {
+			t.Errorf("addon %s: its stylesheet is web/live-%s.css, not %s", a.Script, name, a.Style)
 		}
 	}
 	// Views and panels get ctx.boot without the action token (L.addonBoot),

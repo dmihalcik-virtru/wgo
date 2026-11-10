@@ -41,10 +41,46 @@ type liveBoot struct {
 	Extract string        `json:"extract,omitempty"`
 }
 
-// liveAddons are the scripts under internal/review/web/ that the live page
-// inlines after live.js, in order; each registers views or panels through
-// window.WGOLive before the page starts. gh-101 to gh-105 append theirs.
-var liveAddons = []string{}
+// liveAddon is one live page addon (spec/gh-100.md, requirement 27):
+//
+//   - Script, web/live-<name>.js under internal/review/web/, is inlined
+//     after live.js and registers views or panels through
+//     window.WGOLive.registerView/registerPanel before the page starts.
+//     It follows live.js's rules: no markup from strings, no eval, no
+//     storage, no POST and no token (TestLiveAddonsFollowTheLiveAppRules).
+//   - Style, optional, web/live-<name>.css, is inlined in its own <style>
+//     element after style.css and live.css, so an addon never edits the
+//     shared stylesheet. Scope its selectors to the addon's own classes.
+//
+// Every inline script and stylesheet is hashed into the page's
+// Content-Security-Policy (script-src and style-src): nothing needs
+// 'unsafe-inline', and only the listed files are allowed.
+//
+// A view's render(ctx) reads the query result as ctx.query: matches,
+// rows, vis (the visible closure, null without a filter), and rowKinds,
+// the node kinds the query's kind: clauses allow (null without one), so a
+// view need not parse the query to learn which kinds its rows are.
+type liveAddon struct {
+	Script string
+	Style  string
+}
+
+// liveAddons are the live page's addons, inlined in this order. gh-101 to
+// gh-105 append theirs.
+var liveAddons = []liveAddon{
+	{Script: "web/live-table.js", Style: "web/live-table.css"}, // gh-101: the analysis table, replacing the built-in one
+}
+
+// liveAddonFiles returns the addons' scripts and stylesheets, in order.
+func liveAddonFiles(addons []liveAddon) (scripts, styles []string) {
+	for _, a := range addons {
+		scripts = append(scripts, a.Script)
+		if a.Style != "" {
+			styles = append(styles, a.Style)
+		}
+	}
+	return scripts, styles
+}
 
 // page is a rendered explorer page with its Content-Security-Policy. The
 // bootstrap element is held apart (prefix, suffix) so a page can be re-served

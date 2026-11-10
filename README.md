@@ -1081,19 +1081,36 @@ The page keeps the query, view, sort, columns and selection in its address,
 so every state is a link and Back undoes the last change. Chart bars add or
 remove a clause. **Copy as Markdown** copies the current rows.
 
+The **Table** view compares the rows. Its columns come from the query
+fields, chosen and ordered with **Columns…**; the defaults suit the rows:
+PRs get repository, author, whose move, waiting, age, size, CI, reviews and
+tickets; tickets get status, assignee, points, sprint, linked PRs and
+mismatches. Click a header to sort, again to reverse, and Shift-click to add
+a second or third key; unknown values always sort last. Durations and sizes
+carry a small bar beside the number (sizes on a log scale), CI one mark per
+check with failures first, and reviews one glyph per reviewer (`✓` approved,
+`✕` changes requested, `○` requested, `…` commented). Without a `kind:`
+clause, nodes kept only because a match leads to them are listed dimmed and
+can be hidden. Arrow keys move between rows, Enter selects and Shift+Enter
+adds. Copy as Markdown lists the table's rows in its order, as one list,
+with its columns; the table's own State, Data and Last activity columns
+have no Markdown form, and the status line says when a sort on one of them
+was left out.
+
 ```
 wgo dash --query 'kind:pr;prstate:open'           # open the page at this query
 wgo dash --json --query 'repo:acme/api;kind:pr'   # adds "query": {expr, matches, rows, coverage_warnings}
 wgo dash --md --query 'kind:pr' --cols prstate,checks --group repo
 wgo dash --md --preset shipped --layout table     # a saved filter as a Markdown table
+wgo dash --md --query 'kind:pr' --sort -updated_ago,repo --group none   # one list, as the table sorts
 ```
 
 A malformed query fails with the column, the fix and a corrected command.
-`GET /api/extract?q=…&cols=…&group=…&layout=…` serves the same Markdown as
-`--md`, byte for byte. Merged and closed PRs come from a search that
-reaches back a limited time, so a `merged`, `closed` or `when` query that
-reaches further back carries a coverage warning in `--json` and in the
-Markdown footer, even when nothing matches.
+`GET /api/extract?q=…&cols=…&sort=…&group=…&layout=…` serves the same
+Markdown as `--md`, byte for byte. Merged and closed PRs come from a
+search that reaches back a limited time, so a `merged`, `closed` or
+`when` query that reaches further back carries a coverage warning in
+`--json` and in the Markdown footer, even when nothing matches.
 
 Saved filters are built in or set under `[dash.filters]`, where they
 override built-ins of the same name. `--preset NAME` runs one, and the
