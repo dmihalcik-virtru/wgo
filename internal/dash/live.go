@@ -606,10 +606,12 @@ func (d *Dash) Refresh(ctx context.Context, opts RefreshOptions) error {
 
 // maxFollowUps bounds the extra rounds of lookups a waited-for refresh runs
 // for jobs that only fetched data reveals: once the authenticated login is
-// known, that person's inventory; once the inventory is in, the tickets its
-// PRs name; once a sprint's search is in, its tickets' own facts (gh-98). A
-// background refresh leaves them to its next collection.
-const maxFollowUps = 2
+// known, that person's inventory (gh-97) and a sprint search for their own
+// Jira identity (gh-98); once the inventory or a sprint search is in, the
+// tickets they name. The third follow-up gives a newly discovered ticket
+// another round to be fetched. A background refresh leaves them to its next
+// collection.
+const maxFollowUps = 3
 
 // awaitRounds waits for the batch done of jobs, then assembles ls again. Jobs
 // the new data revealed that no earlier round submitted are submitted and

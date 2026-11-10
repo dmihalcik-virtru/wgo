@@ -6,10 +6,11 @@
  *   pr        = orange square, ticket = aqua diamond (same as review)
  *   effort    = neutral hexagon (container mark), bookmark = small neutral tag
  *   agent     = ink triangle: a tool, never drawn as a person
+ *   sprint    = neutral wide bar (a time box), the effort's hue in another shape
  * Freshness is never colour alone: stale = dashed outline + "stale", unknown =
  * hollow mark + "?" + "unknown", error = dotted critical outline + "unavailable".
  */
-:root { --k-workspace: var(--k-person); --k-effort: var(--k-repo); --k-bookmark: var(--muted); --k-agent: var(--ink2); }
+:root { --k-workspace: var(--k-person); --k-effort: var(--k-repo); --k-bookmark: var(--muted); --k-agent: var(--ink2); --k-sprint: var(--k-repo); }
 body.live #app { min-height: 560px; }
 .hdr .mode { font-weight: 400; color: var(--ink2); margin-left: 6px; font-size: 13px; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; }

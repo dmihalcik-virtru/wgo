@@ -17,7 +17,7 @@
   var L = {};
   var PR_STATES = ["open", "draft", "merged", "closed", "unknown", "none"];
   L.PR_STATES = PR_STATES;
-  var KIND_ORDER = { effort: 0, workspace: 1, bookmark: 2, pr: 3, ticket: 4, agent: 5 };
+  var KIND_ORDER = { effort: 0, workspace: 1, bookmark: 2, pr: 3, ticket: 4, agent: 5, sprint: 6 };
   L.KIND_ORDER = KIND_ORDER;
 
   function push(m, k, v) { var l = m.get(k); if (!l) m.set(k, l = []); l.push(v); }
@@ -184,10 +184,52 @@
     return w.bookmark ? "on " + w.bookmark : "no bookmark";
   };
 
+  var CATEGORY_TEXT = { todo: "to do", in_progress: "in progress", done: "done" };
+  // ticketFacts describes a Jira ticket's status category and story points
+  // (gh-98), each "" when unknown. Points are known only once the field was
+  // read (story_points_known); a ticket read without them is unestimated.
+  L.ticketFacts = function (ti) {
+    ti = ti || {};
+    var pts = "";
+    if (ti.story_points_known) pts = typeof ti.story_points === "number" ? ti.story_points + (ti.story_points === 1 ? " point" : " points") : "unestimated";
+    return { category: CATEGORY_TEXT[ti.status_category] || "", points: pts };
+  };
+  // sprintText is a sprint's state and dates (the calendar days Jira
+  // reports), e.g. "active sprint · 2026-10-20 to 2026-11-03".
+  L.sprintText = function (sp) {
+    if (!sp) return "";
+    var day = function (t) { return typeof t === "string" && t.length >= 10 ? t.slice(0, 10) : ""; };
+    var s = day(sp.start), e = day(sp.end), out = sp.state ? sp.state + " sprint" : "sprint state unknown";
+    if (s || e) out += " · " + (s || "?") + " to " + (e || "?");
+    return out;
+  };
+  // sprintGroupText is the line a sprint group's card adds for its sprint:
+  // its state and dates, and its goal unless the effort's description (which
+  // assemble copies from the goal) already shows it.
+  L.sprintGroupText = function (effort, sp) {
+    var goal = sp && sp.goal && sp.goal !== (effort && effort.description) ? " · goal: " + sp.goal : "";
+    return L.sprintText(sp) + goal;
+  };
+  // One collator for every comparison: localeCompare with options builds
+  // one per call, which costs milliseconds over a long list.
+  var NATURAL = new Intl.Collator("en", { numeric: true });
+  function naturalOrder(a, b) { return NATURAL.compare(String(a.label), String(b.label)) || cmp(a.id, b.id); }
+  // tracked lists what effort id tracks (gh-97, gh-98): its PRs, and its
+  // tickets, tracked directly or named by those PRs, each in natural order
+  // (acme/api#9 before acme/api#10). keep, when given, filters both.
+  L.tracked = function (idx, id, keep) {
+    var ok = keep || function () { return true; }, tickets = new Map();
+    var all = L.childrenOf(idx, id, "tracks").filter(function (n) { return ok(n.id); });
+    var prs = all.filter(function (n) { return n.kind === "pr"; });
+    all.forEach(function (n) { if (n.kind === "ticket") tickets.set(n.id, n); });
+    prs.forEach(function (p) { L.childrenOf(idx, p.id, "ticket").forEach(function (t) { if (ok(t.id)) tickets.set(t.id, t); }); });
+    return { prs: prs.sort(naturalOrder), tickets: Array.from(tickets.values()).sort(naturalOrder) };
+  };
+
   // stateText is the State column of the table.
   L.stateText = function (n) {
     switch (n.kind) {
-      case "effort": return n.effort ? ({ effort: "named effort", ticket: "ticket fallback", theme: "agent theme", ungrouped: "ungrouped work" })[n.effort.group] || n.effort.group || "" : "";
+      case "effort": return n.effort ? ({ effort: "named effort", ticket: "ticket fallback", theme: "agent theme", repo: "repository group", sprint: "sprint group", ungrouped: "ungrouped work" })[n.effort.group] || n.effort.group || "" : "";
       case "workspace": {
         var w = n.workspace || {};
         if (w.error) return "unavailable: " + w.error;
@@ -198,6 +240,7 @@
       case "bookmark": return L.bookmarkPRText(n.bookmark);
       case "pr": return L.prBucket(n.pr) + " · " + L.ciText(n.pr) + " · " + L.reviewText(n.pr);
       case "ticket": return n.ticket && n.ticket.status ? n.ticket.status : "status unknown";
+      case "sprint": return L.sprintText(n.sprint);
       case "agent": {
         var a = n.agent || {};
         return (a.status || "status unknown") + " · " + L.livenessText(a.liveness) + (a.conflict ? " · same-bookmark conflict" : "");
@@ -212,6 +255,7 @@
       case "bookmark": return L.fresh(n.bookmark && n.bookmark.pr_lookup).label;
       case "pr": return L.fresh(n.pr && n.pr.freshness).label;
       case "ticket": return L.fresh(n.ticket && n.ticket.freshness).label;
+      case "sprint": return L.fresh(n.sprint && n.sprint.freshness).label;
       case "agent": return "local";
       case "effort": return "local";
     }
@@ -407,7 +451,9 @@
   // are joined by ";" (AND); a clause is [!]name:operand, the operand "*", a
   // range (a..b, >=a, <b) or a list (a,b: OR). Positions are 1-based columns
   // in code points.
-  var QUERY_KINDS = ["effort", "workspace", "bookmark", "pr", "ticket", "agent"];
+  // QUERY_KINDS mirrors queryKinds in fields.go: every node kind, in display
+  // order.
+  var QUERY_KINDS = ["effort", "workspace", "bookmark", "pr", "ticket", "agent", "sprint"];
   L.QUERY_KINDS = QUERY_KINDS;
   var TOKEN_CHAR = /^[A-Za-z0-9\-_.\/@#+:]$/, NUMBER_RE = /^-?[0-9]+(\.[0-9]+)?$/, DURATION_RE = /^[0-9]+(\.[0-9]+)?[dw]?$/;
   var DATE_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, RELATIVE_RE = /^[+-][0-9]+[dw]$/;
@@ -652,17 +698,20 @@
   // isUnknownWord: the word unknown, quoted or not, in any case, always
   // means "the value is unknown" outside text fields.
   function isUnknownWord(v) { return !v.macro && v.text.toLowerCase() === "unknown"; }
+  // checkValue: an enum or a set with values is closed, allowing only those
+  // values and unknown (checkValue in query.go).
   function checkValue(rs, v, f) {
     var col = v.start + 1, unknownLit = isUnknownWord(v), vals = f.values || [];
+    var closed = (f.type === "enum" || f.type === "set") && vals.length > 0;
     if (v.macro) {
-      if (f.type === "enum" && vals.length) return badEnumValue(rs, v, f);
+      if (closed) return badEnumValue(rs, v, f);
       if (f.type !== "enum" && f.type !== "set" && f.type !== "text") return qerr(col, sprintf("%s does not apply to %s field %s at column %d; macros name people, for enum, set and text fields", v.text, f.type, f.name, col));
       return null;
     }
     switch (f.type) {
-      case "text": case "set": return null;
-      case "enum":
-        if (!vals.length || unknownLit) return null;
+      case "text": return null;
+      case "enum": case "set":
+        if (!closed || unknownLit) return null;
         return vals.indexOf(v.text.toLowerCase()) < 0 ? badEnumValue(rs, v, f) : null;
       case "bool":
         var t = v.text.toLowerCase();
@@ -1335,7 +1384,7 @@
   var stage = el("div", "stage", null, main);
   var canvas = el("canvas", null, null, stage);
   canvas.tabIndex = 0; canvas.setAttribute("role", "img");
-  canvas.setAttribute("aria-label", "Graph of efforts, workspaces, PRs, tickets and agents. The Table view lists the same nodes.");
+  canvas.setAttribute("aria-label", "Graph of efforts, workspaces, PRs, tickets, sprints and agents. The Table view lists the same nodes.");
   var tip = el("div", "tip", null, stage); tip.hidden = true;
   var tableWrap = el("div", "tablewrap", null, stage); tableWrap.hidden = true;
   var loadingEl = el("div", "loading", "Loading the snapshot… the page fills in as soon as wgo dash has one.", stage);
@@ -1417,13 +1466,14 @@
   var theme = {};
   function readTheme() {
     var cs = getComputedStyle(document.documentElement);
-    ["--surface", "--ink", "--ink2", "--muted", "--grid", "--accent", "--k-workspace", "--k-pr", "--k-ticket", "--k-effort", "--k-bookmark", "--k-agent",
+    ["--surface", "--ink", "--ink2", "--muted", "--grid", "--accent", "--k-workspace", "--k-pr", "--k-ticket", "--k-effort", "--k-bookmark", "--k-agent", "--k-sprint",
       "--s-good", "--s-warn", "--s-serious", "--s-critical"].forEach(function (k) { theme[k] = cs.getPropertyValue(k).trim() || "#888"; });
   }
   readTheme();
   var KINDS = [
     { k: "effort", label: "Effort" }, { k: "workspace", label: "Workspace" }, { k: "bookmark", label: "Bookmark" },
-    { k: "pr", label: "Pull request" }, { k: "ticket", label: "Ticket / issue" }, { k: "agent", label: "Agent session (a tool)" }
+    { k: "pr", label: "Pull request" }, { k: "ticket", label: "Ticket / issue" }, { k: "agent", label: "Agent session (a tool)" },
+    { k: "sprint", label: "Sprint (a time box)" }
   ];
   function kindColor(k) { return theme["--k-" + k] || theme["--muted"]; }
   var PR_RING = { merged: { cv: "--s-good", dash: [] }, closed: { cv: "--s-critical", dash: [2, 2] }, draft: { cv: "--muted", dash: [4, 2.5] }, open: { cv: "--muted", dash: [] } };
@@ -1432,15 +1482,17 @@
     if (d.kind === "ticket") return d.ticket && d.ticket.freshness;
     if (d.kind === "bookmark") return d.bookmark && d.bookmark.pr_lookup;
     if (d.kind === "workspace") return d.workspace && d.workspace.error ? "error" : "fresh";
+    if (d.kind === "sprint") return d.sprint && d.sprint.freshness;
     return "fresh";
   }
-  function radius(d) { return { effort: 11, workspace: 7, bookmark: 4, pr: 6, ticket: 6, agent: 7 }[d.kind] || 5; }
+  function radius(d) { return { effort: 11, workspace: 7, bookmark: 4, pr: 6, ticket: 6, agent: 7, sprint: 7 }[d.kind] || 5; }
   function pathShape(c, kind, x, y, r) {
     var i, a;
     switch (kind) {
       case "pr": { var s = r * 0.9; c.rect(x - s, y - s, 2 * s, 2 * s); break; }
       case "ticket": { var t = r * 1.25; c.moveTo(x, y - t); c.lineTo(x + t, y); c.lineTo(x, y + t); c.lineTo(x - t, y); c.closePath(); break; }
       case "agent": { var q = r * 1.2; c.moveTo(x, y - q); c.lineTo(x + q * 0.95, y + q * 0.7); c.lineTo(x - q * 0.95, y + q * 0.7); c.closePath(); break; }
+      case "sprint": c.rect(x - r * 1.3, y - r * 0.6, r * 2.6, r * 1.2); break;
       case "effort": for (i = 0; i < 6; i++) { a = Math.PI / 3 * i + Math.PI / 6; if (i) c.lineTo(x + r * Math.cos(a), y + r * Math.sin(a)); else c.moveTo(x + r * Math.cos(a), y + r * Math.sin(a)); } c.closePath(); break;
       default: c.moveTo(x + r, y); c.arc(x, y, r, 0, 6.2832);
     }
@@ -1452,6 +1504,7 @@
       case "pr": { var s = r * 0.9; return "M" + (x - s) + " " + (y - s) + "h" + 2 * s + "v" + 2 * s + "h" + (-2 * s) + "z"; }
       case "ticket": { var t = r * 1.25; return "M" + x + " " + (y - t) + "L" + (x + t) + " " + y + "L" + x + " " + (y + t) + "L" + (x - t) + " " + y + "z"; }
       case "agent": { var q = r * 1.2; return "M" + x + " " + (y - q) + "L" + (x + q * 0.95) + " " + (y + q * 0.7) + "L" + (x - q * 0.95) + " " + (y + q * 0.7) + "z"; }
+      case "sprint": return "M" + (x - r * 1.3) + " " + (y - r * 0.6) + "h" + r * 2.6 + "v" + r * 1.2 + "h" + (-r * 2.6) + "z";
       case "effort": for (i = 0; i < 6; i++) { a = Math.PI / 3 * i + Math.PI / 6; p.push((x + r * Math.cos(a)) + " " + (y + r * Math.sin(a))); } return "M" + p.join("L") + "z";
       default: return "M" + (x + r) + " " + y + "A" + r + " " + r + " 0 1 1 " + (x - r) + " " + y + "A" + r + " " + r + " 0 1 1 " + (x + r) + " " + y;
     }
@@ -1498,7 +1551,8 @@
   }
 
   // ---------- header, freshness, since last look ----------
-  var SOURCE_LABEL = { jj: "jj (local)", plan: "Plan", agents: "Agents", github_prs: "GitHub PRs", github_issues: "GitHub issues", jira: "Jira" };
+  var SOURCE_LABEL = { jj: "jj (local)", plan: "Plan", agents: "Agents", github_prs: "GitHub PRs", github_issues: "GitHub issues", jira: "Jira",
+    github_inventory: "GitHub PR inventory", jira_sprints: "Jira sprints" };
   function renderHeader() {
     var p = store.payload, snap = store.snap;
     chipsEl.textContent = ""; warnsEl.textContent = "";
@@ -1516,7 +1570,7 @@
     // A missing age is unknown, not zero: never call an old snapshot new.
     var age = typeof p.age_seconds === "number" ? p.age_seconds + (Date.now() - store.fetchedAt) / 1000 : null;
     countsEl.textContent = plural(c.effort || 0, "effort") + " · " + plural(c.workspace || 0, "workspace") + " · " + plural(c.pr || 0, "PR") + " · " +
-      plural(c.ticket || 0, "ticket") + " · " + plural(c.agent || 0, "agent session") + "   |   generation " + p.generation +
+      plural(c.ticket || 0, "ticket") + (c.sprint ? " · " + plural(c.sprint, "sprint") : "") + " · " + plural(c.agent || 0, "agent session") + "   |   generation " + p.generation +
       " · snapshot age " + L.ageText(age) + (p.loaded_from_disk ? " · loaded from disk, refreshing" : "");
     Object.keys(snap.sources || {}).sort().forEach(function (k) {
       var st = snap.sources[k], f = L.fresh(st.state), chip = el("span", "chip f-" + f.key, null, chipsEl);
@@ -1741,6 +1795,10 @@
     el("span", "meta", "ticket ", li);
     selButton(li, t.label, t.id); li.appendChild(document.createTextNode(" "));
     stateBadge(li, ti.status || "status unknown", ti.status ? "" : "f-unknown"); li.appendChild(document.createTextNode(" "));
+    // The category only when the status name does not already say it.
+    var tf = L.ticketFacts(ti);
+    if (tf.category && tf.category !== String(ti.status || "").toLowerCase()) { stateBadge(li, tf.category); li.appendChild(document.createTextNode(" ")); }
+    if (tf.points) { stateBadge(li, tf.points); li.appendChild(document.createTextNode(" ")); }
     freshBadge(li, ti.freshness);
     if (ti.title) el("div", "meta", ti.title, li);
     if (ti.error) el("div", "err", ti.error, li);
@@ -1756,6 +1814,9 @@
     if (ai.conflict) el("div", "conflict", "Same bookmark as " + plural((ai.conflicts_with || []).length, "other active session"), li);
   }
   var effortEls = new Map();
+  // TRACKED_MAX bounds the tracked PRs and tickets an effort card lists, so a
+  // repository with hundreds of PRs keeps the list short.
+  var TRACKED_MAX = 20;
   function renderEfforts() {
     effortsEl.textContent = ""; effortEls = new Map();
     if (!store.snap) { el("p", "empty", "Waiting for the first snapshot…", effortsEl); return; }
@@ -1775,8 +1836,13 @@
       if (info.group === "ungrouped") el("span", "badge warn", "Ungrouped", head);
       else if (info.group === "ticket") el("span", "badge", "ticket fallback", head);
       else if (info.group === "theme") el("span", "badge", "agent theme", head);
+      else if (info.group === "repo") el("span", "badge", "repository", head);
+      else if (info.group === "sprint") el("span", "badge", "sprint", head);
       if (info.source) el("span", "badge", info.source, head);
       if (info.description) el("div", "desc", info.description, sec);
+      // A sprint group's effort key is its sprint's node ID.
+      var spn = info.group === "sprint" ? idx.byId.get(info.key) : null;
+      if (spn && spn.sprint) el("div", "desc", L.sprintGroupText(info, spn.sprint), sec);
       (info.conflicts || []).forEach(function (c) {
         var w = idx.byId.get(c.workspace_id);
         el("div", "conflict", "Attribution conflict: " + (w ? w.label : c.workspace_id || "a workspace") + " is claimed by " + (c.claimed_by || []).join(", "), sec);
@@ -1789,9 +1855,9 @@
         if (rl.matches && rl.matches.length) xl.appendChild(document.createTextNode(" (" + plural(rl.matches.length, "exact match") + ")"));
       }
       var wss = L.childrenOf(idx, e.id, "contains").filter(function (w) { return store.isVisible(w.id); });
-      var tracked = L.childrenOf(idx, e.id, "tracks").filter(function (n) { return store.isVisible(n.id); });
+      var tr = L.tracked(idx, e.id, function (id) { return store.isVisible(id); }), listed = new Set();
       var ul = el("ul", null, null, sec);
-      if (!wss.length && !tracked.length) el("li", "meta", "No workspaces discovered for this effort.", ul);
+      if (!wss.length && !tr.prs.length && !tr.tickets.length) el("li", "meta", "No workspaces discovered for this effort.", ul);
       wss.sort(function (a, b) { return a.label < b.label ? -1 : a.label > b.label ? 1 : 0; }).forEach(function (w) {
         var wi = w.workspace || {}, li = el("li", "ws", null, ul);
         button(li, w.label, null, function () { store.select([w.id], false); }, "Select workspace " + w.label);
@@ -1817,21 +1883,17 @@
           var tickets = new Map();
           L.childrenOf(idx, bm.id, "ticket").forEach(function (t) { tickets.set(t.id, t); });
           prs.forEach(function (p) { L.childrenOf(idx, p.id, "ticket").forEach(function (t) { tickets.set(t.id, t); }); });
-          tickets.forEach(function (t) { renderTicket(sub, t); });
+          tickets.forEach(function (t) { listed.add(t.id); renderTicket(sub, t); });
         });
       });
-      // PRs and tickets no local bookmark leads to (repo and sprint groups,
-      // or any effort tracking an inventory PR), each PR with its tickets.
-      if (tracked.length) {
-        var tul = el("ul", null, null, sec), shown = new Set();
-        L.sortTracked(tracked).forEach(function (n) {
-          if (n.kind === "pr") {
-            renderPR(tul, n);
-            L.childrenOf(idx, n.id, "ticket").forEach(function (t) {
-              if (!shown.has(t.id) && store.isVisible(t.id)) { shown.add(t.id); renderTicket(tul, t); }
-            });
-          } else if (!shown.has(n.id)) { shown.add(n.id); renderTicket(tul, n); }
-        });
+      // PRs and tickets the effort tracks without a workspace (gh-97, gh-98).
+      tr.tickets = tr.tickets.filter(function (t) { return !listed.has(t.id); });
+      if (tr.prs.length || tr.tickets.length) {
+        var tul = el("ul", "tracked", null, sec);
+        tr.prs.slice(0, TRACKED_MAX).forEach(function (p) { renderPR(tul, p); });
+        if (tr.prs.length > TRACKED_MAX) el("li", "meta", "+" + plural(tr.prs.length - TRACKED_MAX, "more PR") + "; the table lists every one", tul);
+        tr.tickets.slice(0, TRACKED_MAX).forEach(function (t) { renderTicket(tul, t); });
+        if (tr.tickets.length > TRACKED_MAX) el("li", "meta", "+" + plural(tr.tickets.length - TRACKED_MAX, "more ticket") + "; the table lists every one", tul);
       }
       var agents = L.childrenOf(idx, e.id, "runs").filter(function (a) { return store.isVisible(a.id); });
       if (agents.length) {
@@ -1881,7 +1943,15 @@
       } else if (n.ticket) {
         var t = n.ticket;
         kv(detailBox, "System", t.system); kv(detailBox, "Status", t.status || "unknown"); kv(detailBox, "Title", t.title); kv(detailBox, "Assignee", t.assignee);
+        var tfd = L.ticketFacts(t);
+        kv(detailBox, "Status category", tfd.category); kv(detailBox, "Story points", tfd.points);
+        kv(detailBox, "Sprints", (t.sprints || []).map(function (s) { return (s.name || "sprint " + s.id) + (s.state ? " (" + s.state + ")" : ""); }).join(", "));
         kv(detailBox, "Data", L.fresh(t.freshness).label); if (t.error) el("div", "err", t.error, detailBox);
+      } else if (n.sprint) {
+        var sp = n.sprint;
+        kv(detailBox, "Sprint", L.sprintText(sp)); kv(detailBox, "Goal", sp.goal); kv(detailBox, "Board", sp.board);
+        if (sp.truncated) el("div", "meta", "Its ticket search stopped at 200 tickets; more may be in it.", detailBox);
+        kv(detailBox, "Data", L.fresh(sp.freshness).label);
       } else if (n.agent) {
         var a = n.agent;
         kv(detailBox, "Tool", a.tool); kv(detailBox, "Status", a.status || "unknown"); kv(detailBox, "Liveness", L.livenessText(a.liveness));
@@ -2039,7 +2109,7 @@
     });
     return { nodes: nodes, links: links, idx: idx, adj: adj };
   }
-  var LINK_DIST = { contains: 60, on: 26, pr: 30, ticket: 34, runs: 70, works_in: 40 };
+  var LINK_DIST = { contains: 60, on: 26, pr: 30, ticket: 34, runs: 70, works_in: 40, tracks: 50, in_sprint: 46 };
   // startSim lays the visible nodes out. While another view is shown it
   // only marks the layout stale (the graph catches up when shown again), and
   // nodes with cached positions get no synchronous ticks: the running
@@ -2131,12 +2201,12 @@
     view.nodes.forEach(function (n) {
       if (n.d.kind === "effort") cand.push([n, 1]);
       else if (nb && nb.has(n.id)) cand.push([n, 2]);
-      else if (n.d.kind === "workspace" || n.d.kind === "agent") cand.push([n, 3]);
+      else if (n.d.kind === "workspace" || n.d.kind === "agent" || n.d.kind === "sprint") cand.push([n, 3]);
     });
     cand.sort(function (a, b) { return a[1] - b[1]; });
     cand.forEach(function (c) {
       var n = c[0]; if (seen.has(n.id)) return; seen.add(n.id);
-      var sx = n.x * k + T.x, sy = n.y * k + T.y, rr = n.r * k;
+      var sx = n.x * k + T.x, sy = n.y * k + T.y, rr = n.r * k * (n.d.kind === "sprint" ? 1.3 : 1);
       if (sx < -50 || sx > W + 50 || sy < -20 || sy > H + 20) return;
       var text = n.d.kind === "agent" ? (n.d.agent ? n.d.agent.tool + " (agent)" : n.d.label) : n.d.label;
       var tw = ctx.measureText(text).width, bx = sx + rr + 4, by = sy - 8;
