@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,7 +40,8 @@ var agentHookCmd = &cobra.Command{
 	Long: `Update agent sessions from a Claude Code or Codex hook.
 
 The agent passes hook data as JSON on stdin; wgo reads session_id, cwd and
-hook_event_name from it and ignores everything else. Hook data is never placed
+hook_event_name from it, plus tool_name and the file path in tool_input for
+file edits, and ignores everything else. Hook data is never placed
 on a command line or passed to a shell. The event argument overrides
 hook_event_name when given. Pass --tool codex for Codex hooks.
 
@@ -57,7 +59,9 @@ exited, the next event finds the new one.
 
 Malformed input, a missing or invalid session_id, or no event exits non-zero.
 A cwd that holds jj workspaces without being one, such as a shared root from
-wgo add with several repos or a rig root, records the session on that folder.
+wgo add with several repos or a rig root, records the session on that folder;
+a file edit in one of its workspaces then records that workspace's repository
+and bookmark, so conflicts with other sessions are still found.
 Any other cwd outside a jj workspace is skipped silently (logged under
 WGO_DEBUG=1).
 A state file wgo cannot read or write (for example one written by a newer
@@ -87,11 +91,66 @@ func init() {
 }
 
 // hookPayload is the subset of Claude Code and Codex hook JSON that wgo uses.
-// Unknown fields (tool_input, tool_response, ...) are ignored.
+// Unknown fields (tool_response, ...) are ignored.
 type hookPayload struct {
 	SessionID     string `json:"session_id"`
 	HookEventName string `json:"hook_event_name"`
 	Cwd           string `json:"cwd"`
+	ToolName      string `json:"tool_name"`
+	// ToolInput is decoded only for the file tools (see editedPath), and
+	// leniently: a shape wgo does not expect must not fail the hook.
+	ToolInput json.RawMessage `json:"tool_input"`
+}
+
+// fileEditTools are the Claude Code tools whose tool_input names the file
+// they changed. Reads are left out: looking at another workspace is not
+// working in it.
+var fileEditTools = map[string]bool{"Edit": true, "MultiEdit": true, "Write": true, "NotebookEdit": true}
+
+// editedPath returns the absolute path a file tool changed, or "". It is only
+// ever compared with and stat'ed under the session's folder (see
+// editedWorkspace), never run or passed to jj.
+func (p hookPayload) editedPath() string {
+	if !fileEditTools[p.ToolName] || len(p.ToolInput) == 0 {
+		return ""
+	}
+	var in struct {
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
+	}
+	if json.Unmarshal(p.ToolInput, &in) != nil {
+		return ""
+	}
+	path := in.FilePath
+	if path == "" {
+		path = in.NotebookPath
+	}
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+	return filepath.Clean(path)
+}
+
+// editedWorkspace returns the workspace under root that path lies in, when
+// root is a folder of workspaces rather than a workspace itself, or "". It
+// walks up from path to root looking for a .jj directory, so it costs a few
+// stats and no jj call.
+func editedWorkspace(root, path string) string {
+	if root == "" || path == "" {
+		return ""
+	}
+	if rel, err := filepath.Rel(root, path); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	if info, err := os.Stat(filepath.Join(root, ".jj")); err == nil && info.IsDir() {
+		return "" // root is the workspace; there is nothing to narrow down
+	}
+	for dir := filepath.Dir(path); dir != root && len(dir) > len(root); dir = filepath.Dir(dir) {
+		if info, err := os.Stat(filepath.Join(dir, ".jj")); err == nil && info.IsDir() {
+			return dir
+		}
+	}
+	return ""
 }
 
 // hookAction is what an event does to its session.
@@ -184,7 +243,16 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		return err
 	}
 	existing := snapshot.GetAgentSession(p.SessionID)
-	if existing != nil && !act.refresh &&
+	edited := p.editedPath()
+	// focus is a workspace this event edited in, when it is not the one the
+	// session already records.
+	focus := ""
+	if existing != nil {
+		if f := editedWorkspace(existing.WorktreePath, edited); f != existing.Focus {
+			focus = f
+		}
+	}
+	if existing != nil && !act.refresh && focus == "" &&
 		(act.status == "" || act.status == existing.Status) &&
 		agentNow().Sub(existing.LastActivity) < heartbeatThrottle {
 		return nil
@@ -225,6 +293,24 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			}
 		}
 	}
+	switch {
+	case existing == nil:
+		focus = editedWorkspace(ws.Root, edited)
+	case focus == "" && act.refresh && ws.Root != "" && ws.Repo == "":
+		// Still in the folder: re-read the edited workspace's bookmark, as a
+		// refresh does for a session in a workspace. Resolving the folder
+		// took no jj call, so this stays within one lookup's budget.
+		focus = existing.Focus
+	}
+	// The workspace an edit landed in lends the session its repository and
+	// bookmark, so AgentConflicts sees what the agent is changing.
+	var focusWS workspaceInfo
+	if focus != "" {
+		if focusWS, err = lookupWorkspace(focus); err != nil {
+			debugf("agent hook: session %s: cannot resolve edited workspace %s: %v", p.SessionID, focus, err)
+			focusWS = workspaceInfo{}
+		}
+	}
 	// Find the agent process when none is recorded, or when the recorded one
 	// is no longer running: claude --resume keeps the session ID but starts a
 	// new process, and a stale identity would get the session pruned as soon
@@ -255,6 +341,9 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		if sess.WorktreePath == "" && cur != nil {
 			sess.WorktreePath = cur.WorktreePath
 		}
+		if focusWS.Root != "" {
+			sess.Focus, sess.RepoPath, sess.Branch = focusWS.Root, focusWS.Repo, focusWS.Branch
+		}
 		// Merge before pruning: this event shows the session is in use, so one
 		// quiet long enough to be prunable keeps its start time, effort, repo
 		// and bookmark rather than being deleted and recreated without them.
@@ -266,6 +355,13 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			// A fresh lookup is authoritative, including "no bookmark", which
 			// the merge in UpsertAgentSession would otherwise ignore.
 			state.SetAgentBookmark(saved.ID, ws.Branch)
+		}
+		if focusWS.Root != "" && focusWS.BranchKnown {
+			state.SetAgentBookmark(saved.ID, focusWS.Branch)
+		}
+		if ws.Repo != "" && saved.Focus != "" {
+			// The session moved into a workspace, which it now records itself.
+			state.ClearAgentFocus(saved.ID)
 		}
 		if pid == 0 && proc.Check(procInspector, saved.PID, saved.ProcStart) == proc.Exited {
 			// The recorded process is gone and the walk found no new one (a

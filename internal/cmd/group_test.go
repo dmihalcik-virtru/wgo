@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -134,4 +136,105 @@ func TestAgentHookInGroupFolder(t *testing.T) {
 	assert.Equal(t, root, sess.WorktreePath)
 	assert.Empty(t, sess.Branch)
 	assert.Equal(t, store.AgentWaiting, sess.Status)
+}
+
+// TestEditedWorkspace narrows a path under a folder of workspaces to the
+// workspace it lies in, and finds nothing outside the folder or when the
+// folder is a workspace itself.
+func TestEditedWorkspace(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "api/.jj", "api/pkg/deep", "web/.jj", "docs")
+	api := filepath.Join(root, "api")
+
+	assert.Equal(t, api, editedWorkspace(root, filepath.Join(api, "main.go")))
+	assert.Equal(t, api, editedWorkspace(root, filepath.Join(api, "pkg", "deep", "x.go")))
+	assert.Empty(t, editedWorkspace(root, filepath.Join(root, "docs", "notes.md")), "not in a workspace")
+	assert.Empty(t, editedWorkspace(root, filepath.Join(root, "CLAUDE.md")))
+	assert.Empty(t, editedWorkspace(root, root+"-other/api/main.go"), "a sibling sharing the prefix is outside")
+	assert.Empty(t, editedWorkspace(api, filepath.Join(api, "main.go")), "the root is the workspace")
+	assert.Empty(t, editedWorkspace("", filepath.Join(api, "main.go")))
+}
+
+// TestHookPayloadEditedPath reads the path only from file edits, and never
+// fails on a tool_input it does not expect.
+func TestHookPayloadEditedPath(t *testing.T) {
+	for _, tc := range []struct {
+		name, tool, input, want string
+	}{
+		{"edit", "Edit", `{"file_path":"/w/api/x.go","old_string":"a"}`, "/w/api/x.go"},
+		{"write", "Write", `{"file_path":"/w/api/../web/y.go"}`, "/w/web/y.go"},
+		{"notebook", "NotebookEdit", `{"notebook_path":"/w/api/n.ipynb"}`, "/w/api/n.ipynb"},
+		{"read is not an edit", "Read", `{"file_path":"/w/api/x.go"}`, ""},
+		{"bash", "Bash", `{"command":"vi /w/api/x.go"}`, ""},
+		{"relative path", "Edit", `{"file_path":"api/x.go"}`, ""},
+		{"unexpected shape", "Edit", `"x.go"`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var p hookPayload
+			raw := fmt.Sprintf(`{"session_id":"s","tool_name":%q,"tool_input":%s}`, tc.tool, tc.input)
+			require.NoError(t, json.Unmarshal([]byte(raw), &p))
+			assert.Equal(t, tc.want, p.editedPath())
+		})
+	}
+}
+
+// TestAgentHookFocusInGroupFolder: a session started in a folder of
+// workspaces takes the repository and bookmark of the workspace it edits, so
+// it conflicts with another session on that bookmark; it keeps them across
+// events from the folder, and drops the focus once it moves into a workspace.
+func TestAgentHookFocusInGroupFolder(t *testing.T) {
+	e := newAgentEnv(t)
+	root := t.TempDir()
+	mkdirs(t, root, "api/.jj", "web/.jj")
+	api, web := filepath.Join(root, "api"), filepath.Join(root, "web")
+	e.workspaces[root] = workspaceInfo{Root: root}
+	e.workspaces[api] = workspaceInfo{Root: api, Repo: api, Branch: "feat", BranchKnown: true}
+	e.workspaces[web] = workspaceInfo{Root: web, Repo: web, Branch: "other", BranchKnown: true}
+	send := func(id, event, cwd, tool, input string) {
+		t.Helper()
+		e.advance(time.Second)
+		if input == "" {
+			input = "{}"
+		}
+		raw := fmt.Sprintf(`{"session_id":%q,"hook_event_name":%q,"cwd":%q,"tool_name":%q,"tool_input":%s}`, id, event, cwd, tool, input)
+		require.NoError(t, runAgentHook(strings.NewReader(raw), "", "claude"))
+	}
+	editIn := func(path string) string { return fmt.Sprintf(`{"file_path":%q}`, path) }
+
+	send("grp", "SessionStart", root, "", "")
+	send("grp", "PostToolUse", root, "Read", editIn(filepath.Join(web, "a.go")))
+	assert.Empty(t, loadState(t).GetAgentSession("grp").Focus, "reading is not editing")
+
+	send("grp", "PostToolUse", root, "Edit", editIn(filepath.Join(api, "main.go")))
+	sess := loadState(t).GetAgentSession("grp")
+	assert.Equal(t, root, sess.WorktreePath)
+	assert.Equal(t, api, sess.Focus)
+	assert.Equal(t, api, sess.RepoPath)
+	assert.Equal(t, "feat", sess.Branch)
+
+	send("solo", "SessionStart", api, "", "")
+	observed := loadState(t).ObserveAgentSessions(e.now, agentPolicy())
+	assert.Equal(t, []string{"solo"}, store.AgentConflicts(observed)["grp"])
+	assert.Contains(t, agentStatusOut(t), "editing in api")
+
+	send("grp", "Stop", root, "", "")
+	sess = loadState(t).GetAgentSession("grp")
+	assert.Equal(t, "feat", sess.Branch, "an event from the folder keeps the edited workspace's bookmark")
+	assert.Equal(t, api, sess.Focus)
+
+	e.workspaces[api] = workspaceInfo{Root: api, Repo: api, Branch: "feat-2", BranchKnown: true}
+	send("grp", "UserPromptSubmit", root, "", "")
+	assert.Equal(t, "feat-2", loadState(t).GetAgentSession("grp").Branch, "a refresh re-reads the edited workspace's bookmark")
+	e.workspaces[api] = workspaceInfo{Root: api, Repo: api, Branch: "feat", BranchKnown: true}
+
+	send("grp", "PostToolUse", root, "Write", editIn(filepath.Join(web, "new.go")))
+	sess = loadState(t).GetAgentSession("grp")
+	assert.Equal(t, web, sess.Focus)
+	assert.Equal(t, "other", sess.Branch)
+
+	send("grp", "UserPromptSubmit", api, "", "")
+	sess = loadState(t).GetAgentSession("grp")
+	assert.Equal(t, api, sess.WorktreePath)
+	assert.Empty(t, sess.Focus, "a session inside a workspace records it directly")
+	assert.Equal(t, "feat", sess.Branch)
 }

@@ -523,6 +523,7 @@ type agentSessionJSON struct {
 	Workspace    string    `json:"workspace"`
 	Repo         string    `json:"repo,omitempty"`
 	Bookmark     string    `json:"bookmark,omitempty"`
+	Focus        string    `json:"focus,omitempty"`
 	Theme        string    `json:"theme,omitempty"`
 	PID          int       `json:"pid,omitempty"`
 	StartTime    time.Time `json:"start_time"`
@@ -534,7 +535,7 @@ func sessionJSON(o store.ObservedSession, conflicts []string) agentSessionJSON {
 	return agentSessionJSON{
 		ID: o.ID, Tool: o.Tool, Status: string(o.Status), Liveness: string(o.Liveness),
 		Source: string(o.Source), Workspace: o.WorktreePath, Repo: o.RepoPath,
-		Bookmark: o.Branch, Theme: o.ThemeID, PID: o.PID,
+		Bookmark: o.Branch, Focus: o.Focus, Theme: o.ThemeID, PID: o.PID,
 		StartTime: o.StartTime, LastActivity: o.LastActivity, Conflicts: conflicts,
 	}
 }
@@ -584,6 +585,9 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 			branch = "(no bookmark)"
 		}
 		var notes []string
+		if o.Focus != "" {
+			notes = append(notes, "editing in "+filepath.Base(o.Focus))
+		}
 		if o.ThemeID != "" {
 			notes = append(notes, "theme "+o.ThemeID)
 		}
