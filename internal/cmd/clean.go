@@ -3,6 +3,7 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -77,6 +78,7 @@ skipped instead if it changed, since the evidence you confirmed predates it.
 
 Also forgets jj workspaces whose directory is gone (the warnings wgo dash
 shows). Forgetting never touches the disk, and --worktrees includes them.
+An unmounted volume looks like a missing directory; mount it before cleaning.
 
 Shows a dry-run summary first, then prompts y/n per item (or use --yes to skip).
 Uses GitHub for PR state when a token is available.`,
@@ -117,6 +119,9 @@ func runClean(cmd *cobra.Command, args []string) error {
 	scan, err := cleanup.FindCandidates(cfg, jjc, ghClient, kinds...)
 	if err != nil {
 		return fmt.Errorf("failed to find candidates: %w", err)
+	}
+	for _, warning := range scan.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
 	}
 	candidates := scan.Candidates
 	if len(kinds) > 0 {
@@ -193,8 +198,9 @@ func runClean(cmd *cobra.Command, args []string) error {
 				}
 				promptReason = linkPRs(c, promptReason)
 			}
-			fmt.Printf("\n[%d/%d] Remove %s %s (%s)? %s: ",
-				i+1, len(ordered), c.Kind, promptPath, promptReason, prompt)
+			verb, _ := removalVerbs(c.Kind)
+			fmt.Printf("\n[%d/%d] %s %s %s (%s)? %s: ",
+				i+1, len(ordered), verb, c.Kind, promptPath, promptReason, prompt)
 			if !scanner.Scan() {
 				break
 			}
@@ -220,10 +226,14 @@ func runClean(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		if err := executeRemoval(c, jjc, ghClient, nil); err != nil {
+		var skip *skipRemoval
+		if err := executeRemoval(c, jjc, ghClient, nil); errors.As(err, &skip) {
+			fmt.Printf("  Skipped: %s\n", skip.why)
+		} else if err != nil {
 			fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
 		} else {
-			fmt.Printf("  Removed %s %s\n", c.Kind, c.DisplayPath())
+			_, done := removalVerbs(c.Kind)
+			fmt.Printf("  %s %s %s\n", done, c.Kind, c.DisplayPath())
 			removed++
 			if c.Kind == KindRepo {
 				untrackedRepos = append(untrackedRepos, c.RepoPath)
@@ -244,9 +254,22 @@ func runClean(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Printf("\nDone. Removed %d item(s).\n", removed)
+	fmt.Printf("\nDone. Removed or forgot %d item(s).\n", removed)
 	return nil
 }
+
+func removalVerbs(kind cleanup.CandidateKind) (verb, done string) {
+	if kind == cleanup.KindOrphanWorkspace {
+		return "Forget", "Forgot"
+	}
+	return "Remove", "Removed"
+}
+
+// skipRemoval means another actor already resolved the candidate, or the
+// workspace came back after the scan. Neither is a successful removal.
+type skipRemoval struct{ why string }
+
+func (s *skipRemoval) Error() string { return s.why }
 
 // splitByTier separates workspaces that need a decision from everything that
 // is proven removable, keeping their order.
@@ -587,6 +610,11 @@ func executeRemoval(c Candidate, jjc jj.Client, ghClient github.Client, _ *store
 				return fmt.Errorf("cannot verify bookmark is safe to delete:\n- %s\nuse --force to delete anyway", strings.Join(reasons, "\n- "))
 			}
 		}
+		if c.OrphanCommitID != "" {
+			if err := recheckOrphanBookmark(c, jjc); err != nil {
+				return err
+			}
+		}
 		if err := jjc.BookmarkDelete(c.RepoPath, c.Branch); err != nil {
 			return err
 		}
@@ -609,6 +637,46 @@ func executeRemoval(c Candidate, jjc jj.Client, ghClient github.Client, _ *store
 	default:
 		return fmt.Errorf("unknown candidate kind: %v", c.Kind)
 	}
+}
+
+// recheckOrphanBookmark makes sure a bookmark offered because its workspace
+// was orphaned is still on the scanned commit and no live workspace now uses
+// that commit. The orphan itself may have come back during the prompt.
+func recheckOrphanBookmark(c Candidate, jjc jj.Client) error {
+	bookmarks, err := jjc.BookmarkList(c.RepoPath, jj.BookmarkListOpts{Local: true, Names: []string{c.Branch}})
+	if err != nil {
+		return fmt.Errorf("could not recheck bookmark %q: %w", c.Branch, err)
+	}
+	var current *jj.Bookmark
+	for i := range bookmarks {
+		if bookmarks[i].Name == c.Branch {
+			current = &bookmarks[i]
+			break
+		}
+	}
+	if current == nil || !current.Present {
+		return &skipRemoval{why: fmt.Sprintf("bookmark %q was already deleted", c.Branch)}
+	}
+	if current.Conflict || current.CommitID != c.OrphanCommitID {
+		return &skipRemoval{why: fmt.Sprintf("bookmark %q changed since the scan", c.Branch)}
+	}
+	workspaces, err := jjc.ListWorkspaces(c.RepoPath)
+	if err != nil {
+		return fmt.Errorf("could not recheck workspaces for bookmark %q: %w", c.Branch, err)
+	}
+	for _, ws := range workspaces {
+		if ws.CommitID != current.CommitID {
+			continue
+		}
+		_, orphaned, err := jj.OrphanReason(ws)
+		if err != nil {
+			return fmt.Errorf("could not recheck workspace %q for bookmark %q: %w", ws.Name, c.Branch, err)
+		}
+		if !orphaned {
+			return &skipRemoval{why: fmt.Sprintf("bookmark %q is now on live workspace %q at %s", c.Branch, ws.Name, ws.Path)}
+		}
+	}
+	return nil
 }
 
 // invalidateBranchCache drops the on-disk PR cache entry for a deleted branch so
@@ -671,7 +739,7 @@ func forgetOrphanWorkspace(c Candidate, jjc jj.Client) error {
 			return fmt.Errorf("workspace %q: could not check its .jj directory: %w", w.Name, err)
 		}
 		if !orphaned {
-			return fmt.Errorf("workspace %q is back at %s; not forgetting it", w.Name, w.Path)
+			return &skipRemoval{why: fmt.Sprintf("workspace %q is back at %s; not forgetting it", w.Name, w.Path)}
 		}
 		if err := jjc.WorkspaceForget(c.RepoPath, w.Name); err != nil {
 			return err
@@ -681,8 +749,7 @@ func forgetOrphanWorkspace(c Candidate, jjc jj.Client) error {
 		}
 		return nil
 	}
-	// Already forgotten (by jj or another wgo): nothing left to do.
-	return nil
+	return &skipRemoval{why: fmt.Sprintf("workspace %q was already forgotten", c.WorkspaceName)}
 }
 
 func workspaceNameForPath(jjc jj.Client, repoPath, wsPath string) string {

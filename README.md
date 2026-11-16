@@ -231,10 +231,10 @@ wgo statusline --refresh >/dev/null 2>&1 &
 ```
 
 **Agent sessions.** `wgo agent status` lists AI agent sessions across
-workspaces; several agents can share one workspace. For Claude Code, wire up
-`wgo agent hook` as described in
-[`contrib/claude-code-hooks.md`](contrib/claude-code-hooks.md); other tools
-can use `wgo agent start --json`, `heartbeat` and `stop --session`.
+workspaces; several agents can share one workspace. Wire up `wgo agent hook`
+using the [Claude Code](contrib/claude-code-hooks.md) or
+[Codex](contrib/codex-hooks.md) recipe. Other tools can use
+`wgo agent start --json`, `heartbeat` and `stop --session`.
 
 ### Annotate Your Current Branch
 
@@ -766,7 +766,8 @@ wgo clean --remote       # close draft/stale PRs on GitHub (with confirmation)
 `--worktrees` (and plain `wgo clean`) also forgets jj workspaces whose directory
 was deleted — the "listed by jj but its directory is gone" warnings in `wgo dash`.
 That only runs `jj workspace forget`: nothing on disk is removed, and edits in the
-workspace's working-copy change stay in the repo.
+workspace's working-copy change stay in the repo. A workspace on an unmounted
+volume also looks missing; mount the volume before running cleanup.
 
 For scripting or CI, skip prompts with `--yes`:
 

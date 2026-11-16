@@ -59,6 +59,40 @@ func TestAgentHookLifecycle(t *testing.T) {
 	assert.Nil(t, loadState(t).GetAgentSession(hookSessionID))
 }
 
+// Codex sends the same shared hook fields as Claude Code. Its session ID is
+// kept distinct, and the hook records the codex process and lifecycle.
+func TestAgentHookCodexLifecycle(t *testing.T) {
+	e := newAgentEnv(t)
+	e.procs[fakeClaudePID] = proc.Info{PID: fakeClaudePID, PPID: 1, Name: "codex", Start: fakeClaudeTok}
+	const sessionID = "thr_123"
+	send := func(event, extra string) {
+		t.Helper()
+		payload := fmt.Sprintf(`{"session_id":%q,"cwd":"/ws","hook_event_name":%q%s}`, sessionID, event, extra)
+		require.NoError(t, runAgentHook(strings.NewReader(payload), "", "codex"))
+		e.advance(time.Second)
+	}
+
+	send("SessionStart", `,"source":"startup"`)
+	sess := loadState(t).GetAgentSession(sessionID)
+	require.NotNil(t, sess)
+	assert.Equal(t, "codex", sess.Tool)
+	assert.Equal(t, store.AgentWaiting, sess.Status)
+	assert.Equal(t, fakeClaudePID, sess.PID)
+	assert.Equal(t, fakeClaudeTok, sess.ProcStart)
+
+	send("UserPromptSubmit", `,"turn_id":"turn_1","prompt":"Fix the bug"`)
+	assert.Equal(t, store.AgentWorking, loadState(t).GetAgentSession(sessionID).Status)
+	send("PostToolUse", `,"turn_id":"turn_1","tool_name":"Bash"`)
+	assert.Equal(t, store.AgentWorking, loadState(t).GetAgentSession(sessionID).Status)
+	send("Stop", `,"turn_id":"turn_1"`)
+	assert.Equal(t, store.AgentWaiting, loadState(t).GetAgentSession(sessionID).Status)
+	send("UserPromptSubmit", `,"turn_id":"turn_2"`)
+	send("Interrupt", `,"turn_id":"turn_2"`)
+	assert.Equal(t, store.AgentWaiting, loadState(t).GetAgentSession(sessionID).Status)
+	send("SessionEnd", `,"reason":"other"`)
+	assert.Nil(t, loadState(t).GetAgentSession(sessionID))
+}
+
 // TestAgentHookThrottlesRepeatedToolUse: repeated PostToolUse events with no
 // status change inside the throttle window do not rewrite state.
 func TestAgentHookThrottlesRepeatedToolUse(t *testing.T) {
@@ -107,6 +141,7 @@ func TestHookActionFor(t *testing.T) {
 	assert.Equal(t, store.AgentWorking, hookActionFor("PostToolUse").status)
 	assert.Equal(t, store.AgentWorking, hookActionFor("posttooluse").status)
 	assert.Equal(t, store.AgentWaiting, hookActionFor("Stop").status)
+	assert.Equal(t, store.AgentWaiting, hookActionFor("Interrupt").status)
 	assert.True(t, hookActionFor("SessionEnd").remove)
 	assert.Equal(t, hookAction{}, hookActionFor("SomethingNew"))
 }
@@ -322,7 +357,7 @@ func TestAgentHookReportsJJFailure(t *testing.T) {
 	assert.Nil(t, loadState(t).GetAgentSession(hookSessionID))
 	msg := hookWarning(t, e.warnings.String())
 	assert.Contains(t, msg, "/ws/sub/dir")
-	assert.Contains(t, msg, "PATH Claude Code runs hooks with")
+	assert.Contains(t, msg, "hook's PATH")
 }
 
 // TestAgentHookWarningLimitIsPerProblem: sessions in different directories
