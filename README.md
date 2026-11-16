@@ -231,10 +231,10 @@ wgo statusline --refresh >/dev/null 2>&1 &
 ```
 
 **Agent sessions.** `wgo agent status` lists AI agent sessions across
-workspaces; several agents can share one workspace. For Claude Code, wire up
-`wgo agent hook` as described in
-[`contrib/claude-code-hooks.md`](contrib/claude-code-hooks.md); other tools
-can use `wgo agent start --json`, `heartbeat` and `stop --session`.
+workspaces; several agents can share one workspace. Wire up `wgo agent hook`
+using the [Claude Code](contrib/claude-code-hooks.md) or
+[Codex](contrib/codex-hooks.md) recipe. Other tools can use
+`wgo agent start --json`, `heartbeat` and `stop --session`.
 
 ### Annotate Your Current Branch
 

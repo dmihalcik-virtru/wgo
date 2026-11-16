@@ -19,52 +19,55 @@ import (
 var agentHookTool string
 
 // hookLockTimeout bounds how long a hook waits for another wgo process to
-// release state.json's lock. Claude Code holds up the user's prompt until the
-// hook exits, so a wedged wgo delays each prompt by at most this, not until
-// Claude Code kills the hook. See workspaceLookupTimeout for how it fits
-// Claude Code's hook timeout.
+// release state.json's lock. Synchronous agent hooks hold up the triggering
+// action, so a wedged wgo delays it by at most this lock wait.
 var hookLockTimeout = 2 * time.Second
 
-// hookRemoveLockTimeout is hookLockTimeout for SessionEnd. It is the last
-// event of a session, so no later one retries a removal it gives up on, and
-// it makes no jj calls, so it can spend most of the hook timeout waiting.
+// hookRemoveLockTimeout is hookLockTimeout for Claude Code's SessionEnd. It is
+// the last event of a session, so no later one retries a removal it gives up
+// on, and it makes no jj calls, so it can spend most of the hook timeout
+// waiting.
 var hookRemoveLockTimeout = 8 * time.Second
+
+// Codex caps SessionEnd command hooks at 3 seconds. Leave time for process
+// startup and state I/O after waiting for the lock.
+const codexHookRemoveLockTimeout = 2 * time.Second
 
 var agentHookCmd = &cobra.Command{
 	Use:   "hook [event]",
-	Short: "Update agent sessions from Claude Code hook JSON on stdin",
-	Long: `Update agent sessions from a Claude Code hook.
+	Short: "Update agent sessions from an agent hook JSON event on stdin",
+	Long: `Update agent sessions from a Claude Code or Codex hook.
 
-Claude Code passes hook data as JSON on stdin; wgo reads session_id, cwd and
+The agent passes hook data as JSON on stdin; wgo reads session_id, cwd and
 hook_event_name from it and ignores everything else. Hook data is never placed
 on a command line or passed to a shell. The event argument overrides
-hook_event_name when given.
+hook_event_name when given. Pass --tool codex for Codex hooks.
 
-  SessionStart, Stop, Notification      the session is waiting for input
+  SessionStart, Stop, Notification,
+  Interrupt                             the session is waiting for input
   UserPromptSubmit, PreToolUse,
   PostToolUse, SubagentStop             the session is working
   SessionEnd                            the session is removed
   any other event                       refreshes the session's activity
 
 The session is created on its first event, in the jj workspace containing cwd,
-and records the Claude Code process (found by walking up from the hook's
-parent) so a quiet session stays visible while Claude is running. If that
-process has exited (claude --resume keeps the session but starts a new
-process), the next event finds the new one.
+and records the agent process (found by walking up from the hook's parent) so
+a quiet session stays visible while the agent is running. If that process has
+exited, the next event finds the new one.
 
 Malformed input, a missing or invalid session_id, or no event exits non-zero.
 A cwd outside any jj workspace is skipped silently (logged under WGO_DEBUG=1).
 A state file wgo cannot read or write (for example one written by a newer
-wgo), or a workspace jj fails on (for example because jj is not on Claude
-Code's PATH), is reported as a JSON systemMessage on stdout, which Claude
-Code shows the user; that is written only on PostToolUse and
-UserPromptSubmit, where Claude Code displays it, and at most once an hour for
-the same problem across all sessions. Otherwise the command prints nothing on
-stdout. Either way it exits 0, so it never disrupts the agent.
+wgo), or a workspace jj fails on (for example because jj is not on the hook's
+PATH), is reported as a JSON systemMessage on stdout on PostToolUse and
+UserPromptSubmit, at most once an hour for the same problem across all
+sessions. Otherwise the command prints nothing on stdout. Either way it exits
+0, so it never disrupts the agent.
 
 The jj lookups (run with --ignore-working-copy, so they never snapshot)
 share a 2s budget, and the wait for the state file's lock is also 2s (8s for
-SessionEnd, which is never retried). See contrib/claude-code-hooks.md.`,
+Claude Code SessionEnd, 2s for Codex SessionEnd, which are never retried).
+See contrib/claude-code-hooks.md and contrib/codex-hooks.md.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		event := ""
@@ -80,7 +83,7 @@ func init() {
 	agentHookCmd.Flags().StringVar(&agentHookTool, "tool", "claude", "agent tool sending the hook")
 }
 
-// hookPayload is the subset of Claude Code's hook JSON that wgo uses.
+// hookPayload is the subset of Claude Code and Codex hook JSON that wgo uses.
 // Unknown fields (tool_input, tool_response, ...) are ignored.
 type hookPayload struct {
 	SessionID     string `json:"session_id"`
@@ -103,7 +106,7 @@ func hookActionFor(event string) hookAction {
 		return hookAction{status: store.AgentWaiting, refresh: true}
 	case "stop":
 		return hookAction{status: store.AgentWaiting, refresh: true}
-	case "notification":
+	case "notification", "interrupt":
 		return hookAction{status: store.AgentWaiting}
 	case "userpromptsubmit":
 		return hookAction{status: store.AgentWorking, refresh: true}
@@ -161,7 +164,11 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		return err
 	}
 	if act.remove {
-		err := s.MutateStateWithin(hookRemoveLockTimeout, func(state *store.State) (bool, error) {
+		lockTimeout := hookRemoveLockTimeout
+		if tool == "codex" && lockTimeout > codexHookRemoveLockTimeout {
+			lockTimeout = codexHookRemoveLockTimeout
+		}
+		err := s.MutateStateWithin(lockTimeout, func(state *store.State) (bool, error) {
 			return state.RemoveAgentSession(p.SessionID), nil
 		})
 		return lockProblem(s, err, "the session stays listed until wgo sees its agent exit")
@@ -206,12 +213,12 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			}
 		default:
 			// dir is in a jj workspace, but jj failed on it: it is missing from
-			// the PATH Claude Code runs hooks with, too old, or misconfigured.
+			// the agent hook's PATH, too old, or misconfigured.
 			// The warning is keyed on jj's error, not dir, so every session it
 			// fails for shares one hourly warning.
 			return &hookProblem{
 				key: "jj: " + jj.BriefError(err),
-				err: fmt.Errorf("cannot resolve the jj workspace at %s (check that jj is on the PATH Claude Code runs hooks with): %w", dir, err),
+				err: fmt.Errorf("cannot resolve the jj workspace at %s (check that jj is on the hook's PATH): %w", dir, err),
 			}
 		}
 	}
