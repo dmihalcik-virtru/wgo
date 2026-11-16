@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -65,8 +66,61 @@ func TestExecuteRemoval_OrphanThatCameBack(t *testing.T) {
 
 	err := executeRemoval(orphanCandidate(repo, "back", ws), c, nil, nil)
 	require.Error(t, err)
+	var skip *skipRemoval
+	assert.True(t, errors.As(err, &skip))
 	assert.Contains(t, err.Error(), "is back")
 	assert.Contains(t, workspaceNames(t, c, repo), "back")
+}
+
+func TestExecuteRemoval_OrphanAlreadyForgotten(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	err := executeRemoval(orphanCandidate(repo, "gone", ""), c, nil, nil)
+	var skip *skipRemoval
+	require.ErrorAs(t, err, &skip)
+	assert.Contains(t, skip.why, "already forgotten")
+}
+
+func TestExecuteRemoval_OrphanBookmarkWorkspaceCameBack(t *testing.T) {
+	repo, c := jjtest.NewRepo(t)
+	ws := jjtest.NewWorkspace(t, repo, "back")
+	workspaces, err := c.ListWorkspaces(repo)
+	require.NoError(t, err)
+	var commitID string
+	for _, w := range workspaces {
+		if w.Name == "back" {
+			commitID = w.CommitID
+		}
+	}
+	require.NotEmpty(t, commitID)
+	require.NoError(t, c.BookmarkCreate(repo, "feature", commitID))
+	bookmark := cleanup.Candidate{
+		Kind:           cleanup.KindLocalBranch,
+		RepoPath:       repo,
+		Branch:         "feature",
+		OrphanCommitID: commitID,
+	}
+
+	// The scan saw an orphan and offered its bookmark. Restore the directory
+	// before the execution pass, as can happen while clean waits for input.
+	holding := filepath.Join(t.TempDir(), "holding")
+	require.NoError(t, os.Rename(ws, holding))
+	require.NoError(t, recheckOrphanBookmark(bookmark, c))
+	require.NoError(t, os.Rename(holding, ws))
+
+	err = executeRemoval(bookmark, c, nil, nil)
+	var skip *skipRemoval
+	require.ErrorAs(t, err, &skip)
+	assert.Contains(t, skip.why, "live workspace")
+	assert.Contains(t, workspaceNames(t, c, repo), "back")
+	bms, err := c.BookmarkList(repo, jj.BookmarkListOpts{Local: true})
+	require.NoError(t, err)
+	found := false
+	for _, bm := range bms {
+		if bm.Name == "feature" && bm.CommitID == commitID && bm.Present {
+			found = true
+		}
+	}
+	assert.True(t, found, "the live workspace's bookmark must remain")
 }
 
 // Forgetting a workspace must not lose edits in its working-copy commit: jj

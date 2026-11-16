@@ -315,6 +315,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	collector := dash.NewCollector(dash.Config{
 		JJ:          jj.NewCLI(),
 		Discover:    discovery.FromConfig(cfg).DiscoverAll,
+		RigDir:      cfg.Rig.Dir,
 		Store:       st,
 		AgentPolicy: agentPolicy(),
 		Days:        dashDays,

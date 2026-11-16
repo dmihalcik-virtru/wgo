@@ -17,6 +17,10 @@ func TestOrphanReason(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(jjFile, ".jj"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	rootFile := filepath.Join(t.TempDir(), "workspace")
+	if err := os.WriteFile(rootFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name     string
@@ -26,6 +30,7 @@ func TestOrphanReason(t *testing.T) {
 	}{
 		{"gone", "", true, "its directory is gone"},
 		{"missing dir", filepath.Join(t.TempDir(), "deleted"), true, "deleted is gone"},
+		{"root is a file", rootFile, true, "not a directory"},
 		{"no .jj", noJJ, true, "has no .jj directory"},
 		{".jj is a file", jjFile, true, "has no .jj directory"},
 		{"live", live, false, ""},
