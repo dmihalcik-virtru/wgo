@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"io"
 	"os"
 
@@ -59,7 +60,13 @@ Claude Code integration:
     }
 
   The SessionStart warm is synchronous (no trailing &) so the first render is
-  correct; the Stop warm is backgrounded so it never delays a turn.`,
+  correct; the Stop warm is backgrounded so it never delays a turn.
+
+Outside any jj workspace the line is empty and the exit status 0, so a prompt
+never shows an error; --json still reports it.`,
+	// A runtime failure is not a usage mistake; the usage text would only
+	// bury the error in a prompt.
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runStatusline(os.Stdout)
 	},
@@ -92,7 +99,12 @@ func runStatusline(w io.Writer) error {
 		Siblings:  statuslineSiblings,
 		Refresh:   statuslineRefresh,
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, errNotJJRepo) && !statuslineJSON:
+		// A prompt segment is not worth an error: outside any workspace
+		// there is simply nothing to show.
+		return nil
+	case err != nil:
 		return err
 	}
 

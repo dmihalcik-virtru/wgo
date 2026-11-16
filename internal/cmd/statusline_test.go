@@ -137,3 +137,19 @@ func TestResolveCwd(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+// TestStatuslineOutsideWorkspace renders nothing, without an error, outside
+// any jj workspace, so a prompt never shows one; --json still reports it.
+func TestStatuslineOutsideWorkspace(t *testing.T) {
+	origRepo, origJSON := repoFlag, statuslineJSON
+	t.Cleanup(func() { repoFlag, statuslineJSON = origRepo, origJSON })
+	t.Setenv("HOME", t.TempDir())
+	repoFlag = t.TempDir()
+
+	var buf bytes.Buffer
+	require.NoError(t, runStatusline(&buf))
+	assert.Empty(t, buf.String())
+
+	statuslineJSON = true
+	assert.ErrorIs(t, runStatusline(&buf), errNotJJRepo)
+}
