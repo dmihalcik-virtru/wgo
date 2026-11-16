@@ -55,7 +55,10 @@ per-tool cost stays small.
 
 - **Hook data stays on stdin.** The command line is fixed; Claude Code's JSON
   is decoded from stdin and only `session_id`, `cwd` and `hook_event_name` are
-  used. Nothing from the payload is placed on a command line or handed to a
+  used, plus `tool_name` and the absolute file path in `tool_input` for file
+  edits (`Edit`, `MultiEdit`, `Write`, `NotebookEdit`). That path is only
+  compared with the session's folder and checked for a `.jj` directory above
+  it. Nothing from the payload is placed on a command line or handed to a
   shell. Session IDs are restricted to `[A-Za-z0-9._:-]`.
 - **Quiet output.** The hook prints nothing on stdout except the warning
   below, and that only as a JSON `systemMessage`, which Claude Code shows you
@@ -64,7 +67,8 @@ per-tool cost stays small.
 - **It never breaks your session.** Malformed JSON, a missing or invalid
   `session_id`, or no event exits non-zero, which Claude Code shows as a
   non-blocking hook error. Everything else exits 0. A `cwd` outside a jj
-  workspace is skipped silently (run with `WGO_DEBUG=1` to see it). A state
+  workspace, other than a folder of workspaces (below), is skipped silently
+  (run with `WGO_DEBUG=1` to see it). A state
   file wgo cannot read or write, such as one from a newer wgo, or a workspace
   jj fails on, such as when `jj` is not on Claude Code's `PATH`, means
   sessions are not being tracked, so it is shown as a warning on the next
@@ -97,6 +101,21 @@ per-tool cost stays small.
   matches), is removed. A session with no recorded process, or one whose
   process cannot be checked, is shown as *uncertain* rather than deleted; it
   is removed after 24 hours, by `SessionEnd`, or by `wgo agent stop`.
+
+## Starting in a folder of workspaces
+
+`wgo add` with several repos and `wgo rig` both write a `CLAUDE.md` in a folder
+that holds jj workspaces without being one, so Claude Code is often started
+there. A `cwd` like that, one whose subfolders (or, in a rig, whose `src/`
+subfolders) are jj workspaces, records the session on the folder itself. It
+has no repository or bookmark of its own, and `wgo statusline` run there
+summarizes each workspace instead.
+
+When Claude edits a file in one of those workspaces, `PostToolUse` records that
+workspace's repository and bookmark on the session (`wgo agent status` notes
+`editing in <workspace>`), so it is flagged when another session works on the
+same bookmark. Later events from the folder keep them, and re-read the
+bookmark; a session that moves into a workspace records that one directly.
 
 ## Alongside the statusline
 

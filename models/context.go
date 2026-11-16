@@ -49,6 +49,31 @@ type Context struct {
 	// Rig is set when the workspace is a `wgo rig` checkout rather than branch
 	// work. Nil everywhere else.
 	Rig *RigRef `json:"rig,omitempty"`
+	// Group is set when wgo runs in a folder that holds jj workspaces without
+	// being one: a `wgo add` shared root or a rig root, where an agent is
+	// often started. The workspace-level fields above are then empty and
+	// each workspace is summarized here. Nil everywhere else.
+	Group *GroupRef `json:"group,omitempty"`
+}
+
+// GroupRef summarizes the jj workspaces in a folder that is not one itself.
+type GroupRef struct {
+	Name       string           `json:"name"`
+	Path       string           `json:"path"`
+	Workspaces []GroupWorkspace `json:"workspaces"`
+	// Overflow counts workspaces beyond the ones summarized.
+	Overflow int `json:"overflow,omitempty"`
+}
+
+// GroupWorkspace is one workspace of a group: where it is, its bookmark, and
+// the PRs cached for it.
+type GroupWorkspace struct {
+	Name      string  `json:"name"`
+	Path      string  `json:"path"`
+	RepoURL   string  `json:"repo_url,omitempty"`
+	Branch    string  `json:"branch,omitempty"` // "" when there is no bookmark
+	BranchURL string  `json:"branch_url,omitempty"`
+	PRs       []PRRef `json:"prs,omitempty"`
 }
 
 // RigRef identifies the rig a workspace belongs to.

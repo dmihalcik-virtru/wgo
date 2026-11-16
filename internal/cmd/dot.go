@@ -116,7 +116,7 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 	jjc := jj.NewCLI()
 
 	if !jjc.IsRepo(cwd) {
-		return nil, fmt.Errorf("not a jj repository")
+		return nil, errNotJJRepo
 	}
 
 	wsRoot, err := jjc.Root(cwd)

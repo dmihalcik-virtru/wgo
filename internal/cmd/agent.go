@@ -219,7 +219,9 @@ type workspaceInfo struct {
 var workspaceLookupTimeout = 2 * time.Second
 
 // lookupWorkspace resolves the workspace root, its repository's main root and
-// the nearest bookmark at or below @ for dir. These are jj subprocess calls,
+// the nearest bookmark at or below @ for dir. A dir that is not in a
+// workspace but holds several resolves to itself, with no repository or
+// bookmark. These are jj subprocess calls,
 // so hooks make them only when creating a session or on the events that
 // refresh one (SessionStart, UserPromptSubmit, Stop), never on PostToolUse.
 // They run with --ignore-working-copy, so recording a session never
@@ -232,6 +234,15 @@ var lookupWorkspace = func(dir string) (workspaceInfo, error) {
 	defer cancel()
 	jjc := jj.NewCLI().ReadOnly().WithContext(ctx)
 	wsRoot, err := workspaceRootWith(jjc, dir)
+	if errors.Is(err, errNotJJRepo) {
+		if abs, absErr := filepath.Abs(dir); absErr == nil && len(groupWorkspaces(abs)) > 0 {
+			// A folder of workspaces (see groupWorkspaces) is where the
+			// session runs. It has no repository or bookmark of its own, so
+			// none is recorded: BranchKnown false keeps what an edit in one
+			// of its workspaces recorded.
+			return workspaceInfo{Root: abs}, nil
+		}
+	}
 	if err != nil {
 		return workspaceInfo{}, err
 	}
@@ -512,6 +523,7 @@ type agentSessionJSON struct {
 	Workspace    string    `json:"workspace"`
 	Repo         string    `json:"repo,omitempty"`
 	Bookmark     string    `json:"bookmark,omitempty"`
+	Focus        string    `json:"focus,omitempty"`
 	Theme        string    `json:"theme,omitempty"`
 	PID          int       `json:"pid,omitempty"`
 	StartTime    time.Time `json:"start_time"`
@@ -523,7 +535,7 @@ func sessionJSON(o store.ObservedSession, conflicts []string) agentSessionJSON {
 	return agentSessionJSON{
 		ID: o.ID, Tool: o.Tool, Status: string(o.Status), Liveness: string(o.Liveness),
 		Source: string(o.Source), Workspace: o.WorktreePath, Repo: o.RepoPath,
-		Bookmark: o.Branch, Theme: o.ThemeID, PID: o.PID,
+		Bookmark: o.Branch, Focus: o.Focus, Theme: o.ThemeID, PID: o.PID,
 		StartTime: o.StartTime, LastActivity: o.LastActivity, Conflicts: conflicts,
 	}
 }
@@ -573,6 +585,9 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 			branch = "(no bookmark)"
 		}
 		var notes []string
+		if o.Focus != "" {
+			notes = append(notes, "editing in "+filepath.Base(o.Focus))
+		}
 		if o.ThemeID != "" {
 			notes = append(notes, "theme "+o.ThemeID)
 		}

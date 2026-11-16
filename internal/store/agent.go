@@ -59,8 +59,12 @@ type AgentSession struct {
 	WorktreePath string `json:"worktree_path"`
 	// RepoPath is the repository's main workspace root, so sessions in
 	// different workspaces of one repository can be compared for conflicts.
-	RepoPath     string    `json:"repo_path,omitempty"`
-	Branch       string    `json:"branch"`
+	RepoPath string `json:"repo_path,omitempty"`
+	Branch   string `json:"branch"`
+	// Focus is set when WorktreePath is a folder of workspaces rather than
+	// one: the workspace in it the agent last edited a file in. RepoPath and
+	// Branch are then that workspace's.
+	Focus        string    `json:"focus,omitempty"`
 	StartTime    time.Time `json:"start_time"`
 	LastActivity time.Time `json:"last_activity"`
 	// PID and ProcStart identify the agent's own process (not a transient
@@ -176,6 +180,9 @@ func (s *State) UpsertAgentSession(sess AgentSession, now time.Time) (AgentSessi
 		if sess.Branch == "" {
 			sess.Branch = existing.Branch
 		}
+		if sess.Focus == "" {
+			sess.Focus = existing.Focus
+		}
 		if sess.Status == "" {
 			sess.Status = existing.Status
 		}
@@ -222,6 +229,19 @@ func (s *State) ClearAgentProcess(id string) bool {
 		return false
 	}
 	sess.PID, sess.ProcStart = 0, 0
+	s.AgentSessions[id] = sess
+	return true
+}
+
+// ClearAgentFocus forgets the workspace a session last edited in, which
+// UpsertAgentSession's merge cannot express. It reports whether the session
+// exists.
+func (s *State) ClearAgentFocus(id string) bool {
+	sess, ok := s.AgentSessions[id]
+	if !ok {
+		return false
+	}
+	sess.Focus = ""
 	s.AgentSessions[id] = sess
 	return true
 }
