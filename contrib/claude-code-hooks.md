@@ -64,7 +64,8 @@ per-tool cost stays small.
 - **It never breaks your session.** Malformed JSON, a missing or invalid
   `session_id`, or no event exits non-zero, which Claude Code shows as a
   non-blocking hook error. Everything else exits 0. A `cwd` outside a jj
-  workspace is skipped silently (run with `WGO_DEBUG=1` to see it). A state
+  workspace, other than a folder of workspaces (below), is skipped silently
+  (run with `WGO_DEBUG=1` to see it). A state
   file wgo cannot read or write, such as one from a newer wgo, or a workspace
   jj fails on, such as when `jj` is not on Claude Code's `PATH`, means
   sessions are not being tracked, so it is shown as a warning on the next
@@ -97,6 +98,15 @@ per-tool cost stays small.
   matches), is removed. A session with no recorded process, or one whose
   process cannot be checked, is shown as *uncertain* rather than deleted; it
   is removed after 24 hours, by `SessionEnd`, or by `wgo agent stop`.
+
+## Starting in a folder of workspaces
+
+`wgo add` with several repos and `wgo rig` both write a `CLAUDE.md` in a folder
+that holds jj workspaces without being one, so Claude Code is often started
+there. A `cwd` like that, one whose subfolders (or, in a rig, whose `src/`
+subfolders) are jj workspaces, records the session on the folder itself. It
+has no repository or bookmark of its own, so it never conflicts with another
+session, and `wgo statusline` run there summarizes each workspace instead.
 
 ## Alongside the statusline
 

@@ -56,7 +56,10 @@ a quiet session stays visible while the agent is running. If that process has
 exited, the next event finds the new one.
 
 Malformed input, a missing or invalid session_id, or no event exits non-zero.
-A cwd outside any jj workspace is skipped silently (logged under WGO_DEBUG=1).
+A cwd that holds jj workspaces without being one, such as a shared root from
+wgo add with several repos or a rig root, records the session on that folder.
+Any other cwd outside a jj workspace is skipped silently (logged under
+WGO_DEBUG=1).
 A state file wgo cannot read or write (for example one written by a newer
 wgo), or a workspace jj fails on (for example because jj is not on the hook's
 PATH), is reported as a JSON systemMessage on stdout on PostToolUse and

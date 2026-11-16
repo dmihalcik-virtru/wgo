@@ -2,13 +2,16 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/virtru/wgo/internal/jjtest"
+	"github.com/virtru/wgo/internal/store"
 	"github.com/virtru/wgo/models"
 )
 
@@ -99,4 +102,36 @@ func TestStatuslineInGroupFolder(t *testing.T) {
 	require.NoError(t, runStatusline(&buf))
 	assert.Equal(t, "⧉ "+filepath.Base(repoFlag)+" · "+filepath.Base(repo)+" feat-x · "+filepath.Base(ws)+"\n",
 		buf.String())
+}
+
+// TestLookupWorkspaceGroupFolder resolves a folder of workspaces to itself,
+// with no repository or bookmark, and any other non-workspace to an error.
+func TestLookupWorkspaceGroupFolder(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "api/.jj", "web/.jj", "docs")
+
+	ws, err := lookupWorkspace(root)
+	require.NoError(t, err)
+	assert.Equal(t, workspaceInfo{Root: root}, ws)
+
+	_, err = lookupWorkspace(filepath.Join(root, "docs"))
+	assert.ErrorIs(t, err, errNotJJRepo)
+}
+
+// TestAgentHookInGroupFolder records a session started in a folder of
+// workspaces on that folder, where it used to be skipped.
+func TestAgentHookInGroupFolder(t *testing.T) {
+	realLookup := lookupWorkspace
+	newAgentEnv(t)
+	lookupWorkspace = realLookup
+	root := t.TempDir()
+	mkdirs(t, root, "api/.jj", "web/.jj")
+
+	payload := fmt.Sprintf(`{"session_id":"grp-1","hook_event_name":"SessionStart","cwd":%q}`, root)
+	require.NoError(t, runAgentHook(strings.NewReader(payload), "", "claude"))
+	sess := loadState(t).GetAgentSession("grp-1")
+	require.NotNil(t, sess)
+	assert.Equal(t, root, sess.WorktreePath)
+	assert.Empty(t, sess.Branch)
+	assert.Equal(t, store.AgentWaiting, sess.Status)
 }
