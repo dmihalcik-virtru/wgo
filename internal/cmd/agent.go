@@ -71,7 +71,7 @@ Each session has its own ID, so several agents can share a workspace or an
 effort. Sessions come from three places:
 
   wgo agent start      an explicit session, for any tool or script
-  wgo agent hook       Claude Code hooks (see contrib/claude-code-hooks.md)
+  wgo agent hook       Claude Code or Codex hooks (see contrib/)
   wgo . / statusline   inside Claude Code (CLAUDECODE set), a heartbeat that
                        refreshes its agent's session in the workspace, or
                        keeps a single inferred one when that agent has none

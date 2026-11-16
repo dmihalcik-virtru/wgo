@@ -129,3 +129,20 @@ func TestAgentHookSessionEndWaitsLongerForStateLock(t *testing.T) {
 	assert.NotNil(t, loadState(t).GetAgentSession(hookSessionID))
 	assert.Empty(t, e.warnings.String(), "Claude Code discards SessionEnd's systemMessage")
 }
+
+// Codex only permits a three-second SessionEnd hook. A contended state lock
+// must release the hook before Codex kills it.
+func TestAgentHookCodexSessionEndFitsTimeout(t *testing.T) {
+	newAgentEnv(t)
+	const payload = `{"session_id":"thr_123","cwd":"/ws","hook_event_name":"SessionStart"}`
+	require.NoError(t, runAgentHook(strings.NewReader(payload), "", "codex"))
+	require.NotNil(t, loadState(t).GetAgentSession("thr_123"))
+
+	release := holdStateLock(t)
+	start := time.Now()
+	end := `{"session_id":"thr_123","cwd":"/ws","hook_event_name":"SessionEnd"}`
+	require.NoError(t, runAgentHook(strings.NewReader(end), "", "codex"))
+	assert.Less(t, time.Since(start), 3*time.Second)
+	release()
+	assert.NotNil(t, loadState(t).GetAgentSession("thr_123"), "timed-out removal leaves the session for pruning")
+}
