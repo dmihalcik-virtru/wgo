@@ -4,9 +4,11 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/virtru/wgo/internal/config"
+	"github.com/virtru/wgo/models"
 )
 
 var (
@@ -62,8 +64,11 @@ Claude Code integration:
   The SessionStart warm is synchronous (no trailing &) so the first render is
   correct; the Stop warm is backgrounded so it never delays a turn.
 
-Outside any jj workspace the line is empty and the exit status 0, so a prompt
-never shows an error; --json still reports it.`,
+In a folder that holds jj workspaces without being one, such as a shared root
+from wgo add with several repos or a rig root, the line summarizes up to six of
+them: each one's bookmark and PRs, after the group's ticket or rig. Anywhere
+else outside a jj workspace the line is empty and the exit status 0, so a
+prompt never shows an error; --json still reports it.`,
 	// A runtime failure is not a usage mistake; the usage text would only
 	// bury the error in a prompt.
 	SilenceUsage: true,
@@ -94,7 +99,7 @@ func runStatusline(w io.Writer) error {
 	// show it, and every other command reports it.
 	_ = config.Init()
 
-	ctx, err := buildContextOpts(cwd, contextOptions{
+	ctx, err := statuslineContext(cwd, contextOptions{
 		LocalOnly: !statuslineRefresh,
 		Siblings:  statuslineSiblings,
 		Refresh:   statuslineRefresh,
@@ -117,6 +122,24 @@ func runStatusline(w io.Writer) error {
 	default:
 		return renderStatuslineLine(w, ctx, rich)
 	}
+}
+
+// statuslineContext resolves the context for cwd: its workspace's or, in a
+// folder holding several workspaces, a summary of them (see groupWorkspaces).
+func statuslineContext(cwd string, opts contextOptions) (*models.Context, error) {
+	ctx, err := buildContextOpts(cwd, opts)
+	if !errors.Is(err, errNotJJRepo) {
+		return ctx, err
+	}
+	dir, absErr := filepath.Abs(cwd)
+	if absErr != nil {
+		return nil, err
+	}
+	members := groupWorkspaces(dir)
+	if len(members) == 0 {
+		return nil, err
+	}
+	return buildGroupContext(dir, members, opts), nil
 }
 
 // statuslineRich reports whether ANSI color and OSC8 hyperlinks should be

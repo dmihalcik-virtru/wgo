@@ -110,6 +110,9 @@ func ciStateColor(state string) string {
 // are colored and hyperlinked (repo/branch/PR → GitHub, ticket → Jira/GitHub).
 // Empty segments are omitted, so a cache miss simply drops the PR part.
 func renderStatuslineLine(w io.Writer, c *models.Context, rich bool) error {
+	if c.Group != nil {
+		return renderGroupLine(w, c, rich)
+	}
 	var parts []string
 
 	if c.Rig != nil {
@@ -127,11 +130,7 @@ func renderStatuslineLine(w io.Writer, c *models.Context, rich bool) error {
 	parts = append(parts, branch)
 
 	if c.Ticket != "" {
-		label := "[" + c.Ticket + "]"
-		if c.JiraStatus != "" {
-			label = "[" + c.Ticket + " " + c.JiraStatus + "]"
-		}
-		parts = append(parts, styleLink(c.TicketURL, label, colYellow, rich))
+		parts = append(parts, ticketSegment(c, rich))
 	}
 
 	if ab := aheadBehind(c.Ahead, c.Behind, rich); ab != "" {
@@ -143,15 +142,64 @@ func renderStatuslineLine(w io.Writer, c *models.Context, rich bool) error {
 	}
 
 	if c.Agent != nil {
-		glyph := "🤖 " + c.Agent.Name
-		if c.Agent.Uncertain {
-			glyph += "?"
-		}
-		parts = append(parts, colorize(glyph, colMagenta, rich))
+		parts = append(parts, agentSegment(*c.Agent, rich))
 	}
 
 	_, err := fmt.Fprintln(w, strings.Join(parts, " "))
 	return err
+}
+
+// renderGroupLine writes the line for a folder of workspaces: the rig or the
+// group's name and ticket, then each workspace's name, bookmark and PRs, then
+// the agent. A workspace without a bookmark shows its name alone.
+func renderGroupLine(w io.Writer, c *models.Context, rich bool) error {
+	g := c.Group
+	var parts []string
+	if c.Rig != nil {
+		parts = append(parts, colorize("⚓ "+rigRefLabel(*c.Rig), colYellow, rich))
+	} else {
+		parts = append(parts, colorize("⧉ "+g.Name, colCyan, rich))
+	}
+	if c.Ticket != "" {
+		parts = append(parts, ticketSegment(c, rich))
+	}
+	sep := colorize("·", colDim, rich)
+	for _, ws := range g.Workspaces {
+		seg := styleLink(ws.RepoURL, ws.Name, colCyan, rich)
+		if ws.Branch != "" {
+			seg += " " + styleLink(ws.BranchURL, ws.Branch, colGreen, rich)
+		}
+		for _, pr := range ws.PRs {
+			seg += " " + prSegment(pr, rich)
+		}
+		parts = append(parts, sep, seg)
+	}
+	if g.Overflow > 0 {
+		parts = append(parts, sep, colorize(fmt.Sprintf("+%d more", g.Overflow), colDim, rich))
+	}
+	if c.Agent != nil {
+		parts = append(parts, agentSegment(*c.Agent, rich))
+	}
+	_, err := fmt.Fprintln(w, strings.Join(parts, " "))
+	return err
+}
+
+// ticketSegment formats "[WGO-130 In Review]", linked to the ticket.
+func ticketSegment(c *models.Context, rich bool) string {
+	label := "[" + c.Ticket + "]"
+	if c.JiraStatus != "" {
+		label = "[" + c.Ticket + " " + c.JiraStatus + "]"
+	}
+	return styleLink(c.TicketURL, label, colYellow, rich)
+}
+
+// agentSegment formats "🤖 claude", with "?" when its liveness is uncertain.
+func agentSegment(a models.AgentRef, rich bool) string {
+	glyph := "🤖 " + a.Name
+	if a.Uncertain {
+		glyph += "?"
+	}
+	return colorize(glyph, colMagenta, rich)
 }
 
 // prSegment formats one PR as "#42 open ✓ ●": the linked number, its state,

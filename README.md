@@ -212,6 +212,18 @@ Target another directory without `cd` using the global `-C/--repo` flag:
 wgo -C /path/to/repo statusline
 ```
 
+In a folder that holds jj workspaces without being one — the shared root `wgo
+add` creates for several repos, or a rig root, both of which get a `CLAUDE.md`
+for an agent to start from — the line summarizes up to six of them instead:
+
+```bash
+wgo -C ~/Documents/GitHub/worktrees/WGO-140-multi-repo statusline
+# → ⧉ WGO-140-multi-repo [WGO-140] · api WGO-140-api #7 open ● · web 🤖 claude
+```
+
+Anywhere else outside a jj workspace it prints nothing and exits 0, so a prompt
+never shows an error (`--json` still reports one).
+
 **Claude Code / shell integration.** `contrib/statusline.sh` reads the working
 directory (from Claude Code's JSON on stdin, else `$PWD`) and calls
 `wgo -C "$dir" statusline`:
