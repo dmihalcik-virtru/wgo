@@ -139,17 +139,7 @@ func renderStatuslineLine(w io.Writer, c *models.Context, rich bool) error {
 	}
 
 	for _, pr := range c.PRs {
-		state := prStateWord(pr)
-		code := prStateColor(state)
-		num := styleLink(pr.URL, fmt.Sprintf("#%d", pr.Number), code, rich)
-		seg := num + " " + colorize(state, code, rich)
-		if g := reviewGlyph(pr.ReviewDecision); g != "" {
-			seg += " " + colorize(g, reviewColor(pr.ReviewDecision), rich)
-		}
-		if pr.Checks.State != "" && pr.Checks.State != "none" {
-			seg += " " + styleLink(pr.Checks.URL, "●", ciStateColor(pr.Checks.State), rich)
-		}
-		parts = append(parts, seg)
+		parts = append(parts, prSegment(pr, rich))
 	}
 
 	if c.Agent != nil {
@@ -162,6 +152,22 @@ func renderStatuslineLine(w io.Writer, c *models.Context, rich bool) error {
 
 	_, err := fmt.Fprintln(w, strings.Join(parts, " "))
 	return err
+}
+
+// prSegment formats one PR as "#42 open ✓ ●": the linked number, its state,
+// the review glyph and the CI dot, each omitted when absent.
+func prSegment(pr models.PRRef, rich bool) string {
+	state := prStateWord(pr)
+	code := prStateColor(state)
+	num := styleLink(pr.URL, fmt.Sprintf("#%d", pr.Number), code, rich)
+	seg := num + " " + colorize(state, code, rich)
+	if g := reviewGlyph(pr.ReviewDecision); g != "" {
+		seg += " " + colorize(g, reviewColor(pr.ReviewDecision), rich)
+	}
+	if pr.Checks.State != "" && pr.Checks.State != "none" {
+		seg += " " + styleLink(pr.Checks.URL, "●", ciStateColor(pr.Checks.State), rich)
+	}
+	return seg
 }
 
 // aheadBehind formats the ↑ahead ↓behind segment, dim-colored, or "" when the
