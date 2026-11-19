@@ -34,6 +34,11 @@ type ExtractArgs struct {
 	// Unknown values sort last in both directions. Empty is the default
 	// order: kind, label, ID.
 	Sort []string
+	// Triage are the rules of the triage view (gh-133), which sorts the
+	// operator's open PRs the query keeps into buckets as wgo pr triage
+	// does. It is set by the caller from [[pr.triage.rules]], never from a
+	// parameter; nil means DefaultTriageRules.
+	Triage *TriageRules
 }
 
 // ErrExtractArgs marks an extract request that cannot be served as asked:
@@ -59,6 +64,7 @@ type extractInput struct {
 var extractRenderers = map[string]func(*extractInput) (string, error){
 	"rows":   renderRows,
 	"sprint": renderSprint, // gh-105, extract_sprint.go
+	"triage": renderTriage, // gh-133, worklist.go
 }
 
 // pendingViews names extract views a later spec provides, with that spec.
@@ -100,6 +106,17 @@ func CheckExtractArgs(reg *Registry, args ExtractArgs) error {
 	}
 	if args.Sprint != "" && view != "sprint" {
 		return extractArgsError("a sprint only applies to the sprint view; ask for view sprint (--view sprint) to summarize sprint %s", args.Sprint)
+	}
+	if view == "triage" {
+		for _, o := range []struct {
+			name string
+			set  bool
+		}{{"cols", len(args.Cols) > 0}, {"group", args.Group != ""}, {"layout", args.Layout != ""}, {"sort", len(args.Sort) > 0}} {
+			if o.set {
+				return extractArgsError("%s only applies to the rows view; the triage view's buckets come from [[pr.triage.rules]]", o.name)
+			}
+		}
+		return nil
 	}
 	if view == "sprint" {
 		// The summary has fixed sections; rows' options do not apply.

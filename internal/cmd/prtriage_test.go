@@ -163,3 +163,28 @@ func TestWriteResync(t *testing.T) {
 		t.Errorf("a stale Jira does not hide closes, so it is not reported:\n%s", out)
 	}
 }
+
+// TestDashServesWithABadTriageConfig: a bad [pr.triage] is wgo pr triage's
+// error; wgo dash warns and uses the defaults, here for the triage view.
+func TestDashServesWithABadTriageConfig(t *testing.T) {
+	saveQueryFlags(t)
+	goldenHome(t, "[pr.triage]\nbot_logins = ['(']\n\n[[pr.triage.rules]]\nbucket = \"x\"\nmatch = \"prstat:open\"\n")
+	dashFixture, dashMD, dashView = vectorFixturePath(t), true, "triage"
+	md, err := runDashOut(t, passedFlags("view"))
+	if err != nil {
+		t.Fatalf("wgo dash failed on a bad [pr.triage]: %v", err)
+	}
+	if !strings.HasPrefix(md, dash.WorklistHeading) || !strings.Contains(md, "## parked (") {
+		t.Errorf("the triage extract does not use the default rules:\n%s", md)
+	}
+	if _, _, err := loadTriageConfig(); err == nil {
+		t.Error("wgo pr triage accepted a bad [pr.triage]")
+	}
+}
+
+func TestPRTriageChecksDashDays(t *testing.T) {
+	goldenHome(t, "[dash]\ndays = 9999\n")
+	if _, _, err := loadTriageConfig(); err == nil || !strings.Contains(err.Error(), "[dash] days") {
+		t.Errorf("err %v, want one naming [dash] days", err)
+	}
+}

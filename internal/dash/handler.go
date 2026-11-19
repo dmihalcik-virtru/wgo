@@ -64,6 +64,9 @@ type HandlerOptions struct {
 	// means DefaultFacets.
 	Facets     []string
 	FacetNotes []string
+	// Triage are the compiled [[pr.triage.rules]], for the triage view and
+	// extract (gh-133); nil means DefaultTriageRules.
+	Triage *TriageRules
 	// Addons and AddonStyles replace the live page's addon scripts and
 	// stylesheets (liveAddons) when Addons is non-nil, read from AddonFS
 	// when set instead of the embedded files. Tests use them.
@@ -253,6 +256,7 @@ func (s *server) serveExtract(w http.ResponseWriter, r *http.Request) {
 	md, err := Extract(v, Fields(), s.opts.Filters, ExtractArgs{
 		Query: p.Get("q"), Cols: SplitCols(p.Get("cols")), Group: p.Get("group"),
 		Layout: p.Get("layout"), View: p.Get("view"), Sprint: p.Get("sprint"), Sort: SplitCols(p.Get("sort")),
+		Triage: s.opts.Triage,
 	})
 	if err != nil {
 		var qe *QueryError

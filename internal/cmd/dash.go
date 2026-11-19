@@ -195,7 +195,7 @@ func init() {
 	dashCmd.Flags().StringVar(&dashCols, "cols", "", "with --md, comma-separated fields to show per row, e.g. prstate,repo")
 	dashCmd.Flags().StringVar(&dashGroup, "group", "", "with --md, section the rows by effort (default), repo or none")
 	dashCmd.Flags().StringVar(&dashLayout, "layout", "", "with --md, bullets (default) or table")
-	dashCmd.Flags().StringVar(&dashView, "view", "", "with --md, the extract view: rows (default) or sprint (an active sprint's summary)")
+	dashCmd.Flags().StringVar(&dashView, "view", "", "with --md, the extract view: rows (default), sprint (an active sprint's summary) or triage (your open PRs in wgo pr triage's buckets)")
 	dashCmd.Flags().StringVar(&dashSprint, "sprint", "", "with --md --view sprint, the ID of the active sprint to summarize (default: the one with the most tickets for the configured people)")
 	dashCmd.Flags().StringVar(&dashSort, "sort", "", "with --md, sort rows by these fields as the table does, e.g. -waiting,size (- sorts descending; unknown values sort last)")
 	// --fixture serves or prints a saved snapshot instead of collecting one:
@@ -246,9 +246,21 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	if err := applyDashConfig(cfg.Dash, flagChanged); err != nil {
 		return err
 	}
+	// A bad [pr.triage] is wgo pr triage's error; the dash warns and uses
+	// the defaults, so it still serves every other view.
 	bots, err := dash.CompileBotLogins(cfg.PR.Triage.BotLogins)
 	if err != nil {
-		return fmt.Errorf("%w; fix it in ~/.wgo/config.toml, or remove bot_logins to use the defaults", err)
+		fmt.Fprintf(os.Stderr, "wgo dash: %v; using the default bot_logins until it is fixed in ~/.wgo/config.toml\n", err)
+		bots, _ = dash.CompileBotLogins(nil)
+	}
+	triage, err := triageRules(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wgo dash: %v; the triage view uses the default rules until then\n", err)
+		defaults := *cfg
+		defaults.PR.Triage.Rules = nil
+		if triage, err = triageRules(&defaults); err != nil {
+			return err
+		}
 	}
 	filters := dash.MergeConfigFilters(cfg.Dash.Filters, dash.Fields())
 	for _, f := range filters {
@@ -266,7 +278,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	if err != nil {
 		return err
 	}
-	extract := dash.ExtractArgs{Query: expr, Cols: dash.SplitCols(dashCols), Group: dashGroup, Layout: dashLayout, View: dashView, Sprint: dashSprint, Sort: dash.SplitCols(dashSort)}
+	extract := dash.ExtractArgs{Query: expr, Cols: dash.SplitCols(dashCols), Group: dashGroup, Layout: dashLayout, View: dashView, Sprint: dashSprint, Sort: dash.SplitCols(dashSort), Triage: triage}
 	if dashMD {
 		if err := dash.CheckExtractArgs(dash.Fields(), extract); err != nil {
 			return dashQueryFailure(err, expr)
@@ -309,7 +321,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		// A fixture is served as it is: no collection, refresh or actions.
-		return serveDash(ctx, out, ln, dashServer{source: dash.StaticSource{V: v}, open: !dashNoOpen, filters: filters, facets: facets, facetNotes: facetNotes, hash: hash})
+		return serveDash(ctx, out, ln, dashServer{source: dash.StaticSource{V: v}, open: !dashNoOpen, filters: filters, facets: facets, facetNotes: facetNotes, hash: hash, triage: triage})
 	}
 	st, err := store.New()
 	if err != nil {
@@ -362,6 +374,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 			},
 			facets:     facets,
 			facetNotes: facetNotes,
+			triage:     triage,
 		})
 	}
 	v, refreshErr := collectDashView(ctx, opts, dashRefresh, dashRefreshTimeout)
@@ -843,6 +856,8 @@ type dashServer struct {
 	// facets named that could not be one.
 	facets     []string
 	facetNotes []string
+	// triage are the compiled [[pr.triage.rules]], or the defaults.
+	triage *dash.TriageRules
 }
 
 // prefixLogf logs "wgo dash: ..." lines to w.
@@ -874,6 +889,7 @@ func serveDash(ctx context.Context, out io.Writer, ln net.Listener, ds dashServe
 		Facets:  ds.facets,
 		// The page shows these beside the facets; serving printed them.
 		FacetNotes: ds.facetNotes,
+		Triage:     ds.triage,
 	})
 	if err != nil {
 		ln.Close()

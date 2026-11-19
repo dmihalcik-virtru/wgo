@@ -1,6 +1,7 @@
 package dash
 
 import (
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -101,5 +102,47 @@ func TestParseWorklistUsesNewSinceBucketHeadings(t *testing.T) {
 	})
 	if len(items) != 3 || items[0].Section != "active (2)" || items[1].Section != "land (1)" || items[2].Section != "active (1)" {
 		t.Errorf("sections: %+v", items)
+	}
+}
+
+// TestTriageExtractAgrees: the triage extract, GET /api/extract?view=triage
+// and BuildTriage's JSON give the same buckets and counts for the same
+// snapshot, rules and query.
+func TestTriageExtractAgrees(t *testing.T) {
+	v := triageFixture(t, nil)
+	rules, err := CompileTriageRules([]TriageRule{{Bucket: "drafts", Match: "prstate:draft"}, {Bucket: "rest"}}, Fields())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newServerOpts(t, HandlerOptions{Source: StaticSource{V: v}, Triage: rules})
+	for _, q := range []string{"", "ticket:*", "repo:acme/web"} {
+		tr, err := BuildTriage(v, rules, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		md, err := Extract(v, Fields(), nil, ExtractArgs{View: "triage", Query: q, Triage: rules})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range tr.Buckets {
+			if h := "\n## " + b.Name + " (" + strconv.Itoa(len(b.Items)) + ")\n"; !strings.Contains(md, h) {
+				t.Errorf("q=%q: the extract lacks %q:\n%s", q, h, md)
+			}
+		}
+		if n := strings.Count(md, "\n- ["); n != tr.Total {
+			t.Errorf("q=%q: the extract has %d items, the JSON %d", q, n, tr.Total)
+		}
+		if md != RenderTriage(tr, false, time.UTC) {
+			t.Errorf("q=%q: the extract is not the worklist renderer's output without checkboxes", q)
+		}
+		_, body := get(t, srv.URL+ExtractPath+"?"+url.Values{"view": {"triage"}, "q": {q}}.Encode())
+		if body != md {
+			t.Errorf("q=%q: the route serves\n%s\nExtract renders\n%s", q, body, md)
+		}
+	}
+	for _, args := range []ExtractArgs{{View: "triage", Cols: []string{"repo"}}, {View: "triage", Sprint: "1"}} {
+		if err := CheckExtractArgs(Fields(), args); err == nil {
+			t.Errorf("%+v: no error", args)
+		}
 	}
 }

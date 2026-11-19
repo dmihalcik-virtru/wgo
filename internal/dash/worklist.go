@@ -48,9 +48,12 @@ func RenderTriage(t *Triage, checkboxes bool, loc *time.Location) string {
 }
 
 func writeTriageSection(b *strings.Builder, name, note string, items []TriageItem, checkboxes bool, loc *time.Location) {
-	fmt.Fprintf(b, "\n## %s (%d)\n\n", mdText(name), len(items))
+	fmt.Fprintf(b, "\n## %s (%d)\n", mdText(name), len(items))
 	if note != "" {
-		b.WriteString(mdText(note) + "\n\n")
+		b.WriteString("\n" + mdText(note) + "\n")
+	}
+	if len(items) > 0 {
+		b.WriteString("\n")
 	}
 	for _, it := range items {
 		b.WriteString(TriageItemLine(it, checkboxes, loc) + "\n")
@@ -159,4 +162,25 @@ func ParseWorklist(lines []string) []WorklistItem {
 		}
 	}
 	return out
+}
+
+// renderTriage is the triage extract: the worklist without checkboxes, for
+// the operator's open PRs the query keeps.
+func renderTriage(x *extractInput) (string, error) {
+	rules := x.args.Triage
+	if rules == nil {
+		var err error
+		if rules, err = CompileTriageRules(DefaultTriageRules(DefaultStaleDays), Fields()); err != nil {
+			return "", err
+		}
+	}
+	t, err := BuildTriage(x.v, rules, x.args.Query)
+	if err != nil {
+		return "", extractArgsError("%v", err)
+	}
+	loc := x.ix.loc
+	if loc == nil {
+		loc = time.UTC
+	}
+	return RenderTriage(t, false, loc), nil
 }
