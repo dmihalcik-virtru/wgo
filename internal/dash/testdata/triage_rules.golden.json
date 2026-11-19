@@ -1,0 +1,47 @@
+[
+  {
+    "bucket": "land",
+    "note": "Approved: merge it, or fix what blocks it.",
+    "match": "review:approved;!prstate:draft"
+  },
+  {
+    "bucket": "land",
+    "note": "A human approval went stale after a push: re-request review.",
+    "match": "approval_dismissed:true"
+  },
+  {
+    "bucket": "keep",
+    "note": "The ticket is in an active sprint.",
+    "match": "ticket_sprint_state:active"
+  },
+  {
+    "bucket": "close?",
+    "note": "Every linked ticket is done but the PR never merged: close it if superseded.",
+    "match": "ticket_category:done;!ticket_category:todo,in_progress"
+  },
+  {
+    "bucket": "close?",
+    "note": "No ticket, and no update or human review for 180 days: close it if abandoned.",
+    "match": "!ticket:*;updated_ago:\u003e180;!human_ago:\u003c=180"
+  },
+  {
+    "bucket": "draft?",
+    "note": "Ready for review but not updated for 30 days: ping a reviewer, or convert it to a draft.",
+    "match": "!prstate:draft;stale:true"
+  },
+  {
+    "bucket": "fix ticket",
+    "note": "Updated in the last 30 days, but the ticket is still to do: move the ticket.",
+    "match": "updated_ago:\u003c30;ticket_category:todo"
+  },
+  {
+    "bucket": "active",
+    "note": "Updated in the last 30 days.",
+    "match": "updated_ago:\u003c30"
+  },
+  {
+    "bucket": "parked",
+    "note": "Not updated for 30 days and nothing to decide: close it when the work is dropped.",
+    "match": ""
+  }
+]

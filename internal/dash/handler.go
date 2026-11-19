@@ -125,10 +125,16 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	if opts.Facets == nil {
 		opts.Facets, _ = ResolveFacets(nil, Fields())
 	}
+	if opts.Triage == nil {
+		var err error
+		if opts.Triage, err = CompileTriageRules(DefaultTriageRules(DefaultStaleDays), Fields()); err != nil {
+			return nil, err
+		}
+	}
 	s := &server{opts: opts}
 	reg := Fields().JSON()
 	s.boot = liveBoot{Mode: string(review.ModeLive), API: "/api/snapshot", PollMS: opts.PollInterval.Milliseconds(),
-		Fields: &reg, Filters: opts.Filters, Extract: ExtractPath, Facets: opts.Facets, FacetNotes: opts.FacetNotes}
+		Fields: &reg, Filters: opts.Filters, Extract: ExtractPath, Facets: opts.Facets, FacetNotes: opts.FacetNotes, Triage: opts.Triage.Rules()}
 	if opts.Reviews != nil {
 		s.boot.Links = "/api/review-links"
 	}

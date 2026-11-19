@@ -58,6 +58,15 @@ type compiledRule struct {
 // TriageRules are checked rules, ready for BuildTriage.
 type TriageRules struct{ rules []compiledRule }
 
+// Rules returns the rules as written.
+func (rs *TriageRules) Rules() []TriageRule {
+	out := make([]TriageRule, len(rs.rules))
+	for i, r := range rs.rules {
+		out[i] = r.TriageRule
+	}
+	return out
+}
+
 // CompileTriageRules checks rules against reg: each needs a bucket whose
 // name survives a worklist heading and a match over PR fields, and the last,
 // alone, has no match, so it catches every PR the others did not. An error

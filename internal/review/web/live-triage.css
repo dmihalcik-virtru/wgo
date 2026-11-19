@@ -1,0 +1,50 @@
+/* wgo dash triage view (live-triage.js, spec/gh-133.md). Inlined after
+ * style.css and live.css as the addon's own stylesheet, reusing their
+ * tokens. Buckets are sections named in text with their counts; no colour
+ * carries meaning: a closed PR is struck through and labelled "closed", an
+ * unknown field is named in italics, and the accent marks only focus and
+ * selection. */
+.viewwrap.tv-host { padding: 10px 14px; }
+.tv { max-width: 1200px; font-size: 13px; }
+.tv h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.tv-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.tv-meta, .tv-note { color: var(--ink2); font-size: 12px; }
+.tv-note { margin: 4px 0; }
+.tv-inc { margin: 6px 0; padding: 4px 8px; border-left: 3px solid var(--ink2); font-size: 12px; max-width: 90ch; }
+.tv-gap { max-width: 75ch; }
+.tv-nav { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 10px 0 4px; }
+.tv-nav button { font-size: 12px; padding: 2px 9px; font-variant-numeric: tabular-nums; }
+.tv-nav button b { font-weight: 600; }
+.tv-nav button .n { margin-left: 6px; color: var(--ink2); }
+.tv-nav button.empty { color: var(--ink2); }
+.tv-nav button.empty b { font-weight: 400; }
+.tv-sec { margin-top: 14px; }
+.tv-sec h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.tv-sec h3 .n { font-weight: 400; color: var(--ink2); }
+.tv-sec.empty { margin-top: 6px; }
+.tv-sec.empty h3 { font-weight: 400; color: var(--ink2); font-size: 13px; }
+.tv-sec h3:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tv-closed ul { margin: 4px 0; padding-left: 18px; }
+.tv-closed li { margin: 2px 0; }
+.tv-closed s { color: var(--ink2); }
+.tv-tag { margin-left: 8px; font-size: 12px; color: var(--ink2); }
+.tv-scroll { overflow-x: auto; }
+table.tv-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; margin-top: 4px; }
+table.tv-table th, table.tv-table td { padding: 3px 8px; line-height: 18px; border-bottom: 1px solid var(--grid); text-align: left; vertical-align: top; }
+table.tv-table thead th { color: var(--ink2); font-weight: 600; border-bottom-color: var(--axis); white-space: nowrap; }
+table.tv-table .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.tv-table td.nm a { white-space: nowrap; }
+table.tv-table td.tk { white-space: nowrap; }
+table.tv-table .st { color: var(--ink2); }
+table.tv-table .unk, table.tv-table td.unk { color: var(--ink2); font-style: italic; }
+table.tv-table .muted { color: var(--muted); }
+table.tv-table td.ttl { min-width: 16em; }
+table.tv-table td.notes { color: var(--ink2); }
+table.tv-table td.notes > span { display: block; }
+table.tv-table tbody tr[data-id] { cursor: pointer; }
+table.tv-table tbody tr[data-id]:hover td { background: color-mix(in srgb, var(--ink) 4%, var(--surface)); }
+table.tv-table tr.sel td, table.tv-table tr.sel:hover td { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+table.tv-table tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+table.tv-table tbody tr:focus { outline: none; }
+table.tv-table tbody tr:focus td { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }
+table.tv-table tbody tr:focus td:first-child { box-shadow: inset 3px 0 0 var(--accent), inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }

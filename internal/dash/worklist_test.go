@@ -1,7 +1,10 @@
 package dash
 
 import (
+	"encoding/json"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -143,6 +146,44 @@ func TestTriageExtractAgrees(t *testing.T) {
 	for _, args := range []ExtractArgs{{View: "triage", Cols: []string{"repo"}}, {View: "triage", Sprint: "1"}} {
 		if err := CheckExtractArgs(Fields(), args); err == nil {
 			t.Errorf("%+v: no error", args)
+		}
+	}
+}
+
+// TestTriageExtractGolden pins the triage extract of the analysis fixture,
+// and the default rules beside it, which the live page's triage view
+// (live-triage.js) reads in live_logic.js to check it buckets the same.
+func TestTriageExtractGolden(t *testing.T) {
+	v, err := LoadFixture(analysisFixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rulesJSON, err := json.MarshalIndent(DefaultTriageRules(DefaultStaleDays), "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{"triage_rules.golden.json": string(rulesJSON) + "\n"}
+	for file, q := range map[string]string{"triage_extract.golden.md": "", "triage_extract_query.golden.md": "repo:acme/api"} {
+		md, err := Extract(v, Fields(), nil, ExtractArgs{View: "triage", Query: q})
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		files[file] = md
+	}
+	for file, got := range files {
+		path := filepath.Join("testdata", file)
+		if *updateFields {
+			if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		want, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != string(want) {
+			t.Errorf("%s differs; got:\n%s\nrun go test ./internal/dash -run TestTriageExtractGolden -update after checking it", file, got)
 		}
 	}
 }
