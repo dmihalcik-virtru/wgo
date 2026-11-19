@@ -176,6 +176,7 @@
           {"person": "bob", "role": "review_requested"}
         ],
         "sources": ["bookmark", "inventory"],
+        "open_authored_listed": true,
         "facts": {
           "move": "reviewer",
           "reasons": [

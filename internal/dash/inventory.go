@@ -42,6 +42,9 @@ type invPR struct {
 	// the most recently fetched one holding the PR.
 	state     Freshness
 	fetchedAt time.Time
+	// listedOpenAuthored is true only for a PR in an open-authored result,
+	// not one carried as dropped while the closed-PR search catches up.
+	listedOpenAuthored bool
 	// requested maps the lowercased logins whose review-requested set holds
 	// the PR to when that set was fetched, so an older set than the facts'
 	// cannot outvote them.
@@ -154,6 +157,9 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 					case res.FetchedAt.After(ip.fetchedAt):
 						ip.pr, ip.state, ip.fetchedAt = pr, f, res.FetchedAt
 					}
+					if set == inventory.OpenAuthored {
+						ip.listedOpenAuthored = true
+					}
 					if set == inventory.ReviewRequested {
 						ip.requested[strings.ToLower(person.Login)] = res.FetchedAt
 					}
@@ -247,6 +253,8 @@ func (c *Collector) addInventory(b *builder, ls *localState, wsEffort map[string
 			setPRBase(p, f)
 			setPRFacts(p, f, keys)
 		}
+		listed := ip.listedOpenAuthored
+		p.OpenAuthoredListed = &listed
 		p.Involvement = involvement(people, p, ip.requested, invNewer, ip.fetchedAt)
 		if !bookmarked {
 			b.node(Node{ID: id, Kind: KindPR, Label: f.Repo + "#" + strconv.Itoa(f.Number), PR: p})

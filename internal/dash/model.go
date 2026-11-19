@@ -275,6 +275,11 @@ type PRInfo struct {
 	// or both, sorted. It is set on every PR assemble builds; it is absent
 	// only from snapshots older than the inventory.
 	Sources []string `json:"sources,omitempty"`
+	// OpenAuthoredListed says whether the latest open-authored inventory set
+	// actually listed this PR. A false value can coexist with an older open
+	// bookmark lookup while the closed-PR search catches up. Nil is for old
+	// snapshots and PRs known only through a bookmark.
+	OpenAuthoredListed *bool `json:"open_authored_listed,omitempty"`
 
 	// The fields below are the inventory's facts (gh-97). Each is omitted
 	// when GitHub did not report it, which is always the case for a PR

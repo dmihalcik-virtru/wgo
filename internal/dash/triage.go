@@ -113,9 +113,16 @@ type Triage struct {
 	Sources []TriageSource `json:"sources"`
 	// Incomplete names the lookups that failed or were cut short, so a
 	// missing PR or an unknown ticket never reads as none.
-	Incomplete []string       `json:"incomplete,omitempty"`
-	Buckets    []TriageBucket `json:"buckets"`
-	Total      int            `json:"total"`
+	Incomplete []string `json:"incomplete,omitempty"`
+	// Dropped are the URLs of PRs no longer in the open PR list whose new
+	// state is not known yet; they are in no bucket.
+	Dropped []string `json:"dropped,omitempty"`
+	// InventoryComplete is set when the operator's open-authored set is
+	// whole, so a PR missing from it is not open. Tickets with no status
+	// do not clear it.
+	InventoryComplete bool           `json:"inventory_complete"`
+	Buckets           []TriageBucket `json:"buckets"`
+	Total             int            `json:"total"`
 	// Warnings are the query warnings of the rules and filter.
 	Warnings []string `json:"warnings,omitempty"`
 }
@@ -167,16 +174,6 @@ type TriageRef struct {
 	URL    string `json:"url,omitempty"`
 }
 
-// Count is the number of PRs in the bucket named name.
-func (t *Triage) Count(name string) int {
-	for _, b := range t.Buckets {
-		if b.Name == name {
-			return len(b.Items)
-		}
-	}
-	return 0
-}
-
 // BuildTriage sorts the open PRs the operator authored in v's snapshot into
 // rules' buckets. filter, when set, is a query that further narrows the PRs
 // (the dash's and the extract's q).
@@ -207,7 +204,9 @@ func BuildTriage(v *View, rs *TriageRules, filter string) (*Triage, error) {
 	}
 	res := ix.evaluate(q)
 	t := &Triage{GeneratedAt: v.Snapshot.GeneratedAt, Me: ix.env.Me, Warnings: res.Warnings}
+	// Only the inventory is in Incomplete yet; tickets are added last.
 	t.Sources, t.Incomplete = triageSources(v.Snapshot, ix.env.Me)
+	t.InventoryComplete = len(t.Incomplete) == 0
 	var unfetched []string
 
 	type boundRule struct {
@@ -251,9 +250,31 @@ func BuildTriage(v *View, rs *TriageRules, filter string) (*Triage, error) {
 			tickets[e.Source] = append(tickets[e.Source], e.Target)
 		}
 	}
+	// A PR absent from the latest complete open-authored set has most likely
+	// merged or closed, even if an older bookmark lookup still calls it open.
+	// Older snapshots lack the explicit marker; their inventory-only PRs can
+	// still be recognized by comparing the fetch times.
+	// With the open-authored part found, it is the first of two sources.
+	var listedAt time.Time
+	if len(t.Sources) > 1 && t.Sources[0].State.hasData() {
+		listedAt = t.Sources[0].FetchedAt
+	}
 	for _, i := range res.rowIdx {
 		n := nodes[ix.ids[i]]
 		if n == nil || n.PR == nil {
+			continue
+		}
+		dropped := false
+		if t.InventoryComplete {
+			switch {
+			case n.PR.OpenAuthoredListed != nil:
+				dropped = !*n.PR.OpenAuthoredListed
+			case slices.Equal(n.PR.Sources, []string{PRSourceInventory}):
+				dropped = n.PR.FetchedAt.Before(listedAt)
+			}
+		}
+		if dropped {
+			t.Dropped = append(t.Dropped, n.PR.URL)
 			continue
 		}
 		item := triageItem(n, nodes, tickets[n.ID])
@@ -366,9 +387,10 @@ func triageItem(n *Node, nodes map[string]*Node, ticketIDs []string) TriageItem 
 	return it
 }
 
-// triageSources reports the freshness of the sources triage reads, and
-// what is incomplete: me's open-authored inventory set when it is not
-// complete, and each linked ticket lookup that failed.
+// triageSources reports the freshness of me's open-authored inventory set
+// and of Jira, and what makes that set incomplete: not fetched, cut short
+// by the search limit, or partly read. BuildTriage adds the tickets with no
+// status.
 func triageSources(s *Snapshot, me string) ([]TriageSource, []string) {
 	var srcs []TriageSource
 	var incomplete []string
