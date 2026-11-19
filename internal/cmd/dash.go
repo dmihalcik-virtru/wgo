@@ -315,40 +315,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	if err != nil {
 		return err
 	}
-	facts, _ := dashFactThresholds(cfg.Dash.Facts)
-	facts.BotLogins = bots
-	collector := dash.NewCollector(dash.Config{
-		JJ:          jj.NewCLI(),
-		Discover:    discovery.FromConfig(cfg).DiscoverAll,
-		RigDir:      cfg.Rig.Dir,
-		Store:       st,
-		AgentPolicy: agentPolicy(),
-		Days:        dashDays,
-		PRTTL:       prTTL(),
-		JiraTTL:     jiraTTL(),
-		// GitHub issue status moves at ticket speed, not PR speed, so it
-		// shares the Jira TTL rather than having its own setting.
-		IssueTTL: jiraTTL(),
-		JiraSite: cfg.Jira.Site,
-		People:   dashPeople(cfg.Dash.People),
-		Pair:     dashPair(cfg, os.Stderr),
-		// The login cached by the background identity lookup: a file read,
-		// never a network call or a process.
-		Identity: func() (string, string) {
-			login, _ := inventory.ReadIdentity(inventory.IdentityTTL, time.Now())
-			return login, ""
-		},
-		IdentityError:      inventory.IdentityError,
-		InventoryTTL:       dashInventoryTTL(cfg.Dash),
-		InventoryClosedTTL: dash.ClosedInventoryTTL(dashInventoryTTL(cfg.Dash)),
-		TicketPrefixes:     dashTicketPrefixes(cfg),
-		GitHubUnavailable:  githubUnavailable(),
-		// The board whose sprints the dash shows (gh-98).
-		JiraBoard: cfg.Jira.Board,
-		// Thresholds of the derived facts (gh-99), checked by
-		// applyDashConfig.
-		Facts: facts,
-	})
+	collector := newDashCollector(cfg, st, bots, dashDays)
 	opts := dash.Options{Dir: filepath.Join(st.BaseDir(), "cache", "dash"), Collector: collector}
 	if serving {
 		// Bind first: a busy port fails before any collection starts.
@@ -397,24 +364,9 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 			facetNotes: facetNotes,
 		})
 	}
-	if dashRefresh {
-		// One waited-for batch: queue it whole (see dashQueue). Exit soon
-		// after the output, rather than when the slowest lookup ends.
-		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, Queue: dashQueue, IgnoreLeases: true, CloseWait: dashCloseWait})
-		defer r.Close()
-		opts.Refresher = r
-	}
-	d, err := dash.Open(opts)
-	if err != nil {
-		return err
-	}
-	refreshErr := d.Refresh(ctx, dash.RefreshOptions{Remote: dashRefresh, Wait: true, Timeout: dashRefreshTimeout})
-	v := d.Current()
+	v, refreshErr := collectDashView(ctx, opts, dashRefresh, dashRefreshTimeout)
 	if v == nil {
-		if refreshErr != nil {
-			return refreshErr
-		}
-		return errors.New("wgo dash: no snapshot was produced")
+		return refreshErr
 	}
 	if err := emit(v); err != nil {
 		return err
@@ -423,6 +375,70 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	// saved, failed remote lookups) is also in the printed diagnostics; the
 	// error makes it visible to scripts through the exit status.
 	return refreshErr
+}
+
+// newDashCollector builds the collector wgo dash and wgo pr triage share,
+// from config applyDashConfig has checked; bots are [pr.triage] bot_logins
+// compiled.
+func newDashCollector(cfg *config.Config, st *store.FileStore, bots []*regexp.Regexp, days int) *dash.Collector {
+	facts, _ := dashFactThresholds(cfg.Dash.Facts)
+	facts.BotLogins = bots
+	return dash.NewCollector(dash.Config{
+		JJ:          jj.NewCLI(),
+		Discover:    discovery.FromConfig(cfg).DiscoverAll,
+		RigDir:      cfg.Rig.Dir,
+		Store:       st,
+		AgentPolicy: agentPolicy(),
+		Days:        days,
+		PRTTL:       prTTL(),
+		JiraTTL:     jiraTTL(),
+		// GitHub issue status moves at ticket speed, not PR speed, so it
+		// shares the Jira TTL rather than having its own setting.
+		IssueTTL: jiraTTL(),
+		JiraSite: cfg.Jira.Site,
+		People:   dashPeople(cfg.Dash.People),
+		Pair:     dashPair(cfg, os.Stderr),
+		// The login cached by the background identity lookup: a file read,
+		// never a network call or a process.
+		Identity: func() (string, string) {
+			login, _ := inventory.ReadIdentity(inventory.IdentityTTL, time.Now())
+			return login, ""
+		},
+		IdentityError:      inventory.IdentityError,
+		InventoryTTL:       dashInventoryTTL(cfg.Dash),
+		InventoryClosedTTL: dash.ClosedInventoryTTL(dashInventoryTTL(cfg.Dash)),
+		TicketPrefixes:     dashTicketPrefixes(cfg),
+		GitHubUnavailable:  githubUnavailable(),
+		// The board whose sprints the dash shows (gh-98).
+		JiraBoard: cfg.Jira.Board,
+		// Thresholds of the derived facts (gh-99), checked by
+		// applyDashConfig.
+		Facts: facts,
+	})
+}
+
+// collectDashView runs one collection, with remote lookups when remote is
+// set (at most timeout to start them; 0 waits for all), and returns the
+// view. The error is any refresh failure, which the view's diagnostics also
+// carry; the view is nil only when no snapshot was produced.
+func collectDashView(ctx context.Context, opts dash.Options, remote bool, timeout time.Duration) (*dash.View, error) {
+	if remote {
+		// One waited-for batch: queue it whole (see dashQueue). Exit soon
+		// after the output, rather than when the slowest lookup ends.
+		r := dash.NewRefresher(dashFetchers(), dash.RefresherOptions{Workers: 4, Queue: dashQueue, IgnoreLeases: true, CloseWait: dashCloseWait})
+		defer r.Close()
+		opts.Refresher = r
+	}
+	d, err := dash.Open(opts)
+	if err != nil {
+		return nil, err
+	}
+	refreshErr := d.Refresh(ctx, dash.RefreshOptions{Remote: remote, Wait: true, Timeout: timeout})
+	v := d.Current()
+	if v == nil && refreshErr == nil {
+		refreshErr = errors.New("no snapshot was produced")
+	}
+	return v, refreshErr
 }
 
 // secondsFlag is a duration flag that also takes a bare number of seconds,
