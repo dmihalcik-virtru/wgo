@@ -466,6 +466,7 @@ func setStableFacts(p *PRInfo, f github.PRFacts, keys []string) {
 	p.Author, p.CreatedAt = f.Author, f.CreatedAt
 	p.Additions, p.Deletions, p.ChangedFiles = f.Additions, f.Deletions, f.ChangedFiles
 	p.BaseRef, p.HeadRef = f.BaseRef, f.HeadRef
+	p.CrossRepository, p.DefaultBranch = f.CrossRepository, f.DefaultBranch
 	p.TicketKeys = keys
 }
 

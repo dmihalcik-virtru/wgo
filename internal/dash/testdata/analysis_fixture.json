@@ -159,6 +159,7 @@
         "mergeable": "mergeable",
         "base_ref": "main",
         "head_ref": "TEAM-101-token-refresh",
+        "default_branch": "main",
         "review_requests": [
           {"reviewer": "bob", "kind": "user", "requested_at": "2026-10-26T10:00:00Z"}
         ],
@@ -188,7 +189,12 @@
           "size": 222,
           "size_bucket": "m",
           "stale": false,
-          "waiting_source": "timeline"
+          "uncertain": ["ticket:gh-12"],
+          "waiting_source": "timeline",
+          "human_reviews": [],
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": []
         },
         "timeline": {
           "freshness": "fresh",
@@ -274,7 +280,16 @@
           "size": 108,
           "size_bucket": "m",
           "stale": false,
-          "waiting_source": "timeline"
+          "waiting_source": "timeline",
+          "human_reviews": [
+            {"author": "bob", "state": "CHANGES_REQUESTED", "submitted_at": "2026-10-24T16:20:00Z"}
+          ],
+          "human_activity": "2026-10-24T16:20:00Z",
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_category": ["done"],
+          "ticket_sprint_state": ["active"]
         },
         "timeline": {
           "freshness": "fresh",
@@ -352,7 +367,13 @@
           "ci": "failing",
           "size": 630,
           "size_bucket": "l",
-          "stale": false
+          "stale": false,
+          "human_reviews": [],
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_category": [],
+          "ticket_sprint_state": []
         }
       }
     },
@@ -382,6 +403,7 @@
         "mergeable": "mergeable",
         "base_ref": "main",
         "head_ref": "carol/orders-pagination",
+        "cross_repository": true,
         "review_requests": [
           {"reviewer": "team:web", "kind": "team", "requested_at": "2026-10-25T12:55:00Z"}
         ],
@@ -411,7 +433,13 @@
           "size": 72,
           "size_bucket": "s",
           "stale": false,
-          "waiting_source": "timeline"
+          "waiting_source": "timeline",
+          "human_reviews": [],
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_category": [],
+          "ticket_sprint_state": []
         },
         "timeline": {
           "freshness": "fresh",
@@ -486,7 +514,16 @@
           "ci": "green",
           "size": 2230,
           "size_bucket": "xl",
-          "stale": true
+          "stale": true,
+          "human_reviews": [
+            {"author": "bob", "state": "DISMISSED", "submitted_at": "2026-06-10T11:00:00Z"}
+          ],
+          "human_activity": "2026-06-10T11:00:00Z",
+          "approval_dismissed": true,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_category": ["in_progress"],
+          "ticket_sprint_state": ["active"]
         },
         "timeline": {
           "freshness": "fresh",
@@ -564,7 +601,16 @@
           "ci": "systemic_only",
           "size": 43,
           "size_bucket": "s",
-          "stale": false
+          "stale": false,
+          "human_reviews": [
+            {"author": "alice", "state": "APPROVED", "submitted_at": "2026-10-28T11:45:00Z"}
+          ],
+          "human_activity": "2026-10-28T11:45:00Z",
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_category": [],
+          "ticket_sprint_state": []
         },
         "timeline": {
           "freshness": "fresh",
@@ -639,7 +685,13 @@
           "ci": "green",
           "size": 180,
           "size_bucket": "m",
-          "stale": false
+          "stale": false,
+          "human_reviews": [
+            {"author": "bob", "state": "APPROVED", "submitted_at": "2026-10-27T17:00:00Z"}
+          ],
+          "human_activity": "2026-10-27T17:00:00Z",
+          "ticket_category": ["in_progress"],
+          "ticket_sprint_state": ["closed", "active"]
         },
         "timeline": {
           "freshness": "fresh",
@@ -720,7 +772,13 @@
           "ci": "green",
           "size": 55,
           "size_bucket": "s",
-          "stale": false
+          "stale": false,
+          "human_reviews": [
+            {"author": "bob", "state": "APPROVED", "submitted_at": "2026-10-19T14:00:00Z"}
+          ],
+          "human_activity": "2026-10-19T14:00:00Z",
+          "ticket_category": ["in_progress"],
+          "ticket_sprint_state": ["active"]
         },
         "timeline": {
           "freshness": "fresh",
@@ -792,7 +850,10 @@
           "ci": "green",
           "size": 420,
           "size_bucket": "m",
-          "stale": false
+          "stale": false,
+          "human_reviews": [],
+          "ticket_category": [],
+          "ticket_sprint_state": []
         },
         "timeline": {
           "freshness": "fresh",
@@ -859,7 +920,13 @@
           "ci": "failing",
           "size": 40,
           "size_bucket": "s",
-          "stale": false
+          "stale": false,
+          "human_reviews": [],
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_category": [],
+          "ticket_sprint_state": []
         }
       }
     },
@@ -911,7 +978,13 @@
           "size": 40,
           "size_bucket": "s",
           "stale": false,
-          "uncertain": ["mergeable"]
+          "uncertain": ["mergeable"],
+          "human_reviews": [],
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_category": [],
+          "ticket_sprint_state": []
         }
       }
     },
@@ -965,7 +1038,13 @@
           "ci": "green",
           "size": 36,
           "size_bucket": "s",
-          "stale": false
+          "stale": false,
+          "human_reviews": [
+            {"author": "alice", "state": "APPROVED", "submitted_at": "2026-10-29T16:00:00Z"}
+          ],
+          "human_activity": "2026-10-29T16:00:00Z",
+          "ticket_category": [],
+          "ticket_sprint_state": []
         }
       }
     },
@@ -1019,7 +1098,13 @@
           "size": 89,
           "size_bucket": "s",
           "stale": false,
-          "waiting_source": "timeline"
+          "waiting_source": "timeline",
+          "human_reviews": [],
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_category": ["in_progress"],
+          "ticket_sprint_state": ["closed", "active"]
         },
         "timeline": {
           "freshness": "fresh",
@@ -1093,7 +1178,16 @@
           "size_bucket": "s",
           "stale": false,
           "uncertain": ["requested_at:team:web"],
-          "waiting_source": "estimate"
+          "waiting_source": "estimate",
+          "human_reviews": [
+            {"author": "carol", "state": "COMMENTED", "submitted_at": "2026-10-27T10:00:00Z"}
+          ],
+          "human_activity": "2026-10-27T10:00:00Z",
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_category": ["todo"],
+          "ticket_sprint_state": []
         },
         "timeline": {
           "freshness": "stale",
@@ -1171,7 +1265,12 @@
           "size": 142,
           "size_bucket": "m",
           "stale": false,
-          "uncertain": ["mergeable"]
+          "uncertain": ["mergeable", "ticket:TEAM-108"],
+          "human_reviews": [],
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_sprint_state": ["future"]
         }
       }
     },
@@ -1226,7 +1325,13 @@
           "ci": "green",
           "size": 16,
           "size_bucket": "s",
-          "stale": false
+          "stale": false,
+          "human_reviews": [
+            {"author": "bob", "state": "APPROVED", "submitted_at": "2026-10-20T10:00:00Z"}
+          ],
+          "human_activity": "2026-10-20T10:00:00Z",
+          "ticket_category": [],
+          "ticket_sprint_state": []
         }
       }
     },
@@ -1281,7 +1386,13 @@
           "ci": "green",
           "size": 89,
           "size_bucket": "s",
-          "stale": false
+          "stale": false,
+          "human_reviews": [
+            {"author": "bob", "state": "APPROVED", "submitted_at": "2026-10-22T13:00:00Z"}
+          ],
+          "human_activity": "2026-10-22T13:00:00Z",
+          "ticket_category": [],
+          "ticket_sprint_state": []
         },
         "timeline": {
           "freshness": "fresh",
@@ -1357,7 +1468,13 @@
           "ci": "green",
           "size": 405,
           "size_bucket": "m",
-          "stale": false
+          "stale": false,
+          "human_reviews": [
+            {"author": "alice", "state": "APPROVED", "submitted_at": "2026-10-05T16:00:00Z"}
+          ],
+          "human_activity": "2026-10-05T16:00:00Z",
+          "ticket_category": [],
+          "ticket_sprint_state": []
         }
       }
     },
@@ -1388,7 +1505,7 @@
           "move_people": [],
           "ci": "green",
           "stale": false,
-          "uncertain": ["additions", "deletions", "ticket_keys", "mergeable", "ready_at"],
+          "uncertain": ["additions", "deletions", "ticket_keys", "mergeable", "ready_at", "reviews", "base_ref"],
           "waiting_source": "estimate"
         }
       }
@@ -1438,7 +1555,13 @@
           "size": 350,
           "size_bucket": "m",
           "stale": false,
-          "uncertain": ["requested_reviewers"]
+          "uncertain": ["requested_reviewers"],
+          "human_reviews": [],
+          "approval_dismissed": false,
+          "stacked_on": [],
+          "stack_children": [],
+          "ticket_category": [],
+          "ticket_sprint_state": []
         }
       }
     },

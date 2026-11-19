@@ -333,7 +333,8 @@ const fullPRNode = `{
   "additions": 0, "deletions": 40, "changedFiles": 7, "mergeable": "CONFLICTING",
   "baseRefName": "main", "headRefName": "TEAM-101-token-refresh", "reviewDecision": "CHANGES_REQUESTED",
   "author": {"login": "alice"},
-  "repository": {"nameWithOwner": "acme/api", "isArchived": false},
+  "isCrossRepository": true,
+  "repository": {"nameWithOwner": "acme/api", "isArchived": false, "defaultBranchRef": {"name": "main"}},
   "reviewRequests": {"nodes": [
     {"requestedReviewer": {"__typename": "User", "login": "bob"}},
     {"requestedReviewer": {"__typename": "Team", "slug": "web"}},
@@ -406,6 +407,7 @@ func TestSearchPullRequestsFacts(t *testing.T) {
 		CreatedAt: at("2026-10-20T09:00:00Z"), UpdatedAt: at("2026-10-29T14:10:00Z"), ReadyAt: at("2026-10-21T15:30:00Z"),
 		Additions: intp(0), Deletions: intp(40), ChangedFiles: intp(7), Mergeable: "conflicting",
 		BaseRef: "main", HeadRef: "TEAM-101-token-refresh", ReviewDecision: "CHANGES_REQUESTED",
+		CrossRepository: true, DefaultBranch: "main",
 		ReviewRequests: []ReviewRequestFact{
 			{Reviewer: "bob", Kind: "user", RequestedAt: at("2026-10-26T10:00:00Z")},
 			{Reviewer: "team:web", Kind: "team", RequestedAt: at("2026-10-22T08:00:00Z")},

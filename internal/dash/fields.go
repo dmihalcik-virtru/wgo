@@ -179,6 +179,21 @@ var fieldRegistry = []Field{
 	{Name: "size", Label: "Size (lines changed)", Type: FieldNumber, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.size"}, Unit: "lines", Scale: "log"},
 	{Name: "size_bucket", Label: "Size bucket", Type: FieldEnum, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.size_bucket"}, Values: sizeBuckets},
 	{Name: "stale", Label: "Stale", Type: FieldBool, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.stale"}},
+	// Triage facts (gh-133). human_activity and human_ago also read
+	// human_reviews' states, which are not dates: they make a PR whose
+	// reviews were all by bots or the author known and empty.
+	{Name: "human_activity", Label: "Last human review", Type: FieldDate, Kinds: []NodeKind{KindPR},
+		Paths: []string{"pr.facts.human_activity", "pr.facts.human_reviews.state"}, Unit: "day", Scale: "linear"},
+	{Name: "human_ago", Label: "Since human review", Type: FieldDuration, Kinds: []NodeKind{KindPR},
+		Paths: []string{"pr.facts.human_activity", "pr.facts.human_reviews.state"}, Derive: DeriveDaysSince, Unit: "days", Scale: "log"},
+	{Name: "human_reviewer", Label: "Human reviewers", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.human_reviews.author"}},
+	{Name: "approval_dismissed", Label: "Approval dismissed", Type: FieldBool, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.approval_dismissed"}},
+	{Name: "stacked_on", Label: "Stacked on", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.stacked_on"}},
+	{Name: "stack_children", Label: "Stack children", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.stack_children"}},
+	{Name: "ticket_category", Label: "Ticket status category", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.ticket_category"},
+		Values: []string{StatusToDo, StatusInProgress, StatusDone}},
+	{Name: "ticket_sprint_state", Label: "Ticket sprint state", Type: FieldSet, Kinds: []NodeKind{KindPR}, Paths: []string{"pr.facts.ticket_sprint_state"},
+		Values: []string{SprintActive, SprintFuture, SprintClosed}},
 	{Name: "mismatch", Label: "Jira mismatch", Type: FieldSet, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.facts.mismatches.code"}, Values: mismatchCodes},
 	{Name: "linked_prs", Label: "Linked PRs", Type: FieldSet, Kinds: []NodeKind{KindTicket}, Paths: []string{"ticket.facts.linked_prs.state"}, Values: linkedPRStates},
 }

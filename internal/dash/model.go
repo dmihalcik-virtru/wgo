@@ -298,6 +298,11 @@ type PRInfo struct {
 	Mergeable string `json:"mergeable,omitempty"`
 	BaseRef   string `json:"base_ref,omitempty"`
 	HeadRef   string `json:"head_ref,omitempty"`
+	// CrossRepository is set when the head branch is in a fork, and
+	// DefaultBranch is the repository's default branch; neither head can be
+	// the base of a stack.
+	CrossRepository bool   `json:"cross_repository,omitempty"`
+	DefaultBranch   string `json:"default_branch,omitempty"`
 	// ReviewRequests adds kinds and request times to RequestedReviewers,
 	// for the same outstanding requests. ReviewersKnown covers
 	// RequestedReviewers only: ReviewRequests is nil (unknown) whenever the

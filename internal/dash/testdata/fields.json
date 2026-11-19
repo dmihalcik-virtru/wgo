@@ -750,6 +750,111 @@
    ]
   },
   {
+   "name": "human_activity",
+   "label": "Last human review",
+   "type": "date",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.human_activity",
+    "pr.facts.human_reviews.state"
+   ],
+   "unit": "day",
+   "scale": "linear"
+  },
+  {
+   "name": "human_ago",
+   "label": "Since human review",
+   "type": "duration",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.human_activity",
+    "pr.facts.human_reviews.state"
+   ],
+   "derive": "days_since",
+   "unit": "days",
+   "scale": "log"
+  },
+  {
+   "name": "human_reviewer",
+   "label": "Human reviewers",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.human_reviews.author"
+   ]
+  },
+  {
+   "name": "approval_dismissed",
+   "label": "Approval dismissed",
+   "type": "bool",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.approval_dismissed"
+   ]
+  },
+  {
+   "name": "stacked_on",
+   "label": "Stacked on",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.stacked_on"
+   ]
+  },
+  {
+   "name": "stack_children",
+   "label": "Stack children",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.stack_children"
+   ]
+  },
+  {
+   "name": "ticket_category",
+   "label": "Ticket status category",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.ticket_category"
+   ],
+   "values": [
+    "todo",
+    "in_progress",
+    "done"
+   ]
+  },
+  {
+   "name": "ticket_sprint_state",
+   "label": "Ticket sprint state",
+   "type": "set",
+   "kinds": [
+    "pr"
+   ],
+   "paths": [
+    "pr.facts.ticket_sprint_state"
+   ],
+   "values": [
+    "active",
+    "future",
+    "closed"
+   ]
+  },
+  {
    "name": "mismatch",
    "label": "Jira mismatch",
    "type": "set",

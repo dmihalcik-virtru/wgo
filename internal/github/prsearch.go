@@ -56,6 +56,10 @@ type PRFacts struct {
 	Mergeable string `json:"mergeable,omitempty"`
 	BaseRef   string `json:"base_ref,omitempty"`
 	HeadRef   string `json:"head_ref,omitempty"`
+	// CrossRepository is set when the head branch is in a fork.
+	CrossRepository bool `json:"cross_repository,omitempty"`
+	// DefaultBranch is the repository's default branch.
+	DefaultBranch string `json:"default_branch,omitempty"`
 	// ReviewDecision is GitHub's: APPROVED, CHANGES_REQUESTED or
 	// REVIEW_REQUIRED. Where GitHub computes none (the base branch does
 	// not require reviews), it is rolled up from Reviews as the REST path
@@ -165,9 +169,9 @@ var prSearchQuery = fmt.Sprintf(`query($q: String!, $after: String) {
         number title url state isDraft body
         createdAt updatedAt mergedAt closedAt
         additions deletions changedFiles mergeable
-        baseRefName headRefName reviewDecision
+        baseRefName headRefName isCrossRepository reviewDecision
         author { login }
-        repository { nameWithOwner isArchived }
+        repository { nameWithOwner isArchived defaultBranchRef { name } }
         reviewRequests(first: 100) {
           nodes { requestedReviewer { __typename ... on Actor { login } ... on Team { slug } } }
         }
@@ -264,11 +268,15 @@ type gqlPR struct {
 	Mergeable      string    `json:"mergeable"`
 	BaseRefName    string    `json:"baseRefName"`
 	HeadRefName    string    `json:"headRefName"`
+	IsCrossRepo    bool      `json:"isCrossRepository"`
 	ReviewDecision string    `json:"reviewDecision"`
 	Author         *gqlActor `json:"author"`
 	Repository     *struct {
-		NameWithOwner string `json:"nameWithOwner"`
-		IsArchived    bool   `json:"isArchived"`
+		NameWithOwner    string `json:"nameWithOwner"`
+		IsArchived       bool   `json:"isArchived"`
+		DefaultBranchRef *struct {
+			Name string `json:"name"`
+		} `json:"defaultBranchRef"`
 	} `json:"repository"`
 	ReviewRequests *struct {
 		Nodes []struct {
@@ -460,6 +468,10 @@ func (n *gqlPR) facts() (PRFacts, bool) {
 		HeadRef:        n.HeadRefName,
 		ReviewDecision: n.ReviewDecision,
 		Body:           n.Body,
+	}
+	p.CrossRepository = n.IsCrossRepo
+	if d := n.Repository.DefaultBranchRef; d != nil {
+		p.DefaultBranch = d.Name
 	}
 	if n.Author != nil {
 		p.Author = n.Author.Login

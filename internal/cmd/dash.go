@@ -246,6 +246,10 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 	if err := applyDashConfig(cfg.Dash, flagChanged); err != nil {
 		return err
 	}
+	bots, err := dash.CompileBotLogins(cfg.PR.Triage.BotLogins)
+	if err != nil {
+		return fmt.Errorf("%w; fix it in ~/.wgo/config.toml, or remove bot_logins to use the defaults", err)
+	}
 	filters := dash.MergeConfigFilters(cfg.Dash.Filters, dash.Fields())
 	for _, f := range filters {
 		if f.Hidden && !f.Builtin {
@@ -312,6 +316,7 @@ func runDash(ctx context.Context, out io.Writer, flagChanged func(name string) b
 		return err
 	}
 	facts, _ := dashFactThresholds(cfg.Dash.Facts)
+	facts.BotLogins = bots
 	collector := dash.NewCollector(dash.Config{
 		JJ:          jj.NewCLI(),
 		Discover:    discovery.FromConfig(cfg).DiscoverAll,
