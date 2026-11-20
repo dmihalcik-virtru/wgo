@@ -128,6 +128,9 @@ func TestInventoryMergesIntoBookmarkPR(t *testing.T) {
 	if !slices.Equal(p.Sources, []string{PRSourceBookmark, PRSourceInventory}) || p.BookmarkID != bm || !hasEdge(s, bm, id, EdgePR) {
 		t.Fatalf("merged PR: sources %v bookmark %q", p.Sources, p.BookmarkID)
 	}
+	if p.OpenAuthoredListed == nil || !*p.OpenAuthoredListed {
+		t.Fatalf("the current open-authored inventory listed this PR: %+v", p.OpenAuthoredListed)
+	}
 	if p.Author != "alice" || p.Title != "new title" || p.Additions == nil || *p.Additions != 10 || p.Deletions == nil || *p.Deletions != 0 {
 		t.Fatalf("inventory facts not merged: %+v", p)
 	}

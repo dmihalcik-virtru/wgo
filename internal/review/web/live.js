@@ -1183,6 +1183,18 @@
       return { c: c, kind: c.name === "kind", bits: bits };
     });
   };
+  // clauseTris evaluates each clause of q on its own over ix as evaluate
+  // tests it: [{name, tris}] in clause order, tris holding 0 (does not
+  // hold), 1 (holds) or 2 (unknown) per node. gh-133's triage rules use it
+  // to name the fields that kept a rule from deciding (triage.go ruleHolds).
+  L.clauseTris = function (q, ix) {
+    var warns = [];
+    return q.clauses.map(function (c) {
+      var b = bindClause(ix, c, warns), vals = ix.values.get(c.name), tris = new Uint8Array(ix.nodes.length);
+      for (var i = 0; i < ix.nodes.length; i++) tris[i] = testClause(b, vals[i]);
+      return { name: c.name, tris: tris };
+    });
+  };
   // resolveDay is a date bound (YYYY-MM-DD, today, -7d, +2w) as the day it
   // means in ix's snapshot, or null.
   L.resolveDay = function (ix, s) { return resolveDay(ix, s); };

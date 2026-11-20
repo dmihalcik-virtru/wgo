@@ -240,7 +240,12 @@ func TestBuiltinFiltersAreVisible(t *testing.T) {
 	// Without gh-99's fields, as before it landed.
 	var fs []Field
 	planned := map[string]string{}
+	// gh-133's triage facts came later; no built-in filter uses them.
+	triage := []string{"human_activity", "human_ago", "human_reviewer", "approval_dismissed", "stacked_on", "stack_children", "ticket_category", "ticket_sprint_state"}
 	for _, f := range Fields().List() {
+		if slices.Contains(triage, f.Name) {
+			continue
+		}
 		if slices.ContainsFunc(f.Paths, func(p string) bool { return strings.HasPrefix(p, "pr.facts.") || strings.HasPrefix(p, "ticket.facts.") }) {
 			planned[f.Name] = "gh-99"
 			continue

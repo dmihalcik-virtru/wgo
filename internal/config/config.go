@@ -33,6 +33,32 @@ type Config struct {
 	Sync      SyncConfig      `mapstructure:"sync"`
 	Rig       RigConfig       `mapstructure:"rig"`
 	Dash      DashConfig      `mapstructure:"dash"`
+	PR        PRConfig        `mapstructure:"pr"`
+}
+
+// PRConfig is [pr].
+type PRConfig struct {
+	Triage PRTriageConfig `mapstructure:"triage"`
+}
+
+// PRTriageConfig is [pr.triage], the buckets of wgo pr triage (gh-133).
+type PRTriageConfig struct {
+	// BotLogins are case-insensitive regexes of logins whose reviews are
+	// not human activity. Unset means dash.DefaultBotLogins.
+	BotLogins []string `mapstructure:"bot_logins"`
+	// Rules sort PRs into buckets, the first match winning; the last has no
+	// match and catches the rest. Unset means dash.DefaultTriageRules; an
+	// empty list is an error.
+	Rules []PRTriageRule `mapstructure:"rules"`
+}
+
+// PRTriageRule is one [[pr.triage.rules]] entry: a bucket, an optional
+// note, and a dash query over PR fields (empty matches every PR, and only
+// the last rule may leave it empty).
+type PRTriageRule struct {
+	Bucket string `mapstructure:"bucket"`
+	Note   string `mapstructure:"note"`
+	Match  string `mapstructure:"match"`
 }
 
 // DashConfig controls `wgo dash`, the local live dashboard, and the
@@ -696,6 +722,21 @@ gh_stack = "auto"
 # stale_days = 30               # an open PR not updated this long is stale (1 to 3650)
 # systemic_ratio = 0.6          # a check failing on this share of a repo's open PRs fails everywhere (above 0, at most 1)
 # systemic_min_prs = 3          # ...if it ran on at least this many open PRs (2 to 1000)
+
+# [pr.triage]
+# Logins whose reviews are not human activity, as case-insensitive regexes.
+# Setting it replaces the default list.
+# bot_logins = ['\[bot\]$', '^github-actions', '^sonarqubecloud', '^codecov', 'gemini', 'copilot', 'coderabbit', '^dependabot', '^renovate']
+#
+# Buckets of wgo pr triage, in order; a PR goes to the first whose match (a
+# wgo dash query over PR fields) holds. The last rule has no match and takes
+# every PR the others did not. Setting any replaces the defaults.
+# [[pr.triage.rules]]
+# bucket = "land"
+# note = "Approved: merge it, or fix what blocks it."
+# match = "review:approved;!prstate:draft"
+# [[pr.triage.rules]]
+# bucket = "parked"
 
 # [pair]
 # GitHub handle of your pairing teammate (enables pair features in today, pr, team)

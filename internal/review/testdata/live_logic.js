@@ -1622,4 +1622,64 @@ test("detail panel: check= names a check of the selected PR", () => {
 }
 // ---------- end gh-104 ----------
 
+// ===== gh-133: the triage view's pure logic (web/live-triage.js) =====
+// On the analysis fixture with the default rules, the buckets and their
+// PRs must be those of triage.go's extract (its golden), with and without
+// a query.
+{
+const path = require("node:path");
+const TR = require(path.join(path.dirname(process.argv[2]), "live-triage.js"))(L);
+const TDATA = path.dirname(process.argv[3]);
+const AFIX = JSON.parse(fs.readFileSync(path.join(TDATA, "analysis_fixture.json"), "utf8"));
+const RULES = JSON.parse(fs.readFileSync(path.join(TDATA, "triage_rules.golden.json"), "utf8"));
+const TREG = L.registry(FIELDS);
+// goldenBuckets reads "## name (N)" sections and their item labels.
+const goldenBuckets = (md) => {
+  const out = [];
+  for (const line of md.split("\n")) {
+    const h = /^## (.+) \((\d+)\)$/.exec(line);
+    if (h) { out.push({ name: h[1].replace(/\\/g, ""), n: Number(h[2]), refs: [] }); continue; }
+    const it = /^- \[([^\]]+)\]\(/.exec(line);
+    if (it && out.length) out[out.length - 1].refs.push(it[1]);
+  }
+  return out;
+};
+const viewBuckets = (b) => b.buckets.map((x) => ({ name: x.name, n: x.items.length, refs: x.items.map((it) => TR.shortRef(it.ref)) }));
+
+test("triage: the page buckets as triage.go does (its golden extract)", () => {
+  const ix = L.queryIndex(AFIX, TREG), rules = TR.compile(RULES, TREG);
+  assert.equal(rules.length, RULES.length, "every default rule parses");
+  const built = TR.build(AFIX, ix, rules, null);
+  assert.deepEqual(viewBuckets(built), goldenBuckets(fs.readFileSync(path.join(TDATA, "triage_extract.golden.md"), "utf8")));
+  const q = L.runQuery("repo:acme/api", ix);
+  assert.deepEqual(viewBuckets(TR.build(AFIX, ix, rules, q.res.rowSet)), goldenBuckets(fs.readFileSync(path.join(TDATA, "triage_extract_query.golden.md"), "utf8")));
+  const api101 = built.buckets.flatMap((b) => b.items).find((it) => it.ref === "acme/api#101");
+  assert.deepEqual(api101.unknown, ["ticket_sprint_state", "ticket_category"], "the unknown fields are named");
+});
+
+test("triage: no operator, dropped PRs and PRs closed since they were seen", () => {
+  const anon = Object.assign({}, AFIX, { people: [] });
+  assert.match(TR.build(anon, L.queryIndex(anon, TREG), TR.compile(RULES, TREG), null).error, /no authenticated GitHub user/);
+  // #301 dropped from the open-authored set, but an older bookmark still
+  // calls it open. #101 is listed despite an older bookmark fetch time.
+  const snap = JSON.parse(JSON.stringify(AFIX));
+  const n301 = snap.nodes.find((n) => n.id === "pr:acme/infra#301");
+  n301.pr.sources = ["bookmark", "inventory"]; n301.pr.fetched_at = "2026-10-30T10:00:00Z"; n301.pr.open_authored_listed = false;
+  const n101 = snap.nodes.find((n) => n.id === "pr:acme/api#101");
+  n101.pr.sources = ["bookmark", "inventory"]; n101.pr.fetched_at = "2026-10-30T10:00:00Z"; n101.pr.open_authored_listed = true;
+  const ix = L.queryIndex(snap, TREG), built = TR.build(snap, ix, TR.compile(RULES, TREG), null);
+  assert.deepEqual(built.dropped, [n301.pr.url]);
+  assert.equal(built.total, 4);
+  const seen = new Map([["pr:acme/infra#301", { item: { id: "pr:acme/infra#301", tickets: [] }, bucket: "active" }], ["pr:acme/api#101", { item: { id: "pr:acme/api#101", tickets: [] }, bucket: "active" }]]);
+  assert.deepEqual(TR.closed(seen, ix, built).map((c) => c.item.id), ["pr:acme/infra#301"]);
+});
+
+test("triage: bucket rows order by ticket, then repository and number", () => {
+  const it = (ref, key) => ({ id: "pr:" + ref, ref: ref, tickets: key ? [{ key: key }] : [] });
+  const rows = [it("acme/web#2"), it("acme/api#100"), it("acme/api#99"), it("acme/api#7", "TEAM-1")].sort(TR.compareItems);
+  assert.deepEqual(rows.map((r) => r.ref), ["acme/api#7", "acme/api#99", "acme/api#100", "acme/web#2"]);
+});
+}
+// ---------- end gh-133 ----------
+
 console.log("ok " + n + " (" + vectorCases + " shared query vectors) " + perfLine);

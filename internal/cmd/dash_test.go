@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -420,11 +421,11 @@ func ptr[T any](v T) *T { return &v }
 
 func TestDashFactThresholds(t *testing.T) {
 	th, err := dashFactThresholds(config.DashFactsConfig{})
-	if err != nil || th != dash.DefaultFactThresholds() {
+	if err != nil || !reflect.DeepEqual(th, dash.DefaultFactThresholds()) {
 		t.Fatalf("unset: %+v, %v", th, err)
 	}
 	th, err = dashFactThresholds(config.DashFactsConfig{StaleDays: ptr(14), SystemicRatio: ptr(0.75)})
-	if err != nil || th != (dash.FactThresholds{StaleDays: 14, SystemicRatio: 0.75, SystemicMinPRs: dash.DefaultSystemicMinPRs}) {
+	if err != nil || !reflect.DeepEqual(th, dash.FactThresholds{StaleDays: 14, SystemicRatio: 0.75, SystemicMinPRs: dash.DefaultSystemicMinPRs}) {
 		t.Fatalf("set: %+v, %v", th, err)
 	}
 }

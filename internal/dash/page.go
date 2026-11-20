@@ -43,6 +43,9 @@ type liveBoot struct {
 	// [dash] facets named that could not be one (gh-102, ResolveFacets).
 	Facets     []string `json:"facets,omitempty"`
 	FacetNotes []string `json:"facet_notes,omitempty"`
+	// Triage are the triage view's rules (gh-133), checked by
+	// CompileTriageRules: [[pr.triage.rules]] or the defaults.
+	Triage []TriageRule `json:"triage,omitempty"`
 }
 
 // liveAddon is one live page addon (spec/gh-100.md, requirement 27):
@@ -82,6 +85,8 @@ var liveAddons = []liveAddon{
 	{Script: "web/live-sprint.js", Style: "web/live-sprint.css"},
 	// gh-104: PR timelines; after the table, whose sort it reuses.
 	{Script: "web/live-timeline.js", Style: "web/live-timeline.css"},
+	// gh-133: the triage view of the operator's open PRs.
+	{Script: "web/live-triage.js", Style: "web/live-triage.css"},
 }
 
 // liveAddonFiles returns the addons' scripts and stylesheets, in order.

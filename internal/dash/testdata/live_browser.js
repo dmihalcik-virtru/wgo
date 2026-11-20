@@ -1516,3 +1516,67 @@ async function timeTimeline(tableURL) {
 }
 }
 // ---------- end gh-104 ----------
+
+// ---------- gh-133: the triage view (web/live-triage.js) ----------
+// The triage view on the analysis fixture (--triage): its buckets agree
+// with triage_extract.golden.md, the query narrows them, the keyboard
+// reaches every bucket and row, and its stylesheet applies under the CSP.
+// --set=triage saves light, dark and colour-vision-deficiency screenshots.
+{
+SHOT_SETS.triage = [
+  ["triage-light.png", "light", "#view=triage"],
+  ["triage-dark.png", "dark", "#view=triage"],
+  ["triage-query-light.png", "light", "#view=triage&q=repo:acme/api"],
+];
+for (const type of ["protanopia", "deuteranopia", "tritanopia", "achromatopsia"]) {
+  for (const scheme of ["light", "dark"]) SHOT_SETS.triage.push(["triage-" + type + "-" + scheme + ".png", scheme, "#view=triage", "cvd:" + type]);
+}
+SHOT_SETS.triage.viewport = { width: 1400, height: 900 };
+SUITES.push({ name: "triage view", flag: "triage", checks: triageChecks });
+
+async function triageChecks(url) {
+  const from = events.length;
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: url + "#view=triage" });
+  await waitFor("!!(window.__wgoStore && window.__wgoStore.snap) && !!document.querySelector('.tv-head')", "the triage view");
+  await send("Page.resetNavigationHistory");
+  const text = (sel) => evaluate("(() => { const e = document.querySelector(" + JSON.stringify(sel) + "); return e ? e.textContent : null })()");
+  const active = () => evaluate("(() => { const a = document.activeElement; return a ? (a.dataset.k || a.id || a.tagName) : '' })()");
+  const sections = () => evaluate("Array.from(document.querySelectorAll('.tv-sec:not(.tv-closed) h3')).map(h => h.textContent).join('|')");
+
+  check((await evaluate("Array.from(document.querySelectorAll('.view-tabs button')).map(b => b.textContent).join()")).includes("Triage"), "the triage view is a tab");
+  check((await evaluate("getComputedStyle(document.querySelector('.tv-nav')).display")) === "flex", "the addon's stylesheet (live-triage.css) applies under the CSP");
+  check((await text(".tv-meta")) === "5 open PRs by alice", "header: " + (await text(".tv-meta")));
+  // The same buckets and counts as the extract's golden.
+  check((await sections()) === "land (0)|keep (2)|close? (0)|draft? (0)|fix ticket (0)|active (3)|parked (0)", "buckets: " + (await sections()));
+  const rows = await evaluate("Array.from(document.querySelectorAll('.tv-table tr[data-id]')).map(tr => tr.querySelector('td.nm a').textContent).join()");
+  check(rows === "web#201,api#102,api#101,api#103,infra#301", "rows in bucket order: " + rows);
+  check((await evaluate("document.querySelector(\".tv-table tr[data-id='pr:acme/api#101'] td.notes\").textContent")) === "unknown: ticket_sprint_state, ticket_category", "unknown fields are named");
+  // The query narrows the PRs, as the extract's q does.
+  await evaluate("window.__wgoStore.setQuery('repo:acme/api', { commit: true })");
+  check((await sections()) === "land (0)|keep (1)|close? (0)|draft? (0)|fix ticket (0)|active (2)|parked (0)" && (await text(".tv-meta")) === "3 open PRs by alice that the query keeps", "the query narrows: " + (await sections()));
+  await evaluate("window.__wgoStore.setQuery('', { commit: true })");
+
+  // Keyboard only: a bucket button moves to its section; rows rove with the
+  // arrow keys and Enter selects.
+  await evaluate("document.querySelector('.tv-nav button[data-sec=\"5\"]').focus()");
+  await key("Enter");
+  check((await active()) === "tv-sec-5", "Enter on a bucket moves to its section: " + (await active()));
+  await evaluate("document.querySelector('.tv-table tr[data-id]').focus()");
+  await key("ArrowDown");
+  check((await active()) === "row:pr:acme/api#102", "ArrowDown moves to the next row: " + (await active()));
+  await key("ArrowDown");
+  check((await active()) === "row:pr:acme/api#101", "and on across buckets: " + (await active()));
+  await key("Enter");
+  check((await evaluate("Array.from(window.__wgoStore.selection).join()")) === "pr:acme/api#101", "Enter selects");
+  await key("Tab");
+  check((await active()) === "link:pr:acme/api#101", "Tab reaches the row's links: " + (await active()));
+  const stops = await evaluate("document.querySelectorAll('.tv-table tr[tabindex=\"0\"]').length");
+  check(stops === 1, "one row is a tab stop: " + stops);
+  await evaluate("window.__wgoStore.setState({ sel: '' }, { commit: true })");
+
+  const problems = events.slice(from).filter((e) => (e.method === "Log.entryAdded" && e.params.entry.level === "error" && !/\/favicon\.ico$/.test(e.params.entry.url || "")) || e.method === "Runtime.exceptionThrown");
+  check(problems.length === 0, "console errors in the triage view: " + JSON.stringify(problems.map((e) => e.params)));
+}
+}
+// ---------- end gh-133 ----------

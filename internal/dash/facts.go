@@ -3,6 +3,7 @@ package dash
 import (
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -41,6 +42,9 @@ type FactThresholds struct {
 	// that ran it, and it ran on at least SystemicMinPRs open PRs.
 	SystemicRatio  float64
 	SystemicMinPRs int
+	// BotLogins are [pr.triage] bot_logins compiled: logins whose reviews
+	// are not human activity. nil means DefaultBotLogins.
+	BotLogins []*regexp.Regexp
 }
 
 // DefaultFactThresholds returns the default [dash.facts].
@@ -58,6 +62,9 @@ func (t FactThresholds) withDefaults() FactThresholds {
 	}
 	if t.SystemicMinPRs <= 0 {
 		t.SystemicMinPRs = d.SystemicMinPRs
+	}
+	if t.BotLogins == nil {
+		t.BotLogins = defaultBots
 	}
 	return t
 }
@@ -164,6 +171,28 @@ type PRFacts struct {
 	// gh-99's approximation from ready, request and review times. Omitted
 	// for the other moves.
 	WaitingSource string `json:"waiting_source,omitempty"`
+
+	// The triage facts (gh-133). Lists are nil (omitted) while unknown and
+	// [] for none, like PRInfo's.
+
+	// HumanReviews are the latest reviews by people other than the author
+	// whose logins match no [pr.triage] bot_logins pattern, and
+	// HumanActivity the latest of their times.
+	HumanReviews  []Review  `json:"human_reviews,omitzero"`
+	HumanActivity time.Time `json:"human_activity,omitzero"`
+	// ApprovalDismissed is known for an open PR whose reviews were fetched:
+	// true when its decision is back to review required while some human's
+	// latest review is APPROVED or DISMISSED, so it needs a fresh review.
+	ApprovalDismissed *bool `json:"approval_dismissed,omitempty"`
+	// StackedOn holds the open PRs of the same repository whose head is
+	// this open PR's base (normally zero or one), and StackChildren the open
+	// PRs based on its head, as node IDs.
+	StackedOn     []string `json:"stacked_on,omitzero"`
+	StackChildren []string `json:"stack_children,omitzero"`
+	// TicketCategory and TicketSprintState are the status categories of the
+	// linked tickets and the states of their sprints.
+	TicketCategory    []string `json:"ticket_category,omitzero"`
+	TicketSprintState []string `json:"ticket_sprint_state,omitzero"`
 }
 
 // Sources of PRFacts.WaitingSince (PRFacts.WaitingSource).
@@ -248,6 +277,7 @@ func ComputeFacts(s *Snapshot, people []Person, th FactThresholds, now time.Time
 			out.Tickets[n.ID] = ticketFacts(n.ID, n.Ticket, g, th, now)
 		}
 	}
+	triageFacts(s, g, out.PRs, th.BotLogins)
 	if len(out.CheckStats) == 0 {
 		out.CheckStats = nil
 	}

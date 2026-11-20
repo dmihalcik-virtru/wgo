@@ -64,6 +64,9 @@ type HandlerOptions struct {
 	// means DefaultFacets.
 	Facets     []string
 	FacetNotes []string
+	// Triage are the compiled [[pr.triage.rules]], for the triage view and
+	// extract (gh-133); nil means DefaultTriageRules.
+	Triage *TriageRules
 	// Addons and AddonStyles replace the live page's addon scripts and
 	// stylesheets (liveAddons) when Addons is non-nil, read from AddonFS
 	// when set instead of the embedded files. Tests use them.
@@ -122,10 +125,16 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	if opts.Facets == nil {
 		opts.Facets, _ = ResolveFacets(nil, Fields())
 	}
+	if opts.Triage == nil {
+		var err error
+		if opts.Triage, err = CompileTriageRules(DefaultTriageRules(DefaultStaleDays), Fields()); err != nil {
+			return nil, err
+		}
+	}
 	s := &server{opts: opts}
 	reg := Fields().JSON()
 	s.boot = liveBoot{Mode: string(review.ModeLive), API: "/api/snapshot", PollMS: opts.PollInterval.Milliseconds(),
-		Fields: &reg, Filters: opts.Filters, Extract: ExtractPath, Facets: opts.Facets, FacetNotes: opts.FacetNotes}
+		Fields: &reg, Filters: opts.Filters, Extract: ExtractPath, Facets: opts.Facets, FacetNotes: opts.FacetNotes, Triage: opts.Triage.Rules()}
 	if opts.Reviews != nil {
 		s.boot.Links = "/api/review-links"
 	}
@@ -253,6 +262,7 @@ func (s *server) serveExtract(w http.ResponseWriter, r *http.Request) {
 	md, err := Extract(v, Fields(), s.opts.Filters, ExtractArgs{
 		Query: p.Get("q"), Cols: SplitCols(p.Get("cols")), Group: p.Get("group"),
 		Layout: p.Get("layout"), View: p.Get("view"), Sprint: p.Get("sprint"), Sort: SplitCols(p.Get("sort")),
+		Triage: s.opts.Triage,
 	})
 	if err != nil {
 		var qe *QueryError

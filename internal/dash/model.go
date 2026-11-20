@@ -275,6 +275,11 @@ type PRInfo struct {
 	// or both, sorted. It is set on every PR assemble builds; it is absent
 	// only from snapshots older than the inventory.
 	Sources []string `json:"sources,omitempty"`
+	// OpenAuthoredListed says whether the latest open-authored inventory set
+	// actually listed this PR. A false value can coexist with an older open
+	// bookmark lookup while the closed-PR search catches up. Nil is for old
+	// snapshots and PRs known only through a bookmark.
+	OpenAuthoredListed *bool `json:"open_authored_listed,omitempty"`
 
 	// The fields below are the inventory's facts (gh-97). Each is omitted
 	// when GitHub did not report it, which is always the case for a PR
@@ -298,6 +303,11 @@ type PRInfo struct {
 	Mergeable string `json:"mergeable,omitempty"`
 	BaseRef   string `json:"base_ref,omitempty"`
 	HeadRef   string `json:"head_ref,omitempty"`
+	// CrossRepository is set when the head branch is in a fork, and
+	// DefaultBranch is the repository's default branch; neither head can be
+	// the base of a stack.
+	CrossRepository bool   `json:"cross_repository,omitempty"`
+	DefaultBranch   string `json:"default_branch,omitempty"`
 	// ReviewRequests adds kinds and request times to RequestedReviewers,
 	// for the same outstanding requests. ReviewersKnown covers
 	// RequestedReviewers only: ReviewRequests is nil (unknown) whenever the
