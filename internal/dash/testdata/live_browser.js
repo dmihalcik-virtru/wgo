@@ -465,6 +465,10 @@ const SHOT_SETS = {
     ["table-context-light.png", "light", "#view=table&q=repo:acme/api&sort=kind,-updated_ago"],
     ["table-columns-dark.png", "dark", "#view=table&q=kind:pr&cols=repo,author,updated_ago,additions,deletions,mergeable&sort=-updated_ago", "columns"],
   ],
+  "agent-mounts": [
+    ["antigravity-mounts-light.png", "light", "#view=graph&q=kind:agent&sel=agent:antigravity-a1b2c3d4e5f6"],
+    ["antigravity-mounts-dark.png", "dark", "#view=graph&q=kind:agent&sel=agent:antigravity-a1b2c3d4e5f6"],
+  ],
 };
 
 // timeTable times the analysis table on the analysis fixture scaled to
@@ -473,6 +477,7 @@ const SHOT_SETS = {
 // the rows in view are in the DOM, following the scroll.
 // The table's PR columns need a wider window than the graph.
 SHOT_SETS.table.viewport = { width: 2200, height: 1000 };
+SHOT_SETS["agent-mounts"].viewport = { width: 1400, height: 900 };
 
 async function timeTable(tableURL) {
   await send("Page.navigate", { url: "about:blank" });

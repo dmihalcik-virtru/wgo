@@ -213,7 +213,7 @@ func TestLoadStateMigratesV2(t *testing.T) {
 	require.NoError(t, s.SaveState(state))
 	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	require.NoError(t, err)
-	assert.Contains(t, string(raw), `"version": 3`)
+	assert.Contains(t, string(raw), `"version": 4`)
 	reloaded, err := s.LoadState()
 	require.NoError(t, err)
 	assert.Equal(t, state.AgentSessions, reloaded.AgentSessions)
