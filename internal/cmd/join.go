@@ -19,6 +19,7 @@ import (
 var (
 	joinNoPush     bool
 	joinNoClaudeMD bool
+	joinNoAgentsMD bool
 )
 
 var joinCmd = &cobra.Command{
@@ -27,9 +28,9 @@ var joinCmd = &cobra.Command{
 	Long: `Detects the current worktree's branch and shared root, creates a sibling
 worktree for the new repo on the same branch, and updates plan.md and state.json.
 
-For a workspace holding 2+ repos, regenerates a shared CLAUDE.md at the
-workspace root listing every repo. A CLAUDE.md that wgo did not generate is
-never overwritten; pass --no-claude-md to skip this entirely.
+For a workspace holding 2+ repos, regenerates shared CLAUDE.md and AGENTS.md
+files at the workspace root listing every repo. Files that wgo did not generate
+are never overwritten; pass --no-claude-md or --no-agents-md to skip them.
 
 Output goes to stdout so you can use it with cd:
   cd $(wgo join virtru/cli)`,
@@ -44,6 +45,7 @@ func init() {
 	rootCmd.AddCommand(joinCmd)
 	joinCmd.Flags().BoolVar(&joinNoPush, "no-push", false, "Skip pushing when a new branch is created")
 	joinCmd.Flags().BoolVar(&joinNoClaudeMD, "no-claude-md", false, "Skip regenerating the shared CLAUDE.md for the workspace")
+	joinCmd.Flags().BoolVar(&joinNoAgentsMD, "no-agents-md", false, "Skip regenerating the shared AGENTS.md for the workspace")
 }
 
 func runJoin(ownerRepo string, noPush bool) (retErr error) {
@@ -195,28 +197,35 @@ func runJoin(ownerRepo string, noPush bool) (retErr error) {
 		return fmt.Errorf("save plan: %w", err)
 	}
 
-	// 14. Regenerate the shared CLAUDE.md so a newly joined repo is reflected
-	// (see writeSharedClaudeMD). Only inside worktrees_dir: sharedRoot is
-	// inferred from the cwd, so outside our own tree it can name an arbitrary
-	// directory of the user's that we have no business writing into.
-	if !joinNoClaudeMD {
+	// 14. Regenerate the shared CLAUDE.md / AGENTS.md so a newly joined repo is
+	// reflected. Only inside worktrees_dir: sharedRoot is inferred from the cwd,
+	// so outside our own tree it can name an arbitrary directory of the user's
+	// that we have no business writing into.
+	if !joinNoClaudeMD || !joinNoAgentsMD {
 		if !isManagedWorkspaceRoot(cfg.Worktree.WorktreesDir, sharedRoot) {
-			fmt.Fprintf(os.Stderr, "note: %s is outside worktrees_dir; skipping shared CLAUDE.md\n", sharedRoot)
+			fmt.Fprintf(os.Stderr, "note: %s is outside worktrees_dir; skipping shared agent docs\n", sharedRoot)
 		} else if repos, derr := discoverSharedRepos(jjc, sharedRoot); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not scan workspace for shared CLAUDE.md: %v\n", derr)
+			fmt.Fprintf(os.Stderr, "warning: could not scan workspace for shared agent docs: %v\n", derr)
 		} else {
 			ticket := specpkg.ParseTicketFromBranch(branch)
 			// Deliberately no fallback to `reason`: it defaults to the raw
 			// branch name, and a slug rendered as the goal reads like a real
 			// description. An empty desc renders a visible placeholder instead.
-			err := writeSharedClaudeMD(sharedClaudeMD{
+			req := sharedClaudeMD{
 				Root:        sharedRoot,
 				Ticket:      ticket,
 				Description: planDescriptionForBranch(p, branch, ticket),
 				Repos:       repos,
-			})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not update shared CLAUDE.md: %v\n", err)
+			}
+			if !joinNoClaudeMD {
+				if err := writeSharedClaudeMD(req); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not update shared CLAUDE.md: %v\n", err)
+				}
+			}
+			if !joinNoAgentsMD {
+				if err := writeSharedAgentsMD(req); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not update shared AGENTS.md: %v\n", err)
+				}
 			}
 		}
 	}

@@ -140,10 +140,67 @@ func TestAgentHookMalformedInput(t *testing.T) {
 func TestHookActionFor(t *testing.T) {
 	assert.Equal(t, store.AgentWorking, hookActionFor("PostToolUse").status)
 	assert.Equal(t, store.AgentWorking, hookActionFor("posttooluse").status)
+	assert.Equal(t, store.AgentWorking, hookActionFor("PreInvocation").status)
+	assert.True(t, hookActionFor("PreInvocation").refresh)
 	assert.Equal(t, store.AgentWaiting, hookActionFor("Stop").status)
 	assert.Equal(t, store.AgentWaiting, hookActionFor("Interrupt").status)
 	assert.True(t, hookActionFor("SessionEnd").remove)
 	assert.Equal(t, hookAction{}, hookActionFor("SomethingNew"))
+}
+
+// TestAgentHookAntigravityLifecycle verifies Antigravity's camelCase protojson
+// payloads (conversationId, hookEventName, workspacePaths, toolCall) and
+// required JSON stdout responses ({}, {"decision":"allow"}, and PreInvocation
+// injectSteps warnings).
+func TestAgentHookAntigravityLifecycle(t *testing.T) {
+	e := newAgentEnv(t)
+	e.procs[fakeClaudePID] = proc.Info{PID: fakeClaudePID, PPID: 1, Name: "Antigravity Helper", Start: fakeClaudeTok}
+	const convID = "79b14596-1d0f-4244-948d-8a8c03428d42"
+
+	send := func(payload string) string {
+		t.Helper()
+		e.warnings.Reset()
+		agentStateWarned = false
+		require.NoError(t, runAgentHook(strings.NewReader(payload), "", "antigravity"))
+		e.advance(time.Second)
+		return strings.TrimSpace(e.warnings.String())
+	}
+
+	// SessionStart falls back to workspacePaths when cwd is outside a jj repo.
+	out := send(fmt.Sprintf(`{"conversationId":%q,"cwd":"/scratch","workspacePaths":["/ws"],"hookEventName":"SessionStart"}`, convID))
+	assert.Equal(t, `{}`, out)
+	sess := loadState(t).GetAgentSession(convID)
+	require.NotNil(t, sess)
+	assert.Equal(t, "antigravity", sess.Tool)
+	assert.Equal(t, store.AgentWaiting, sess.Status)
+	assert.Equal(t, "/ws", sess.WorktreePath)
+	assert.Equal(t, fakeClaudePID, sess.PID)
+
+	out = send(fmt.Sprintf(`{"conversationId":%q,"cwd":"/ws","hookEventName":"PreInvocation","invocationNum":1}`, convID))
+	assert.Equal(t, `{}`, out)
+	assert.Equal(t, store.AgentWorking, loadState(t).GetAgentSession(convID).Status)
+
+	out = send(fmt.Sprintf(`{"conversationId":%q,"cwd":"/ws","hookEventName":"PostToolUse","toolCall":{"id":"t1","name":"edit_file","args":{"Path":"/ws/a.go"}}}`, convID))
+	assert.Equal(t, `{}`, out)
+	assert.Equal(t, store.AgentWorking, loadState(t).GetAgentSession(convID).Status)
+
+	out = send(fmt.Sprintf(`{"conversationId":%q,"cwd":"/ws","hookEventName":"Stop","terminationReason":"NO_TOOL_CALL"}`, convID))
+	assert.Equal(t, `{"decision":"allow"}`, out)
+	assert.Equal(t, store.AgentWaiting, loadState(t).GetAgentSession(convID).Status)
+
+	// Outside any jj workspace still emits valid JSON so Antigravity never
+	// fails parsing stdout.
+	out = send(`{"conversationId":"other-conv","cwd":"/nowhere","hookEventName":"Stop"}`)
+	assert.Equal(t, `{"decision":"allow"}`, out)
+	assert.Nil(t, loadState(t).GetAgentSession("other-conv"))
+
+	// State problems surface via injectSteps user_markdown on PreInvocation.
+	home, _ := os.UserHomeDir()
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".wgo", "state.json"), fmt.Appendf(nil, `{"version":%d}`, store.StateVersion+1), 0o644))
+	out = send(fmt.Sprintf(`{"conversationId":%q,"cwd":"/ws","hookEventName":"PreInvocation"}`, convID))
+	assert.Contains(t, out, `"injectSteps"`)
+	assert.Contains(t, out, `"user_markdown"`)
+	assert.Contains(t, out, "Upgrade wgo")
 }
 
 // TestAgentHookResumedSessionFindsNewProcess: claude --resume keeps the

@@ -84,6 +84,7 @@ func newAgentEnv(t *testing.T) *agentEnv {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDECODE", "")
+	t.Setenv("ANTIGRAVITY_AGENT", "")
 	e := &agentEnv{
 		now: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC),
 		procs: fakeProcs{
@@ -159,13 +160,18 @@ func agentStatusOut(t *testing.T) string {
 	return buf.String()
 }
 
-// TestDetectAgent gates on the CLAUDECODE env var.
+// TestDetectAgent gates on the CLAUDECODE and ANTIGRAVITY_AGENT env vars.
 func TestDetectAgent(t *testing.T) {
+	t.Setenv("CLAUDECODE", "")
+	t.Setenv("ANTIGRAVITY_AGENT", "")
+	assert.Equal(t, "", detectAgent())
+
 	t.Setenv("CLAUDECODE", "1")
 	assert.Equal(t, "claude", detectAgent())
 
 	t.Setenv("CLAUDECODE", "")
-	assert.Equal(t, "", detectAgent())
+	t.Setenv("ANTIGRAVITY_AGENT", "1")
+	assert.Equal(t, "antigravity", detectAgent())
 }
 
 // TestRunAgentStartRejectsEmptyName: start validates the name before touching

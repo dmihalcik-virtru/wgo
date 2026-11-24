@@ -380,19 +380,45 @@ func TestIsManagedWorkspaceRoot(t *testing.T) {
 func TestNoClaudeMDFlagRegistered(t *testing.T) {
 	for _, tt := range []struct {
 		cmdName string
+		flag    string
 		target  *bool
 	}{
-		{"add", &addNoClaudeMD},
-		{"join", &joinNoClaudeMD},
+		{"add", "no-claude-md", &addNoClaudeMD},
+		{"join", "no-claude-md", &joinNoClaudeMD},
+		{"add", "no-agents-md", &addNoAgentsMD},
+		{"join", "no-agents-md", &joinNoAgentsMD},
 	} {
-		t.Run(tt.cmdName, func(t *testing.T) {
+		t.Run(tt.cmdName+"_"+tt.flag, func(t *testing.T) {
 			cmd, _, err := rootCmd.Find([]string{tt.cmdName})
 			require.NoError(t, err)
 
-			flag := cmd.Flags().Lookup("no-claude-md")
-			require.NotNil(t, flag, "%s must accept --no-claude-md", tt.cmdName)
+			flag := cmd.Flags().Lookup(tt.flag)
+			require.NotNil(t, flag, "%s must accept --%s", tt.cmdName, tt.flag)
 			assert.Equal(t, "false", flag.DefValue, "generating the file is the default")
 			assert.False(t, *tt.target)
 		})
 	}
+}
+
+func TestWriteSharedAgentsMDLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	writeSpec(t, dir, "platform", "DSPX-1.md")
+
+	req := sharedClaudeMD{Root: dir, Ticket: "DSPX-1", Description: "before", Repos: twoRepos()}
+	require.NoError(t, writeSharedAgentsMD(req))
+
+	gotBytes, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	require.NoError(t, err)
+	got := string(gotBytes)
+	assert.True(t, strings.HasPrefix(got, claudemd.AgentsMarker))
+	assert.Contains(t, got, "platform/spec/DSPX-1.md")
+
+	// Hand-written AGENTS.md is never overwritten.
+	dir2 := t.TempDir()
+	handWritten := "# Custom AGENTS.md\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir2, "AGENTS.md"), []byte(handWritten), 0o644))
+	require.NoError(t, writeSharedAgentsMD(sharedClaudeMD{Root: dir2, Ticket: "DSPX-1", Repos: twoRepos()}))
+	kept, err := os.ReadFile(filepath.Join(dir2, "AGENTS.md"))
+	require.NoError(t, err)
+	assert.Equal(t, handWritten, string(kept))
 }

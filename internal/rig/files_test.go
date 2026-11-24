@@ -21,11 +21,13 @@ func filesByName(t *testing.T, m *Manifest, root string) map[string]GeneratedFil
 
 func TestGeneratedFilesCoverTheWholeSet(t *testing.T) {
 	files := filesByName(t, twoCheckoutManifest(), "/rigs/dsp")
-	for _, name := range []string{EnvShName, EnvrcName, ClaudeMDName, ReadmeName, GitignoreName} {
+	for _, name := range []string{EnvShName, EnvrcName, ClaudeMDName, AgentsMDName, ReadmeName, GitignoreName} {
 		assert.Contains(t, files, name)
 		assert.NotEmpty(t, files[name].Content, name)
 	}
 	assert.Equal(t, uint32(0o755), files[EnvShName].Mode, "env.sh is meant to be executable")
+	assert.True(t, strings.HasPrefix(files[AgentsMDName].Content, "# AGENTS.md\n\n"))
+	assert.Contains(t, files[AgentsMDName].Content, "export GOWORK=/rigs/dsp/go.work")
 }
 
 func TestEnvShExportsAbsoluteGoWork(t *testing.T) {

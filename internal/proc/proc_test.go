@@ -83,11 +83,14 @@ func TestFindAncestorWalksPastShells(t *testing.T) {
 
 func TestMatchesToolScriptRuntime(t *testing.T) {
 	in := fakeInspector{args: map[int][]string{
-		5: {"node", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"},
-		6: {"node", "/usr/local/bin/claude"},
-		7: {"node", "server.js"},
-		8: {"claude"},
-		9: {"/bin/zsh", "-c", "claude"},
+		5:  {"node", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"},
+		6:  {"node", "/usr/local/bin/claude"},
+		7:  {"node", "server.js"},
+		8:  {"claude"},
+		9:  {"/bin/zsh", "-c", "claude"},
+		10: {"/Applications/Antigravity.app/Contents/Resources/bin/language_server", "--app_data_dir", "antigravity"},
+		11: {"/usr/local/bin/language_server"},
+		12: {"node", "/usr/local/bin/agy"},
 	}}
 	assert.True(t, MatchesTool(in, Info{PID: 8, Name: "2.1.285"}, "claude"), "native install: comm is the version, argv[0] the tool")
 	assert.False(t, MatchesTool(in, Info{PID: 9, Name: "zsh"}, "claude"), "a shell running the tool is not the tool")
@@ -95,6 +98,11 @@ func TestMatchesToolScriptRuntime(t *testing.T) {
 	assert.True(t, MatchesTool(in, Info{PID: 6, Name: "node"}, "claude"))
 	assert.False(t, MatchesTool(in, Info{PID: 7, Name: "node"}, "claude"))
 	assert.True(t, MatchesTool(in, Info{Name: "Cursor Helper"}, "cursor"))
+	assert.True(t, MatchesTool(in, Info{Name: "Antigravity Helper"}, "antigravity"))
+	assert.True(t, MatchesTool(in, Info{Name: "agy"}, "antigravity"))
+	assert.True(t, MatchesTool(in, Info{PID: 10, Name: "language_server"}, "antigravity"), "Antigravity desktop language_server")
+	assert.False(t, MatchesTool(in, Info{PID: 11, Name: "language_server"}, "antigravity"), "unrelated language_server must not match")
+	assert.True(t, MatchesTool(in, Info{PID: 12, Name: "node"}, "antigravity"), "node-hosted agy CLI")
 	assert.False(t, MatchesTool(in, Info{Name: "claudette"}, "claude"))
 	assert.False(t, MatchesTool(in, Info{Name: "claude"}, ""))
 }

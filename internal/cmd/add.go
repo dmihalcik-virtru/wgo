@@ -28,6 +28,7 @@ var (
 	addNoSpec      bool
 	addSpecRepo    string
 	addNoClaudeMD  bool
+	addNoAgentsMD  bool
 	addJira        bool
 	addJiraProject string
 	addJiraType    string
@@ -140,9 +141,10 @@ The branches are pushed to origin. The shared root is printed to stdout
 so you can cd into it:
   cd $(wgo add DSPX-2674 my task)
 
-With 2+ repos, a shared CLAUDE.md is written at the shared root to orient a
-coding agent across them. A CLAUDE.md that wgo did not generate is never
-overwritten; pass --no-claude-md to skip this entirely.
+With 2+ repos, shared CLAUDE.md and AGENTS.md files are written at the shared
+root to orient coding agents (Claude Code, Antigravity, Codex) across them.
+Files that wgo did not generate are never overwritten; pass --no-claude-md or
+--no-agents-md to skip generating them.
 
 The scaffolded spec is enriched with the ticket's title, description, and
 priority when acli is authenticated (acli jira auth login). Without it the spec
@@ -192,6 +194,7 @@ func init() {
 	addCmd.Flags().BoolVar(&addNoSpec, "no-spec", false, "Skip spec scaffold commit")
 	addCmd.Flags().StringVar(&addSpecRepo, "spec-repo", "", "owner/repo to write spec into (default: first -r repo)")
 	addCmd.Flags().BoolVar(&addNoClaudeMD, "no-claude-md", false, "Skip generating the shared CLAUDE.md for multi-repo workspaces")
+	addCmd.Flags().BoolVar(&addNoAgentsMD, "no-agents-md", false, "Skip generating the shared AGENTS.md for multi-repo workspaces")
 	addCmd.Flags().BoolVar(&addJira, "jira", false, "Create a new Jira work item first, then proceed with the ticket")
 	addCmd.Flags().StringVar(&addJiraProject, "jira-project", "", "Jira project key for new ticket (default: jira.default_project in config)")
 	addCmd.Flags().StringVar(&addJiraType, "jira-type", "", "Jira issue type for new ticket (default: jira.default_type in config, e.g. \"Task\")")
@@ -442,21 +445,28 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 		}
 	}
 
-	// Onboard a coding agent to the multi-repo workspace (see writeSharedClaudeMD).
-	if !addNoClaudeMD {
+	// Onboard coding agents to the multi-repo workspace (see writeSharedClaudeMD / writeSharedAgentsMD).
+	if !addNoClaudeMD || !addNoAgentsMD {
 		discovered, derr := discoverSharedRepos(jjc, sharedRoot)
 		if derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not scan workspace for shared CLAUDE.md: %v\n", derr)
+			fmt.Fprintf(os.Stderr, "warning: could not scan workspace for shared agent docs: %v\n", derr)
 		}
-		err := writeSharedClaudeMD(sharedClaudeMD{
+		req := sharedClaudeMD{
 			Root:        sharedRoot,
 			Ticket:      ticket,
 			Description: desc,
 			SpecRepoDir: specs[specRepoIdx].repo,
 			Repos:       mergeRepoLabels(discovered, specs),
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not write shared CLAUDE.md: %v\n", err)
+		}
+		if !addNoClaudeMD {
+			if err := writeSharedClaudeMD(req); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write shared CLAUDE.md: %v\n", err)
+			}
+		}
+		if !addNoAgentsMD {
+			if err := writeSharedAgentsMD(req); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write shared AGENTS.md: %v\n", err)
+			}
 		}
 	}
 

@@ -71,10 +71,11 @@ Each session has its own ID, so several agents can share a workspace or an
 effort. Sessions come from three places:
 
   wgo agent start      an explicit session, for any tool or script
-  wgo agent hook       Claude Code or Codex hooks (see contrib/)
-  wgo . / statusline   inside Claude Code (CLAUDECODE set), a heartbeat that
-                       refreshes its agent's session in the workspace, or
-                       keeps a single inferred one when that agent has none
+  wgo agent hook       Claude Code, Codex, or Antigravity hooks (see contrib/)
+  wgo . / statusline   inside Claude Code (CLAUDECODE set) or Antigravity
+                       (ANTIGRAVITY_AGENT set), a heartbeat that refreshes its
+                       agent's session in the workspace, or keeps a single
+                       inferred one when that agent has none
 
 Liveness: a session with activity in the last 10 minutes is active. After that,
 an inferred session is removed, whatever its process. Otherwise a session whose
@@ -621,10 +622,14 @@ func quietFor(now, last time.Time) string {
 }
 
 // detectAgent returns the agent name when wgo is running inside a recognized
-// agent, or "" otherwise. Claude Code sets CLAUDECODE in the environment.
+// agent, or "" otherwise. Claude Code sets CLAUDECODE and Antigravity sets
+// ANTIGRAVITY_AGENT in the environment.
 func detectAgent() string {
 	if os.Getenv("CLAUDECODE") != "" {
 		return "claude"
+	}
+	if os.Getenv("ANTIGRAVITY_AGENT") != "" {
+		return "antigravity"
 	}
 	return ""
 }
@@ -793,20 +798,57 @@ func (p *hookProblem) Unwrap() error { return p.err }
 // read or parse, but it reads newer-schema state and never writes, so for
 // those problems the hook's warning is the only report.
 func warnAgentState(event string, err error) {
+	_ = warnAgentStateForTool("claude", event, err)
+}
+
+// warnAgentStateForTool reports a state/jj hook problem using the host agent's
+// hook JSON contract, returning true if it wrote a JSON response to stdout.
+// For Antigravity, PreInvocation supports injectSteps with metadata.user_markdown
+// (rendered inline to the user without entering model context); all other
+// Antigravity events require their standard response object instead.
+func warnAgentStateForTool(tool, event string, err error) bool {
 	debugf("agent hook %s: %v", event, err)
 	problem := err.Error()
 	var hp *hookProblem
 	if errors.As(err, &hp) {
 		problem = hp.key
 	}
+	if tool == "antigravity" {
+		if agentStateWarned || !strings.EqualFold(event, "preinvocation") || !claimHookWarning(problem) {
+			return false
+		}
+		agentStateWarned = true
+		type sysMsg struct {
+			SystemMessage string            `json:"systemMessage"`
+			Metadata      map[string]string `json:"metadata,omitempty"`
+		}
+		type step struct {
+			SystemMessage sysMsg `json:"systemMessage"`
+		}
+		out, _ := json.Marshal(struct {
+			InjectSteps []step `json:"injectSteps"`
+		}{
+			InjectSteps: []step{{
+				SystemMessage: sysMsg{
+					SystemMessage: "",
+					Metadata: map[string]string{
+						"user_markdown": "wgo agent hook: could not record this session: " + err.Error(),
+					},
+				},
+			}},
+		})
+		fmt.Fprintf(agentWarnOut, "%s\n", out)
+		return true
+	}
 	if agentStateWarned || !hookWarningEvents[strings.ToLower(event)] || !claimHookWarning(problem) {
-		return
+		return false
 	}
 	agentStateWarned = true
 	out, _ := json.Marshal(struct {
 		SystemMessage string `json:"systemMessage"`
 	}{"wgo agent hook: could not record this session: " + err.Error()})
 	fmt.Fprintf(agentWarnOut, "%s\n", out)
+	return true
 }
 
 // claimHookWarning reports whether a warning about problem is due, and if so
