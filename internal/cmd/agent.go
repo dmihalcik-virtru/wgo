@@ -35,6 +35,9 @@ const (
 	// agentMaxAge bounds how long a session without a verifiable process is
 	// kept after its last activity, so abandoned sessions cannot accumulate.
 	agentMaxAge = 24 * time.Hour
+	// antigravityMaxAge caps hook conversations even while the app stays open:
+	// the app process identifies the host, not one conversation's lifetime.
+	antigravityMaxAge = time.Hour
 	// agentAncestorDepth bounds the walk up the process tree when looking for
 	// the agent process behind a hook or `agent start`.
 	agentAncestorDepth = 16
@@ -49,7 +52,7 @@ var (
 )
 
 func agentPolicy() store.AgentPolicy {
-	return store.AgentPolicy{Window: agentStaleAfter, MaxAge: agentMaxAge, Procs: procInspector}
+	return store.AgentPolicy{Window: agentStaleAfter, MaxAge: agentMaxAge, AntigravityMaxAge: antigravityMaxAge, Procs: procInspector}
 }
 
 // Flag values, one set per subcommand so their defaults never interfere.
@@ -71,17 +74,20 @@ Each session has its own ID, so several agents can share a workspace or an
 effort. Sessions come from three places:
 
   wgo agent start      an explicit session, for any tool or script
-  wgo agent hook       Claude Code or Codex hooks (see contrib/)
-  wgo . / statusline   inside Claude Code (CLAUDECODE set), a heartbeat that
-                       refreshes its agent's session in the workspace, or
-                       keeps a single inferred one when that agent has none
+  wgo agent hook       Claude Code, Codex, or Antigravity hooks (see contrib/)
+  wgo . / statusline   inside Claude Code (CLAUDECODE set) or Antigravity
+                       (ANTIGRAVITY_AGENT set), a heartbeat that refreshes its
+                       agent's session in the workspace, or keeps a single
+                       inferred one when that agent has none
 
 Liveness: a session with activity in the last 10 minutes is active. After that,
 an inferred session is removed, whatever its process. Otherwise a session whose
 agent process is verified alive (PID and start time match) stays live however
 quiet it is; a session whose recorded process has exited is removed; any other
 session (no recorded process, or one wgo cannot check) is shown as uncertain
-and removed after 24 hours or by "wgo agent stop".`,
+and removed after 24 hours or by "wgo agent stop". Antigravity hook conversations
+become uncertain after 10 minutes and expire after 1 hour without a hook event,
+even while the app remains open.`,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return runAgentStatus(os.Stdout, false)
 	},
@@ -515,26 +521,27 @@ func runAgentStop(w io.Writer, id string) error {
 
 // agentSessionJSON is the machine-readable form of a session.
 type agentSessionJSON struct {
-	ID           string    `json:"id"`
-	Tool         string    `json:"tool"`
-	Status       string    `json:"status"`
-	Liveness     string    `json:"liveness"`
-	Source       string    `json:"source"`
-	Workspace    string    `json:"workspace"`
-	Repo         string    `json:"repo,omitempty"`
-	Bookmark     string    `json:"bookmark,omitempty"`
-	Focus        string    `json:"focus,omitempty"`
-	Theme        string    `json:"theme,omitempty"`
-	PID          int       `json:"pid,omitempty"`
-	StartTime    time.Time `json:"start_time"`
-	LastActivity time.Time `json:"last_activity"`
-	Conflicts    []string  `json:"conflicts,omitempty"`
+	ID                string    `json:"id"`
+	Tool              string    `json:"tool"`
+	Status            string    `json:"status"`
+	Liveness          string    `json:"liveness"`
+	Source            string    `json:"source"`
+	Workspace         string    `json:"workspace"`
+	MountedWorkspaces []string  `json:"mounted_workspaces,omitempty"`
+	Repo              string    `json:"repo,omitempty"`
+	Bookmark          string    `json:"bookmark,omitempty"`
+	Focus             string    `json:"focus,omitempty"`
+	Theme             string    `json:"theme,omitempty"`
+	PID               int       `json:"pid,omitempty"`
+	StartTime         time.Time `json:"start_time"`
+	LastActivity      time.Time `json:"last_activity"`
+	Conflicts         []string  `json:"conflicts,omitempty"`
 }
 
 func sessionJSON(o store.ObservedSession, conflicts []string) agentSessionJSON {
 	return agentSessionJSON{
 		ID: o.ID, Tool: o.Tool, Status: string(o.Status), Liveness: string(o.Liveness),
-		Source: string(o.Source), Workspace: o.WorktreePath, Repo: o.RepoPath,
+		Source: string(o.Source), Workspace: o.WorktreePath, MountedWorkspaces: o.MountedWorkspaces, Repo: o.RepoPath,
 		Bookmark: o.Branch, Focus: o.Focus, Theme: o.ThemeID, PID: o.PID,
 		StartTime: o.StartTime, LastActivity: o.LastActivity, Conflicts: conflicts,
 	}
@@ -580,6 +587,10 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 		current = ""
 	}
 	for _, o := range observed {
+		location := o.WorktreePath
+		if location == "" && len(o.MountedWorkspaces) > 1 {
+			location = fmt.Sprintf("(%d mounted workspaces)", len(o.MountedWorkspaces))
+		}
 		branch := o.Branch
 		if branch == "" {
 			branch = "(no bookmark)"
@@ -588,6 +599,9 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 		if o.Focus != "" {
 			notes = append(notes, "editing in "+filepath.Base(o.Focus))
 		}
+		if o.WorktreePath == "" && len(o.MountedWorkspaces) > 1 {
+			notes = append(notes, "mounted: "+strings.Join(o.MountedWorkspaces, ", "))
+		}
 		if o.ThemeID != "" {
 			notes = append(notes, "theme "+o.ThemeID)
 		}
@@ -595,7 +609,11 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 		case store.LivenessLive:
 			notes = append(notes, fmt.Sprintf("quiet %s, process alive", quietFor(now, o.LastActivity)))
 		case store.LivenessUncertain:
-			notes = append(notes, fmt.Sprintf("uncertain: quiet %s, no process to check", quietFor(now, o.LastActivity)))
+			if o.Tool == "antigravity" && o.Source == store.SourceHook {
+				notes = append(notes, fmt.Sprintf("uncertain: quiet %s, app process cannot confirm this conversation", quietFor(now, o.LastActivity)))
+			} else {
+				notes = append(notes, fmt.Sprintf("uncertain: quiet %s, no process to check", quietFor(now, o.LastActivity)))
+			}
 		}
 		if o.Source == store.SourceInferred {
 			notes = append(notes, "inferred")
@@ -604,7 +622,7 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 			notes = append(notes, "current")
 		}
 		line := fmt.Sprintf("🤖 %-8s %-8s %s  %s  since %s  session %s",
-			o.Tool, o.Status, o.WorktreePath, branch, formatTime(o.StartTime), o.ID)
+			o.Tool, o.Status, location, branch, formatTime(o.StartTime), o.ID)
 		if len(notes) > 0 {
 			line += "  (" + strings.Join(notes, "; ") + ")"
 		}
@@ -621,10 +639,14 @@ func quietFor(now, last time.Time) string {
 }
 
 // detectAgent returns the agent name when wgo is running inside a recognized
-// agent, or "" otherwise. Claude Code sets CLAUDECODE in the environment.
+// agent, or "" otherwise. Claude Code sets CLAUDECODE and Antigravity sets
+// ANTIGRAVITY_AGENT in the environment.
 func detectAgent() string {
 	if os.Getenv("CLAUDECODE") != "" {
 		return "claude"
+	}
+	if os.Getenv("ANTIGRAVITY_AGENT") != "" {
+		return "antigravity"
 	}
 	return ""
 }
@@ -793,20 +815,57 @@ func (p *hookProblem) Unwrap() error { return p.err }
 // read or parse, but it reads newer-schema state and never writes, so for
 // those problems the hook's warning is the only report.
 func warnAgentState(event string, err error) {
+	_ = warnAgentStateForTool("claude", event, err)
+}
+
+// warnAgentStateForTool reports a state/jj hook problem using the host agent's
+// hook JSON contract, returning true if it wrote a JSON response to stdout.
+// For Antigravity, PreInvocation supports injectSteps with metadata.user_markdown
+// (rendered inline to the user without entering model context); all other
+// Antigravity events require their standard response object instead.
+func warnAgentStateForTool(tool, event string, err error) bool {
 	debugf("agent hook %s: %v", event, err)
 	problem := err.Error()
 	var hp *hookProblem
 	if errors.As(err, &hp) {
 		problem = hp.key
 	}
+	if tool == "antigravity" {
+		if agentStateWarned || !strings.EqualFold(event, "preinvocation") || !claimHookWarning(problem) {
+			return false
+		}
+		agentStateWarned = true
+		type sysMsg struct {
+			SystemMessage string            `json:"systemMessage"`
+			Metadata      map[string]string `json:"metadata,omitempty"`
+		}
+		type step struct {
+			SystemMessage sysMsg `json:"systemMessage"`
+		}
+		out, _ := json.Marshal(struct {
+			InjectSteps []step `json:"injectSteps"`
+		}{
+			InjectSteps: []step{{
+				SystemMessage: sysMsg{
+					SystemMessage: "",
+					Metadata: map[string]string{
+						"user_markdown": "wgo agent hook: could not record this session: " + err.Error(),
+					},
+				},
+			}},
+		})
+		fmt.Fprintf(agentWarnOut, "%s\n", out)
+		return true
+	}
 	if agentStateWarned || !hookWarningEvents[strings.ToLower(event)] || !claimHookWarning(problem) {
-		return
+		return false
 	}
 	agentStateWarned = true
 	out, _ := json.Marshal(struct {
 		SystemMessage string `json:"systemMessage"`
 	}{"wgo agent hook: could not record this session: " + err.Error()})
 	fmt.Fprintf(agentWarnOut, "%s\n", out)
+	return true
 }
 
 // claimHookWarning reports whether a warning about problem is due, and if so

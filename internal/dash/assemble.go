@@ -271,18 +271,19 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	// Agent sessions.
 	for _, o := range ls.sessions {
 		ai := &AgentInfo{
-			SessionID:     o.ID,
-			Tool:          o.Tool,
-			Status:        string(o.Status),
-			Liveness:      Liveness(o.Liveness),
-			Source:        string(o.Source),
-			Branch:        o.Branch,
-			ThemeID:       o.ThemeID,
-			Path:          o.WorktreePath,
-			WorkspaceID:   wsByCanonical[canonicalPath(o.WorktreePath)],
-			StartTime:     o.StartTime,
-			LastActivity:  o.LastActivity,
-			ConflictsWith: append([]string(nil), ls.conflicts[o.ID]...),
+			SessionID:         o.ID,
+			Tool:              o.Tool,
+			Status:            string(o.Status),
+			Liveness:          Liveness(o.Liveness),
+			Source:            string(o.Source),
+			Branch:            o.Branch,
+			ThemeID:           o.ThemeID,
+			Path:              o.WorktreePath,
+			MountedWorkspaces: append([]string(nil), o.MountedWorkspaces...),
+			WorkspaceID:       wsByCanonical[canonicalPath(o.WorktreePath)],
+			StartTime:         o.StartTime,
+			LastActivity:      o.LastActivity,
+			ConflictsWith:     append([]string(nil), ls.conflicts[o.ID]...),
 		}
 		sort.Strings(ai.ConflictsWith)
 		ai.Conflict = len(ai.ConflictsWith) > 0
@@ -292,7 +293,10 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		case ai.WorkspaceID != "":
 			ai.EffortID = b.nodes[ai.WorkspaceID].Workspace.EffortID
 		default:
-			ai.EffortID = effortNode(GroupUngrouped)
+			ai.EffortID = mountedEffortID(o.MountedWorkspaces, wsByCanonical, b.nodes)
+			if ai.EffortID == "" {
+				ai.EffortID = effortNode(GroupUngrouped)
+			}
 		}
 		id := agentNodeID(o.ID)
 		b.node(Node{ID: id, Kind: KindAgent, Label: o.Tool, Agent: ai})
@@ -750,6 +754,29 @@ func firstLine(s string) string {
 		s = s[:i]
 	}
 	return strings.TrimSpace(s)
+}
+
+// mountedEffortID returns the shared EffortID when every mounted workspace
+// resolves to a discovered workspace attributed to the same effort, or "" when
+// mounts are empty, unknown, or span more than one effort.
+func mountedEffortID(mounts []string, wsByCanonical map[string]string, nodes map[string]*Node) string {
+	common := ""
+	for _, m := range mounts {
+		wsID := wsByCanonical[canonicalPath(m)]
+		if wsID == "" {
+			return ""
+		}
+		n := nodes[wsID]
+		if n == nil || n.Workspace == nil || n.Workspace.EffortID == "" {
+			return ""
+		}
+		if common == "" {
+			common = n.Workspace.EffortID
+		} else if common != n.Workspace.EffortID {
+			return ""
+		}
+	}
+	return common
 }
 
 func dedupeStrings(in []string) []string {

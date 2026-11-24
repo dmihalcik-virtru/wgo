@@ -74,9 +74,9 @@ wgo agent status
 wgo .
 ```
 
-Codex reads `AGENTS.md` for project instructions. This repository has one;
-`wgo add` and `wgo join` currently generate a shared `CLAUDE.md` for multi-repo
-workspaces, but do not generate a corresponding `AGENTS.md`.
+Codex reads `AGENTS.md` for project instructions. This repository has one, and
+`wgo add`, `wgo join`, and `wgo rig` generate a shared `AGENTS.md` alongside
+`CLAUDE.md` for multi-repo workspaces and rigs.
 
 See the [Codex hooks documentation](https://developers.openai.com/codex/hooks)
 for hook loading, trust, event payloads, and supported environments, and the

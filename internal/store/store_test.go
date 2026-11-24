@@ -173,7 +173,7 @@ func TestLoadStateAcceptsCurrentVersion(t *testing.T) {
 
 // TestLoadStateMigratesV2: workspace-keyed version-2 agent sessions become
 // distinct ID-keyed sessions, other state survives, and the next save writes
-// version 3.
+// the current version.
 func TestLoadStateMigratesV2(t *testing.T) {
 	dir := t.TempDir()
 	s := NewWithDir(dir)
@@ -213,10 +213,25 @@ func TestLoadStateMigratesV2(t *testing.T) {
 	require.NoError(t, s.SaveState(state))
 	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	require.NoError(t, err)
-	assert.Contains(t, string(raw), `"version": 3`)
+	assert.Contains(t, string(raw), `"version": 4`)
 	reloaded, err := s.LoadState()
 	require.NoError(t, err)
 	assert.Equal(t, state.AgentSessions, reloaded.AgentSessions)
+}
+
+func TestLoadStateMigratesV3MountedWorkspaceSchema(t *testing.T) {
+	dir := t.TempDir()
+	s := NewWithDir(dir)
+	require.NoError(t, s.EnsureDir())
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"version":3,"agent_sessions":[{"id":"conv","tool":"antigravity","worktree_path":"/ws","branch":"feat"}]}`), 0o644))
+	state, err := s.LoadState()
+	require.NoError(t, err)
+	assert.Equal(t, StateVersion, state.Version)
+	assert.Equal(t, "feat", state.GetAgentSession("conv").Branch)
+	require.NoError(t, s.SaveState(state))
+	onDisk, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(onDisk), `"version": 4`)
 }
 
 // TestNewerStateIsReadOnly: state from a newer wgo still loads for reading,

@@ -141,3 +141,31 @@ func TestRenderTemplatePreservesRepoOrder(t *testing.T) {
 		t.Errorf("repos were reordered\n--- output ---\n%s", out)
 	}
 }
+
+func TestRenderAgentsTemplate(t *testing.T) {
+	got, err := RenderAgentsTemplate(TemplateData{
+		Ticket:   "DSPX-2674",
+		SpecPath: "platform/spec/DSPX-2674.md",
+		Repos: []RepoEntry{
+			{Dir: "platform", Label: "virtru/platform"},
+			{Dir: "cli", Label: "virtru/cli"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RenderAgentsTemplate: %v", err)
+	}
+	out := string(got)
+	if !strings.HasPrefix(out, AgentsMarker) {
+		t.Errorf("output does not start with AgentsMarker\n--- output ---\n%s", out)
+	}
+	for _, want := range []string{
+		"# DSPX-2674 — multi-repo workspace",
+		"[platform/spec/DSPX-2674.md](./platform/spec/DSPX-2674.md)",
+		"repo's own AGENTS.md",
+		"--no-agents-md",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+}

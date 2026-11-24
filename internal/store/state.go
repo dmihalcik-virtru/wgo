@@ -12,14 +12,16 @@ import (
 // StateVersion is the current schema version. Bumped to 2 for the jj
 // migration; older state files (Version <= 1) are refused on load. Bumped to 3
 // when agent sessions became keyed by session ID instead of workspace root;
-// version-2 files are migrated on load (see normalizeAgentSessions).
+// version-2 files are migrated on load (see normalizeAgentSessions). Version 4
+// adds mounted workspace paths and permits a session without an active root.
 //
 // Version 3 also writes agent_sessions as a JSON array rather than an object.
 // Version-2 binaries decode that field into a map, so they fail to parse a
 // version-3 file and never rewrite it: an older wgo on PATH (one run by a
 // hook, say) cannot strip the new session fields. Binaries from version 3 on
-// refuse newer files explicitly (see NewerStateError).
-const StateVersion = 3
+// refuse newer files explicitly (see NewerStateError), which also protects
+// version-4 mounted workspace paths from version-3 writers.
+const StateVersion = 4
 
 // State represents the persistent state for wgo.
 //

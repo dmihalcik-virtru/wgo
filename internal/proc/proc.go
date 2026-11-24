@@ -114,24 +114,30 @@ func FindAncestor(in Inspector, pid int, maxDepth int, match func(Info) bool) (i
 }
 
 // MatchesTool reports whether a process looks like the named agent tool. It
-// matches the process name first ("claude", "codex", "Cursor Helper"), then
-// the basename of argv[0], since a native Claude Code install runs an
-// executable named after its version (comm "2.1.285", argv[0] "claude").
-// For script runtimes such as node or bun it also checks the next arguments,
-// which is how an npm-installed CLI shows up.
+// matches the process name first ("claude", "codex", "Cursor Helper",
+// "Antigravity", "agy"), then the basename of argv[0], since a native Claude
+// Code install runs an executable named after its version (comm "2.1.285",
+// argv[0] "claude") and Antigravity runs a bundled "language_server" inside
+// Antigravity.app. For script runtimes such as node or bun it also checks the
+// next arguments, which is how an npm-installed CLI shows up.
 func MatchesTool(in Inspector, info Info, tool string) bool {
 	tool = strings.ToLower(strings.TrimSpace(tool))
 	if tool == "" {
 		return false
 	}
-	if nameMatches(info.Name, tool) {
+	if nameMatches(info.Name, tool) || (tool == "antigravity" && nameMatches(info.Name, "agy")) {
 		return true
 	}
 	args, err := in.Args(info.PID)
 	if err != nil || len(args) == 0 {
 		return false
 	}
-	if nameMatches(filepath.Base(args[0]), tool) {
+	base := filepath.Base(args[0])
+	if nameMatches(base, tool) || (tool == "antigravity" && nameMatches(base, "agy")) {
+		return true
+	}
+	if tool == "antigravity" && strings.HasPrefix(strings.ToLower(info.Name), "language_server") &&
+		strings.Contains(strings.ToLower(args[0]), "antigravity") {
 		return true
 	}
 	switch strings.ToLower(info.Name) {
@@ -140,7 +146,7 @@ func MatchesTool(in Inspector, info Info, tool string) bool {
 		return false
 	}
 	for _, a := range args[1:min(len(args), 3)] {
-		if nameMatches(filepath.Base(a), tool) {
+		if nameMatches(filepath.Base(a), tool) || (tool == "antigravity" && nameMatches(filepath.Base(a), "agy")) {
 			return true
 		}
 		// npm installs a shim whose target lives under the package name, e.g.

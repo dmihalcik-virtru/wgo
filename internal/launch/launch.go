@@ -248,7 +248,7 @@ const (
 
 func flavorOf(exe string) editorFlavor {
 	switch strings.TrimSuffix(strings.ToLower(filepath.Base(exe)), ".exe") {
-	case "code", "code-insiders", "cursor", "windsurf", "codium", "vscodium":
+	case "code", "code-insiders", "cursor", "windsurf", "codium", "vscodium", "antigravity", "agy":
 		return flavorVSCode
 	case "xed":
 		return flavorXed

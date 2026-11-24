@@ -37,18 +37,20 @@ const codexHookRemoveLockTimeout = 2 * time.Second
 var agentHookCmd = &cobra.Command{
 	Use:   "hook [event]",
 	Short: "Update agent sessions from an agent hook JSON event on stdin",
-	Long: `Update agent sessions from a Claude Code or Codex hook.
+	Long: `Update agent sessions from a Claude Code, Codex, or Antigravity hook.
 
-The agent passes hook data as JSON on stdin; wgo reads session_id, cwd and
-hook_event_name from it, plus tool_name and the file path in tool_input for
-file edits, and ignores everything else. Hook data is never placed
+The agent passes hook data as JSON on stdin; wgo reads session_id (or
+Antigravity's conversationId), cwd (falling back to workspacePaths) and
+hook_event_name (or hookEventName) from it, plus tool_name/tool_input or
+toolCall for file edits, and ignores everything else. Hook data is never placed
 on a command line or passed to a shell. The event argument overrides
-hook_event_name when given. Pass --tool codex for Codex hooks.
+hook_event_name when given. Pass --tool codex for Codex hooks or
+--tool antigravity for Antigravity hooks.
 
   SessionStart, Stop, Notification,
   Interrupt                             the session is waiting for input
-  UserPromptSubmit, PreToolUse,
-  PostToolUse, SubagentStop             the session is working
+  UserPromptSubmit, PreInvocation,
+  PreToolUse, PostToolUse, SubagentStop the session is working
   SessionEnd                            the session is removed
   any other event                       refreshes the session's activity
 
@@ -67,14 +69,17 @@ WGO_DEBUG=1).
 A state file wgo cannot read or write (for example one written by a newer
 wgo), or a workspace jj fails on (for example because jj is not on the hook's
 PATH), is reported as a JSON systemMessage on stdout on PostToolUse and
-UserPromptSubmit, at most once an hour for the same problem across all
-sessions. Otherwise the command prints nothing on stdout. Either way it exits
-0, so it never disrupts the agent.
+UserPromptSubmit (or injectSteps on Antigravity PreInvocation), at most once an
+hour for the same problem across all sessions. For Claude Code and Codex the
+command otherwise prints nothing on stdout; for Antigravity it prints the JSON
+response object the hook contract requires ({} or {"decision":"allow"}). Either
+way it exits 0, so it never disrupts the agent.
 
 The jj lookups (run with --ignore-working-copy, so they never snapshot)
 share a 2s budget, and the wait for the state file's lock is also 2s (8s for
 Claude Code SessionEnd, 2s for Codex SessionEnd, which are never retried).
-See contrib/claude-code-hooks.md and contrib/codex-hooks.md.`,
+See contrib/claude-code-hooks.md, contrib/codex-hooks.md, and
+contrib/antigravity-hooks.md.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		event := ""
@@ -90,16 +95,37 @@ func init() {
 	agentHookCmd.Flags().StringVar(&agentHookTool, "tool", "claude", "agent tool sending the hook")
 }
 
-// hookPayload is the subset of Claude Code and Codex hook JSON that wgo uses.
-// Unknown fields (tool_response, ...) are ignored.
+// hookPayload is the subset of Claude Code, Codex, and Antigravity hook JSON
+// that wgo uses. Antigravity encodes hook payloads as camelCase protojson
+// (conversationId, hookEventName, workspacePaths, toolCall). Unknown fields
+// (tool_response, ...) are ignored.
 type hookPayload struct {
-	SessionID     string `json:"session_id"`
-	HookEventName string `json:"hook_event_name"`
-	Cwd           string `json:"cwd"`
-	ToolName      string `json:"tool_name"`
-	// ToolInput is decoded only for the file tools (see editedPath), and
-	// leniently: a shape wgo does not expect must not fail the hook.
+	SessionID          string   `json:"session_id"`
+	ConversationID     string   `json:"conversationId"`
+	HookEventName      string   `json:"hook_event_name"`
+	HookEventNameCamel string   `json:"hookEventName"`
+	Cwd                string   `json:"cwd"`
+	WorkspacePaths     []string `json:"workspacePaths"`
+	ToolName           string   `json:"tool_name"`
+	// ToolInput and ToolCall are decoded only for the file tools (see
+	// editedPath), and leniently: a shape wgo does not expect must not fail
+	// the hook.
 	ToolInput json.RawMessage `json:"tool_input"`
+	ToolCall  json.RawMessage `json:"toolCall"`
+}
+
+func (p hookPayload) sessionID() string {
+	if p.SessionID != "" {
+		return p.SessionID
+	}
+	return p.ConversationID
+}
+
+func (p hookPayload) eventName() string {
+	if p.HookEventName != "" {
+		return p.HookEventName
+	}
+	return p.HookEventNameCamel
 }
 
 // fileEditTools are the Claude Code tools whose tool_input names the file
@@ -107,28 +133,121 @@ type hookPayload struct {
 // working in it.
 var fileEditTools = map[string]bool{"Edit": true, "MultiEdit": true, "Write": true, "NotebookEdit": true}
 
+// antigravityFileEditTools are the Antigravity tools whose toolCall.args.TargetFile
+// names the file they changed. The older edit_file/write_file names use Path.
+var antigravityFileEditTools = map[string]bool{
+	"write_to_file": true, "replace_file_content": true, "multi_replace_file_content": true,
+	"edit_file": true, "write_file": true,
+}
+
 // editedPath returns the absolute path a file tool changed, or "". It is only
 // ever compared with and stat'ed under the session's folder (see
 // editedWorkspace), never run or passed to jj.
 func (p hookPayload) editedPath() string {
-	if !fileEditTools[p.ToolName] || len(p.ToolInput) == 0 {
-		return ""
+	var path string
+	if fileEditTools[p.ToolName] && len(p.ToolInput) > 0 {
+		var in struct {
+			FilePath     string `json:"file_path"`
+			NotebookPath string `json:"notebook_path"`
+		}
+		if json.Unmarshal(p.ToolInput, &in) == nil {
+			path = in.FilePath
+			if path == "" {
+				path = in.NotebookPath
+			}
+		}
 	}
-	var in struct {
-		FilePath     string `json:"file_path"`
-		NotebookPath string `json:"notebook_path"`
-	}
-	if json.Unmarshal(p.ToolInput, &in) != nil {
-		return ""
-	}
-	path := in.FilePath
-	if path == "" {
-		path = in.NotebookPath
+	if path == "" && len(p.ToolCall) > 0 {
+		var tc struct {
+			Name string `json:"name"`
+			Args struct {
+				TargetFile string `json:"TargetFile"`
+				Path       string `json:"Path"`
+			} `json:"args"`
+		}
+		if json.Unmarshal(p.ToolCall, &tc) == nil && antigravityFileEditTools[tc.Name] {
+			path = tc.Args.TargetFile
+			if path == "" {
+				path = tc.Args.Path
+			}
+		}
 	}
 	if !filepath.IsAbs(path) {
 		return ""
 	}
 	return filepath.Clean(path)
+}
+
+// activityDir is the directory a completed Antigravity tool worked in. Reads
+// do not change the session's focus; a command's own Cwd is stronger evidence
+// than the hook runner's cwd.
+func (p hookPayload) activityDir() string {
+	if path := p.editedPath(); path != "" {
+		return filepath.Dir(path)
+	}
+	var tc struct {
+		Name string `json:"name"`
+		Args struct {
+			Cwd string `json:"Cwd"`
+		} `json:"args"`
+	}
+	if json.Unmarshal(p.ToolCall, &tc) == nil && tc.Name == "run_command" && filepath.IsAbs(tc.Args.Cwd) {
+		return filepath.Clean(tc.Args.Cwd)
+	}
+	return ""
+}
+
+// mountedWorkspaceRoots finds mounted jj roots without spawning jj for every
+// mount. A hook may list several roots, so resolving all of them with jj could
+// exceed the hook runner's timeout before we record anything.
+func mountedWorkspaceRoots(paths []string) []string {
+	roots := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+	for _, path := range paths {
+		if !filepath.IsAbs(path) {
+			continue
+		}
+		path = filepath.Clean(path)
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			path = resolved
+		}
+		root := ""
+		for dir := path; ; dir = filepath.Dir(dir) {
+			if info, err := os.Stat(filepath.Join(dir, ".jj")); err == nil && info.IsDir() {
+				root = dir
+				break
+			}
+			if dir == filepath.Dir(dir) {
+				break
+			}
+		}
+		if root == "" && len(groupWorkspaces(path)) > 0 {
+			root = path
+		}
+		if root != "" && !seen[root] {
+			seen[root] = true
+			roots = append(roots, root)
+		}
+	}
+	return roots
+}
+
+func activityMount(roots []string, dir string) string {
+	if !filepath.IsAbs(dir) {
+		return ""
+	}
+	dir = filepath.Clean(dir)
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	best := ""
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, dir)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && len(root) > len(best) {
+			best = root
+		}
+	}
+	return best
 }
 
 // editedWorkspace returns the workspace under root that path lies in, when
@@ -170,7 +289,7 @@ func hookActionFor(event string) hookAction {
 		return hookAction{status: store.AgentWaiting, refresh: true}
 	case "notification", "interrupt":
 		return hookAction{status: store.AgentWaiting}
-	case "userpromptsubmit":
+	case "userpromptsubmit", "preinvocation":
 		return hookAction{status: store.AgentWorking, refresh: true}
 	case "pretooluse", "posttooluse", "subagentstop":
 		return hookAction{status: store.AgentWorking}
@@ -193,8 +312,9 @@ func runAgentHook(r io.Reader, event, tool string) error {
 	if err := json.NewDecoder(r).Decode(&p); err != nil {
 		return fmt.Errorf("agent hook: stdin is not hook JSON: %w", err)
 	}
+	p.SessionID = p.sessionID()
 	if event == "" {
-		event = p.HookEventName
+		event = p.eventName()
 	}
 	if event == "" {
 		return fmt.Errorf("agent hook: no event: pass one (wgo agent hook PostToolUse) or include hook_event_name")
@@ -211,13 +331,124 @@ func runAgentHook(r io.Reader, event, tool string) error {
 		debugf("agent hook: unrecognized event %q; treating it as activity", event)
 	}
 	err := applyHook(p, act, tool)
+	wroteStdout := false
 	switch {
 	case errors.Is(err, errHookSkipped):
 		debugf("agent hook %s: %v", event, err)
 	case err != nil:
-		warnAgentState(event, err)
+		wroteStdout = warnAgentStateForTool(tool, event, err)
+	}
+	if tool == "antigravity" && !wroteStdout {
+		writeAntigravityHookResult(event)
 	}
 	return nil
+}
+
+// writeAntigravityHookResult writes the single JSON object Antigravity expects
+// on stdout for every hook invocation. Stop and PreToolUse require a "decision"
+// field ("allow" lets Stop finish the turn and PreToolUse proceed); all other
+// events accept an empty object.
+func writeAntigravityHookResult(event string) {
+	switch strings.ToLower(event) {
+	case "stop", "pretooluse":
+		fmt.Fprintln(agentWarnOut, `{"decision":"allow"}`)
+	default:
+		fmt.Fprintln(agentWarnOut, `{}`)
+	}
+}
+
+// resolveHookWorkspace resolves p.Cwd to a jj workspace, falling back to
+// p.WorkspacePaths when Cwd is empty or lies outside any jj workspace (for
+// example when Antigravity runs in its scratch directory while a jj workspace
+// is attached to the conversation).
+func resolveHookWorkspace(p hookPayload) (ws workspaceInfo, dir string, err error) {
+	dir = p.Cwd
+	if dir == "" && len(p.WorkspacePaths) > 0 {
+		dir = p.WorkspacePaths[0]
+	}
+	if dir == "" {
+		if dir, err = resolveCwd(); err != nil {
+			return workspaceInfo{}, "", err
+		}
+	}
+	ws, err = lookupWorkspace(dir)
+	if errors.Is(err, errNotJJRepo) {
+		for _, wp := range p.WorkspacePaths {
+			if wp == "" || wp == dir {
+				continue
+			}
+			if altWS, altErr := lookupWorkspace(wp); !errors.Is(altErr, errNotJJRepo) {
+				return altWS, wp, altErr
+			}
+		}
+	}
+	return ws, dir, err
+}
+
+// resolveAntigravityWorkspace resolves an Antigravity conversation's active
+// workspace across 0, 1, or 2+ mounted jj workspaces:
+//   - 2+ mounts: stays unassigned (unassigned == true) until activityDir or a
+//     cwd inside one of the mounts selects a workspace; retains a previous
+//     WorktreePath only while it remains among mounts.
+//   - 1 mount: prefers activityDir or a cwd inside that mount (ignoring an
+//     unrelated hook-runner cwd), otherwise resolves the single mount itself.
+//   - 0 mounts: prefers activityDir (so file edits or commands in a jj
+//     workspace track workspace-less conversations), then p.Cwd, then an
+//     existing WorktreePath on refresh events, before falling back to the
+//     process cwd.
+func resolveAntigravityWorkspace(p hookPayload, existing *store.AgentSession, mounts []string) (ws workspaceInfo, dir string, unassigned bool, err error) {
+	actDir := p.activityDir()
+	switch len(mounts) {
+	case 0:
+		if actDir != "" {
+			if ws, err = lookupWorkspace(actDir); !errors.Is(err, errNotJJRepo) {
+				return ws, actDir, false, err
+			}
+		}
+		if p.Cwd != "" {
+			ws, err = lookupWorkspace(p.Cwd)
+			if !errors.Is(err, errNotJJRepo) {
+				return ws, p.Cwd, false, err
+			}
+		}
+		if existing != nil && existing.WorktreePath != "" {
+			ws, err = lookupWorkspace(existing.WorktreePath)
+			return ws, existing.WorktreePath, false, err
+		}
+		ws, dir, err = resolveHookWorkspace(p)
+		return ws, dir, false, err
+
+	case 1:
+		if actDir != "" && activityMount(mounts, actDir) != "" {
+			ws, err = lookupWorkspace(actDir)
+			return ws, actDir, false, err
+		}
+		if p.Cwd != "" && activityMount(mounts, p.Cwd) != "" {
+			ws, err = lookupWorkspace(p.Cwd)
+			if !errors.Is(err, errNotJJRepo) {
+				return ws, p.Cwd, false, err
+			}
+		}
+		ws, err = lookupWorkspace(mounts[0])
+		return ws, mounts[0], false, err
+
+	default:
+		if actDir != "" && activityMount(mounts, actDir) != "" {
+			ws, err = lookupWorkspace(actDir)
+			return ws, actDir, false, err
+		}
+		if p.Cwd != "" && activityMount(mounts, p.Cwd) != "" {
+			ws, err = lookupWorkspace(p.Cwd)
+			if !errors.Is(err, errNotJJRepo) {
+				return ws, p.Cwd, false, err
+			}
+		}
+		if existing != nil && existing.WorktreePath != "" && activityMount(mounts, existing.WorktreePath) != "" {
+			ws, err = lookupWorkspace(existing.WorktreePath)
+			return ws, existing.WorktreePath, false, err
+		}
+		return workspaceInfo{}, "", true, nil
+	}
 }
 
 func applyHook(p hookPayload, act hookAction, tool string) error {
@@ -244,6 +475,28 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 	}
 	existing := snapshot.GetAgentSession(p.SessionID)
 	edited := p.editedPath()
+	var mounts []string
+	if tool == "antigravity" {
+		mounts = mountedWorkspaceRoots(p.WorkspacePaths)
+	}
+	actDir := p.activityDir()
+	movedRoot := ""
+	switch {
+	case tool != "antigravity" || actDir == "":
+	case len(mounts) > 1:
+		movedRoot = activityMount(mounts, actDir)
+	case len(mounts) == 0:
+		if roots := mountedWorkspaceRoots([]string{actDir}); len(roots) == 1 {
+			movedRoot = roots[0]
+		}
+	}
+	locationChanged := movedRoot != "" &&
+		(existing == nil ||
+			(len(mounts) > 1 && activityMount(mounts, existing.WorktreePath) != movedRoot) ||
+			(len(mounts) == 0 && existing.WorktreePath != movedRoot))
+	unmountedFocus := tool == "antigravity" && len(mounts) > 1 &&
+		existing != nil && existing.WorktreePath != "" &&
+		activityMount(mounts, existing.WorktreePath) == "" && movedRoot == ""
 	// focus is a workspace this event edited in, when it is not the one the
 	// session already records.
 	focus := ""
@@ -252,21 +505,21 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			focus = f
 		}
 	}
-	if existing != nil && !act.refresh && focus == "" &&
+	if existing != nil && !act.refresh && !locationChanged && !unmountedFocus && focus == "" &&
 		(act.status == "" || act.status == existing.Status) &&
 		agentNow().Sub(existing.LastActivity) < heartbeatThrottle {
 		return nil
 	}
 
 	var ws workspaceInfo
-	if existing == nil || act.refresh {
-		dir := p.Cwd
-		if dir == "" {
-			if dir, err = resolveCwd(); err != nil {
-				return err
-			}
+	unassigned := false
+	if existing == nil || act.refresh || locationChanged || unmountedFocus {
+		var dir string
+		if tool == "antigravity" {
+			ws, dir, unassigned, err = resolveAntigravityWorkspace(p, existing, mounts)
+		} else {
+			ws, dir, err = resolveHookWorkspace(p)
 		}
-		ws, err = lookupWorkspace(dir)
 		switch {
 		case err == nil:
 		case existing != nil:
@@ -335,10 +588,10 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		}
 		sess := store.AgentSession{
 			ID: p.SessionID, Tool: tool, Source: store.SourceHook, Status: act.status,
-			WorktreePath: ws.Root, RepoPath: ws.Repo, Branch: ws.Branch,
+			WorktreePath: ws.Root, MountedWorkspaces: mounts, RepoPath: ws.Repo, Branch: ws.Branch,
 			PID: pid, ProcStart: start,
 		}
-		if sess.WorktreePath == "" && cur != nil {
+		if !unassigned && sess.WorktreePath == "" && cur != nil {
 			sess.WorktreePath = cur.WorktreePath
 		}
 		if focusWS.Root != "" {
@@ -350,6 +603,10 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		saved, err := state.UpsertAgentSession(sess, now)
 		if err != nil {
 			return false, err
+		}
+		if unassigned {
+			state.ClearAgentWorkspace(saved.ID)
+			saved.WorktreePath, saved.RepoPath, saved.Branch, saved.Focus = "", "", "", ""
 		}
 		if ws.Root != "" && ws.BranchKnown {
 			// A fresh lookup is authoritative, including "no bookmark", which

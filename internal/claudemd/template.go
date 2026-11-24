@@ -24,6 +24,10 @@ var defaultTemplate string
 // apart from a hand-written CLAUDE.md they must not overwrite.
 const Marker = "<!-- wgo:generated-claude-md -->"
 
+// AgentsMarker identifies an AGENTS.md (read by Antigravity and Codex) that
+// this package generated, serving the same overwrite-guard role as Marker.
+const AgentsMarker = "<!-- wgo:generated-agents-md -->"
+
 // RepoEntry describes one repo checkout under the shared workspace root.
 type RepoEntry struct {
 	Dir string // subdirectory name under the shared root
@@ -64,4 +68,17 @@ func RenderTemplate(d TemplateData) ([]byte, error) {
 	}
 
 	return []byte(buf.String()), nil
+}
+
+// RenderAgentsTemplate renders d into the markdown body of a shared AGENTS.md
+// (used by Antigravity and Codex). The result always begins with AgentsMarker.
+func RenderAgentsTemplate(d TemplateData) ([]byte, error) {
+	raw, err := RenderTemplate(d)
+	if err != nil {
+		return nil, err
+	}
+	s := strings.Replace(string(raw), Marker, AgentsMarker, 1)
+	s = strings.Replace(s, "in a repo's own CLAUDE.md", "in a repo's own AGENTS.md", 1)
+	s = strings.Replace(s, "`--no-claude-md`", "`--no-agents-md`", 1)
+	return []byte(s), nil
 }

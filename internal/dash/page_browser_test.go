@@ -125,6 +125,40 @@ func TestLivePageInBrowser(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if os.Getenv("WGO_SHOT_SET") == "agent-mounts" {
+			// Show an Antigravity conversation before any mounted workspace
+			// has supplied a focused file or command directory.
+			const oldAgentID = "agent:claude-a1b2c3d4e5f6"
+			const agentID = "agent:antigravity-a1b2c3d4e5f6"
+			for i := range shotView.Snapshot.Nodes {
+				n := &shotView.Snapshot.Nodes[i]
+				if n.Agent == nil {
+					continue
+				}
+				n.ID = agentID
+				n.Label = "antigravity"
+				n.Agent.SessionID = "antigravity-a1b2c3d4e5f6"
+				n.Agent.Tool = "antigravity"
+				n.Agent.Branch = ""
+				n.Agent.Path = ""
+				n.Agent.WorkspaceID = ""
+				n.Agent.MountedWorkspaces = []string{"/src/worktrees/api/TEAM-101-token-refresh", "/src/worktrees/web/TEAM-101-token-refresh"}
+			}
+			shotView.Snapshot.Edges = slices.DeleteFunc(shotView.Snapshot.Edges, func(e Edge) bool { return e.Kind == "works_in" && e.Source == oldAgentID })
+			for i := range shotView.Snapshot.Edges {
+				e := &shotView.Snapshot.Edges[i]
+				if e.Source == oldAgentID {
+					e.Source = agentID
+				}
+				if e.Target == oldAgentID {
+					e.Target = agentID
+				}
+			}
+			shotView, err = newView(shotView.Snapshot, computeDelta(nil, shotView.Snapshot), false, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 		shotServer := newServerOpts(t, HandlerOptions{Source: StaticSource{V: shotView}})
 		args = append(args, "--shots="+dir, "--shots-data="+shotServer.URL+"/")
 	}

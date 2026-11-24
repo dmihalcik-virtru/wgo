@@ -2165,7 +2165,9 @@
         kv(detailBox, "Tool", a.tool); kv(detailBox, "Status", a.status || "unknown"); kv(detailBox, "Liveness", L.livenessText(a.liveness));
         kv(detailBox, "Bookmark", a.branch || "none recorded"); kv(detailBox, "Started", a.start_time ? fmtTime(a.start_time) + " (" + L.relTime(a.start_time, now) + ")" : "unknown");
         kv(detailBox, "Last activity", a.last_activity ? fmtTime(a.last_activity) + " (" + L.relTime(a.last_activity, now) + ")" : "unknown");
-        kv(detailBox, "Session", a.session_id); kv(detailBox, "Source", a.source); kv(detailBox, "Path", a.path); kv(detailBox, "Theme", a.theme_id);
+        kv(detailBox, "Session", a.session_id); kv(detailBox, "Source", a.source);
+        kv(detailBox, "Path", a.path || ((a.mounted_workspaces || []).length > 1 ? "multiple mounted workspaces" : ""));
+        kv(detailBox, "Mounted workspaces", (a.mounted_workspaces || []).join(", ")); kv(detailBox, "Theme", a.theme_id);
         if (a.conflict) {
           el("div", "conflict", "Another active session works on the same bookmark:", detailBox);
           var cul = el("ul", null, null, detailBox);

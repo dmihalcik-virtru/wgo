@@ -91,6 +91,7 @@ func TestStatuslineGroupRig(t *testing.T) {
 func TestStatuslineInGroupFolder(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDECODE", "")
+	t.Setenv("ANTIGRAVITY_AGENT", "")
 	origRepo, origNoColor := repoFlag, statuslineNoColor
 	t.Cleanup(func() { repoFlag, statuslineNoColor = origRepo, origNoColor })
 	statuslineNoColor = true
@@ -172,6 +173,26 @@ func TestHookPayloadEditedPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var p hookPayload
 			raw := fmt.Sprintf(`{"session_id":"s","tool_name":%q,"tool_input":%s}`, tc.tool, tc.input)
+			require.NoError(t, json.Unmarshal([]byte(raw), &p))
+			assert.Equal(t, tc.want, p.editedPath())
+		})
+	}
+
+	for _, tc := range []struct {
+		name, call, want string
+	}{
+		{"antigravity write_to_file", `{"name":"write_to_file","args":{"TargetFile":"/w/api/new.go"}}`, "/w/api/new.go"},
+		{"antigravity replace_file_content", `{"name":"replace_file_content","args":{"TargetFile":"/w/api/x.go"}}`, "/w/api/x.go"},
+		{"antigravity multi_replace_file_content", `{"name":"multi_replace_file_content","args":{"TargetFile":"/w/web/y.go"}}`, "/w/web/y.go"},
+		{"antigravity edit_file", `{"name":"edit_file","args":{"Path":"/w/api/x.go"}}`, "/w/api/x.go"},
+		{"antigravity write_file", `{"name":"write_file","args":{"Path":"/w/api/../web/y.go"}}`, "/w/web/y.go"},
+		{"antigravity read_file ignored", `{"name":"read_file","args":{"Path":"/w/api/x.go"}}`, ""},
+		{"antigravity relative path", `{"name":"edit_file","args":{"Path":"api/x.go"}}`, ""},
+		{"antigravity unexpected shape", `"x.go"`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var p hookPayload
+			raw := fmt.Sprintf(`{"conversationId":"s","toolCall":%s}`, tc.call)
 			require.NoError(t, json.Unmarshal([]byte(raw), &p))
 			assert.Equal(t, tc.want, p.editedPath())
 		})
