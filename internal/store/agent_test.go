@@ -88,9 +88,24 @@ func TestAgentSessionCanWaitForMultiWorkspaceFocus(t *testing.T) {
 	assert.Empty(t, AgentConflicts(s.ObserveAgentSessions(t0, policy(nil)))["conv"])
 
 	focused := mustUpsert(t, s, AgentSession{
-		ID: "conv", Tool: "antigravity", WorktreePath: "/web", Branch: "feature", Source: SourceHook,
+		ID: "conv", Tool: "antigravity", WorktreePath: "/web", RepoPath: "/mains/web", Branch: "feature", Source: SourceHook,
 	}, t0.Add(time.Second))
 	assert.Equal(t, []string{"/api", "/web"}, focused.MountedWorkspaces, "later events keep the mount list")
+
+	assert.True(t, s.ClearAgentWorkspace("conv"))
+	cleared := s.GetAgentSession("conv")
+	require.NotNil(t, cleared)
+	assert.Empty(t, cleared.WorktreePath)
+	assert.Empty(t, cleared.RepoPath)
+	assert.Empty(t, cleared.Branch)
+	assert.Equal(t, []string{"/api", "/web"}, cleared.MountedWorkspaces)
+
+	// Explicitly passing an empty non-nil mount list clears stored mounts once
+	// the session has an active workspace.
+	unmounted := mustUpsert(t, s, AgentSession{
+		ID: "conv", Tool: "antigravity", WorktreePath: "/solo", MountedWorkspaces: []string{}, Source: SourceHook,
+	}, t0.Add(2*time.Second))
+	assert.Nil(t, unmounted.MountedWorkspaces)
 }
 
 // TestTwoSessionsOneWorkspace: two sessions share a workspace and are

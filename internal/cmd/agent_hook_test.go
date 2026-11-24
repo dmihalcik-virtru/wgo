@@ -261,6 +261,70 @@ func TestAgentHookAntigravityMultipleMountedWorkspaces(t *testing.T) {
 
 	send("Stop", webFirst, `{}`)
 	assert.Equal(t, "api-feature", loadState(t).GetAgentSession(convID).Branch)
+
+	// Unmounting the previously focused workspace (api) while keeping 2+ mounts
+	// clears WorktreePath, RepoPath and Branch instead of leaving stale conflict
+	// state pointing at api.
+	cli := filepath.Join(root, "cli")
+	require.NoError(t, os.MkdirAll(filepath.Join(cli, ".jj"), 0o755))
+	e.workspaces[cli] = workspaceInfo{Root: cli, Repo: cli, Branch: "cli-feature", BranchKnown: true}
+	webAndCLI := fmt.Sprintf(`[%q,%q]`, web, cli)
+	send("PreInvocation", webAndCLI, `{}`)
+	sess = loadState(t).GetAgentSession(convID)
+	require.NotNil(t, sess)
+	assert.Empty(t, sess.WorktreePath)
+	assert.Empty(t, sess.RepoPath)
+	assert.Empty(t, sess.Branch)
+	assert.Equal(t, []string{web, cli}, sess.MountedWorkspaces)
+}
+
+func TestAgentHookAntigravityZeroAndSingleMountContainment(t *testing.T) {
+	e := newAgentEnv(t)
+	e.procs[fakeClaudePID] = proc.Info{PID: fakeClaudePID, PPID: 1, Name: "Antigravity Helper", Start: fakeClaudeTok}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	api, web := filepath.Join(root, "api"), filepath.Join(root, "web")
+	require.NoError(t, os.MkdirAll(filepath.Join(api, ".jj"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(web, ".jj"), 0o755))
+	e.workspaces[api] = workspaceInfo{Root: api, Repo: api, Branch: "api-feature", BranchKnown: true}
+	e.workspaces[web] = workspaceInfo{Root: web, Repo: web, Branch: "web-feature", BranchKnown: true}
+
+	// 1 mount: an unrelated hook-runner cwd (/ws) must not override mounts[0] (api).
+	singleMount := fmt.Sprintf(`{"conversationId":"single-mount","cwd":"/ws","workspacePaths":[%q]}`, api)
+	require.NoError(t, runAgentHook(strings.NewReader(singleMount), "SessionStart", "antigravity"))
+	sess := loadState(t).GetAgentSession("single-mount")
+	require.NotNil(t, sess)
+	assert.Equal(t, api, sess.WorktreePath)
+	assert.Equal(t, "api-feature", sess.Branch)
+
+	// 0 mounts (scratch cwd): file edits inside jj workspaces still track and
+	// switch workspaces, and a subsequent Stop in /scratch preserves it.
+	const unmountedID = "unmounted-conv"
+	editAPI := fmt.Sprintf(`{"conversationId":%q,"cwd":"/scratch","workspacePaths":[],"toolCall":{"name":"edit_file","args":{"Path":%q}}}`,
+		unmountedID, filepath.Join(api, "main.go"))
+	require.NoError(t, runAgentHook(strings.NewReader(editAPI), "PostToolUse", "antigravity"))
+	sess = loadState(t).GetAgentSession(unmountedID)
+	require.NotNil(t, sess)
+	assert.Equal(t, api, sess.WorktreePath)
+	assert.Equal(t, "api-feature", sess.Branch)
+
+	e.advance(time.Second)
+	editWeb := fmt.Sprintf(`{"conversationId":%q,"cwd":"/scratch","workspacePaths":[],"toolCall":{"name":"write_file","args":{"Path":%q}}}`,
+		unmountedID, filepath.Join(web, "index.ts"))
+	require.NoError(t, runAgentHook(strings.NewReader(editWeb), "PostToolUse", "antigravity"))
+	sess = loadState(t).GetAgentSession(unmountedID)
+	require.NotNil(t, sess)
+	assert.Equal(t, web, sess.WorktreePath)
+	assert.Equal(t, "web-feature", sess.Branch)
+
+	e.advance(time.Second)
+	stopScratch := fmt.Sprintf(`{"conversationId":%q,"cwd":"/scratch","workspacePaths":[]}`, unmountedID)
+	require.NoError(t, runAgentHook(strings.NewReader(stopScratch), "Stop", "antigravity"))
+	sess = loadState(t).GetAgentSession(unmountedID)
+	require.NotNil(t, sess)
+	assert.Equal(t, store.AgentWaiting, sess.Status)
+	assert.Equal(t, web, sess.WorktreePath)
+	assert.Equal(t, "web-feature", sess.Branch)
 }
 
 func TestAgentHookAntigravityQuietConversationExpires(t *testing.T) {

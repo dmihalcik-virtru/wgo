@@ -68,13 +68,16 @@ a small script that prepends `$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin` to
 | `Stop` | `waiting` (refreshes workspace & bookmark) | `{"decision":"allow"}` |
 
 - **CamelCase payloads on stdin.** Antigravity sends `conversationId`,
-  `workspacePaths`, and `toolCall` (`name` and `args.TargetFile` for
-  `write_to_file`, `replace_file_content`, and `multi_replace_file_content`).
-  The hook event is supplied by the configured command. When `cwd` is outside a `jj`
-  workspace (such as Antigravity's default scratch folder), `wgo` uses
-  `workspacePaths`. If several workspaces are mounted, a `TargetFile` or a
-  `run_command` `Cwd` selects the active workspace; until then, no bookmark is
-  claimed for the conversation.
+  `hookEventName` (overridden when an event name is passed on the command line),
+  `cwd`, `workspacePaths`, and `toolCall` (`args.Path` for `edit_file` and
+  `write_file` in Antigravity App, `args.TargetFile` for `write_to_file`,
+  `replace_file_content`, and `multi_replace_file_content` in Antigravity IDE,
+  and `args.Cwd` when `run_command` carries one). With one mounted `jj`
+  workspace, `wgo` scopes the conversation to that workspace; with several
+  mounted workspaces, a file edit or command `Cwd` inside a mount selects the
+  active workspace (and unmounting it clears that focus) while keeping no
+  bookmark claimed beforehand; with no mounted workspaces, file edits or
+  commands inside a `jj` workspace still record and update the conversation.
 - **Process liveness.** `wgo` walks up the parent process tree to match
   `Antigravity`, `agy`, or Antigravity's bundled `language_server` binary, and
   records its PID and start-time token. An exited process removes its sessions.

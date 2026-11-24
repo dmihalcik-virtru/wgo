@@ -196,6 +196,8 @@ func (s *State) UpsertAgentSession(sess AgentSession, now time.Time) (AgentSessi
 	if existing, ok := s.AgentSessions[sess.ID]; ok {
 		if sess.MountedWorkspaces == nil {
 			sess.MountedWorkspaces = existing.MountedWorkspaces
+		} else if len(sess.MountedWorkspaces) == 0 {
+			sess.MountedWorkspaces = nil
 		}
 		if !existing.StartTime.IsZero() {
 			sess.StartTime = existing.StartTime
@@ -271,6 +273,20 @@ func (s *State) ClearAgentFocus(id string) bool {
 		return false
 	}
 	sess.Focus = ""
+	s.AgentSessions[id] = sess
+	return true
+}
+
+// ClearAgentWorkspace clears a session's active workspace, repository, bookmark
+// and focus (for example when a focused workspace is unmounted from a
+// multi-mount conversation), which UpsertAgentSession's merge cannot express.
+// It reports whether the session exists.
+func (s *State) ClearAgentWorkspace(id string) bool {
+	sess, ok := s.AgentSessions[id]
+	if !ok {
+		return false
+	}
+	sess.WorktreePath, sess.RepoPath, sess.Branch, sess.Focus = "", "", "", ""
 	s.AgentSessions[id] = sess
 	return true
 }

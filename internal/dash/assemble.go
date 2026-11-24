@@ -293,7 +293,10 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 		case ai.WorkspaceID != "":
 			ai.EffortID = b.nodes[ai.WorkspaceID].Workspace.EffortID
 		default:
-			ai.EffortID = effortNode(GroupUngrouped)
+			ai.EffortID = mountedEffortID(o.MountedWorkspaces, wsByCanonical, b.nodes)
+			if ai.EffortID == "" {
+				ai.EffortID = effortNode(GroupUngrouped)
+			}
 		}
 		id := agentNodeID(o.ID)
 		b.node(Node{ID: id, Kind: KindAgent, Label: o.Tool, Agent: ai})
@@ -751,6 +754,29 @@ func firstLine(s string) string {
 		s = s[:i]
 	}
 	return strings.TrimSpace(s)
+}
+
+// mountedEffortID returns the shared EffortID when every mounted workspace
+// resolves to a discovered workspace attributed to the same effort, or "" when
+// mounts are empty, unknown, or span more than one effort.
+func mountedEffortID(mounts []string, wsByCanonical map[string]string, nodes map[string]*Node) string {
+	common := ""
+	for _, m := range mounts {
+		wsID := wsByCanonical[canonicalPath(m)]
+		if wsID == "" {
+			return ""
+		}
+		n := nodes[wsID]
+		if n == nil || n.Workspace == nil || n.Workspace.EffortID == "" {
+			return ""
+		}
+		if common == "" {
+			common = n.Workspace.EffortID
+		} else if common != n.Workspace.EffortID {
+			return ""
+		}
+	}
+	return common
 }
 
 func dedupeStrings(in []string) []string {

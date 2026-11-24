@@ -201,7 +201,7 @@ func (p hookPayload) activityDir() string {
 // mount. A hook may list several roots, so resolving all of them with jj could
 // exceed the hook runner's timeout before we record anything.
 func mountedWorkspaceRoots(paths []string) []string {
-	var roots []string
+	roots := make([]string, 0, len(paths))
 	seen := map[string]bool{}
 	for _, path := range paths {
 		if !filepath.IsAbs(path) {
@@ -385,29 +385,70 @@ func resolveHookWorkspace(p hookPayload) (ws workspaceInfo, dir string, err erro
 	return ws, dir, err
 }
 
-// resolveAntigravityWorkspace leaves a multi-mounted conversation unassigned
-// until a tool or an actual cwd identifies one of its workspaces. A previous
-// focus is retained and refreshed on lifecycle events without guessing from
-// the order of workspacePaths.
-func resolveAntigravityWorkspace(p hookPayload, existing *store.AgentSession, mounts []string) (workspaceInfo, string, error) {
-	if len(mounts) < 2 {
-		return resolveHookWorkspace(p)
-	}
-	if dir := p.activityDir(); activityMount(mounts, dir) != "" {
-		ws, err := lookupWorkspace(dir)
-		return ws, dir, err
-	}
-	if p.Cwd != "" && activityMount(mounts, p.Cwd) != "" {
-		ws, err := lookupWorkspace(p.Cwd)
-		if !errors.Is(err, errNotJJRepo) {
-			return ws, p.Cwd, err
+// resolveAntigravityWorkspace resolves an Antigravity conversation's active
+// workspace across 0, 1, or 2+ mounted jj workspaces:
+//   - 2+ mounts: stays unassigned (unassigned == true) until activityDir or a
+//     cwd inside one of the mounts selects a workspace; retains a previous
+//     WorktreePath only while it remains among mounts.
+//   - 1 mount: prefers activityDir or a cwd inside that mount (ignoring an
+//     unrelated hook-runner cwd), otherwise resolves the single mount itself.
+//   - 0 mounts: prefers activityDir (so file edits or commands in a jj
+//     workspace track workspace-less conversations), then p.Cwd, then an
+//     existing WorktreePath on refresh events, before falling back to the
+//     process cwd.
+func resolveAntigravityWorkspace(p hookPayload, existing *store.AgentSession, mounts []string) (ws workspaceInfo, dir string, unassigned bool, err error) {
+	actDir := p.activityDir()
+	switch len(mounts) {
+	case 0:
+		if actDir != "" {
+			if ws, err = lookupWorkspace(actDir); !errors.Is(err, errNotJJRepo) {
+				return ws, actDir, false, err
+			}
 		}
+		if p.Cwd != "" {
+			ws, err = lookupWorkspace(p.Cwd)
+			if !errors.Is(err, errNotJJRepo) {
+				return ws, p.Cwd, false, err
+			}
+		}
+		if existing != nil && existing.WorktreePath != "" {
+			ws, err = lookupWorkspace(existing.WorktreePath)
+			return ws, existing.WorktreePath, false, err
+		}
+		ws, dir, err = resolveHookWorkspace(p)
+		return ws, dir, false, err
+
+	case 1:
+		if actDir != "" && activityMount(mounts, actDir) != "" {
+			ws, err = lookupWorkspace(actDir)
+			return ws, actDir, false, err
+		}
+		if p.Cwd != "" && activityMount(mounts, p.Cwd) != "" {
+			ws, err = lookupWorkspace(p.Cwd)
+			if !errors.Is(err, errNotJJRepo) {
+				return ws, p.Cwd, false, err
+			}
+		}
+		ws, err = lookupWorkspace(mounts[0])
+		return ws, mounts[0], false, err
+
+	default:
+		if actDir != "" && activityMount(mounts, actDir) != "" {
+			ws, err = lookupWorkspace(actDir)
+			return ws, actDir, false, err
+		}
+		if p.Cwd != "" && activityMount(mounts, p.Cwd) != "" {
+			ws, err = lookupWorkspace(p.Cwd)
+			if !errors.Is(err, errNotJJRepo) {
+				return ws, p.Cwd, false, err
+			}
+		}
+		if existing != nil && existing.WorktreePath != "" && activityMount(mounts, existing.WorktreePath) != "" {
+			ws, err = lookupWorkspace(existing.WorktreePath)
+			return ws, existing.WorktreePath, false, err
+		}
+		return workspaceInfo{}, "", true, nil
 	}
-	if existing != nil && activityMount(mounts, existing.WorktreePath) != "" {
-		ws, err := lookupWorkspace(existing.WorktreePath)
-		return ws, existing.WorktreePath, err
-	}
-	return workspaceInfo{}, "", nil
 }
 
 func applyHook(p hookPayload, act hookAction, tool string) error {
@@ -438,9 +479,24 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 	if tool == "antigravity" {
 		mounts = mountedWorkspaceRoots(p.WorkspacePaths)
 	}
-	movedMount := activityMount(mounts, p.activityDir())
-	locationChanged := tool == "antigravity" && len(mounts) > 1 && movedMount != "" &&
-		(existing == nil || activityMount(mounts, existing.WorktreePath) != movedMount)
+	actDir := p.activityDir()
+	movedRoot := ""
+	switch {
+	case tool != "antigravity" || actDir == "":
+	case len(mounts) > 1:
+		movedRoot = activityMount(mounts, actDir)
+	case len(mounts) == 0:
+		if roots := mountedWorkspaceRoots([]string{actDir}); len(roots) == 1 {
+			movedRoot = roots[0]
+		}
+	}
+	locationChanged := movedRoot != "" &&
+		(existing == nil ||
+			(len(mounts) > 1 && activityMount(mounts, existing.WorktreePath) != movedRoot) ||
+			(len(mounts) == 0 && existing.WorktreePath != movedRoot))
+	unmountedFocus := tool == "antigravity" && len(mounts) > 1 &&
+		existing != nil && existing.WorktreePath != "" &&
+		activityMount(mounts, existing.WorktreePath) == "" && movedRoot == ""
 	// focus is a workspace this event edited in, when it is not the one the
 	// session already records.
 	focus := ""
@@ -449,17 +505,18 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			focus = f
 		}
 	}
-	if existing != nil && !act.refresh && !locationChanged && focus == "" &&
+	if existing != nil && !act.refresh && !locationChanged && !unmountedFocus && focus == "" &&
 		(act.status == "" || act.status == existing.Status) &&
 		agentNow().Sub(existing.LastActivity) < heartbeatThrottle {
 		return nil
 	}
 
 	var ws workspaceInfo
-	if existing == nil || act.refresh || locationChanged {
+	unassigned := false
+	if existing == nil || act.refresh || locationChanged || unmountedFocus {
 		var dir string
 		if tool == "antigravity" {
-			ws, dir, err = resolveAntigravityWorkspace(p, existing, mounts)
+			ws, dir, unassigned, err = resolveAntigravityWorkspace(p, existing, mounts)
 		} else {
 			ws, dir, err = resolveHookWorkspace(p)
 		}
@@ -534,7 +591,7 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			WorktreePath: ws.Root, MountedWorkspaces: mounts, RepoPath: ws.Repo, Branch: ws.Branch,
 			PID: pid, ProcStart: start,
 		}
-		if sess.WorktreePath == "" && cur != nil {
+		if !unassigned && sess.WorktreePath == "" && cur != nil {
 			sess.WorktreePath = cur.WorktreePath
 		}
 		if focusWS.Root != "" {
@@ -546,6 +603,10 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		saved, err := state.UpsertAgentSession(sess, now)
 		if err != nil {
 			return false, err
+		}
+		if unassigned {
+			state.ClearAgentWorkspace(saved.ID)
+			saved.WorktreePath, saved.RepoPath, saved.Branch, saved.Focus = "", "", "", ""
 		}
 		if ws.Root != "" && ws.BranchKnown {
 			// A fresh lookup is authoritative, including "no bookmark", which

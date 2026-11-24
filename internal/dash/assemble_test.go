@@ -203,6 +203,52 @@ func TestAssembleEdgesOnePerKind(t *testing.T) {
 	}
 }
 
+func TestAssembleMountedWorkspacesEffortAttribution(t *testing.T) {
+	a := newAsm(t)
+	a.effort("api-auth", "API auth", "TEAM-101-api", "TEAM-101-web")
+	a.effort("other", "Other", "TEAM-202-other")
+	wAPI := a.ws("/w/acme/widgets-api", "TEAM-101-api")
+	wWeb := a.ws("/w/acme/widgets-web", "TEAM-101-web")
+	wOther := a.ws("/w/acme/widgets-other", "TEAM-202-other")
+
+	a.ls.sessions = append(a.ls.sessions,
+		store.ObservedSession{
+			AgentSession: store.AgentSession{
+				ID: "agy-same", Tool: "antigravity", Status: store.AgentWorking, Source: store.SourceHook,
+				MountedWorkspaces: []string{wAPI.root, wWeb.root},
+				StartTime:         a.ls.at.Add(-time.Minute), LastActivity: a.ls.at,
+			},
+			Liveness: store.LivenessActive,
+		},
+		store.ObservedSession{
+			AgentSession: store.AgentSession{
+				ID: "agy-mixed", Tool: "antigravity", Status: store.AgentWaiting, Source: store.SourceHook,
+				MountedWorkspaces: []string{wAPI.root, wOther.root},
+				StartTime:         a.ls.at.Add(-time.Minute), LastActivity: a.ls.at,
+			},
+			Liveness: store.LivenessActive,
+		},
+	)
+	s, _ := a.build()
+
+	same := s.Node(agentNodeID("agy-same"))
+	if same == nil || same.Agent == nil {
+		t.Fatalf("missing agy-same node: %+v", same)
+	}
+	wantEff := effortNodeID("api-auth")
+	if same.Agent.EffortID != wantEff || !hasEdge(s, wantEff, same.ID, EdgeRuns) {
+		t.Fatalf("mounts sharing one effort should attach to %s, got %+v", wantEff, same.Agent)
+	}
+	if same.Agent.WorkspaceID != "" || hasEdge(s, same.ID, wAPI.id, EdgeWorksIn) || hasEdge(s, same.ID, wWeb.id, EdgeWorksIn) {
+		t.Fatalf("unfocused multi-mount session must not claim a works_in edge: %+v", same.Agent)
+	}
+
+	mixed := s.Node(agentNodeID("agy-mixed"))
+	if mixed == nil || mixed.Agent == nil || mixed.Agent.EffortID != UngroupedID {
+		t.Fatalf("mounts spanning multiple efforts must stay Ungrouped, got %+v", mixed)
+	}
+}
+
 func TestAssembleActivityBucketing(t *testing.T) {
 	a := newAsm(t) // window: Oct 8, 9, 10 in asmZone
 	day := func(d, h, m, s int) time.Time { return time.Date(2026, 10, d, h, m, s, 0, asmZone) }
