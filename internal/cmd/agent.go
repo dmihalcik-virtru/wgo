@@ -35,6 +35,9 @@ const (
 	// agentMaxAge bounds how long a session without a verifiable process is
 	// kept after its last activity, so abandoned sessions cannot accumulate.
 	agentMaxAge = 24 * time.Hour
+	// antigravityMaxAge caps hook conversations even while the app stays open:
+	// the app process identifies the host, not one conversation's lifetime.
+	antigravityMaxAge = time.Hour
 	// agentAncestorDepth bounds the walk up the process tree when looking for
 	// the agent process behind a hook or `agent start`.
 	agentAncestorDepth = 16
@@ -49,7 +52,7 @@ var (
 )
 
 func agentPolicy() store.AgentPolicy {
-	return store.AgentPolicy{Window: agentStaleAfter, MaxAge: agentMaxAge, Procs: procInspector}
+	return store.AgentPolicy{Window: agentStaleAfter, MaxAge: agentMaxAge, AntigravityMaxAge: antigravityMaxAge, Procs: procInspector}
 }
 
 // Flag values, one set per subcommand so their defaults never interfere.
@@ -82,7 +85,9 @@ an inferred session is removed, whatever its process. Otherwise a session whose
 agent process is verified alive (PID and start time match) stays live however
 quiet it is; a session whose recorded process has exited is removed; any other
 session (no recorded process, or one wgo cannot check) is shown as uncertain
-and removed after 24 hours or by "wgo agent stop".`,
+and removed after 24 hours or by "wgo agent stop". Antigravity hook conversations
+become uncertain after 10 minutes and expire after 1 hour without a hook event,
+even while the app remains open.`,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return runAgentStatus(os.Stdout, false)
 	},
@@ -604,7 +609,11 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 		case store.LivenessLive:
 			notes = append(notes, fmt.Sprintf("quiet %s, process alive", quietFor(now, o.LastActivity)))
 		case store.LivenessUncertain:
-			notes = append(notes, fmt.Sprintf("uncertain: quiet %s, no process to check", quietFor(now, o.LastActivity)))
+			if o.Tool == "antigravity" && o.Source == store.SourceHook {
+				notes = append(notes, fmt.Sprintf("uncertain: quiet %s, app process cannot confirm this conversation", quietFor(now, o.LastActivity)))
+			} else {
+				notes = append(notes, fmt.Sprintf("uncertain: quiet %s, no process to check", quietFor(now, o.LastActivity)))
+			}
 		}
 		if o.Source == store.SourceInferred {
 			notes = append(notes, "inferred")

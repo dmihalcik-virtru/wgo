@@ -35,7 +35,7 @@ func (deniedProcs) Args(int) ([]string, error) { return nil, errors.New("operati
 var t0 = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 
 func policy(procs proc.Inspector) AgentPolicy {
-	return AgentPolicy{Window: 10 * time.Minute, MaxAge: 24 * time.Hour, Procs: procs}
+	return AgentPolicy{Window: 10 * time.Minute, MaxAge: 24 * time.Hour, AntigravityMaxAge: time.Hour, Procs: procs}
 }
 
 func mustUpsert(t *testing.T, s *State, sess AgentSession, now time.Time) AgentSession {
@@ -161,6 +161,13 @@ func TestLivenessRules(t *testing.T) {
 	old := t0.Add(48 * time.Hour)
 	assert.Equal(t, LivenessGone, quiet(AgentSession{ID: "u", Source: SourceExplicit}).Liveness(old, p))
 	assert.Equal(t, LivenessLive, quiet(AgentSession{ID: "l", Source: SourceExplicit, PID: 100, ProcStart: 5000}).Liveness(old, p))
+
+	conversation := quiet(AgentSession{ID: "agy", Tool: "antigravity", Source: SourceHook, Status: AgentWaiting, PID: 100, ProcStart: 5000})
+	conversation.Tool = "antigravity"
+	assert.Equal(t, LivenessActive, conversation.Liveness(t0.Add(5*time.Minute), p))
+	assert.Equal(t, LivenessUncertain, conversation.Liveness(t0.Add(30*time.Minute), p), "a live app does not prove its conversation is open")
+	assert.Equal(t, LivenessGone, conversation.Liveness(t0.Add(61*time.Minute), p))
+	assert.Equal(t, LivenessGone, conversation.Liveness(t0.Add(time.Minute), policy(fakeProcs{})), "an exited app removes the conversation")
 }
 
 // TestPruneAgentSessionsFollowsLiveness: pruning removes exactly the gone

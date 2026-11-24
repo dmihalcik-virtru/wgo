@@ -90,8 +90,9 @@ const (
 	LivenessActive AgentLiveness = "active"
 	// LivenessLive: quiet, but its recorded process is verified alive.
 	LivenessLive AgentLiveness = "live"
-	// LivenessUncertain: quiet, and there is no process identity or it could
-	// not be checked. Shown, not deleted.
+	// LivenessUncertain: quiet, and the conversation cannot be verified from
+	// its process identity, or there is no identity to check. Shown until its
+	// inactivity limit, then deleted.
 	LivenessUncertain AgentLiveness = "uncertain"
 	// LivenessGone: prunable. An inferred session past the window, a
 	// session whose recorded process definitely exited (or whose PID was
@@ -109,6 +110,9 @@ type AgentPolicy struct {
 	// MaxAge bounds how long an unverifiable (no process identity) explicit or
 	// hook session is kept after its last activity.
 	MaxAge time.Duration
+	// AntigravityMaxAge bounds hook conversations even when the Antigravity app
+	// process is alive, since one process can outlive many conversations.
+	AntigravityMaxAge time.Duration
 	// Procs verifies recorded process identities. Nil verifies nothing, so
 	// every recorded identity counts as unverifiable rather than exited.
 	Procs proc.Inspector
@@ -118,13 +122,30 @@ type AgentPolicy struct {
 // whatever its process: its identity records which agent it belongs to, not
 // that the statusline keeping it is still running. For any other session a
 // verified live process wins over quiet time, so a long-running quiet agent
-// never expires (#61); a recorded process that definitely exited or was
-// reused makes the session gone. When the process cannot be checked
-// (sandboxed lookup, unsupported platform, a PID recorded on another
-// machine), the session is treated as having no identity: uncertain, never
-// deleted on that basis alone.
+// never expires (#61), except for an Antigravity hook conversation: its app
+// process does not prove the conversation is still open. A recorded process
+// that definitely exited or was reused makes the session gone. When the process
+// cannot be checked (sandboxed lookup, unsupported platform, a PID recorded on
+// another machine), the session is treated as having no identity: uncertain,
+// never deleted on that basis alone.
 func (s AgentSession) Liveness(now time.Time, p AgentPolicy) AgentLiveness {
 	quiet := now.Sub(s.LastActivity)
+	if s.Source == SourceHook && s.Tool == "antigravity" {
+		if s.HasProcess() && proc.Check(p.Procs, s.PID, s.ProcStart) == proc.Exited {
+			return LivenessGone
+		}
+		if quiet <= p.Window {
+			return LivenessActive
+		}
+		limit := p.AntigravityMaxAge
+		if limit <= 0 {
+			limit = p.MaxAge
+		}
+		if limit > 0 && quiet > limit {
+			return LivenessGone
+		}
+		return LivenessUncertain
+	}
 	if quiet <= p.Window {
 		return LivenessActive
 	}
@@ -310,8 +331,8 @@ func (s *State) ObserveAgentSessions(now time.Time, p AgentPolicy) []ObservedSes
 
 // PruneAgentSessions deletes sessions whose liveness is gone and returns how
 // many it removed. It applies the same rules as ObserveAgentSessions, so a
-// session that is listed is never pruned, and an explicit or hook session with
-// a verified live process is never pruned at all.
+// session that is listed is never pruned. A verified live process protects
+// explicit and hook sessions from pruning except Antigravity conversations.
 func (s *State) PruneAgentSessions(now time.Time, p AgentPolicy) int {
 	removed := 0
 	for id, sess := range s.AgentSessions {

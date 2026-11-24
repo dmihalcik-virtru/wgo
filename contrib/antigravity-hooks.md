@@ -77,9 +77,10 @@ a small script that prepends `$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin` to
   claimed for the conversation.
 - **Process liveness.** `wgo` walks up the parent process tree to match
   `Antigravity`, `agy`, or Antigravity's bundled `language_server` binary, and
-  records its PID and start-time token. While Antigravity remains open, quiet
-  sessions stay **live**; once Antigravity exits and the 10-minute quiet window
-  passes, stale entries are pruned automatically.
+  records its PID and start-time token. An exited process removes its sessions.
+  Because the app process can outlive a conversation, a session with no hook
+  event for 10 minutes becomes **uncertain** and expires after 1 hour, even if
+  Antigravity stays open. A later hook event records it again.
 - **Environment detection.** Inside Antigravity (`ANTIGRAVITY_AGENT` set),
   `wgo agent start` and `wgo .` / `wgo statusline` also recognize `antigravity`
   automatically.

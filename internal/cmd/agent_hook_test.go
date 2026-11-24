@@ -263,6 +263,27 @@ func TestAgentHookAntigravityMultipleMountedWorkspaces(t *testing.T) {
 	assert.Equal(t, "api-feature", loadState(t).GetAgentSession(convID).Branch)
 }
 
+func TestAgentHookAntigravityQuietConversationExpires(t *testing.T) {
+	e := newAgentEnv(t)
+	e.procs[fakeClaudePID] = proc.Info{PID: fakeClaudePID, PPID: 1, Name: "Antigravity Helper", Start: fakeClaudeTok}
+	const convID = "quiet-antigravity-conversation"
+	payload := fmt.Sprintf(`{"conversationId":%q,"workspacePaths":["/ws"]}`, convID)
+	require.NoError(t, runAgentHook(strings.NewReader(payload), "Stop", "antigravity"))
+	sess := loadState(t).GetAgentSession(convID)
+	require.NotNil(t, sess)
+	assert.Equal(t, store.AgentWaiting, sess.Status)
+	assert.Equal(t, fakeClaudePID, sess.PID)
+
+	e.advance(11 * time.Minute)
+	assert.Contains(t, agentStatusOut(t), "uncertain")
+	e.advance(50 * time.Minute)
+	assert.Contains(t, agentStatusOut(t), "No active agent sessions.")
+	assert.Contains(t, e.procs, fakeClaudePID, "the app process is still running")
+
+	require.NoError(t, runAgentHook(strings.NewReader(payload), "PreInvocation", "antigravity"))
+	assert.Equal(t, store.AgentWorking, loadState(t).GetAgentSession(convID).Status)
+}
+
 // TestAgentHookResumedSessionFindsNewProcess: claude --resume keeps the
 // session ID but runs a new process. The next event records the new process,
 // so the session survives going quiet instead of being pruned (#61).
