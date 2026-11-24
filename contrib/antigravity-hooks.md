@@ -63,12 +63,13 @@ a small script that prepends `$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin` to
 |---|---|---|
 | `SessionStart` | `waiting` (refreshes workspace & bookmark) | `{}` |
 | `PreInvocation` | `working` (refreshes workspace & bookmark) | `{}` (or `injectSteps` `user_markdown` warning, at most once/hour) |
-| `PostToolUse` | `working` (throttled to 60s; records `Focus` on `edit_file`/`write_file`) | `{}` |
+| `PostToolUse` | `working` (throttled to 60s; records `Focus` on file writes and edits) | `{}` |
 | `Stop` | `waiting` (refreshes workspace & bookmark) | `{"decision":"allow"}` |
 
 - **CamelCase payloads on stdin.** Antigravity sends `conversationId`,
-  `hookEventName`, `cwd`, `workspacePaths`, and `toolCall` (`name` and
-  `args.Path` for `edit_file`/`write_file`). When `cwd` is outside a `jj`
+  `workspacePaths`, and `toolCall` (`name` and `args.TargetFile` for
+  `write_to_file`, `replace_file_content`, and `multi_replace_file_content`).
+  The hook event is supplied by the configured command. When `cwd` is outside a `jj`
   workspace (such as Antigravity's default scratch folder), `wgo` falls back to
   `workspacePaths` so an attached `jj` workspace is still tracked.
 - **Process liveness.** `wgo` walks up the parent process tree to match

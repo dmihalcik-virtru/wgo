@@ -181,6 +181,9 @@ func TestHookPayloadEditedPath(t *testing.T) {
 	for _, tc := range []struct {
 		name, call, want string
 	}{
+		{"antigravity write_to_file", `{"name":"write_to_file","args":{"TargetFile":"/w/api/new.go"}}`, "/w/api/new.go"},
+		{"antigravity replace_file_content", `{"name":"replace_file_content","args":{"TargetFile":"/w/api/x.go"}}`, "/w/api/x.go"},
+		{"antigravity multi_replace_file_content", `{"name":"multi_replace_file_content","args":{"TargetFile":"/w/web/y.go"}}`, "/w/web/y.go"},
 		{"antigravity edit_file", `{"name":"edit_file","args":{"Path":"/w/api/x.go"}}`, "/w/api/x.go"},
 		{"antigravity write_file", `{"name":"write_file","args":{"Path":"/w/api/../web/y.go"}}`, "/w/web/y.go"},
 		{"antigravity read_file ignored", `{"name":"read_file","args":{"Path":"/w/api/x.go"}}`, ""},

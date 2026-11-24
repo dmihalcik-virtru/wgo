@@ -133,9 +133,12 @@ func (p hookPayload) eventName() string {
 // working in it.
 var fileEditTools = map[string]bool{"Edit": true, "MultiEdit": true, "Write": true, "NotebookEdit": true}
 
-// antigravityFileEditTools are the Antigravity tools whose toolCall.args.Path
-// names the file they changed.
-var antigravityFileEditTools = map[string]bool{"edit_file": true, "write_file": true}
+// antigravityFileEditTools are the Antigravity tools whose toolCall.args.TargetFile
+// names the file they changed. The older edit_file/write_file names use Path.
+var antigravityFileEditTools = map[string]bool{
+	"write_to_file": true, "replace_file_content": true, "multi_replace_file_content": true,
+	"edit_file": true, "write_file": true,
+}
 
 // editedPath returns the absolute path a file tool changed, or "". It is only
 // ever compared with and stat'ed under the session's folder (see
@@ -158,11 +161,15 @@ func (p hookPayload) editedPath() string {
 		var tc struct {
 			Name string `json:"name"`
 			Args struct {
-				Path string `json:"Path"`
+				TargetFile string `json:"TargetFile"`
+				Path       string `json:"Path"`
 			} `json:"args"`
 		}
 		if json.Unmarshal(p.ToolCall, &tc) == nil && antigravityFileEditTools[tc.Name] {
-			path = tc.Args.Path
+			path = tc.Args.TargetFile
+			if path == "" {
+				path = tc.Args.Path
+			}
 		}
 	}
 	if !filepath.IsAbs(path) {
