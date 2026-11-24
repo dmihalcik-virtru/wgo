@@ -516,26 +516,27 @@ func runAgentStop(w io.Writer, id string) error {
 
 // agentSessionJSON is the machine-readable form of a session.
 type agentSessionJSON struct {
-	ID           string    `json:"id"`
-	Tool         string    `json:"tool"`
-	Status       string    `json:"status"`
-	Liveness     string    `json:"liveness"`
-	Source       string    `json:"source"`
-	Workspace    string    `json:"workspace"`
-	Repo         string    `json:"repo,omitempty"`
-	Bookmark     string    `json:"bookmark,omitempty"`
-	Focus        string    `json:"focus,omitempty"`
-	Theme        string    `json:"theme,omitempty"`
-	PID          int       `json:"pid,omitempty"`
-	StartTime    time.Time `json:"start_time"`
-	LastActivity time.Time `json:"last_activity"`
-	Conflicts    []string  `json:"conflicts,omitempty"`
+	ID                string    `json:"id"`
+	Tool              string    `json:"tool"`
+	Status            string    `json:"status"`
+	Liveness          string    `json:"liveness"`
+	Source            string    `json:"source"`
+	Workspace         string    `json:"workspace"`
+	MountedWorkspaces []string  `json:"mounted_workspaces,omitempty"`
+	Repo              string    `json:"repo,omitempty"`
+	Bookmark          string    `json:"bookmark,omitempty"`
+	Focus             string    `json:"focus,omitempty"`
+	Theme             string    `json:"theme,omitempty"`
+	PID               int       `json:"pid,omitempty"`
+	StartTime         time.Time `json:"start_time"`
+	LastActivity      time.Time `json:"last_activity"`
+	Conflicts         []string  `json:"conflicts,omitempty"`
 }
 
 func sessionJSON(o store.ObservedSession, conflicts []string) agentSessionJSON {
 	return agentSessionJSON{
 		ID: o.ID, Tool: o.Tool, Status: string(o.Status), Liveness: string(o.Liveness),
-		Source: string(o.Source), Workspace: o.WorktreePath, Repo: o.RepoPath,
+		Source: string(o.Source), Workspace: o.WorktreePath, MountedWorkspaces: o.MountedWorkspaces, Repo: o.RepoPath,
 		Bookmark: o.Branch, Focus: o.Focus, Theme: o.ThemeID, PID: o.PID,
 		StartTime: o.StartTime, LastActivity: o.LastActivity, Conflicts: conflicts,
 	}
@@ -581,6 +582,10 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 		current = ""
 	}
 	for _, o := range observed {
+		location := o.WorktreePath
+		if location == "" && len(o.MountedWorkspaces) > 1 {
+			location = fmt.Sprintf("(%d mounted workspaces)", len(o.MountedWorkspaces))
+		}
 		branch := o.Branch
 		if branch == "" {
 			branch = "(no bookmark)"
@@ -588,6 +593,9 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 		var notes []string
 		if o.Focus != "" {
 			notes = append(notes, "editing in "+filepath.Base(o.Focus))
+		}
+		if o.WorktreePath == "" && len(o.MountedWorkspaces) > 1 {
+			notes = append(notes, "mounted: "+strings.Join(o.MountedWorkspaces, ", "))
 		}
 		if o.ThemeID != "" {
 			notes = append(notes, "theme "+o.ThemeID)
@@ -605,7 +613,7 @@ func runAgentStatus(w io.Writer, asJSON bool) error {
 			notes = append(notes, "current")
 		}
 		line := fmt.Sprintf("🤖 %-8s %-8s %s  %s  since %s  session %s",
-			o.Tool, o.Status, o.WorktreePath, branch, formatTime(o.StartTime), o.ID)
+			o.Tool, o.Status, location, branch, formatTime(o.StartTime), o.ID)
 		if len(notes) > 0 {
 			line += "  (" + strings.Join(notes, "; ") + ")"
 		}

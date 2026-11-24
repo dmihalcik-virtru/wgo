@@ -394,17 +394,18 @@ const TicketNotFound = "not found"
 
 // AgentInfo describes a gh-72 agent session, read only.
 type AgentInfo struct {
-	SessionID    string    `json:"session_id"`
-	Tool         string    `json:"tool"`
-	Status       string    `json:"status"`
-	Liveness     Liveness  `json:"liveness"`
-	Source       string    `json:"source,omitempty"`
-	Branch       string    `json:"branch,omitempty"`
-	ThemeID      string    `json:"theme_id,omitempty"`
-	Path         string    `json:"path"`
-	WorkspaceID  string    `json:"workspace_id,omitempty"`
-	StartTime    time.Time `json:"start_time,omitzero"`
-	LastActivity time.Time `json:"last_activity,omitzero"`
+	SessionID         string    `json:"session_id"`
+	Tool              string    `json:"tool"`
+	Status            string    `json:"status"`
+	Liveness          Liveness  `json:"liveness"`
+	Source            string    `json:"source,omitempty"`
+	Branch            string    `json:"branch,omitempty"`
+	ThemeID           string    `json:"theme_id,omitempty"`
+	Path              string    `json:"path"`
+	MountedWorkspaces []string  `json:"mounted_workspaces,omitempty"`
+	WorkspaceID       string    `json:"workspace_id,omitempty"`
+	StartTime         time.Time `json:"start_time,omitzero"`
+	LastActivity      time.Time `json:"last_activity,omitzero"`
 	// Conflict flags another active session on the same repo and bookmark.
 	Conflict      bool     `json:"conflict,omitempty"`
 	ConflictsWith []string `json:"conflicts_with,omitempty"`

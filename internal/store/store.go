@@ -100,8 +100,12 @@ func (fs *FileStore) LoadState() (*State, error) {
 		state.Version = StateVersion
 	case state.Version == 2:
 		// Version 2 keyed agent sessions by workspace root; the normalization
-		// below rekeys them by ID. The file itself is rewritten at version 3
+		// below rekeys them by ID. The file itself is rewritten at the current version
 		// on the next save.
+		state.Version = StateVersion
+	case state.Version == 3:
+		// Version 4 adds mounted workspace paths. Version-3 sessions already
+		// use the same ID-keyed shape and need no other migration.
 		state.Version = StateVersion
 	}
 	// state.Version > StateVersion loads for reading; SaveState and

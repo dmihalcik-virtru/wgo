@@ -203,6 +203,66 @@ func TestAgentHookAntigravityLifecycle(t *testing.T) {
 	assert.Contains(t, out, "Upgrade wgo")
 }
 
+func TestAgentHookAntigravityMultipleMountedWorkspaces(t *testing.T) {
+	e := newAgentEnv(t)
+	e.procs[fakeClaudePID] = proc.Info{PID: fakeClaudePID, PPID: 1, Name: "Antigravity Helper", Start: fakeClaudeTok}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	api, web := filepath.Join(root, "api"), filepath.Join(root, "web")
+	require.NoError(t, os.MkdirAll(filepath.Join(api, ".jj"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(web, ".jj"), 0o755))
+	e.workspaces[api] = workspaceInfo{Root: api, Repo: api, Branch: "api-feature", BranchKnown: true}
+	e.workspaces[web] = workspaceInfo{Root: web, Repo: web, Branch: "web-feature", BranchKnown: true}
+	const convID = "multi-mounted-conversation"
+	send := func(event, mounts, toolCall string) {
+		t.Helper()
+		payload := fmt.Sprintf(`{"conversationId":%q,"workspacePaths":%s,"toolCall":%s}`, convID, mounts, toolCall)
+		require.NoError(t, runAgentHook(strings.NewReader(payload), event, "antigravity"))
+		e.advance(time.Second)
+	}
+	apiFirst := fmt.Sprintf(`[%q,%q]`, api, web)
+	webFirst := fmt.Sprintf(`[%q,%q]`, web, api)
+
+	send("SessionStart", apiFirst, `{}`)
+	sess := loadState(t).GetAgentSession(convID)
+	require.NotNil(t, sess)
+	assert.Empty(t, sess.WorktreePath)
+	assert.Empty(t, sess.RepoPath)
+	assert.Empty(t, sess.Branch, "mount order is not evidence of an active bookmark")
+	assert.Equal(t, []string{api, web}, sess.MountedWorkspaces)
+	assert.Contains(t, agentStatusOut(t), "2 mounted workspaces")
+	var statusJSON strings.Builder
+	require.NoError(t, runAgentStatus(&statusJSON, true))
+	assert.Contains(t, statusJSON.String(), `"mounted_workspaces"`)
+	assert.NotContains(t, statusJSON.String(), `"bookmark": "api-feature"`)
+
+	// A hook runner launched from another jj repo must not assign that repo to
+	// a conversation whose mounted workspaces are api and web.
+	otherCwd := fmt.Sprintf(`{"conversationId":%q,"cwd":"/ws","workspacePaths":%s}`, convID, apiFirst)
+	require.NoError(t, runAgentHook(strings.NewReader(otherCwd), "PreInvocation", "antigravity"))
+	assert.Empty(t, loadState(t).GetAgentSession(convID).WorktreePath)
+
+	send("PostToolUse", apiFirst, fmt.Sprintf(`{"name":"replace_file_content","args":{"TargetFile":%q}}`, filepath.Join(web, "page.go")))
+	sess = loadState(t).GetAgentSession(convID)
+	require.NotNil(t, sess)
+	assert.Equal(t, web, sess.WorktreePath)
+	assert.Equal(t, web, sess.RepoPath)
+	assert.Equal(t, "web-feature", sess.Branch)
+
+	send("PreInvocation", webFirst, `{}`)
+	assert.Equal(t, "web-feature", loadState(t).GetAgentSession(convID).Branch, "reordering mounts does not change focus")
+
+	send("PostToolUse", webFirst, fmt.Sprintf(`{"name":"run_command","args":{"Cwd":%q,"CommandLine":"go test ./..."}}`, api))
+	sess = loadState(t).GetAgentSession(convID)
+	require.NotNil(t, sess)
+	assert.Equal(t, api, sess.WorktreePath)
+	assert.Equal(t, "api-feature", sess.Branch)
+	assert.Equal(t, []string{web, api}, sess.MountedWorkspaces)
+
+	send("Stop", webFirst, `{}`)
+	assert.Equal(t, "api-feature", loadState(t).GetAgentSession(convID).Branch)
+}
+
 // TestAgentHookResumedSessionFindsNewProcess: claude --resume keeps the
 // session ID but runs a new process. The next event records the new process,
 // so the session survives going quiet instead of being pruned (#61).

@@ -178,6 +178,78 @@ func (p hookPayload) editedPath() string {
 	return filepath.Clean(path)
 }
 
+// activityDir is the directory a completed Antigravity tool worked in. Reads
+// do not change the session's focus; a command's own Cwd is stronger evidence
+// than the hook runner's cwd.
+func (p hookPayload) activityDir() string {
+	if path := p.editedPath(); path != "" {
+		return filepath.Dir(path)
+	}
+	var tc struct {
+		Name string `json:"name"`
+		Args struct {
+			Cwd string `json:"Cwd"`
+		} `json:"args"`
+	}
+	if json.Unmarshal(p.ToolCall, &tc) == nil && tc.Name == "run_command" && filepath.IsAbs(tc.Args.Cwd) {
+		return filepath.Clean(tc.Args.Cwd)
+	}
+	return ""
+}
+
+// mountedWorkspaceRoots finds mounted jj roots without spawning jj for every
+// mount. A hook may list several roots, so resolving all of them with jj could
+// exceed the hook runner's timeout before we record anything.
+func mountedWorkspaceRoots(paths []string) []string {
+	var roots []string
+	seen := map[string]bool{}
+	for _, path := range paths {
+		if !filepath.IsAbs(path) {
+			continue
+		}
+		path = filepath.Clean(path)
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			path = resolved
+		}
+		root := ""
+		for dir := path; ; dir = filepath.Dir(dir) {
+			if info, err := os.Stat(filepath.Join(dir, ".jj")); err == nil && info.IsDir() {
+				root = dir
+				break
+			}
+			if dir == filepath.Dir(dir) {
+				break
+			}
+		}
+		if root == "" && len(groupWorkspaces(path)) > 0 {
+			root = path
+		}
+		if root != "" && !seen[root] {
+			seen[root] = true
+			roots = append(roots, root)
+		}
+	}
+	return roots
+}
+
+func activityMount(roots []string, dir string) string {
+	if !filepath.IsAbs(dir) {
+		return ""
+	}
+	dir = filepath.Clean(dir)
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	best := ""
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, dir)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && len(root) > len(best) {
+			best = root
+		}
+	}
+	return best
+}
+
 // editedWorkspace returns the workspace under root that path lies in, when
 // root is a folder of workspaces rather than a workspace itself, or "". It
 // walks up from path to root looking for a .jj directory, so it costs a few
@@ -313,6 +385,31 @@ func resolveHookWorkspace(p hookPayload) (ws workspaceInfo, dir string, err erro
 	return ws, dir, err
 }
 
+// resolveAntigravityWorkspace leaves a multi-mounted conversation unassigned
+// until a tool or an actual cwd identifies one of its workspaces. A previous
+// focus is retained and refreshed on lifecycle events without guessing from
+// the order of workspacePaths.
+func resolveAntigravityWorkspace(p hookPayload, existing *store.AgentSession, mounts []string) (workspaceInfo, string, error) {
+	if len(mounts) < 2 {
+		return resolveHookWorkspace(p)
+	}
+	if dir := p.activityDir(); activityMount(mounts, dir) != "" {
+		ws, err := lookupWorkspace(dir)
+		return ws, dir, err
+	}
+	if p.Cwd != "" && activityMount(mounts, p.Cwd) != "" {
+		ws, err := lookupWorkspace(p.Cwd)
+		if !errors.Is(err, errNotJJRepo) {
+			return ws, p.Cwd, err
+		}
+	}
+	if existing != nil && activityMount(mounts, existing.WorktreePath) != "" {
+		ws, err := lookupWorkspace(existing.WorktreePath)
+		return ws, existing.WorktreePath, err
+	}
+	return workspaceInfo{}, "", nil
+}
+
 func applyHook(p hookPayload, act hookAction, tool string) error {
 	s, err := store.New()
 	if err != nil {
@@ -337,6 +434,13 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 	}
 	existing := snapshot.GetAgentSession(p.SessionID)
 	edited := p.editedPath()
+	var mounts []string
+	if tool == "antigravity" {
+		mounts = mountedWorkspaceRoots(p.WorkspacePaths)
+	}
+	movedMount := activityMount(mounts, p.activityDir())
+	locationChanged := tool == "antigravity" && len(mounts) > 1 && movedMount != "" &&
+		(existing == nil || activityMount(mounts, existing.WorktreePath) != movedMount)
 	// focus is a workspace this event edited in, when it is not the one the
 	// session already records.
 	focus := ""
@@ -345,16 +449,20 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 			focus = f
 		}
 	}
-	if existing != nil && !act.refresh && focus == "" &&
+	if existing != nil && !act.refresh && !locationChanged && focus == "" &&
 		(act.status == "" || act.status == existing.Status) &&
 		agentNow().Sub(existing.LastActivity) < heartbeatThrottle {
 		return nil
 	}
 
 	var ws workspaceInfo
-	if existing == nil || act.refresh {
+	if existing == nil || act.refresh || locationChanged {
 		var dir string
-		ws, dir, err = resolveHookWorkspace(p)
+		if tool == "antigravity" {
+			ws, dir, err = resolveAntigravityWorkspace(p, existing, mounts)
+		} else {
+			ws, dir, err = resolveHookWorkspace(p)
+		}
 		switch {
 		case err == nil:
 		case existing != nil:
@@ -423,7 +531,7 @@ func applyHook(p hookPayload, act hookAction, tool string) error {
 		}
 		sess := store.AgentSession{
 			ID: p.SessionID, Tool: tool, Source: store.SourceHook, Status: act.status,
-			WorktreePath: ws.Root, RepoPath: ws.Repo, Branch: ws.Branch,
+			WorktreePath: ws.Root, MountedWorkspaces: mounts, RepoPath: ws.Repo, Branch: ws.Branch,
 			PID: pid, ProcStart: start,
 		}
 		if sess.WorktreePath == "" && cur != nil {

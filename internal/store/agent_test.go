@@ -73,6 +73,26 @@ func TestUpsertAgentSessionMergesByID(t *testing.T) {
 	assert.Error(t, err, "a tool is required")
 }
 
+func TestAgentSessionCanWaitForMultiWorkspaceFocus(t *testing.T) {
+	s := NewState()
+	_, err := s.UpsertAgentSession(AgentSession{
+		ID: "conv", Tool: "antigravity", MountedWorkspaces: []string{"/api"}, Source: SourceHook,
+	}, t0)
+	require.Error(t, err, "one mount still needs a workspace")
+
+	initial := mustUpsert(t, s, AgentSession{
+		ID: "conv", Tool: "antigravity", MountedWorkspaces: []string{"/api", "/web"}, Source: SourceHook,
+	}, t0)
+	assert.Empty(t, initial.WorktreePath)
+	assert.Empty(t, initial.Branch)
+	assert.Empty(t, AgentConflicts(s.ObserveAgentSessions(t0, policy(nil)))["conv"])
+
+	focused := mustUpsert(t, s, AgentSession{
+		ID: "conv", Tool: "antigravity", WorktreePath: "/web", Branch: "feature", Source: SourceHook,
+	}, t0.Add(time.Second))
+	assert.Equal(t, []string{"/api", "/web"}, focused.MountedWorkspaces, "later events keep the mount list")
+}
+
 // TestTwoSessionsOneWorkspace: two sessions share a workspace and are
 // refreshed and removed independently.
 func TestTwoSessionsOneWorkspace(t *testing.T) {

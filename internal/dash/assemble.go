@@ -271,18 +271,19 @@ func (c *Collector) assemble(ls *localState) (*Snapshot, []Job) {
 	// Agent sessions.
 	for _, o := range ls.sessions {
 		ai := &AgentInfo{
-			SessionID:     o.ID,
-			Tool:          o.Tool,
-			Status:        string(o.Status),
-			Liveness:      Liveness(o.Liveness),
-			Source:        string(o.Source),
-			Branch:        o.Branch,
-			ThemeID:       o.ThemeID,
-			Path:          o.WorktreePath,
-			WorkspaceID:   wsByCanonical[canonicalPath(o.WorktreePath)],
-			StartTime:     o.StartTime,
-			LastActivity:  o.LastActivity,
-			ConflictsWith: append([]string(nil), ls.conflicts[o.ID]...),
+			SessionID:         o.ID,
+			Tool:              o.Tool,
+			Status:            string(o.Status),
+			Liveness:          Liveness(o.Liveness),
+			Source:            string(o.Source),
+			Branch:            o.Branch,
+			ThemeID:           o.ThemeID,
+			Path:              o.WorktreePath,
+			MountedWorkspaces: append([]string(nil), o.MountedWorkspaces...),
+			WorkspaceID:       wsByCanonical[canonicalPath(o.WorktreePath)],
+			StartTime:         o.StartTime,
+			LastActivity:      o.LastActivity,
+			ConflictsWith:     append([]string(nil), ls.conflicts[o.ID]...),
 		}
 		sort.Strings(ai.ConflictsWith)
 		ai.Conflict = len(ai.ConflictsWith) > 0

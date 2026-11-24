@@ -1,8 +1,9 @@
 # Antigravity hooks for `wgo agent`
 
 Antigravity can report its conversation lifecycle to `wgo agent hook --tool antigravity`.
-The hook stores one entry per Antigravity `conversationId` in the `jj` workspace
-containing the session's `cwd` (or first matching `workspacePaths` entry).
+The hook stores one entry per Antigravity `conversationId`. With one mounted
+`jj` workspace it records that workspace; with several it waits for a file edit
+or command directory to identify the active workspace and bookmark.
 `wgo agent status`, `wgo statusline`, `wgo .`, and `wgo dash` then show that
 session alongside Claude Code, Codex, and manually registered agents.
 
@@ -70,8 +71,10 @@ a small script that prepends `$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin` to
   `workspacePaths`, and `toolCall` (`name` and `args.TargetFile` for
   `write_to_file`, `replace_file_content`, and `multi_replace_file_content`).
   The hook event is supplied by the configured command. When `cwd` is outside a `jj`
-  workspace (such as Antigravity's default scratch folder), `wgo` falls back to
-  `workspacePaths` so an attached `jj` workspace is still tracked.
+  workspace (such as Antigravity's default scratch folder), `wgo` uses
+  `workspacePaths`. If several workspaces are mounted, a `TargetFile` or a
+  `run_command` `Cwd` selects the active workspace; until then, no bookmark is
+  claimed for the conversation.
 - **Process liveness.** `wgo` walks up the parent process tree to match
   `Antigravity`, `agy`, or Antigravity's bundled `language_server` binary, and
   records its PID and start-time token. While Antigravity remains open, quiet

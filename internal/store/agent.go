@@ -55,8 +55,12 @@ type AgentSession struct {
 	Status  AgentStatus `json:"status,omitempty"`
 	Source  AgentSource `json:"source,omitempty"`
 	Tool    string      `json:"tool"` // e.g., "claude", "codex", "cursor"
-	// WorktreePath is the jj workspace root the agent works in.
+	// WorktreePath is the jj workspace root the agent works in. It is empty
+	// while a conversation with multiple mounted workspaces has no known focus.
 	WorktreePath string `json:"worktree_path"`
+	// MountedWorkspaces are the jj workspace roots attached to a conversation.
+	// They do not imply that the agent is working in every one of them.
+	MountedWorkspaces []string `json:"mounted_workspaces,omitempty"`
 	// RepoPath is the repository's main workspace root, so sessions in
 	// different workspaces of one repository can be compared for conflicts.
 	RepoPath string `json:"repo_path,omitempty"`
@@ -155,7 +159,8 @@ type ObservedSession struct {
 // ClearAgentProcess to clear a process identity.
 // Source is never downgraded to inferred. A PID without a start token is
 // dropped, since it cannot be verified. LastActivity is set to now. Sessions
-// without an ID, tool or workspace are rejected.
+// without an ID, tool or workspace are rejected, except that two or more
+// mounted workspaces permit an unassigned WorktreePath.
 func (s *State) UpsertAgentSession(sess AgentSession, now time.Time) (AgentSession, error) {
 	if !ValidAgentSessionID(sess.ID) {
 		return AgentSession{}, fmt.Errorf("invalid agent session ID %q", sess.ID)
@@ -164,10 +169,13 @@ func (s *State) UpsertAgentSession(sess AgentSession, now time.Time) (AgentSessi
 	if !sess.HasProcess() {
 		sess.PID, sess.ProcStart = 0, 0
 	}
-	if sess.Tool == "" || sess.WorktreePath == "" {
+	if sess.Tool == "" || (sess.WorktreePath == "" && len(sess.MountedWorkspaces) < 2) {
 		return AgentSession{}, fmt.Errorf("agent session %s needs a tool and a workspace", sess.ID)
 	}
 	if existing, ok := s.AgentSessions[sess.ID]; ok {
+		if sess.MountedWorkspaces == nil {
+			sess.MountedWorkspaces = existing.MountedWorkspaces
+		}
 		if !existing.StartTime.IsZero() {
 			sess.StartTime = existing.StartTime
 		}
