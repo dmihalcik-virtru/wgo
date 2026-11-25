@@ -12,7 +12,7 @@ func TestParseSprintsSingleDocument(t *testing.T) {
 		{"id":7677,"name":"PQ 🗝️ 26s6","goal":"ML-KEM","state":"closed",
 		 "startDate":"2026-06-05T14:49:34.525Z","endDate":"2026-06-24T16:00:00.000Z"}
 	]}`
-	sprints, err := parseSprints(raw)
+	sprints, err := parseSprints([]byte(raw))
 	require.NoError(t, err)
 	require.Len(t, sprints, 1)
 	assert.Equal(t, 7677, sprints[0].ID)
@@ -22,13 +22,9 @@ func TestParseSprintsSingleDocument(t *testing.T) {
 	assert.Equal(t, 2026, sprints[0].EndDate.Year())
 }
 
-// acli --paginate emits one JSON object per page, concatenated. parseSprints must
-// accumulate across all of them.
-func TestParseSprintsPaginatedMultiDocument(t *testing.T) {
-	raw := `{"sprints":[{"id":1,"name":"A","endDate":"2025-01-01T00:00:00.000Z"}]}
-{"sprints":[{"id":2,"name":"B","endDate":"2026-06-24T16:00:00.000Z"}]}
-{"sprints":[{"id":3,"name":"C","endDate":"2026-06-30T00:00:00.000Z"}]}`
-	sprints, err := parseSprints(raw)
+func TestParseSprintsPage(t *testing.T) {
+	raw := `{"sprints":[{"id":1,"name":"A"},{"id":2,"name":"B"},{"id":3,"name":"C"}],"total":3,"isLast":true}`
+	sprints, err := parseSprints([]byte(raw))
 	require.NoError(t, err)
 	require.Len(t, sprints, 3)
 	ids := []int{sprints[0].ID, sprints[1].ID, sprints[2].ID}

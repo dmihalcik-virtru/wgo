@@ -208,14 +208,14 @@ func TestSprintExtractExplainsMissingSprints(t *testing.T) {
 		}, []string{"## Sprint summary unavailable: No sprint data\n", "does not report the jira_sprints source"}, true},
 		{"not cached", func(s *Snapshot) {
 			noSprints(s)
-			s.Sources[SourceJiraSprints] = SourceStatus{State: Unknown, Unknown: 1, Detail: "board 42's sprints are not cached yet; wgo dash fetches them in the background with acli (wgo dash --json --refresh fetches them now)",
+			s.Sources[SourceJiraSprints] = SourceStatus{State: Unknown, Unknown: 1, Detail: "board 42's sprints are not cached yet; wgo dash fetches them in the background with twg (wgo dash --json --refresh fetches them now)",
 				Parts: []SourcePart{{Name: "board 42", State: Unknown}}}
-		}, []string{"## Sprint summary unavailable: Board 42's sprints are not known yet\n", "Board 42's sprints are not cached yet; wgo dash fetches them in the background with acli (wgo dash --json --refresh fetches them now).\n"}, false},
+		}, []string{"## Sprint summary unavailable: Board 42's sprints are not known yet\n", "Board 42's sprints are not cached yet; wgo dash fetches them in the background with twg (wgo dash --json --refresh fetches them now).\n"}, false},
 		{"failed", func(s *Snapshot) {
 			noSprints(s)
-			s.Sources[SourceJiraSprints] = SourceStatus{State: Error, Error: 1, Detail: "board 42: the sprint lookup failed; check acli is installed and authenticated (acli jira auth status)",
-				Parts: []SourcePart{{Name: "board 42", State: Error, Error: "acli: not logged in"}}}
-		}, []string{"## Sprint summary unavailable: Board 42's sprints could not be read\n", "The lookup failed: acli: not logged in.\n", "check acli is installed"}, false},
+			s.Sources[SourceJiraSprints] = SourceStatus{State: Error, Error: 1, Detail: "board 42: the sprint lookup failed; check twg is installed and authenticated (twg whoami)",
+				Parts: []SourcePart{{Name: "board 42", State: Error, Error: "twg: not logged in"}}}
+		}, []string{"## Sprint summary unavailable: Board 42's sprints could not be read\n", "The lookup failed: twg: not logged in.\n", "check twg is installed"}, false},
 		{"no active sprint", func(s *Snapshot) {
 			var nodes []Node
 			for _, n := range s.Nodes {
@@ -257,7 +257,7 @@ func TestSprintExtractExplainsMissingSprints(t *testing.T) {
 	// A failed ticket search on a sprint that has data is a note on it.
 	v := sprintView(t, func(s *Snapshot) {
 		st := s.Sources[SourceJiraSprints]
-		st.Parts = append(st.Parts, SourcePart{Name: "sprint 1234", State: Stale, Error: "acli: HTTP 502"})
+		st.Parts = append(st.Parts, SourcePart{Name: "sprint 1234", State: Stale, Error: "twg: HTTP 502"})
 		s.Sources[SourceJiraSprints] = st
 		for i := range s.Nodes {
 			if s.Nodes[i].ID == "sprint:1234" {
@@ -269,7 +269,7 @@ func TestSprintExtractExplainsMissingSprints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Note: Jira found more tickets in this sprint than wgo reads, so some are missing.\n", "Note: This sprint's last ticket search failed (acli: HTTP 502); its tickets are from an earlier search.\n"} {
+	for _, want := range []string{"Note: Jira found more tickets in this sprint than wgo reads, so some are missing.\n", "Note: This sprint's last ticket search failed (twg: HTTP 502); its tickets are from an earlier search.\n"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("lacks %q:\n%s", want, md)
 		}

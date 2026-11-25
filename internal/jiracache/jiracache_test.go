@@ -76,7 +76,7 @@ func TestReadCorruptEntryIsMiss(t *testing.T) {
 }
 
 // TestNegativeEntryShortTTL: a failed-fetch entry expires under negativeTTL even
-// when the caller passes a much longer ttl, so a broken acli is retried sooner
+// when the caller passes a much longer ttl, so a broken twg is retried sooner
 // than a real status would go stale.
 func TestNegativeEntryShortTTL(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

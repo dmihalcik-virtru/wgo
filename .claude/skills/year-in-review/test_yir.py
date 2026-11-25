@@ -87,6 +87,52 @@ class IsBot(unittest.TestCase):
             self.assertFalse(collect.is_bot(login), login)
 
 
+class TwgJira(unittest.TestCase):
+    def test_site_from_active_default_profile(self):
+        data = {"activeEnvironment": "prod", "defaults": {"prod": "b"},
+                "profiles": [{"id": "a", "site": "wrong.example"}, {"id": "b", "site": "right.example"}]}
+        with mock.patch.object(collect, "twg_json", return_value=data):
+            self.assertEqual(collect.jira_site(), "right.example")
+
+    def test_cursor_query(self):
+        pages = [
+            {"issues": [{"key": "TEAM-1"}], "pageInfo": {"hasNextPage": True, "nextCursor": "next"}},
+            {"issues": [{"key": "TEAM-2"}], "pageInfo": {"hasNextPage": False}},
+        ]
+        with mock.patch.object(collect, "twg_json", side_effect=pages) as call:
+            self.assertEqual(collect.jira_keys("project = TEAM"), ["TEAM-1", "TEAM-2"])
+            self.assertIn("--after", call.call_args_list[1].args[0])
+            self.assertIn("next", call.call_args_list[1].args[0])
+
+    def test_bulk_fetches_twenty_at_a_time(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(collect, "CACHE", collect.Path(tmp)):
+            keys = [f"TEAM-{n}" for n in range(1, 22)]
+
+            def bulk(args):
+                batch = args[3:args.index("--fields")]
+                return {"items": [{"input": key, "ok": True,
+                                   "data": {"key": key, "summary": key, "status": {"name": "Done"},
+                                            "parent": {"key": "TEAM-0", "fields": {"summary": "Epic"}},
+                                            "url": f"https://jira.example/browse/{key}"}}
+                                  for key in batch]}
+
+            with mock.patch.object(collect, "twg_json", side_effect=bulk) as call:
+                records = collect.jira_issues(keys, "customfield_1", "customfield_2")
+                self.assertEqual(call.call_count, 2)
+            self.assertEqual(len(records), 21)
+            self.assertEqual(records[0]["parent_summary"], "Epic")
+            self.assertEqual(records[-1]["url"], "https://jira.example/browse/TEAM-21")
+
+    def test_structured_error_envelope(self):
+        body = {"apiVersion": "v2", "ok": False,
+                "error": {"code": "AUTH_REQUIRED", "kind": "authentication", "message": "login required"}}
+        completed = subprocess.CompletedProcess([], 1, json.dumps(body), "")
+        with mock.patch.object(collect, "twg_binary", return_value="twg"), \
+                mock.patch.object(collect.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(RuntimeError, "AUTH_REQUIRED"):
+                collect.twg_json(["whoami"])
+
+
 class GhGraphql(unittest.TestCase):
     def fake(self, returncode, stdout, stderr=""):
         return mock.patch.object(

@@ -13,7 +13,7 @@ import (
 
 var specJiraCmd = &cobra.Command{
 	Use:   "jira",
-	Short: "Jira integration for spec files (requires acli)",
+	Short: "Jira integration for spec files (requires twg)",
 }
 
 var specJiraFocusCmd = &cobra.Command{

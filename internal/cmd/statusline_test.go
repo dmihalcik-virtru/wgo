@@ -90,7 +90,7 @@ func TestColorize(t *testing.T) {
 }
 
 // TestTicketURL resolves GitHub-issue tickets against the remote; non-numeric
-// GH tickets yield no link. A Jira ticket falls back to the acli-detected
+// GH tickets yield no link. A Jira ticket falls back to the twg-detected
 // autoSite when config (unset here, so config.Get() is nil) supplies none.
 func TestTicketURL(t *testing.T) {
 	assert.Equal(t, "https://github.com/acme/widgets/issues/9",

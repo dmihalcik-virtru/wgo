@@ -16,14 +16,14 @@ import (
 	"github.com/virtru/wgo/internal/jiracache"
 )
 
-// searchIssuesJSON and listSprints are the acli seams of the sprint
+// searchIssuesJSON and listSprints are the twg seams of the sprint
 // fetcher; tests replace them.
 var (
 	searchIssuesJSON = jira.SearchIssuesJSONContext
 	listSprints      = jira.ListSprintsContext
 )
 
-// sprintFetcher adapts the acli-backed jira client to
+// sprintFetcher adapts the twg-backed jira client to
 // jiracache.SprintFetcher.
 type sprintFetcher struct{}
 
@@ -45,11 +45,11 @@ func (f sprintFetcher) FetchSprints(board int, assignees []string) (jiracache.Bo
 }
 
 // FetchSprintsContext implements jiracache.SprintContextFetcher:
-// FetchSprints, with acli killed when ctx is done.
+// FetchSprints, with twg killed when ctx is done.
 func (sprintFetcher) FetchSprintsContext(ctx context.Context, board int, assignees []string) (jiracache.BoardSprints, error) {
 	sprints, err := listSprints(ctx, board, "active,future", true)
 	if err != nil {
-		return jiracache.BoardSprints{}, errors.New(acliErrorLine(err.Error()))
+		return jiracache.BoardSprints{}, errors.New(twgErrorLine(err.Error()))
 	}
 	out := jiracache.BoardSprints{Board: board, Sprints: []jiracache.SprintEntry{}}
 	rejected := map[string]string{} // identity -> Jira's error
@@ -71,19 +71,19 @@ func (sprintFetcher) FetchSprintsContext(ctx context.Context, board int, assigne
 		out.Sprints = append(out.Sprints, e)
 	}
 	if err := ctx.Err(); err != nil {
-		// acli was killed part way: the failed searches say nothing.
+		// twg was killed part way: the failed searches say nothing.
 		return jiracache.BoardSprints{}, err
 	}
 	for _, a := range slices.Sorted(maps.Keys(rejected)) {
 		out.Notes = append(out.Notes, fmt.Sprintf("Jira rejected the sprint search for %q (%s), so that person's sprint tickets are missing: %s; fix it in ~/.wgo/config.toml, or remove it",
 			a, jiraIdentitySource(a), rejected[a]))
 	}
-	out.Site = acliSiteHost()
+	out.Site = twgSiteHost(ctx)
 	return out, nil
 }
 
 // sprintTickets searches one sprint's tickets assigned to assignees or to
-// no one, with the fields acli's search allows. skipped counts the results
+// no one, with every known Facts field. skipped counts the results
 // it could not read. errMsg is set, and tickets nil, when the search
 // failed. A failed search is retried in parts: the unassigned tickets
 // alone, which name no identity, so their failure is the search's own;
@@ -92,7 +92,9 @@ func (sprintFetcher) FetchSprintsContext(ctx context.Context, board int, assigne
 // added to rejected; any other failure (a rate limit, a timeout) fails
 // the sprint's search, so its earlier tickets are kept.
 func sprintTickets(ctx context.Context, sprint int, assignees []string, rejected map[string]string) (tickets []jiracache.SprintTicket, truncated bool, skipped int, errMsg string) {
+	initialFields := searchSprintFields(ctx)
 	raws, err := searchSprint(ctx, sprint, assignees, true)
+	splitSearch := err != nil
 	if err != nil && len(assignees) > 0 && ctx.Err() == nil {
 		raws, err = searchSprint(ctx, sprint, nil, true)
 		for _, a := range assignees {
@@ -101,25 +103,39 @@ func sprintTickets(ctx context.Context, sprint int, assignees []string, rejected
 			}
 			one, aerr := searchSprint(ctx, sprint, []string{a}, false)
 			if aerr != nil && ctx.Err() != nil {
-				return nil, false, 0, acliErrorLine(aerr.Error())
+				return nil, false, 0, twgErrorLine(aerr.Error())
 			}
 			switch {
 			case aerr == nil:
 				raws = append(raws, one...)
 			case identityRejected(aerr):
-				rejected[a] = acliErrorLine(aerr.Error())
+				rejected[a] = twgErrorLine(aerr.Error())
 			default:
 				err = aerr
 			}
 		}
 	}
 	if err != nil {
-		return nil, false, 0, acliErrorLine(err.Error())
+		return nil, false, 0, twgErrorLine(err.Error())
+	}
+	var ids jira.FieldIDs
+	if len(raws) > 0 {
+		var first struct {
+			Key string `json:"key"`
+		}
+		if json.Unmarshal(raws[0], &first) == nil && first.Key != "" {
+			ids, _ = jiraFieldIDs(ctx, first.Key, raws[0])
+			if !splitSearch && len(jira.SearchFactFieldsFor(ids)) > len(initialFields) {
+				if enriched, err := searchIssuesJSON(ctx, jira.SprintTicketsJQL(sprint, assignees, true), jira.SearchFactFieldsFor(ids), jiracache.MaxSprintTickets+1); err == nil {
+					raws = enriched
+				}
+			}
+		}
 	}
 	seen := map[string]bool{}
 	tickets = []jiracache.SprintTicket{}
 	for _, raw := range raws {
-		f, _, err := jira.ParseFacts(raw, jira.FieldIDs{})
+		f, _, err := jira.ParseFacts(raw, ids)
 		if err != nil {
 			debugf("jira sprint %d: skipping an unreadable search result: %v", sprint, err)
 			skipped++
@@ -141,7 +157,30 @@ func sprintTickets(ctx context.Context, sprint int, assignees []string, rejected
 // searchSprint runs one sprint's ticket search for assignees and, when
 // unassigned is set, its tickets assigned to no one.
 func searchSprint(ctx context.Context, sprint int, assignees []string, unassigned bool) ([]json.RawMessage, error) {
-	return searchIssuesJSON(ctx, jira.SprintTicketsJQL(sprint, assignees, unassigned), jira.SearchFactFields, jiracache.MaxSprintTickets+1)
+	return searchIssuesJSON(ctx, jira.SprintTicketsJQL(sprint, assignees, unassigned), searchSprintFields(ctx), jiracache.MaxSprintTickets+1)
+}
+
+func searchSprintFields(ctx context.Context) []string {
+	ids := jira.FieldIDs{}
+	blocked := map[string]bool{}
+	if cfg := config.Get(); cfg != nil {
+		configured := jira.FieldIDs{StoryPoints: cfg.Jira.Fields.StoryPoints, Sprint: cfg.Jira.Fields.Sprint, Team: cfg.Jira.Fields.Team, EpicLink: cfg.Jira.Fields.EpicLink}
+		for _, name := range jira.FieldNames {
+			blocked[name] = strings.EqualFold(configured.Get(name), noField)
+			if fieldIDRe.MatchString(configured.Get(name)) {
+				ids.Set(name, configured.Get(name))
+			}
+		}
+	}
+	if cached, ok := jiracache.ReadFieldsForSite(twgSiteHost(ctx), jiracache.FieldsTTL); ok {
+		known := jira.FieldIDs{StoryPoints: cached.StoryPoints, Sprint: cached.Sprint, Team: cached.Team, EpicLink: cached.EpicLink}
+		for _, name := range jira.FieldNames {
+			if !blocked[name] && ids.Get(name) == "" && fieldIDRe.MatchString(known.Get(name)) {
+				ids.Set(name, known.Get(name))
+			}
+		}
+	}
+	return jira.SearchFactFieldsFor(ids)
 }
 
 // identityRejected reports whether a search failed because Jira does not
@@ -156,7 +195,7 @@ func identityRejected(err error) bool {
 // from, for a diagnostic.
 func jiraIdentitySource(id string) string {
 	if id == dash.JiraCurrentUser {
-		return "the user acli is logged in as"
+		return "the user twg is logged in as"
 	}
 	if cfg := config.Get(); cfg != nil {
 		for i, p := range cfg.Dash.People {

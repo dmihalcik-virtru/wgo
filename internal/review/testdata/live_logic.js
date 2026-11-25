@@ -859,8 +859,8 @@ test("sprint: explains a missing board or missing sprint data", () => {
   assert.match(SP.BOARD_SNIPPET, /^\[jira\]\nboard = <id>$/);
   const miss = ex({ jira_sprints: { state: "unknown", detail: "board 42's sprints are not cached yet", parts: [{ name: "board 42", state: "unknown" }] } });
   assert.deepEqual([miss.title, miss.config, miss.detail], ["Board 42's sprints are not known yet", false, ["Board 42's sprints are not cached yet."]]);
-  const failed = ex({ jira_sprints: { state: "error", detail: "board 42: the sprint lookup failed", parts: [{ name: "board 42", state: "error", error: "acli: not logged in" }] } });
-  assert.deepEqual([failed.title, failed.detail], ["Board 42's sprints could not be read", ["The lookup failed: acli: not logged in.", "Board 42: the sprint lookup failed."]]);
+  const failed = ex({ jira_sprints: { state: "error", detail: "board 42: the sprint lookup failed", parts: [{ name: "board 42", state: "error", error: "twg: not logged in" }] } });
+  assert.deepEqual([failed.title, failed.detail], ["Board 42's sprints could not be read", ["The lookup failed: twg: not logged in.", "Board 42: the sprint lookup failed."]]);
   const none = ex({ jira_sprints: { state: "fresh", parts: [{ name: "board 42", state: "fresh" }] } }, [{ id: "sprint:1235", kind: "sprint", sprint: { id: 1235, name: "Sprint 13", state: "future", start: "2026-11-03T08:00:00Z" } }]);
   assert.deepEqual([none.title, none.detail], ["Board 42 has no active sprint", ["The sprint view shows active sprints only.", "Future: Sprint 13 (1235) from 2026-11-03."]]);
   assert.equal(SP.explain(AFIX, SP.activeSprints(AFIX)), null, "an active sprint needs no explanation");

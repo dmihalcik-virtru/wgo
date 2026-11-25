@@ -29,7 +29,7 @@ func (f *failingFetchers) FetchPRs(string, string) ([]models.PRRef, error) {
 
 func (f *failingFetchers) FetchJira(string) (jiracache.Info, error) {
 	f.calls.Add(1)
-	return jiracache.Info{}, errors.New("acli: exit status 1: failed to fetch work item details")
+	return jiracache.Info{}, errors.New("twg: exit status 1: failed to fetch work item details")
 }
 
 func (f *failingFetchers) FetchIssue(issuecache.Key) (issuecache.Info, error) {
@@ -87,7 +87,7 @@ func TestRefreshWaitReportsFailedLookups(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true})
-	if err == nil || !strings.Contains(err.Error(), "4 of 4 lookups failed") || !strings.Contains(err.Error(), "jira WGO-5: acli: exit status 1: failed to fetch work item details") {
+	if err == nil || !strings.Contains(err.Error(), "4 of 4 lookups failed") || !strings.Contains(err.Error(), "jira WGO-5: twg: exit status 1: failed to fetch work item details") {
 		t.Fatalf("Refresh = %v, want the failed lookups", err)
 	}
 	v := d.Current()
@@ -95,7 +95,7 @@ func TestRefreshWaitReportsFailedLookups(t *testing.T) {
 		t.Fatalf("failed lookups not in the view: %v", v.Diagnostics)
 	}
 	// The failed Jira lookup is an error with a hint, not a silent unknown.
-	if tk := v.Snapshot.Node(jiraTicketID("WGO-5")).Ticket; tk.Freshness != Error || !strings.Contains(tk.Error, "acli") {
+	if tk := v.Snapshot.Node(jiraTicketID("WGO-5")).Ticket; tk.Freshness != Error || !strings.Contains(tk.Error, "twg") {
 		t.Fatalf("failed jira lookup: %+v", tk)
 	}
 
@@ -262,7 +262,7 @@ func TestJiraTicketFreshness(t *testing.T) {
 		t.Fatal("failing fetcher succeeded")
 	}
 	s, jobs = c.assemble(ls)
-	if tk := s.Node(jiraTicketID("WGO-5")).Ticket; tk.Freshness != Error || !strings.Contains(tk.Error, "acli jira auth status") {
+	if tk := s.Node(jiraTicketID("WGO-5")).Ticket; tk.Freshness != Error || !strings.Contains(tk.Error, "twg whoami") {
 		t.Fatalf("failed ticket: %+v", tk)
 	}
 	if n := jobsFor(jobs, JobJira); n != 1 {

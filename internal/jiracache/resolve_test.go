@@ -37,7 +37,7 @@ func stubRefresh(t *testing.T) *int32 {
 }
 
 // TestResolveFreshNoNetwork: a Fresh cache hit is served without ever calling
-// the fetcher (the "statusline within the TTL makes no acli call" criterion).
+// the fetcher (the "statusline within the TTL makes no twg call" criterion).
 func TestResolveFreshNoNetwork(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	require.NoError(t, Write(testTicket, sampleInfo()))
@@ -132,12 +132,12 @@ func TestResolveFetchErrorLeavesCache(t *testing.T) {
 }
 
 // TestResolveFetchErrorNegativeCachesColdKey: a fetch error on a cold key writes
-// a short-lived negative entry so an environment without acli serves it locally
+// a short-lived negative entry so an environment without twg serves it locally
 // instead of respawning the warmer on every render.
 func TestResolveFetchErrorNegativeCachesColdKey(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	f := &countingFetcher{err: errors.New("no acli")}
+	f := &countingFetcher{err: errors.New("no twg")}
 	_, _, err := Resolve(f, testTicket, Opts{Synchronous: true})
 	require.Error(t, err)
 

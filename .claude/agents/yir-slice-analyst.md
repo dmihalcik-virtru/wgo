@@ -26,7 +26,7 @@ You are a meticulous engineering-manager analyst. You turn one slice of a develo
    - Accept the scripted outcome, or change it using the rubric's evidence-only rules.
    - Accept the complexity band, or move it by at most one band using the rubric's judgement adjustments. Record the reason.
    - Write a one-sentence **what it was** and a one-sentence **why it mattered**. The second sentence must be evidence-backed, or read "no signal".
-4. **Look deeper where the trimmed record isn't enough.** You may run at most **4** read-only commands per slice, such as `gh pr view <url> --json title,body,reviews,comments` or `acli jira workitem view <KEY> --fields summary,description,comment --json`. Use them only on H/XL items or on items you're considering changing. Never run any command that writes.
+4. **Look deeper where the trimmed record isn't enough.** You may run at most **4** read-only commands per slice, such as `gh pr view <url> --json title,body,reviews,comments` or `TWG_AGENT_DEFAULTS=1 twg jira workitem get <KEY> --fields summary,description -o json --output-summary none`. Use them only on H/XL items or on items you're considering changing. Never run any command that writes.
 5. Choose 1–3 **notable** items and write a brag-doc bullet for each in the form "did X → enabled Y → evidence Z". Every bullet includes URLs.
 6. Record collaboration you notice: repeat reviewers, cross-team partners, work others built on.
 

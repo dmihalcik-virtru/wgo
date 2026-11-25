@@ -11,7 +11,7 @@ import (
 )
 
 // stubJiraFetcher is a jiracache.Fetcher that returns canned data and counts
-// calls, so tests can drive resolveJiraStatus/runRefreshJira without acli.
+// calls, so tests can drive resolveJiraStatus/runRefreshJira without twg.
 type stubJiraFetcher struct {
 	info  jiracache.Info
 	err   error
@@ -34,7 +34,7 @@ func installJiraFetcher(t *testing.T, f jiracache.Fetcher) {
 }
 
 // TestResolveJiraStatusSkipsNonJira: empty and GitHub-issue tickets never touch
-// the cache or acli — they return empty immediately.
+// the cache or twg — they return empty immediately.
 func TestResolveJiraStatusSkipsNonJira(t *testing.T) {
 	status, assignee, site := resolveJiraStatus("", contextOptions{LocalOnly: true})
 	assert.Empty(t, status)
@@ -68,11 +68,11 @@ func TestJiraTTLFallback(t *testing.T) {
 }
 
 // TestResolveJiraStatusDegradesOnFetchError: when the live lookup fails (no
-// acli / not authenticated), resolveJiraStatus swallows the error and returns
+// twg / not authenticated), resolveJiraStatus swallows the error and returns
 // empty strings so wgo . degrades cleanly rather than erroring.
 func TestResolveJiraStatusDegradesOnFetchError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	f := &stubJiraFetcher{err: errors.New("acli unavailable")}
+	f := &stubJiraFetcher{err: errors.New("twg unavailable")}
 	installJiraFetcher(t, f)
 
 	// Default opts fetch synchronously on a cold miss, exercising the error path.

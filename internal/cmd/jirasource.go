@@ -21,7 +21,7 @@ func init() {
 	jiracache.Logf = debugf
 }
 
-// jiraFetcher adapts the acli-backed jira client to jiracache.Fetcher: it reads
+// jiraFetcher adapts the twg-backed jira client to jiracache.Fetcher: it reads
 // a ticket's live status and assignee and projects them onto the compact
 // jiracache.Info the cache stores.
 type jiraFetcher struct{}
@@ -32,11 +32,11 @@ func newJiraFetcher() jiracache.Fetcher {
 }
 
 // jiraFetcherFn is the seam used to obtain the Fetcher for cache resolution.
-// Production uses the acli-backed newJiraFetcher; tests override it to inject a
-// stub so they never shell out to acli.
+// Production uses the twg-backed newJiraFetcher; tests override it to inject a
+// stub so they never shell out to twg.
 var jiraFetcherFn = newJiraFetcher
 
-// FetchJira implements jiracache.Fetcher. The acli shell-out lands here (off the
+// FetchJira implements jiracache.Fetcher. The twg shell-out lands here (off the
 // statusline hot path), never on reads. Besides the status and assignee the
 // statusline shows, it reads the ticket facts wgo dash shows (gh-98); see
 // fetchTicketFacts.
@@ -45,31 +45,59 @@ func (f jiraFetcher) FetchJira(ticket string) (jiracache.Info, error) {
 }
 
 // FetchJiraContext implements jiracache.ContextFetcher: FetchJira, with
-// acli killed when ctx is done.
+// twg killed when ctx is done.
 func (jiraFetcher) FetchJiraContext(ctx context.Context, ticket string) (jiracache.Info, error) {
 	info, err := fetchTicketFactsContext(ctx, ticket)
 	if err != nil {
 		return jiracache.Info{}, err
 	}
-	// Best-effort: also cache the acli-detected site host so ticketURL can build
+	// Best-effort: also cache the twg-detected site host so ticketURL can build
 	// a Jira browse link when jira.site isn't configured. A failure here (no
-	// acli, not authenticated) just leaves Site empty — it doesn't fail the
+	// twg, not authenticated) just leaves Site empty — it doesn't fail the
 	// status fetch.
-	info.Site = acliSiteHost()
+	info.Site = twgSiteHost(ctx)
 	return info, nil
 }
 
-// resolveJiraStatus returns the live Jira status, assignee, and acli-detected
+// FetchJiraBatchContext hydrates dashboard tickets with a single Jira
+// bulkfetch request. A missing ticket does not discard its neighbors.
+func (jiraFetcher) FetchJiraBatchContext(ctx context.Context, tickets []string) (map[string]jiracache.FetchOutcome, error) {
+	items, err := jira.BulkGetIssuesJSONContext(ctx, tickets, jira.FactFields)
+	if err != nil {
+		return nil, err
+	}
+	site := twgSiteHost(ctx)
+	out := make(map[string]jiracache.FetchOutcome, len(items))
+	for _, item := range items {
+		if item.Err != nil {
+			out[item.Input] = jiracache.FetchOutcome{Err: item.Err}
+			continue
+		}
+		ids, notes := jiraFieldIDs(ctx, item.Input, item.Data)
+		facts, factNotes, err := jira.ParseFacts(item.Data, ids)
+		if err != nil {
+			out[item.Input] = jiracache.FetchOutcome{Err: fmt.Errorf("jira %s: %w", item.Input, err)}
+			continue
+		}
+		info := infoFromFacts(facts)
+		info.Site = site
+		info.Notes = append(notes, factNotes...)
+		out[item.Input] = jiracache.FetchOutcome{Info: info}
+	}
+	return out, nil
+}
+
+// resolveJiraStatus returns the live Jira status, assignee, and twg-detected
 // site host for a ticket according to opts, delegating the cache/network
 // reconciliation to jiracache.Resolve (mirroring resolvePRs):
 //
 //   - statusline hot path (LocalOnly): read-through only; a Stale/Miss serves
-//     whatever is cached and kicks a background refresh. Never blocks on acli.
+//     whatever is cached and kicks a background refresh. Never blocks on twg.
 //   - wgo . (default): read-through with a synchronous fetch on a cold miss.
 //   - --refresh (opts.Refresh): bypass the cache and fetch synchronously.
 //
 // It returns empty strings for non-Jira tickets (GH-<n> GitHub issues) and when
-// the status/site is unavailable (no acli / not authenticated). site is only
+// the status/site is unavailable (no twg / not authenticated). site is only
 // ever used by ticketURL as a fallback when jira.site isn't configured.
 func resolveJiraStatus(ticket string, opts contextOptions) (status, assignee, site string) {
 	if ticket == "" || strings.HasPrefix(ticket, "GH-") {
@@ -101,23 +129,23 @@ func jiraTTL() time.Duration {
 	return 600 * time.Second
 }
 
-// getIssueJSON is the acli seam of the ticket fetcher; tests replace it.
+// getIssueJSON is the twg seam of the ticket fetcher; tests replace it.
 var getIssueJSON = jira.GetIssueJSONContext
 
-// jiraLoginFn is the acli seam wgo dash asks whether acli is logged in when
+// jiraLoginFn is the twg seam wgo dash asks whether twg is logged in when
 // Jira lookups fail; tests replace it.
 var jiraLoginFn = jira.LoginStatus
 
 // fetchTicketFacts reads a ticket with every field, so the site's custom
 // fields come along under their IDs, and parses its facts with the field
-// IDs jiraFieldIDs resolves. Should acli refuse every field, it falls back
+// IDs jiraFieldIDs resolves. Should twg refuse every field, it falls back
 // to the system fields by name, leaving the custom fields unknown with a
 // note saying so.
 func fetchTicketFacts(ticket string) (jiracache.Info, error) {
 	return fetchTicketFactsContext(context.Background(), ticket)
 }
 
-// fetchTicketFactsContext is fetchTicketFacts, with acli killed when ctx is
+// fetchTicketFactsContext is fetchTicketFacts, with twg killed when ctx is
 // done.
 func fetchTicketFactsContext(ctx context.Context, ticket string) (jiracache.Info, error) {
 	raw, err := getIssueJSON(ctx, ticket, jira.FactFields)
@@ -128,7 +156,7 @@ func fetchTicketFactsContext(ctx context.Context, ticket string) (jiracache.Info
 	case err != nil && fieldsRefused(err):
 		// Only a refused field list is worth a second call; any other
 		// failure (an expired login, a missing ticket) would fail it too.
-		debugf("jira %s: acli refused %s: %v", ticket, jira.FactFields, err)
+		debugf("jira %s: twg refused %s: %v", ticket, jira.FactFields, err)
 		var ferr error
 		if raw, ferr = getIssueJSON(ctx, ticket, jira.FactFieldList); ferr != nil {
 			// The retry's error is the one to act on (an expired login, say);
@@ -136,11 +164,11 @@ func fetchTicketFactsContext(ctx context.Context, ticket string) (jiracache.Info
 			return jiracache.Info{}, errors.Join(ferr, err)
 		}
 		partial = true
-		notes = append(notes, "acli refused to return every Jira field ('*all'), so story points, sprints and team are unknown; wgo retries soon")
+		notes = append(notes, "twg refused to return every Jira field ('*all'), so story points, sprints and team are unknown; wgo retries soon")
 	case err != nil:
 		return jiracache.Info{}, err
 	default:
-		ids, notes = jiraFieldIDs(raw)
+		ids, notes = jiraFieldIDs(ctx, ticket, raw)
 	}
 	facts, factNotes, err := jira.ParseFacts(raw, ids)
 	if err != nil {
@@ -152,18 +180,18 @@ func fetchTicketFactsContext(ctx context.Context, ticket string) (jiracache.Info
 	return info, nil
 }
 
-// fieldsRefused reports whether acli rejected the --fields value, as it
+// fieldsRefused reports whether twg rejected the --fields value, as it
 // does with "field '…' is not allowed" for fields its search refuses.
 func fieldsRefused(err error) bool {
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "not allowed") || (strings.Contains(s, "field") && strings.Contains(s, "invalid"))
 }
 
-// siteHostTTL bounds how long a process reuses the acli-detected site host.
+// siteHostTTL bounds how long a process reuses the twg-detected site host.
 const siteHostTTL = 15 * time.Minute
 
-// siteHostFn is the acli seam of acliSiteHost; tests replace it.
-var siteHostFn = jira.SiteHost
+// siteHostFn is the twg seam of twgSiteHost; tests replace it.
+var siteHostFn = jira.SiteHostContext
 
 var siteHostMemo struct {
 	sync.Mutex
@@ -171,20 +199,20 @@ var siteHostMemo struct {
 	at   time.Time
 }
 
-// acliSiteHost returns the Jira host acli is logged in to, or "" when
-// jira.site is configured (it is then never used) or acli cannot say. acli
+// twgSiteHost returns the Jira host twg is logged in to, or "" when
+// jira.site is configured or twg cannot say. twg
 // is asked at most once per siteHostTTL in a process, so a refresh of many
-// tickets costs one extra acli call, not one per ticket.
-func acliSiteHost() string {
+// tickets costs one extra twg call, not one per ticket.
+func twgSiteHost(ctx context.Context) string {
 	if cfg := config.Get(); cfg != nil && cfg.Jira.Site != "" {
-		return ""
+		return cfg.Jira.Site
 	}
 	siteHostMemo.Lock()
 	defer siteHostMemo.Unlock()
 	if !siteHostMemo.at.IsZero() && time.Since(siteHostMemo.at) < siteHostTTL {
 		return siteHostMemo.site
 	}
-	site, err := siteHostFn()
+	site, err := siteHostFn(ctx)
 	if err != nil {
 		site = ""
 	}
@@ -199,11 +227,12 @@ var fieldIDRe = regexp.MustCompile(`^customfield_[0-9]+$`)
 const noField = "none"
 
 // jiraFieldIDs resolves the site's custom field IDs: [jira.fields] first,
-// then IDs discovered earlier (cached for jiracache.FieldsTTL in
-// ~/.wgo/cache/jira/fields.json), then discovery in raw, a ticket's full
-// JSON, whose finds are cached. notes name each field that stays unknown
+// then IDs discovered earlier (cached for jiracache.FieldsTTL per site),
+// then field update-metadata for the ticket. Notes name fields that stay unknown
 // and the [jira.fields] key that would fix it.
-func jiraFieldIDs(raw []byte) (jira.FieldIDs, []string) {
+var discoverFieldIDs = jira.DiscoverFieldIDsContext
+
+func jiraFieldIDs(ctx context.Context, ticket string, raw []byte) (jira.FieldIDs, []string) {
 	cfg := config.Get()
 	if cfg == nil {
 		// A command that never loaded config would write the entry without
@@ -240,18 +269,24 @@ func jiraFieldIDs(raw []byte) (jira.FieldIDs, []string) {
 	if len(unset) == 0 {
 		return ids, notes
 	}
-	cached, _ := jiracache.ReadFields(jiracache.FieldsTTL)
+	site := twgSiteHost(ctx)
+	cached, fresh := jiracache.ReadFieldsForSite(site, jiracache.FieldsTTL)
 	known := jira.FieldIDs{StoryPoints: cached.StoryPoints, Sprint: cached.Sprint, Team: cached.Team, EpicLink: cached.EpicLink}
-	if found, err := jira.DiscoverFieldIDs(raw); err == nil {
-		grew := false
+	if !fresh && ctx.Err() == nil {
+		found, err := discoverFieldIDs(ctx, ticket)
+		if err != nil {
+			debugf("jira %s: field metadata: %v", ticket, err)
+			// A sprint value still identifies its field if metadata is
+			// unavailable, without guessing the other IDs.
+			found, _ = jira.DiscoverFieldIDs(raw)
+		}
 		for _, name := range jira.FieldNames {
 			if known.Get(name) == "" && found.Get(name) != "" {
 				known.Set(name, found.Get(name))
-				grew = true
 			}
 		}
-		if grew {
-			err := jiracache.WriteFields(jiracache.Fields{StoryPoints: known.StoryPoints, Sprint: known.Sprint, Team: known.Team, EpicLink: known.EpicLink})
+		if err == nil {
+			err := jiracache.WriteFieldsForSite(site, jiracache.Fields{StoryPoints: known.StoryPoints, Sprint: known.Sprint, Team: known.Team, EpicLink: known.EpicLink})
 			if err != nil {
 				debugf("jira cache: write discovered fields: %v", err)
 			}
@@ -270,10 +305,7 @@ func jiraFieldIDs(raw []byte) (jira.FieldIDs, []string) {
 		if name == jira.FieldEpicLink {
 			continue
 		}
-		hint := "acli cannot list a site's fields to discover it"
-		if name == jira.FieldSprint {
-			hint = "it is discovered from a ticket that is in a sprint"
-		}
+		hint := "twg field metadata did not provide its ID"
 		notes = append(notes, fmt.Sprintf("Jira %s are unknown: set %s in [jira.fields] of ~/.wgo/config.toml to this site's field ID (such as customfield_10016), or to \"none\"; %s",
 			jira.FieldLabel(name), name, hint))
 	}
@@ -312,10 +344,10 @@ func infoFromFacts(f jira.Facts) jiracache.Info {
 	return info
 }
 
-// acliErrorLine folds an acli error onto one line: its message comes after a
+// twgErrorLine folds an twg error onto one line: its message comes after a
 // first line that only says the command failed. It is capped at 300
 // characters, for a diagnostic.
-func acliErrorLine(s string) string {
+func twgErrorLine(s string) string {
 	var parts []string
 	for line := range strings.SplitSeq(s, "\n") {
 		if line = strings.TrimSpace(line); line != "" {

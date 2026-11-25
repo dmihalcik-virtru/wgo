@@ -1,6 +1,8 @@
 package jiracache
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -24,6 +26,7 @@ type Fields struct {
 }
 
 type fieldsEntry struct {
+	Site         string    `json:"site,omitempty"`
 	Fields       Fields    `json:"fields"`
 	DiscoveredAt time.Time `json:"discovered_at"`
 }
@@ -31,7 +34,12 @@ type fieldsEntry struct {
 // ReadFields returns the discovered field IDs, and whether they are younger
 // than ttl. It never makes a network call.
 func ReadFields(ttl time.Duration) (Fields, bool) {
-	path, err := fieldsPath()
+	return ReadFieldsForSite("", ttl)
+}
+
+// ReadFieldsForSite reads discovered IDs only for site.
+func ReadFieldsForSite(site string, ttl time.Duration) (Fields, bool) {
+	path, err := fieldsPathForSite(site)
 	if err != nil {
 		return Fields{}, false
 	}
@@ -47,7 +55,7 @@ func ReadFields(ttl time.Duration) (Fields, bool) {
 		logf("jira cache: corrupt entry %s: %v", path, err)
 		return Fields{}, false
 	}
-	if time.Since(e.DiscoveredAt) >= ttl {
+	if e.Site != site || time.Since(e.DiscoveredAt) >= ttl {
 		return Fields{}, false
 	}
 	return e.Fields, true
@@ -55,11 +63,16 @@ func ReadFields(ttl time.Duration) (Fields, bool) {
 
 // WriteFields stores discovered field IDs, stamped now, atomically.
 func WriteFields(f Fields) error {
-	path, err := fieldsPath()
+	return WriteFieldsForSite("", f)
+}
+
+// WriteFieldsForSite stores discovered IDs under a site-specific cache key.
+func WriteFieldsForSite(site string, f Fields) error {
+	path, err := fieldsPathForSite(site)
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(fieldsEntry{Fields: f, DiscoveredAt: time.Now()}, "", "  ")
+	data, err := json.MarshalIndent(fieldsEntry{Site: site, Fields: f, DiscoveredAt: time.Now()}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -69,9 +82,18 @@ func WriteFields(f Fields) error {
 // fieldsPath is ~/.wgo/cache/jira/fields.json. No ticket key can collide
 // with it: keys carry a dash and digits.
 func fieldsPath() (string, error) {
+	return fieldsPathForSite("")
+}
+
+func fieldsPathForSite(site string) (string, error) {
 	s, err := store.New()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(s.BaseDir(), "cache", "jira", "fields.json"), nil
+	name := "fields.json"
+	if site != "" {
+		hash := sha256.Sum256([]byte(site))
+		name = "fields-" + hex.EncodeToString(hash[:8]) + ".json"
+	}
+	return filepath.Join(s.BaseDir(), "cache", "jira", name), nil
 }

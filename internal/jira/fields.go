@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -14,24 +15,39 @@ var fieldNames = []struct{ name, field string }{
 	{"story point estimate", FieldStoryPoints},
 	{"sprint", FieldSprint},
 	{"team", FieldTeam},
+	{"team assignment", FieldTeam},
 	{"epic link", FieldEpicLink},
 }
 
-// DiscoverFieldIDs finds a site's custom field IDs in acli's JSON for one
-// work item. When the document carries Jira's "names" map (field ID to
-// name) it matches by name: "Story Points" (or "Story point estimate"),
-// "Sprint", "Team" and "Epic Link". Otherwise it can find only the sprint
-// field, whose value has a shape no other field has, and only on a ticket
-// that is or was in a sprint. acli has no command that lists a site's
-// fields, so the others usually need [jira.fields]. The result holds only
-// the IDs found.
+// DiscoverFieldIDs reads twg field update-metadata data, matching custom
+// fields by their display names. It also accepts legacy names maps in cached
+// test fixtures and can identify a sprint field by its value shape.
 func DiscoverFieldIDs(raw []byte) (FieldIDs, error) {
 	var doc struct {
-		Names  map[string]string          `json:"names"`
-		Fields map[string]json.RawMessage `json:"fields"`
+		Names  map[string]string `json:"names"`
+		Fields json.RawMessage   `json:"fields"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return FieldIDs{}, fmt.Errorf("parse work item: %w", err)
+	}
+	if len(doc.Fields) > 0 && doc.Fields[0] == '[' {
+		var metadata []struct {
+			ID   string `json:"id"`
+			Key  string `json:"key"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(doc.Fields, &metadata); err != nil {
+			return FieldIDs{}, fmt.Errorf("parse field metadata: %w", err)
+		}
+		for _, field := range metadata {
+			id := field.ID
+			if !strings.HasPrefix(id, "customfield_") {
+				id = field.Key
+			}
+			if strings.HasPrefix(id, "customfield_") && field.Name != "" {
+				doc.Names = appendName(doc.Names, id, field.Name)
+			}
+		}
 	}
 	var found FieldIDs
 	ids := make([]string, 0, len(doc.Names))
@@ -51,9 +67,32 @@ func DiscoverFieldIDs(raw []byte) (FieldIDs, error) {
 		}
 	}
 	if found.Sprint == "" {
-		found.Sprint = sprintFieldByShape(doc.Fields)
+		var fields map[string]json.RawMessage
+		if len(doc.Fields) > 0 && json.Unmarshal(doc.Fields, &fields) == nil {
+			found.Sprint = sprintFieldByShape(fields)
+		} else if json.Unmarshal(raw, &fields) == nil {
+			found.Sprint = sprintFieldByShape(fields)
+		}
 	}
 	return found, nil
+}
+
+func appendName(names map[string]string, id, name string) map[string]string {
+	if names == nil {
+		names = make(map[string]string)
+	}
+	names[id] = name
+	return names
+}
+
+// DiscoverFieldIDsContext fetches the field metadata for a work item without
+// changing it. The result can be cached for other tickets at the same site.
+func DiscoverFieldIDsContext(ctx context.Context, ticket string) (FieldIDs, error) {
+	data, err := runContext(ctx, "jira", "workitem", "field", "update-metadata", "--id", ticket)
+	if err != nil {
+		return FieldIDs{}, err
+	}
+	return DiscoverFieldIDs(data)
 }
 
 // sprintFieldByShape returns the one custom field whose value is a

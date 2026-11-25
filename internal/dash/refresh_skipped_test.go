@@ -12,7 +12,7 @@ func TestRefreshReportsSkippedIntegrationsWithoutError(t *testing.T) {
 	r := NewRefresher(Fetchers{Missing: map[JobKind]string{
 		JobPR:    "no GitHub token or gh",
 		JobIssue: "no GitHub token or gh",
-		JobJira:  "acli not on PATH",
+		JobJira:  "twg not found on PATH or at ~/.local/bin/twg",
 	}}, RefresherOptions{Workers: 2, IgnoreLeases: true})
 	defer r.Close()
 	d, err := Open(Options{Dir: t.TempDir(), Collector: f.collector(t, time.Now(), memSource{}), Refresher: r})
@@ -23,7 +23,7 @@ func TestRefreshReportsSkippedIntegrationsWithoutError(t *testing.T) {
 		t.Fatalf("skipped integrations must not be an error: %v", err)
 	}
 	v := d.Current()
-	if !hasDiag(v, "GitHub PR lookups skipped: no GitHub token or gh") || !hasDiag(v, "Jira lookups skipped: acli not on PATH") {
+	if !hasDiag(v, "GitHub PR lookups skipped: no GitHub token or gh") || !hasDiag(v, "Jira lookups skipped: twg not found on PATH or at ~/.local/bin/twg") {
 		t.Fatalf("diagnostics = %v", v.Diagnostics)
 	}
 	for _, diag := range v.Diagnostics {

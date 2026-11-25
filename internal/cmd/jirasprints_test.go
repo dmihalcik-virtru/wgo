@@ -20,7 +20,7 @@ import (
 // search on its sprint.
 func TestFetchSprints(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("PATH", t.TempDir()) // jira.SiteHost finds no acli
+	t.Setenv("PATH", t.TempDir()) // jira.SiteHost finds no twg
 	oldList, oldSearch := listSprints, searchIssuesJSON
 	t.Cleanup(func() { listSprints, searchIssuesJSON = oldList, oldSearch })
 	start := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
@@ -84,7 +84,7 @@ func TestFetchSprints(t *testing.T) {
 
 	w8 := got.Sprints[2]
 	assert.Nil(t, w8.Tickets)
-	assert.Equal(t, "search issues: exit status 1: Error: unauthorized", w8.Error, "acli's error on one line")
+	assert.Equal(t, "search issues: exit status 1: Error: unauthorized", w8.Error, "twg's error on one line")
 
 	s13 := got.Sprints[3]
 	assert.Equal(t, "future", s13.State)
@@ -95,15 +95,15 @@ func TestFetchSprintsListFailure(t *testing.T) {
 	old := listSprints
 	t.Cleanup(func() { listSprints = old })
 	listSprints = func(context.Context, int, string, bool) ([]jira.Sprint, error) {
-		return nil, errors.New("list sprints for board 42: exit status 1\n✗ Error: unauthorized: use 'acli jira auth login' to authenticate")
+		return nil, errors.New("list sprints for board 42: AUTH_REQUIRED: login required")
 	}
 	_, err := sprintFetcher{}.FetchSprints(42, []string{"currentUser()"})
-	assert.EqualError(t, err, "list sprints for board 42: exit status 1: ✗ Error: unauthorized: use 'acli jira auth login' to authenticate")
+	assert.EqualError(t, err, "list sprints for board 42: AUTH_REQUIRED: login required")
 }
 
-func TestACLIErrorLine(t *testing.T) {
-	assert.Equal(t, "a: b", acliErrorLine("a\n\n  b  \n"))
-	assert.Len(t, []rune(acliErrorLine(strings.Repeat("x", 400))), 300)
+func TestTWGErrorLine(t *testing.T) {
+	assert.Equal(t, "a: b", twgErrorLine("a\n\n  b  \n"))
+	assert.Len(t, []rune(twgErrorLine(strings.Repeat("x", 400))), 300)
 }
 
 // TestFetchSprintsSurvivesARejectedIdentity: Jira rejects a search naming
@@ -198,7 +198,7 @@ func TestFetchSprintsNotesUnreadableResults(t *testing.T) {
 }
 
 // TestFetchSprintsCutsPagedResults: paginated results beyond the bound are
-// cut locally and the sprint marked truncated, however acli pages them.
+// cut locally and the sprint marked truncated, however twg pages them.
 func TestFetchSprintsCutsPagedResults(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	oldList, oldSearch := listSprints, searchIssuesJSON
@@ -220,7 +220,7 @@ func TestFetchSprintsCutsPagedResults(t *testing.T) {
 }
 
 // TestSprintSearchCutShortRejectsNobody: once the refresh's context is done,
-// a failed search (acli killed) is no verdict on an identity: nobody is
+// a failed search (twg killed) is no verdict on an identity: nobody is
 // reported as rejected or left out, and the board fails with the context's
 // error rather than returning sprints whose searches failed.
 func TestSprintSearchCutShortRejectsNobody(t *testing.T) {
