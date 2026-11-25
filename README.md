@@ -605,6 +605,10 @@ Track tasks through the day:
 wgo add "write tests for the auth refresh fix"
 wgo add "respond to PR #142 review comments"
 
+# Start a tracked workspace from a GitHub issue, using its title and body
+wgo add '#42'                 # also accepts 42, gh-42, or owner/repo#42
+wgo add --github "fix token refresh" --github-labels bug
+
 # ... work happens ...
 
 wgo done "write tests"     # mark matching task complete
@@ -1891,6 +1895,8 @@ delete them to forget your answers.
 | `wgo plan effort unlink <name> <repo:bookmark>` | Remove a bookmark from an effort |
 | `wgo plan effort remove <name> [--force]` | Delete an effort from state and the plan |
 | `wgo add "task"` | Add a task to your plan |
+| `wgo add '#42'` | Start a jj workspace and spec from a GitHub issue |
+| `wgo add --github "task"` | Create a GitHub issue, workspace, and spec |
 | `wgo done "pattern"` | Mark a matching task as complete |
 | `wgo cancel "pattern"` | Cancel a matching task |
 | `wgo ls` | List all discovered repositories |

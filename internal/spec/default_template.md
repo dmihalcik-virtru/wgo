@@ -5,6 +5,8 @@ status: draft
 authors: [{{ range $i, $a := .Authors }}{{ if $i }}, {{ end }}{{ $a }}{{ end }}]
 branches: [{{ range $i, $b := .Branches }}{{ if $i }}, {{ end }}{{ $b }}{{ end }}]
 prs: []
+{{ if .IssueURL }}issue: {{ yaml .IssueURL }}
+{{ end }}
 created: {{ .Now.Format "2006-01-02" }}
 updated: {{ .Now.Format "2006-01-02" }}
 ---

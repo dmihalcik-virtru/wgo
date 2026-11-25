@@ -30,6 +30,7 @@ type Frontmatter struct {
 	Phase        int       `yaml:"phase,omitempty"`
 	DependsOn    []string  `yaml:"depends_on,omitempty"`
 	JiraPriority string    `yaml:"jira_priority,omitempty"`
+	Issue        string    `yaml:"issue,omitempty"`
 }
 
 type SpecFile struct {
