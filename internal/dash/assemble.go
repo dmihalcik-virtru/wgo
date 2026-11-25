@@ -503,7 +503,7 @@ func (c *Collector) jiraTicketNode(b *builder, ticket string, jira *remoteTally,
 		// A negative entry: the last lookup failed, so there is no status
 		// to show. A real ticket with an empty status is a normal hit.
 		ti.Freshness = Error
-		ti.Error = "Jira lookup failed; check acli is installed and authenticated (acli jira auth status)"
+		ti.Error = "Jira lookup failed; check twg is installed and authenticated (twg whoami)"
 	case state == jiracache.Fresh:
 		ti.Freshness = Fresh
 	default:

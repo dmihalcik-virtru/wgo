@@ -38,8 +38,8 @@ var (
 	addGitHubMilestone string
 )
 
-// Seams for the acli-backed Jira calls made on the `wgo add` path, so the
-// enrichment and preflight behaviour can be unit-tested without acli. Mirrors
+// Seams for the twg-backed Jira calls made on the `wgo add` path, so the
+// enrichment and preflight behaviour can be unit-tested without twg. Mirrors
 // the jiraFetcherFn pattern in jirasource.go.
 var (
 	jiraGetIssue  = jira.GetIssue
@@ -160,7 +160,7 @@ Files that wgo did not generate are never overwritten; pass --no-claude-md or
 --no-agents-md to skip generating them.
 
 The scaffolded spec is enriched with the ticket's title, description, and
-priority when acli is authenticated (acli jira auth login). Without it the spec
+priority when twg is authenticated (twg login). Without it the spec
 falls back to the description you passed, and a warning says so. Pass
 --require-jira to make the fetch mandatory: the command then fails before any
 repo is cloned rather than scaffolding an unenriched spec.
@@ -627,14 +627,14 @@ func runAddWithJiraCreate(desc string, repos []string, priority bool) error {
 // reports whether enrichment is expected to work.
 //
 // Enrichment itself happens much later — after clones, workspaces, bookmarks,
-// and pushes. Discovering acli is unusable at that point leaves behind a set of
+// and pushes. Discovering twg is unusable at that point leaves behind a set of
 // worktrees built around a spec that never got filled in, which is exactly the
 // failure this check exists to prevent. Under require the command stops here,
 // while the operation log is still untouched; otherwise it warns and continues,
 // per wgo's graceful-degradation constraint.
 //
 // skipSpec short-circuits the probe: with --no-spec there is nothing to enrich,
-// so paying for an acli round-trip would be waste.
+// so paying for an twg round-trip would be waste.
 func jiraPreflight(ticket string, skipSpec, require bool, check func() error) (bool, error) {
 	if skipSpec {
 		return false, nil

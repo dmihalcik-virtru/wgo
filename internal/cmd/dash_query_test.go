@@ -334,7 +334,7 @@ func TestDashQueryAloneServesAtTheQuery(t *testing.T) {
 func TestDashMDCollectsAndPrints(t *testing.T) {
 	saveQueryFlags(t)
 	goldenHome(t, "[discovery]\nbase_dirs = [\""+t.TempDir()+"\"]\n")
-	// No GitHub token, gh or acli: --refresh has no lookup that could fail
+	// No GitHub token, gh or twg: --refresh has no lookup that could fail
 	// (otherwise it would look up the GitHub identity, gh-97).
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("GITHUB_TOKEN", "")

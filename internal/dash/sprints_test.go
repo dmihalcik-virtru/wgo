@@ -268,10 +268,10 @@ func TestAssembleSprintsColdAndFailed(t *testing.T) {
 		t.Fatalf("sprints job: %+v", job)
 	}
 
-	_ = jiracache.RefreshSprints(&stubSprintFetcher{err: errors.New("unauthorized: use 'acli jira auth login'")}, 42, nil)
+	_ = jiracache.RefreshSprints(&stubSprintFetcher{err: errors.New("unauthorized: use 'twg login'")}, 42, nil)
 	s, jobs = a.build()
 	st = s.Sources[SourceJiraSprints]
-	if st.State != Error || !strings.Contains(st.Detail, "acli jira auth status") || !strings.Contains(st.Parts[0].Error, "unauthorized") {
+	if st.State != Error || !strings.Contains(st.Detail, "twg whoami") || !strings.Contains(st.Parts[0].Error, "unauthorized") {
 		t.Fatalf("failed jira_sprints: %+v", st)
 	}
 	if countJobs(jobs, JobSprints) != 1 {
@@ -330,21 +330,21 @@ func TestRefresherSprintsJob(t *testing.T) {
 		t.Fatal("a search for other people is another job")
 	}
 
-	none := NewRefresher(Fetchers{Missing: map[JobKind]string{JobSprints: "acli not on PATH"}}, RefresherOptions{})
+	none := NewRefresher(Fetchers{Missing: map[JobKind]string{JobSprints: "twg not found on PATH or at ~/.local/bin/twg"}}, RefresherOptions{})
 	defer none.Close()
 	res = <-none.Submit([]Job{job})
-	if got := none.skipSummary(res); got != "1 Jira sprint lookups skipped: acli not on PATH" {
+	if got := none.skipSummary(res); got != "1 Jira sprint lookups skipped: twg not found on PATH or at ~/.local/bin/twg" {
 		t.Fatalf("skip summary %q", got)
 	}
 }
 
-// TestRefreshWithoutACLI: without acli the dash still loads; jira and
+// TestRefreshWithoutTWG: without twg the dash still loads; jira and
 // jira_sprints are unknown, and the diagnostics say why.
-func TestRefreshWithoutACLI(t *testing.T) {
+func TestRefreshWithoutTWG(t *testing.T) {
 	f := newFixture(t)
 	r := NewRefresher(Fetchers{Missing: map[JobKind]string{
 		JobPR: "no GitHub token or gh", JobIssue: "no GitHub token or gh",
-		JobJira: "acli not on PATH", JobSprints: "acli not on PATH",
+		JobJira: "twg not found on PATH or at ~/.local/bin/twg", JobSprints: "twg not found on PATH or at ~/.local/bin/twg",
 	}}, RefresherOptions{Workers: 2, IgnoreLeases: true})
 	defer r.Close()
 	c := f.collector(t, time.Now(), memSource{})
@@ -354,7 +354,7 @@ func TestRefreshWithoutACLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true}); err != nil {
-		t.Fatalf("a missing acli is not an error: %v", err)
+		t.Fatalf("a missing twg is not an error: %v", err)
 	}
 	v := d.Current()
 	if err := v.Snapshot.Validate(); err != nil {
@@ -366,7 +366,7 @@ func TestRefreshWithoutACLI(t *testing.T) {
 	if st := v.Snapshot.Sources[SourceJiraSprints]; st.State != Unknown || st.Detail == "" {
 		t.Fatalf("jira_sprints: %+v", st)
 	}
-	if !hasDiag(v, "Jira lookups skipped: acli not on PATH") || !hasDiag(v, "Jira sprint lookups skipped: acli not on PATH") {
+	if !hasDiag(v, "Jira lookups skipped: twg not found on PATH or at ~/.local/bin/twg") || !hasDiag(v, "Jira sprint lookups skipped: twg not found on PATH or at ~/.local/bin/twg") {
 		t.Fatalf("diagnostics %v", v.Diagnostics)
 	}
 	if v.Snapshot.Sources[SourceJJ].State == Unknown {
@@ -422,7 +422,7 @@ func (f *failingJiraFacts) FetchJira(ticket string) (jiracache.Info, error) {
 
 // TestRefreshWaitRunsAFailedTicketLookupOnce: a sprint ticket whose lookup
 // fails is still not fresh after its round, but a waited-for refresh does
-// not run it again: a failure costs one acli call, and is reported once.
+// not run it again: a failure costs one twg call, and is reported once.
 func TestRefreshWaitRunsAFailedTicketLookupOnce(t *testing.T) {
 	f := newFixture(t)
 	jf := &failingJiraFacts{calls: map[string]int{}}

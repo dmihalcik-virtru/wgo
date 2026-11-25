@@ -12,10 +12,10 @@ import (
 	"github.com/virtru/wgo/internal/jira"
 )
 
-// This file is the Refresher's Jira circuit breaker. Once acli's login has
+// This file is the Refresher's Jira circuit breaker. Once twg's login has
 // expired, every Jira ticket and sprint lookup fails the same way, each after
 // about a second and a half: hundreds of tickets would hold a waited-for
-// refresh for minutes and fail it, saying only that acli failed. So the
+// refresh for minutes and fail it, saying only that twg failed. So the
 // first such failure pauses the rest, which are reported as skipped, with
 // the reason on the jira source, and the background refresh tries again
 // later.
@@ -28,15 +28,15 @@ const (
 )
 
 // jiraFailureStreak is how many Jira lookups in a row failing with the same
-// error pause the rest when acli cannot say whether it is logged in.
+// error pause the rest when twg cannot say whether it is logged in.
 const jiraFailureStreak = 3
 
 // jiraLoginRecheck is how long an answer of Fetchers.JiraLogin is reused, so
 // a ticket that keeps failing on its own (a deleted one) costs the served
-// dashboard one more acli call per period at most.
+// dashboard one more twg call per period at most.
 const jiraLoginRecheck = 5 * time.Minute
 
-// jiraNotLoggedIn is the reason of a pause for a lapsed acli login.
+// jiraNotLoggedIn is the reason of a pause for a lapsed twg login.
 var jiraNotLoggedIn = jira.ErrNotLoggedIn.Error()
 
 type loginState int
@@ -49,16 +49,15 @@ const (
 )
 
 // jiraPause decides whether a Jira lookup runs. While closed (no reason),
-// every lookup runs. A lookup failing with acli's "unauthorized" message
-// pauses the rest; so does any other failure once acli's auth status
-// (Fetchers.JiraLogin) confirms that the login lapsed, since `acli jira
-// workitem view` does not say so itself. Should acli's auth status not tell,
+// every lookup runs. A structured twg authentication error pauses the rest;
+// so does any other failure once twg whoami (Fetchers.JiraLogin) confirms
+// that the login lapsed. Should whoami not tell,
 // jiraFailureStreak failures in a row with the same error pause them too.
 // While paused, lookups are skipped. When the pause ends, one lookup runs as
 // a probe: success closes the breaker, failure pauses again for twice as
 // long.
 type jiraPause struct {
-	// login is Fetchers.JiraLogin; nil when acli's auth status cannot be
+	// login is Fetchers.JiraLogin; nil when twg's auth status cannot be
 	// asked.
 	login func(context.Context) error
 	// first and max are jiraPauseFirst and jiraPauseMax; tests shorten them.
@@ -68,7 +67,7 @@ type jiraPause struct {
 
 	mu      sync.Mutex
 	reason  string // why lookups are paused; "" while they run
-	auth    bool   // paused because acli is logged out
+	auth    bool   // paused because twg is logged out
 	until   time.Time
 	backoff time.Duration
 	probing bool
@@ -125,7 +124,7 @@ func (p *jiraPause) admit() (ok, probe bool, reason string) {
 }
 
 // release ends an admitted lookup that made no call (another wgo process
-// held its lease): it tells nothing about acli.
+// held its lease): it tells nothing about twg.
 func (p *jiraPause) release(probe bool) {
 	if probe {
 		p.mu.Lock()
@@ -136,7 +135,7 @@ func (p *jiraPause) release(probe bool) {
 
 // done records how an admitted lookup went and returns what to report: nil
 // on success, a *pausedError for a failure the pause accounts for, else err.
-// ctx is the lookup's, for asking acli whether it is logged in.
+// ctx is the lookup's, for asking twg whether it is logged in.
 func (p *jiraPause) done(ctx context.Context, err error, probe bool) error {
 	if probe {
 		defer p.release(true)
@@ -178,7 +177,7 @@ func (p *jiraPause) done(ctx context.Context, err error, probe bool) error {
 		p.mu.Unlock()
 		return &pausedError{reason: jiraNotLoggedIn, err: err}
 	case loginOK:
-		// acli is logged in: this ticket's own failure, which says nothing
+		// twg is logged in: this ticket's own failure, which says nothing
 		// about the next one.
 		p.mu.Lock()
 		if probe {
@@ -190,13 +189,13 @@ func (p *jiraPause) done(ctx context.Context, err error, probe bool) error {
 	}
 	if probe || streak >= jiraFailureStreak {
 		p.mu.Lock()
-		p.pauseLocked(fmt.Sprintf("Jira lookups paused after acli failed %d %s in a row (%s)", streak, plural(streak, "time", "times"), oneLine(err.Error())), false, probe)
+		p.pauseLocked(fmt.Sprintf("Jira lookups paused after twg failed %d %s in a row (%s)", streak, plural(streak, "time", "times"), oneLine(err.Error())), false, probe)
 		p.mu.Unlock()
 	}
 	return err
 }
 
-// checkLogin asks acli whether it is logged in, reusing an answer younger
+// checkLogin asks twg whether it is logged in, reusing an answer younger
 // than jiraLoginRecheck.
 func (p *jiraPause) checkLogin(ctx context.Context) loginState {
 	if p.login == nil {

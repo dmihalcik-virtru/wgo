@@ -1017,7 +1017,8 @@ GitHub activity, and saves a `wgo contrib` heatmap alongside the run.
 ```
 
 It needs `gh` (with the `read:org` scope for the team map) and, optionally,
-`acli` for Jira. `collect.py` caches closed months under
+`twg` for Jira. The collector finds `twg` on `PATH` or at `~/.local/bin/twg`
+and fetches Jira tickets in batches. `collect.py` caches closed months under
 `~/.wgo/cache/review`. The first full-year run takes a few minutes because
 GitHub search is limited to 30 requests a minute. Reports are written to
 `~/.wgo/reviews/<label>.md`, named after the run: `2026-Q3.md`, or
@@ -1074,17 +1075,17 @@ the open-authored, review-requested and closed-recent sets), since whose
 move a PR is depends on it; then the board's sprints, the bookmarks' PRs,
 and the ticket and issue lookups. At the deadline no more lookups start,
 and the diagnostics say `not run: refresh deadline (60s) reached; N
-lookups left`; lookups already running are cancelled (`acli` is killed,
+lookups left`; lookups already running are cancelled (`twg` is killed,
 GitHub requests are abandoned), and once it has printed, the command waits
 at most a second for them, leaving behind any that has not stopped (the
 caches are written atomically). So it exits within about three times the
-timeout, even when `acli` hangs. PR inventory fetches already
+timeout, even when `twg` hangs. PR inventory fetches already
 running get up to twice the timeout again to finish, so a set with many pages is cached rather than
 lost on every run; a fetch still running then is cancelled, recorded with
 when and on which page, and `github_inventory`'s detail says why the set
 is unknown or stale. Only lookups that failed make the command exit
 non-zero: not those left at the deadline, nor Jira lookups skipped because
-`acli`'s login expired, nor GitHub issues that do not exist.
+`twg`'s login expired, nor GitHub issues that do not exist.
 
 With `[jira] board` set, the dashboard also shows that board's active and
 future sprints, with their goals and dates, and every ticket in an active
@@ -1548,10 +1549,14 @@ asked again a day later.
 
 ### Jira sprints and ticket facts
 
-Ticket nodes carry the facts Jira reports through `acli`: summary, status
+`wgo` finds `twg` on `PATH` or at `~/.local/bin/twg`. Authenticate with
+`twg login`; use `twg doctor` to diagnose an expired or missing profile.
+
+Ticket nodes carry the facts Jira reports through `twg`: summary, status
 category, type, priority, sprints, story points, parent epic, team,
 components, labels, resolution and dates. Story points, sprint and team are
-custom fields whose IDs differ per site. Name yours in `[jira.fields]`:
+custom fields whose IDs differ per site. Override discovered IDs in
+`[jira.fields]`:
 
 ```toml
 [jira]
@@ -1564,12 +1569,12 @@ team         = "customfield_10001"
 epic_link    = "customfield_10014"  # legacy epic link; not needed when epics show as parent
 ```
 
-`acli` cannot list a site's fields, so only the sprint field is discovered
-on its own, from a ticket that is in a sprint. The discovery is cached for
-7 days in `~/.wgo/cache/jira/fields.json`. A field that is neither set nor
+`twg jira workitem field update-metadata` discovers Story Points, Sprint,
+Team, and Epic Link IDs from a ticket. Discovery is cached per site for
+7 days in `~/.wgo/cache/jira/fields-*.json`. A field that is neither set nor
 discovered stays unknown, and the dashboard says which key to set. It never
 shows a blank as "none". Find a site's IDs in any ticket's JSON:
-`acli jira workitem view TEAM-123 --fields '*all' --json`.
+`twg jira workitem field update-metadata --id TEAM-123 -o json`.
 
 The board's sprints are cached for 15 minutes in
 `~/.wgo/cache/jira/sprints/board-<id>.json`. Each active sprint's search
@@ -1581,18 +1586,17 @@ Jira says does not exist is reported with the config key it came from, and
 the others' tickets are still shown; any other failure fails the sprint's
 search. A sprint whose
 search failed keeps its last known tickets, marked stale, and is retried
-after 2 minutes. Without `acli`, or with its login expired, the `jira` and
+after 2 minutes. Without `twg`, or with its login expired, the `jira` and
 `jira_sprints` sources are unknown or failed and say why, and the rest of
 the dashboard is unaffected. `wgo statusline` still reads only the ticket's
 cache entry.
 
-Once a Jira lookup fails because `acli`'s login expired (acli says
-"unauthorized", or, when a ticket view fails without saying why,
-`acli jira auth status` does), the remaining Jira ticket and sprint lookups
+Once a Jira lookup fails because `twg` reports an authentication error,
+the remaining Jira ticket and sprint lookups
 are skipped rather than run into the same failure one by one. One
-diagnostic says ``acli is not authenticated: run `acli jira auth login`;
+diagnostic says ``twg is not authenticated: run `twg login` or `twg doctor`;
 N Jira lookups skipped``, the `jira` source is in error with that reason, and
-`wgo dash --json --refresh` does not exit non-zero for it. Should `acli`
+`wgo dash --json --refresh` does not exit non-zero for it. Should `twg`
 not be able to say whether it is logged in, three lookups in a row failing
 the same way pause the rest too; those three still count as failures. The
 served dashboard pauses Jira lookups for 5 minutes, then tries one; each

@@ -26,6 +26,7 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/inventory"
 	"github.com/virtru/wgo/internal/issuecache"
+	"github.com/virtru/wgo/internal/jira"
 	"github.com/virtru/wgo/internal/jj"
 	"github.com/virtru/wgo/internal/launch"
 	"github.com/virtru/wgo/internal/review"
@@ -102,7 +103,7 @@ fetches already running get up to twice that again to finish, so a large
 set is cached rather than lost; one still running then is cancelled, and
 the github_inventory source says so. The command exits within about
 three times the timeout.
-Once acli turns out to be logged out, the remaining Jira lookups are
+Once twg turns out to be logged out, the remaining Jira lookups are
 skipped instead: one diagnostic says so, the jira source is in error with
 the reason, and the exit status is unaffected. The served dashboard then
 pauses Jira lookups for 5 minutes, doubling up to 30, until one succeeds.
@@ -131,7 +132,7 @@ With [jira] board set, the dash also shows that board's active and future
 sprints, with their goals and dates, and every ticket in an active sprint
 assigned to those people or to no one, even one no PR or workspace leads to. Ticket
 facts (status category, type, sprints, story points, parent, team) come
-from acli; [jira.fields] names the site's custom field IDs.
+from twg; [jira.fields] names the site's custom field IDs.
 
 The last good snapshot is kept in ~/.wgo/cache/dash/ and loaded first.
 
@@ -604,7 +605,7 @@ func hashEscape(s string) string {
 }
 
 // dashFetchers returns the lookups this machine can actually make. An
-// integration that is absent (no GitHub token or gh, no acli) gets no fetcher,
+// integration that is absent (no GitHub token or gh, no twg) gets no fetcher,
 // so its jobs are skipped rather than failing every run.
 func dashFetchers() dash.Fetchers {
 	f := dash.Fetchers{Missing: map[dash.JobKind]string{}}
@@ -620,13 +621,13 @@ func dashFetchers() dash.Fetchers {
 		f.Missing[dash.JobIdentity] = "no GitHub token or gh"
 		f.Missing[dash.JobTimelines] = "no GitHub token or gh"
 	}
-	if _, err := exec.LookPath("acli"); err == nil {
+	if _, err := jira.BinaryPath(); err == nil {
 		f.Jira = jiraFetcherFn()
 		f.Sprints = sprintFetcherFn()
 		f.JiraLogin = jiraLoginFn
 	} else {
-		f.Missing[dash.JobJira] = "acli not on PATH"
-		f.Missing[dash.JobSprints] = "acli not on PATH"
+		f.Missing[dash.JobJira] = jira.ErrMissingTWG.Error()
+		f.Missing[dash.JobSprints] = jira.ErrMissingTWG.Error()
 	}
 	return f
 }

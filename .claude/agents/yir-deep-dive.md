@@ -24,7 +24,7 @@ You are a technical writer with an engineer's eye. You turn a cluster of PRs and
 1. Read the focus file and any matching cards.
 2. **Read the source material** for the deep items, H/XL first, using up to about 25 read-only calls in total:
    - `gh pr view <url> --json title,body,reviews,comments,files` for PR bodies, review discussion, and the files changed
-   - `acli jira workitem view <KEY> --fields summary,description,comment --json` for ticket context
+   - `TWG_AGENT_DEFAULTS=1 twg jira workitem get <KEY> --fields summary,description -o json --output-summary none` for ticket context
    - Specs: if the work touches a repo checked out locally, look for `spec/<TICKET>.md` or ADRs. For example, `wgo ls --format=json` gives local paths.
 3. Reconstruct the arc:
    - **Problem / motivation**

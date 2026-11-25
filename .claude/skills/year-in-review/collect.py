@@ -2,7 +2,7 @@
 """Collect a developer's GitHub + Jira contributions for a period into a ledger.
 
 Read-only: GitHub REST GETs and GraphQL queries through `gh`, Jira searches and
-views through `acli`, plus `wgo ls` / `wgo contrib`. Raw searches are cached per
+bulk reads through `twg`, plus `wgo ls` / `wgo contrib`. Raw searches are cached per
 calendar month under ~/.wgo/cache/review/raw so closed months are never
 re-fetched; the assembled, period-filtered output lands in
 ~/.wgo/cache/review/runs/<label>/:
@@ -29,6 +29,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -364,7 +365,7 @@ def live_state(p: dict, g: dict | None) -> dict:
     return {"state": "open" if g["state"] == "OPEN" else "closed", "closed": g.get("closedAt"), "merged": g.get("mergedAt")}
 
 
-# ---------------------------------------------------------------- Jira via acli
+# ---------------------------------------------------------------- Jira via twg
 
 JIRA_FIELDS = (
     "key,summary,issuetype,status,resolution,priority,created,resolutiondate,"
@@ -374,22 +375,66 @@ JIRA_FIELDS = (
 
 def jira_site() -> str | None:
     try:
-        m = re.search(r"Site:\s*(\S+)", run(["acli", "jira", "auth", "status"]))
+        data = twg_json(["auth", "profile", "list"])
     except (RuntimeError, FileNotFoundError) as e:
         errors.append(f"jira site: {e}; Jira records carry bare keys instead of URLs")
         return None
-    if not m:
-        errors.append("jira site: `acli jira auth status` names no Site; Jira records carry bare keys instead of URLs")
-    return m.group(1) if m else None
+    default = (data.get("defaults") or {}).get(data.get("activeEnvironment"))
+    site = next((p.get("site") for p in data.get("profiles", []) if p.get("id") == default), None)
+    if not site:
+        errors.append("jira site: twg has no default profile site; run `twg doctor`")
+    return site
+
+
+def twg_binary() -> str:
+    path = shutil.which("twg")
+    if path:
+        return path
+    fallback = Path.home() / ".local" / "bin" / "twg"
+    if fallback.is_file() and os.access(fallback, os.X_OK):
+        return str(fallback)
+    raise FileNotFoundError("twg not found on PATH or at ~/.local/bin/twg")
+
+
+def twg_json(args: list[str]) -> dict:
+    command = [twg_binary(), *args, "-o", "json", "--output-summary", "none"]
+    env = {**os.environ, "TWG_AGENT_DEFAULTS": "1"}
+    try:
+        p = subprocess.run(command, capture_output=True, text=True, env=env, timeout=90)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"{describe(command)}: timed out") from e
+    try:
+        envelope = json.loads(p.stdout)
+    except ValueError as e:
+        raise RuntimeError(f"{describe(command)}: invalid twg JSON: {(p.stderr or p.stdout)[:300]}") from e
+    if not isinstance(envelope, dict):
+        raise RuntimeError(f"{describe(command)}: unexpected twg response")
+    error = envelope.get("error") or {}
+    if p.returncode or envelope.get("ok") is False or error:
+        message = error.get("message") or (p.stderr or p.stdout).strip()[:300]
+        raise RuntimeError(f"{describe(command)}: {error.get('code', '')} {message}".strip())
+    if envelope.get("apiVersion") != "v2" or "data" not in envelope:
+        raise RuntimeError(f"{describe(command)}: unexpected twg response")
+    return envelope["data"]
 
 
 def jira_keys(jql: str) -> list[str]:
-    # `--fields key` alone yields a list of nulls; acli needs a second field.
-    out = run(["acli", "jira", "workitem", "search", "--jql", jql, "--fields", "key,summary", "--paginate", "--json"])
-    items = json.loads(out or "[]") or []
-    if items and not any(items):
-        raise RuntimeError(f"acli returned {len(items)} null results for: {jql}")
-    return [i["key"] for i in items if i]
+    keys: list[str] = []
+    cursor = None
+    seen: set[str] = set()
+    while True:
+        args = ["jira", "workitem", "query", "--jql", jql, "--fields", "key", "--limit", "100"]
+        if cursor:
+            args.extend(["--after", cursor])
+        data = twg_json(args)
+        keys.extend(i["key"] for i in data.get("issues", []) if i and i.get("key"))
+        page = data.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return keys
+        cursor = page.get("nextCursor")
+        if not cursor or cursor in seen:
+            raise RuntimeError(f"twg returned a repeated or empty Jira cursor for: {jql}")
+        seen.add(cursor)
 
 
 def adf_text(node, limit: int = 600) -> str:
@@ -414,22 +459,13 @@ def adf_text(node, limit: int = 600) -> str:
     return re.sub(r"\s+", " ", "".join(parts)).strip()[:limit]
 
 
-def jira_issue(key: str, sp: str, sprint: str) -> dict | None:
-    path = CACHE / "raw" / "jira" / f"{key}.json"
-    c = read_json(path)
-    if c and not REFRESH and (c.get("resolved") or time.time() - c.get("_fetched", 0) < 86400):
-        return c
-    fields = JIRA_FIELDS.format(sp=sp, sprint=sprint)
-    try:
-        raw = json.loads(run(["acli", "jira", "workitem", "view", key, "--fields", fields, "--json"]))
-    except (RuntimeError, ValueError, FileNotFoundError) as e:
-        errors.append(f"jira view {key}: {e}")
-        return c
-    f = raw.get("fields", {})
+def normalize_jira_issue(raw: dict, sp: str, sprint: str) -> dict:
+    f = raw
     parent = f.get("parent") or {}
     sprints = f.get(sprint) or []
     rec = {
-        "key": key,
+        "key": f["key"],
+        "url": f.get("url"),
         "summary": f.get("summary"),
         "type": (f.get("issuetype") or {}).get("name"),
         "status": (f.get("status") or {}).get("name"),
@@ -450,8 +486,42 @@ def jira_issue(key: str, sp: str, sprint: str) -> dict | None:
         "description": adf_text(f.get("description")),
         "_fetched": time.time(),
     }
-    write_json(path, rec)
     return rec
+
+
+def jira_issues(keys: list[str], sp: str, sprint: str, workers: int = 8) -> list[dict | None]:
+    cached: dict[str, dict | None] = {}
+    missing: list[str] = []
+    for key in keys:
+        path = CACHE / "raw" / "jira" / f"{key}.json"
+        c = read_json(path)
+        cached[key] = c
+        if not (c and not REFRESH and (c.get("resolved") or time.time() - c.get("_fetched", 0) < 86400)):
+            missing.append(key)
+    fields = JIRA_FIELDS.format(sp=sp, sprint=sprint)
+    batches = [missing[start:start + 20] for start in range(0, len(missing), 20)]
+
+    def fetch_batch(batch: list[str]):
+        try:
+            return batch, twg_json(["jira", "workitem", "bulk-get", *batch, "--fields", fields]), None
+        except (RuntimeError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return batch, None, e
+
+    with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        for batch, data, err in executor.map(fetch_batch, batches):
+            if err:
+                errors.append(f"jira bulk-get {','.join(batch)}: {err}")
+                continue
+            items = {item.get("input"): item for item in data.get("items", [])}
+            for key in batch:
+                item = items.get(key) or {}
+                if not item.get("ok") or not item.get("data"):
+                    errors.append(f"jira bulk-get {key}: {(item.get('error') or {}).get('message') or 'work item not returned'}")
+                    continue
+                rec = normalize_jira_issue(item["data"], sp, sprint)
+                cached[key] = rec
+                write_json(CACHE / "raw" / "jira" / f"{key}.json", rec)
+    return [cached[key] for key in keys]
 
 
 def jira_month(key: str, first: dt.date, last: dt.date, refresh: bool) -> dict:
@@ -882,19 +952,17 @@ def main() -> None:
 
     if "jira" in sources and jira_signals:
         site = jira_site()
-        log(f"  jira view: {len(jira_signals)} issues")
-        with cf.ThreadPoolExecutor(a.jira_workers) as ex:
-            issues = list(ex.map(lambda k: jira_issue(k, a.sp_field, a.sprint_field), sorted(jira_signals)))
+        log(f"  jira bulk-get: {len(jira_signals)} issues")
+        issues = jira_issues(sorted(jira_signals), a.sp_field, a.sprint_field, a.jira_workers)
         parents = {i["parent"] for i in issues if i and i.get("parent")} - set(jira_signals)
-        with cf.ThreadPoolExecutor(a.jira_workers) as ex:
-            epics = {e["key"]: e for e in ex.map(lambda k: jira_issue(k, a.sp_field, a.sprint_field), sorted(parents)) if e}
+        epics = {e["key"]: e for e in jira_issues(sorted(parents), a.sp_field, a.sprint_field, a.jira_workers) if e}
         for i in issues:
             if not i:
                 continue
             rec = {k: v for k, v in i.items() if not k.startswith("_")}
             rec.update(
                 kind="jira",
-                url=f"https://{site}/browse/{i['key']}" if site else i["key"],
+                url=i.get("url") or (f"https://{site}/browse/{i['key']}" if site else i["key"]),
                 title=i["summary"],
                 signals=sorted(jira_signals[i["key"]]),
                 parent_status=(epics.get(i.get("parent")) or {}).get("status"),

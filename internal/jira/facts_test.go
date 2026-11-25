@@ -12,10 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The testdata documents follow the shape acli prints for `workitem view
-// --json` and `workitem search --json` (Jira's REST issue JSON, unchanged),
-// with every value invented. See spec/gh-98.md's delivery notes for what
-// could and could not be checked against a live site.
+// Legacy nested Jira REST fixtures remain here to verify tolerant parsing.
+// Twg v2 flattened fixtures and envelopes are exercised in twg_client_test.go.
 
 // siteIDs are the custom field IDs of the invented site in testdata.
 var siteIDs = FieldIDs{StoryPoints: "customfield_10016", Sprint: "customfield_10020", Team: "customfield_10001", EpicLink: "customfield_10014"}
@@ -254,7 +252,7 @@ func TestParseFactsErrors(t *testing.T) {
 	assert.ErrorContains(t, err, "no key")
 }
 
-// TestDiscoverFieldIDsBySprintShape: acli's view has no names map, so only
+// TestDiscoverFieldIDsBySprintShape: a legacy nested work item has no names map, so only
 // the sprint field is found, by its value; other number and option fields
 // are never guessed at.
 func TestDiscoverFieldIDsBySprintShape(t *testing.T) {
@@ -311,18 +309,35 @@ func TestQuoteJQLEscapesBackslash(t *testing.T) {
 	assert.Equal(t, `sprint = 1 AND assignee in ('x\\',currentUser()) ORDER BY updated DESC`, got)
 }
 
-// fakeACLI puts an acli on PATH that records its arguments, one per line,
-// and prints out.
-func fakeACLI(t *testing.T, out string) (argsFile string) {
+// fakeTwg records the v2 command arguments and prints a JSON envelope.
+func fakeTwg(t *testing.T, out []byte) (argsFile string) {
 	t.Helper()
 	dir := t.TempDir()
 	argsFile = filepath.Join(dir, "args")
 	outFile := filepath.Join(dir, "out")
-	require.NoError(t, os.WriteFile(outFile, []byte(out), 0o644))
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsFile + "'\ncat '" + outFile + "'\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "acli"), []byte(script), 0o755))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	require.NoError(t, os.WriteFile(outFile, out, 0o644))
+	withFakeTwg(t, "printf '%s\\n' \"$@\" > '"+argsFile+"'\n/bin/cat '"+outFile+"'")
 	return argsFile
+}
+
+func flattenFixture(t *testing.T, raw []byte) json.RawMessage {
+	t.Helper()
+	var issue struct {
+		Key    string                     `json:"key"`
+		Fields map[string]json.RawMessage `json:"fields"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &issue))
+	issue.Fields["key"], _ = json.Marshal(issue.Key)
+	flat, err := json.Marshal(issue.Fields)
+	require.NoError(t, err)
+	return flat
+}
+
+func v2(t *testing.T, data any) []byte {
+	t.Helper()
+	out, err := json.Marshal(map[string]any{"apiVersion": "v2", "data": data})
+	require.NoError(t, err)
+	return out
 }
 
 func readArgs(t *testing.T, path string) []string {
@@ -333,30 +348,35 @@ func readArgs(t *testing.T, path string) []string {
 }
 
 func TestGetIssueJSONAsksForEveryField(t *testing.T) {
-	args := fakeACLI(t, string(readTestdata(t, "view_all.json")))
+	args := fakeTwg(t, v2(t, []json.RawMessage{flattenFixture(t, readTestdata(t, "view_all.json"))}))
 	raw, err := GetIssueJSON("TEAM-123", FactFields)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"jira", "workitem", "view", "TEAM-123", "--json", "--fields", "*all"}, readArgs(t, args))
+	assert.Equal(t, []string{"jira", "workitem", "get", "TEAM-123", "--full", "-o", "json", "--output-summary", "none"}, readArgs(t, args))
 	f, _, err := ParseFacts(raw, siteIDs)
 	require.NoError(t, err)
 	assert.Equal(t, "TEAM-123", f.Key)
 }
 
 func TestSearchIssuesJSONBoundsTheSearch(t *testing.T) {
-	args := fakeACLI(t, string(readTestdata(t, "search_sprint.json")))
+	var legacy []json.RawMessage
+	require.NoError(t, json.Unmarshal(readTestdata(t, "search_sprint.json"), &legacy))
+	issues := []json.RawMessage{flattenFixture(t, legacy[0]), flattenFixture(t, legacy[1])}
+	args := fakeTwg(t, v2(t, map[string]any{"issues": issues, "pageInfo": map[string]any{"hasNextPage": false}}))
 	list, err := SearchIssuesJSON("sprint = 1234", SearchFactFields, 201)
 	require.NoError(t, err)
 	assert.Len(t, list, 2)
-	assert.Equal(t, []string{"jira", "workitem", "search", "--jql", "sprint = 1234", "--json", "--paginate", "--limit", "201",
-		"--fields", "key,summary,status,issuetype,priority,assignee,labels"}, readArgs(t, args))
+	assert.Equal(t, []string{"jira", "workitem", "query", "--jql", "sprint = 1234", "--limit", "100",
+		"--fields", FactFieldList, "-o", "json", "--output-summary", "none"}, readArgs(t, args))
 }
 
-// TestSearchIssuesJSONReadsEveryPage: with --paginate acli may print one
-// array per page; every page is read.
+// TestSearchIssuesJSONReadsEveryPage follows twg's cursor without duplicate pages.
 func TestSearchIssuesJSONReadsEveryPage(t *testing.T) {
-	fakeACLI(t, `[{"key":"TEAM-1"},{"key":"TEAM-2"}]
-[{"key":"TEAM-3"}]
-`)
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	second := filepath.Join(dir, "second")
+	require.NoError(t, os.WriteFile(first, v2(t, map[string]any{"issues": []any{map[string]any{"key": "TEAM-1"}, map[string]any{"key": "TEAM-2"}}, "pageInfo": map[string]any{"hasNextPage": true, "nextCursor": "cursor2"}}), 0o644))
+	require.NoError(t, os.WriteFile(second, v2(t, map[string]any{"issues": []any{map[string]any{"key": "TEAM-3"}}, "pageInfo": map[string]any{"hasNextPage": false}}), 0o644))
+	withFakeTwg(t, "case \"$*\" in *--after*) /bin/cat '"+second+"' ;; *) /bin/cat '"+first+"' ;; esac")
 	list, err := SearchIssuesJSON("sprint = 1234", SearchFactFields, 201)
 	require.NoError(t, err)
 	require.Len(t, list, 3)

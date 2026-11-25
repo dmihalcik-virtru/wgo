@@ -276,14 +276,14 @@ type JiraProjectRule struct {
 }
 
 // JiraConfig holds optional Jira integration settings.
-// acli handles authentication; these fields are informational only except where noted.
+// twg handles authentication; these fields are informational only except where noted.
 type JiraConfig struct {
 	Project         string            `mapstructure:"project"`          // informational project key; also board/backlog URL segment
 	DefaultProject  string            `mapstructure:"default_project"`  // used by: wgo add --jira
 	DefaultType     string            `mapstructure:"default_type"`     // used by: wgo add --jira (e.g. "Task")
 	ProjectRules    []JiraProjectRule `mapstructure:"project_rules"`    // ordered; first match wins
 	Board           int               `mapstructure:"board"`            // default board id for: wgo standup
-	Site            string            `mapstructure:"site"`             // Jira host; auto-detected from acli when empty
+	Site            string            `mapstructure:"site"`             // Jira host; auto-detected from twg when empty
 	StandupStatuses []string          `mapstructure:"standup_statuses"` // in-flight statuses for: wgo standup
 	// Fields maps the site-specific fields wgo dash reads ([jira.fields]).
 	Fields JiraFieldsConfig `mapstructure:"fields"`
@@ -292,8 +292,8 @@ type JiraConfig struct {
 // JiraFieldsConfig is [jira.fields]: this Jira site's IDs for the custom
 // fields wgo dash reads, such as "customfield_10016". Each overrides
 // discovery; "none" says the site has no such field, which silences the
-// diagnostic about it. acli cannot list a site's fields, so only the sprint
-// field is discovered and the others need setting here to be known.
+// diagnostic about it. twg field update-metadata discovers these IDs from
+// a ticket when one is available; configured IDs take precedence.
 type JiraFieldsConfig struct {
 	StoryPoints string `mapstructure:"story_points"`
 	Sprint      string `mapstructure:"sprint"`
@@ -751,14 +751,14 @@ gh_stack = "auto"
 # default_project = "WGO"    # fallback project used by: wgo add --jira
 # default_type    = "Task"   # fallback issue type used by: wgo add --jira
 # board           = 305      # default board id used by: wgo standup (override with --board)
-# site            = "your-org.atlassian.net"  # optional; auto-detected from acli when omitted
+# site            = "your-org.atlassian.net"  # optional; auto-detected from twg when omitted
 # standup_statuses = ["In Progress", "In Review", "In QA"]  # in-flight states for: wgo standup
 #
 # This site's custom field IDs, for the ticket facts in "wgo dash". Each is
 # optional and overrides discovery; "none" means the site has no such field.
-# acli cannot list fields, so only sprint is discovered (cached for 7 days in
-# ~/.wgo/cache/jira/fields.json). Find an ID in a ticket's JSON:
-#   acli jira workitem view TEAM-123 --fields '*all' --json
+# twg discovers custom IDs through field update-metadata and caches them for
+# 7 days per site. To inspect a ticket's editable field IDs directly:
+#   twg jira workitem field update-metadata --id TEAM-123 -o json
 # [jira.fields]
 # story_points = "customfield_10016"
 # sprint       = "customfield_10020"

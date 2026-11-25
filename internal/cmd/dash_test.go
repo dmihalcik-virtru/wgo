@@ -316,7 +316,7 @@ func TestServeDashSurvivesPanicsAndPrintsFailuresOnce(t *testing.T) {
 }
 
 // TestDashFetchersAbsentIntegrations: with no GitHub credentials, no gh and no
-// acli, --refresh has nothing to fetch with, so it skips those lookups instead
+// twg, --refresh has nothing to fetch with, so it skips those lookups instead
 // of failing every run.
 func TestDashFetchersAbsentIntegrations(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -332,8 +332,8 @@ func TestDashFetchersAbsentIntegrations(t *testing.T) {
 		dash.JobIssue:     "no GitHub token or gh",
 		dash.JobInventory: "no GitHub token or gh",
 		dash.JobIdentity:  "no GitHub token or gh",
-		dash.JobJira:      "acli not on PATH",
-		dash.JobSprints:   "acli not on PATH",
+		dash.JobJira:      "twg not found on PATH or at ~/.local/bin/twg",
+		dash.JobSprints:   "twg not found on PATH or at ~/.local/bin/twg",
 	}
 	for k, why := range want {
 		if f.Missing[k] != why {

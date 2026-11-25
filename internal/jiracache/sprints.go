@@ -31,7 +31,7 @@ type BoardSprints struct {
 	// Assignees are the Jira identities the ticket searches covered,
 	// sorted: account IDs, emails or currentUser().
 	Assignees []string `json:"assignees,omitempty"`
-	// Site is the Jira host, for browse links, when acli reported one.
+	// Site is the Jira host, for browse links, when twg reported one.
 	Site string `json:"site,omitempty"`
 	// Notes are problems with the searches that did not fail them, such as
 	// a configured Jira identity that Jira rejected; wgo dash shows them as
@@ -67,7 +67,7 @@ type SprintTicket struct {
 }
 
 // SprintFetcher reads a board's sprints and their tickets from Jira. cmd
-// supplies an acli-backed one; like Fetcher it keeps jira out of this
+// supplies an twg-backed one; like Fetcher it keeps jira out of this
 // package.
 type SprintFetcher interface {
 	FetchSprints(board int, assignees []string) (BoardSprints, error)
@@ -151,7 +151,7 @@ func RefreshSprints(f SprintFetcher, board int, assignees []string) error {
 
 // RefreshSprintsContext is RefreshSprints through f's FetchSprintsContext
 // when it has one. A lookup cut short because ctx is done records nothing,
-// even one that returned data: a sprint whose ticket search acli was killed
+// even one that returned data: a sprint whose ticket search twg was killed
 // in would be cached as a failed search.
 func RefreshSprintsContext(ctx context.Context, f SprintFetcher, board int, assignees []string) error {
 	if f == nil {

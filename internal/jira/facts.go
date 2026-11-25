@@ -10,21 +10,28 @@ import (
 )
 
 // FactFields is the --fields value GetIssueJSON is asked for when reading a
-// ticket's facts. Story points, sprint and team are custom fields whose IDs
-// differ per site, and naming one in --fields is reported to fail on some
-// acli versions, so every field is requested and ParseFacts picks out the
-// ones it knows.
+// ticket's facts. Story points, sprint and team are site-specific custom
+// fields, so the full work item is requested.
 const FactFields = "*all"
 
 // FactFieldList is the fallback for FactFields: every system field
 // ParseFacts reads, by name. It carries no custom field.
 const FactFieldList = "key,summary,status,issuetype,priority,assignee,labels,components,parent,resolution,resolutiondate,created,updated"
 
-// SearchFactFields are the fields a sprint ticket search asks for: the
-// subset of ParseFacts' fields that `acli jira workitem search --fields`
-// accepts. It rejects custom fields, parent, components, resolution,
-// resolutiondate, created and updated before making any request.
-var SearchFactFields = []string{"key", "summary", "status", "issuetype", "priority", "assignee", "labels"}
+// SearchFactFields includes every system field ParseFacts reads. twg accepts
+// these fields directly on JQL queries.
+var SearchFactFields = strings.Split(FactFieldList, ",")
+
+// SearchFactFieldsFor includes known site-specific fields too.
+func SearchFactFieldsFor(ids FieldIDs) []string {
+	fields := append([]string(nil), SearchFactFields...)
+	for _, name := range FieldNames {
+		if id := ids.Get(name); id != "" {
+			fields = append(fields, id)
+		}
+	}
+	return fields
+}
 
 // Logical names of the site-specific fields, as [jira.fields] keys them.
 const (
@@ -132,14 +139,13 @@ type Facts struct {
 	UpdatedAt        time.Time
 }
 
-// rawIssue is one work item as acli prints it: Jira's REST issue JSON.
+// rawIssue accepts both twg's flattened work item and legacy nested fixtures.
 type rawIssue struct {
 	Key    string                     `json:"key"`
 	Fields map[string]json.RawMessage `json:"fields"`
 }
 
-// ParseFacts reads a ticket's facts from acli's JSON for one work item
-// (`workitem view --json`, or one element of `workitem search --json`). ids
+// ParseFacts reads a ticket's facts from twg's flattened work item JSON. ids
 // name the custom fields to read. Custom field values vary in shape across
 // sites; one ParseFacts cannot read stays unknown, and a note says which
 // field and [jira.fields] key it was. A configured field the document lacks
@@ -156,6 +162,11 @@ func ParseFacts(raw []byte, ids FieldIDs) (Facts, []string, error) {
 	}
 	f := Facts{Key: is.Key}
 	fields := is.Fields
+	if fields == nil {
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return Facts{}, nil, fmt.Errorf("parse work item fields: %w", err)
+		}
+	}
 	str := func(name string) string {
 		var s string
 		if json.Unmarshal(fields[name], &s) == nil {

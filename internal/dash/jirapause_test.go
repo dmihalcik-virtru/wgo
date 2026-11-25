@@ -14,21 +14,20 @@ import (
 	"github.com/virtru/wgo/internal/jiracache"
 )
 
-// The messages acli 1.3 prints once its login has expired: auth status,
-// searches and sprint lists say so; a work item view does not.
+// Errors modeled on twg v2 envelopes after the client unwraps their codes.
 const (
-	acliUnauthorized = "exit status 1\n✗ Error: unauthorized: use 'acli jira auth login' to authenticate"
-	acliViewFailed   = "exit status 1\n✗ Error: failed to fetch work item details"
+	twgUnauthorized = "AUTH_REQUIRED: login required"
+	twgViewFailed   = "ISSUE_NOT_FOUND: not found"
 )
 
-// fakeAcli fails or answers Jira lookups like acli, counting its calls.
-type fakeAcli struct {
+// fakeTwg fails or answers Jira lookups like twg, counting its calls.
+type fakeTwg struct {
 	mu sync.Mutex
-	// fail is the error a ticket view returns, or "" to succeed.
+	// fail is the error a ticket lookup returns, or "" to succeed.
 	fail string
 	// sprintFail is the error a sprint list returns, or "" to succeed.
 	sprintFail string
-	// login is what `acli jira auth status` returns.
+	// login is what `twg whoami` returns.
 	login error
 	// delay is how long each call takes.
 	delay time.Duration
@@ -36,13 +35,13 @@ type fakeAcli struct {
 	views, sprints, logins atomic.Int32
 }
 
-func (a *fakeAcli) set(fail string, login error) {
+func (a *fakeTwg) set(fail string, login error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.fail, a.sprintFail, a.login = fail, fail, login
 }
 
-func (a *fakeAcli) FetchJira(ticket string) (jiracache.Info, error) {
+func (a *fakeTwg) FetchJira(ticket string) (jiracache.Info, error) {
 	a.views.Add(1)
 	time.Sleep(a.delay)
 	a.mu.Lock()
@@ -53,7 +52,7 @@ func (a *fakeAcli) FetchJira(ticket string) (jiracache.Info, error) {
 	return jiracache.Info{Status: "In Progress", Summary: ticket}, nil
 }
 
-func (a *fakeAcli) FetchSprints(board int, _ []string) (jiracache.BoardSprints, error) {
+func (a *fakeTwg) FetchSprints(board int, _ []string) (jiracache.BoardSprints, error) {
 	a.sprints.Add(1)
 	time.Sleep(a.delay)
 	a.mu.Lock()
@@ -64,7 +63,7 @@ func (a *fakeAcli) FetchSprints(board int, _ []string) (jiracache.BoardSprints, 
 	return jiracache.BoardSprints{Board: board, Sprints: []jiracache.SprintEntry{}}, nil
 }
 
-func (a *fakeAcli) Login(context.Context) error {
+func (a *fakeTwg) Login(context.Context) error {
 	a.logins.Add(1)
 	time.Sleep(a.delay)
 	a.mu.Lock()
@@ -80,7 +79,7 @@ func jiraJobs(n int) []Job {
 	return append(jobs, Job{Kind: JobSprints, Board: 42})
 }
 
-func jiraRefresher(t *testing.T, a *fakeAcli, workers int, withLogin bool) *Refresher {
+func jiraRefresher(t *testing.T, a *fakeTwg, workers int, withLogin bool) *Refresher {
 	t.Helper()
 	f := Fetchers{Jira: a, Sprints: a}
 	if withLogin {
@@ -91,12 +90,12 @@ func jiraRefresher(t *testing.T, a *fakeAcli, workers int, withLogin bool) *Refr
 	return r
 }
 
-// TestJiraPauseOnUnauthorized: acli's "unauthorized" pauses the rest of the
+// TestJiraPauseOnUnauthorized: twg's "unauthorized" pauses the rest of the
 // Jira lookups, sprint lists included, after at most one per worker; every
 // one is skipped, none failed, and the summary says why once.
 func TestJiraPauseOnUnauthorized(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	a := &fakeAcli{fail: acliUnauthorized, sprintFail: acliUnauthorized, delay: 5 * time.Millisecond}
+	a := &fakeTwg{fail: twgUnauthorized, sprintFail: twgUnauthorized, delay: 5 * time.Millisecond}
 	r := jiraRefresher(t, a, 4, true)
 	res := <-r.Submit(jiraJobs(200))
 	if len(res.Failed) != 0 || res.Err() != nil {
@@ -106,12 +105,12 @@ func TestJiraPauseOnUnauthorized(t *testing.T) {
 		t.Fatalf("skipped %d of %d, want 201 of 201", res.JiraSkipped, res.Jobs)
 	}
 	if calls := a.views.Load() + a.sprints.Load(); calls > 4 {
-		t.Fatalf("%d acli calls, want at most one per worker", calls)
+		t.Fatalf("%d twg calls, want at most one per worker", calls)
 	}
 	if a.logins.Load() != 0 {
-		t.Fatalf("acli said why; its auth status need not be asked (%d times)", a.logins.Load())
+		t.Fatalf("twg said why; whoami need not be asked (%d times)", a.logins.Load())
 	}
-	want := "acli is not authenticated: run `acli jira auth login`; 201 Jira lookups skipped"
+	want := "twg is not authenticated: run `twg login` or `twg doctor`; 201 Jira lookups skipped"
 	if got := r.skipSummary(res); got != want {
 		t.Fatalf("summary %q, want %q", got, want)
 	}
@@ -120,31 +119,31 @@ func TestJiraPauseOnUnauthorized(t *testing.T) {
 	}
 }
 
-// TestJiraPauseConfirmsTheLogin: a work item view that fails without saying
-// why is checked against acli's auth status, once; a lapsed login then
+// TestJiraPauseConfirmsTheLogin: a work item error without an auth code is
+// checked against twg whoami once; a lapsed login then
 // pauses the rest.
 func TestJiraPauseConfirmsTheLogin(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	// The sprint list, which runs first, fails without saying why too.
-	a := &fakeAcli{fail: acliViewFailed, sprintFail: acliViewFailed, login: jira.ErrNotLoggedIn, delay: 5 * time.Millisecond}
+	a := &fakeTwg{fail: twgViewFailed, sprintFail: twgViewFailed, login: jira.ErrNotLoggedIn, delay: 5 * time.Millisecond}
 	r := jiraRefresher(t, a, 4, true)
 	res := <-r.Submit(jiraJobs(100))
 	if len(res.Failed) != 0 || res.JiraSkipped != 101 {
 		t.Fatalf("failed %v, skipped %d; want none failed, 101 skipped", res.Failed, res.JiraSkipped)
 	}
 	if a.logins.Load() != 1 {
-		t.Fatalf("auth status asked %d times, want once", a.logins.Load())
+		t.Fatalf("whoami asked %d times, want once", a.logins.Load())
 	}
 	if calls := a.views.Load() + a.sprints.Load(); calls > 4 {
-		t.Fatalf("%d acli calls, want at most one per worker", calls)
+		t.Fatalf("%d twg calls, want at most one per worker", calls)
 	}
 }
 
-// TestJiraPauseLoggedInTicketsFailAlone: when acli is logged in, tickets that
+// TestJiraPauseLoggedInTicketsFailAlone: when twg is logged in, tickets that
 // fail (deleted ones, say) fail on their own and never pause the others.
 func TestJiraPauseLoggedInTicketsFailAlone(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	a := &fakeAcli{fail: acliViewFailed}
+	a := &fakeTwg{fail: twgViewFailed}
 	r := jiraRefresher(t, a, 1, true)
 	jobs := jiraJobs(10)[:10]
 	res := <-r.Submit(jobs)
@@ -152,14 +151,14 @@ func TestJiraPauseLoggedInTicketsFailAlone(t *testing.T) {
 		t.Fatalf("failed %d, skipped %d, views %d; want 10, 0, 10", len(res.Failed), res.JiraSkipped, a.views.Load())
 	}
 	if a.logins.Load() != 1 {
-		t.Fatalf("auth status asked %d times, want once (reused for %v)", a.logins.Load(), jiraLoginRecheck)
+		t.Fatalf("whoami asked %d times, want once (reused for %v)", a.logins.Load(), jiraLoginRecheck)
 	}
 	if r.jira.paused() != "" {
 		t.Fatalf("paused: %q", r.jira.paused())
 	}
 }
 
-// TestJiraPauseAfterAStreak: when acli's auth status cannot tell (or cannot
+// TestJiraPauseAfterAStreak: when twg's auth status cannot tell (or cannot
 // be asked), three failures in a row with the same error, whatever the
 // ticket, pause the rest. Those three are real failures; the rest are
 // skipped. Different errors make no streak.
@@ -167,13 +166,13 @@ func TestJiraPauseAfterAStreak(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for name, withLogin := range map[string]bool{"login unknown": true, "no login check": false} {
 		t.Run(name, func(t *testing.T) {
-			a := &fakeAcli{fail: "exit status 1\n✗ Error: dial tcp: lookup jira.example: no such host", login: errors.New("acli jira auth status: exit status 1: dial tcp: no such host")}
+			a := &fakeTwg{fail: "NETWORK_ERROR: dial tcp: lookup jira.example: no such host", login: errors.New("twg whoami: NETWORK_ERROR: dial tcp: no such host")}
 			r := jiraRefresher(t, a, 1, withLogin)
 			res := <-r.Submit(jiraJobs(20)[:20])
 			if len(res.Failed) != jiraFailureStreak || res.JiraSkipped != 20-jiraFailureStreak {
 				t.Fatalf("failed %d, skipped %d; want %d and %d", len(res.Failed), res.JiraSkipped, jiraFailureStreak, 20-jiraFailureStreak)
 			}
-			if res.JiraSkipReason != "Jira lookups paused after acli failed 3 times in a row (get issue TEAM-3: exit status 1 ✗ Error: dial tcp: lookup jira.example: no such host)" {
+			if res.JiraSkipReason != "Jira lookups paused after twg failed 3 times in a row (get issue TEAM-3: NETWORK_ERROR: dial tcp: lookup jira.example: no such host)" {
 				t.Fatalf("reason %q", res.JiraSkipReason)
 			}
 			if res.failedErr() == nil {
@@ -182,10 +181,10 @@ func TestJiraPauseAfterAStreak(t *testing.T) {
 		})
 	}
 
-	a := &fakeAcli{}
+	a := &fakeTwg{}
 	r := jiraRefresher(t, a, 1, false)
 	for i := range 6 {
-		a.set(fmt.Sprintf("exit status 1\n✗ Error: cause %c", 'a'+i%2), nil)
+		a.set(fmt.Sprintf("NETWORK_ERROR: cause %c", 'a'+i%2), nil)
 		<-r.Submit([]Job{{Kind: JobJira, Ticket: fmt.Sprintf("TEAM-%d", i)}})
 	}
 	if r.jira.paused() != "" {
@@ -194,12 +193,12 @@ func TestJiraPauseAfterAStreak(t *testing.T) {
 }
 
 // TestJiraPauseBacksOffAndProbes is the served dashboard's back-off: while
-// paused, lookups are skipped without calling acli; once the pause ends one
+// paused, lookups are skipped without calling twg; once the pause ends one
 // probe runs, and a failed probe doubles the pause up to its bound; the
 // first lookup that works ends it.
 func TestJiraPauseBacksOffAndProbes(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	a := &fakeAcli{fail: acliUnauthorized, sprintFail: acliUnauthorized}
+	a := &fakeTwg{fail: twgUnauthorized, sprintFail: twgUnauthorized}
 	r := jiraRefresher(t, a, 2, true)
 	r.jira.first, r.jira.max = 5*time.Minute, 12*time.Minute
 	expirePause := func() {
@@ -214,7 +213,7 @@ func TestJiraPauseBacksOffAndProbes(t *testing.T) {
 	}
 	before := a.views.Load() + a.sprints.Load()
 	if res := <-r.Submit(jiraJobs(5)); res.JiraSkipped != 6 || a.views.Load()+a.sprints.Load() != before {
-		t.Fatalf("a paused round called acli: skipped %d, calls %d → %d", res.JiraSkipped, before, a.views.Load()+a.sprints.Load())
+		t.Fatalf("a paused round called twg: skipped %d, calls %d → %d", res.JiraSkipped, before, a.views.Load()+a.sprints.Load())
 	}
 
 	for _, want := range []time.Duration{10 * time.Minute, 12 * time.Minute, 12 * time.Minute} {
@@ -240,12 +239,12 @@ func TestJiraPauseBacksOffAndProbes(t *testing.T) {
 	}
 }
 
-// TestRefreshWaitJiraLoggedOut: a waited-for refresh with acli logged out
+// TestRefreshWaitJiraLoggedOut: a waited-for refresh with twg logged out
 // succeeds; it says once why Jira lookups were skipped and marks the jira
 // source in error with the reason.
 func TestRefreshWaitJiraLoggedOut(t *testing.T) {
 	f := newFixture(t)
-	a := &fakeAcli{fail: acliViewFailed, login: jira.ErrNotLoggedIn}
+	a := &fakeTwg{fail: twgViewFailed, login: jira.ErrNotLoggedIn}
 	bf := &blockingFetchers{release: make(chan struct{})}
 	close(bf.release)
 	r := NewRefresher(Fetchers{PR: bf, Issue: bf, Jira: a, JiraLogin: a.Login}, RefresherOptions{Workers: 2, IgnoreLeases: true})
@@ -255,10 +254,10 @@ func TestRefreshWaitJiraLoggedOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := d.Refresh(context.Background(), RefreshOptions{Remote: true, Wait: true}); err != nil {
-		t.Fatalf("a lapsed acli login failed the refresh: %v", err)
+		t.Fatalf("a lapsed twg login failed the refresh: %v", err)
 	}
 	v := d.Current()
-	if !hasDiag(v, "acli is not authenticated: run `acli jira auth login`; 1 Jira lookup skipped") {
+	if !hasDiag(v, "twg is not authenticated: run `twg login` or `twg doctor`; 1 Jira lookup skipped") {
 		t.Fatalf("diagnostics %v", v.Diagnostics)
 	}
 	for _, diag := range v.Diagnostics {
@@ -271,13 +270,13 @@ func TestRefreshWaitJiraLoggedOut(t *testing.T) {
 	}
 }
 
-// deletedTicket is how a work item view of a ticket that no longer exists
-// may fail while acli is logged in.
+// deletedTicket is how a get of a ticket that no longer exists
+// may fail while twg is logged in.
 func deletedTicket(key string) error {
-	return fmt.Errorf("get issue %s: %s", key, acliViewFailed)
+	return fmt.Errorf("get issue %s: %s", key, twgViewFailed)
 }
 
-// TestJiraPauseLoggedInResetsTheStreak: failures acli's auth status shows
+// TestJiraPauseLoggedInResetsTheStreak: failures twg's auth status shows
 // to be the tickets' own leave no streak behind, so a later failure that
 // cannot be checked does not pause lookups with an unrelated reason.
 func TestJiraPauseLoggedInResetsTheStreak(t *testing.T) {
@@ -294,9 +293,9 @@ func TestJiraPauseLoggedInResetsTheStreak(t *testing.T) {
 			t.Fatalf("after lookup %d, logged in: streak %d", i, p.streak)
 		}
 	}
-	// A blip: acli's auth status cannot tell, once the answer has aged.
+	// A blip: twg's auth status cannot tell, once the answer has aged.
 	mu.Lock()
-	loginErr = errors.New("acli jira auth status: exit status 1: dial tcp: i/o timeout")
+	loginErr = errors.New("twg whoami: NETWORK_ERROR: dial tcp: i/o timeout")
 	mu.Unlock()
 	p.mu.Lock()
 	p.loginAt = time.Now().Add(-2 * jiraLoginRecheck)
@@ -309,12 +308,12 @@ func TestJiraPauseLoggedInResetsTheStreak(t *testing.T) {
 }
 
 // TestJiraPauseFailedProbeWhileLoggedIn: a probe that fails on its own
-// ticket while acli says it is logged in ends the pause; the failure counts.
+// ticket while twg says it is logged in ends the pause; the failure counts.
 func TestJiraPauseFailedProbeWhileLoggedIn(t *testing.T) {
 	p := newJiraPause(func(context.Context) error { return nil })
 	ctx := context.Background()
 	_, probe, _ := p.admit()
-	if err := p.done(ctx, fmt.Errorf("get issue TEAM-1: %s", acliUnauthorized), probe); err == nil || p.paused() != jiraNotLoggedIn {
+	if err := p.done(ctx, fmt.Errorf("get issue TEAM-1: %s", twgUnauthorized), probe); err == nil || p.paused() != jiraNotLoggedIn {
 		t.Fatalf("not paused by an unauthorized lookup: %v, %q", err, p.paused())
 	}
 	if ok, _, reason := p.admit(); ok || reason != jiraNotLoggedIn {
@@ -333,7 +332,7 @@ func TestJiraPauseFailedProbeWhileLoggedIn(t *testing.T) {
 		t.Fatalf("the probe's own failure: %v, want a plain failure", err)
 	}
 	if p.paused() != "" || p.probing || p.streak != 0 {
-		t.Fatalf("still paused after acli said it is logged in: %q, probing %v, streak %d", p.paused(), p.probing, p.streak)
+		t.Fatalf("still paused after twg said it is logged in: %q, probing %v, streak %d", p.paused(), p.probing, p.streak)
 	}
 }
 
@@ -349,7 +348,7 @@ func TestBatchKeepsTheFirstSkipReason(t *testing.T) {
 	}
 	var total BatchResult
 	total.add(b.res)
-	total.add(BatchResult{JiraSkipped: 1, JiraSkipReason: "Jira lookups paused after acli failed 3 times in a row (x)"})
+	total.add(BatchResult{JiraSkipped: 1, JiraSkipReason: "Jira lookups paused after twg failed 3 times in a row (x)"})
 	if total.JiraSkipReason != jiraNotLoggedIn {
 		t.Fatalf("reason %q", total.JiraSkipReason)
 	}

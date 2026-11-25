@@ -56,10 +56,10 @@ func (c *Collector) addSprints(b *builder, effortNode func(string) string, jira 
 	switch {
 	case res.State == jiracache.Miss:
 		boardPart.State = Unknown
-		detail = boardName + "'s sprints are not cached yet; wgo dash fetches them in the background with acli (wgo dash --json --refresh fetches them now)"
+		detail = boardName + "'s sprints are not cached yet; wgo dash fetches them in the background with twg (wgo dash --json --refresh fetches them now)"
 	case res.Failed:
 		boardPart.State, boardPart.Error, boardPart.FetchedAt = Error, res.Err, time.Time{}
-		detail = boardName + ": the sprint lookup failed; check acli is installed and authenticated (acli jira auth status)"
+		detail = boardName + ": the sprint lookup failed; check twg is installed and authenticated (twg whoami)"
 	case res.State == jiracache.Fresh:
 		boardPart.State = Fresh
 	default:

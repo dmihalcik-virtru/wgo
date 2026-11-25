@@ -1,6 +1,6 @@
 // Package jiracache is a cross-invocation on-disk cache for a ticket's live
 // Jira status, living under ~/.wgo/cache/jira/<ticket>.json. It lets
-// `wgo statusline` show a ticket's Jira status without any synchronous acli
+// `wgo statusline` show a ticket's Jira status without any synchronous twg
 // call: the read path serves whatever is on disk (fresh or stale) and never
 // blocks, while a background `_refresh-jira` warms the entry. `wgo .` blocks
 // only on a cold miss (SyncOnMiss), serving from disk on every render after.
@@ -36,7 +36,7 @@ func logf(format string, args ...any) {
 }
 
 // negativeTTL bounds how long a failed-fetch (negative) entry is served before
-// a retry. It is deliberately shorter than a normal TTL: a genuine acli/auth
+// a retry. It is deliberately shorter than a normal TTL: a genuine twg/auth
 // failure should be re-attempted soon, but not on every single render.
 const negativeTTL = 2 * time.Minute
 
@@ -56,9 +56,9 @@ const (
 type Info struct {
 	Status   string `json:"status"`             // status name, e.g. "In Review"
 	Assignee string `json:"assignee,omitempty"` // assignee display name, if any
-	// Site is the Jira host (e.g. "acme.atlassian.net") auto-detected from acli
+	// Site is the Jira host (e.g. "acme.atlassian.net") auto-detected from twg
 	// when jira.site is not configured. Cached alongside the status so the
-	// browse-link build never shells out to acli on the statusline hot path.
+	// browse-link build never shells out to twg on the statusline hot path.
 	Site string `json:"site,omitempty"`
 
 	// The fields below are ticket facts for wgo dash (gh-98). An entry
@@ -87,7 +87,7 @@ type Info struct {
 	// Notes say which facts could not be read and why, naming the
 	// [jira.fields] key to fix; wgo dash shows them as diagnostics.
 	Notes []string `json:"notes,omitempty"`
-	// Partial marks an entry whose fetch could not read every field (acli
+	// Partial marks an entry whose fetch could not read every field (twg
 	// refused them), so its custom field facts are unknown. It is served
 	// under the shorter negativeTTL, so a full read is retried soon.
 	Partial bool `json:"partial,omitempty"`
@@ -110,7 +110,7 @@ type Parent struct {
 
 // entry is the on-disk representation of a cached Jira lookup. Failed marks a
 // negative entry written after a fetch error on a cold key; it is served under
-// the shorter negativeTTL so a broken/absent acli is retried sooner than a real
+// the shorter negativeTTL so a broken/absent twg is retried sooner than a real
 // status would go stale.
 type entry struct {
 	Info      Info      `json:"info"`
@@ -130,7 +130,7 @@ func Read(ticket string, ttl time.Duration) (Info, State) {
 }
 
 // ReadFailed is Read that also reports whether the entry is a negative one:
-// the last fetch of a cold key failed (acli absent, auth error), so it
+// the last fetch of a cold key failed (twg absent, auth error), so it
 // carries no Info. Callers that must tell "lookup failing" apart from "no
 // mappable status" use this instead of checking for an empty status.
 func ReadFailed(ticket string, ttl time.Duration) (Info, State, bool) {
@@ -173,7 +173,7 @@ func Write(ticket string, info Info) error {
 }
 
 // writeNegative stamps a short-lived negative entry for a ticket so a cold key
-// whose fetch failed (no acli, auth error) is not re-fetched on every render;
+// whose fetch failed (no twg, auth error) is not re-fetched on every render;
 // see negativeTTL. It never overwrites a usable positive entry — callers gate
 // on a cold Miss first.
 func writeNegative(ticket string) error {

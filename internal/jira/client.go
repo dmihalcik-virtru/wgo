@@ -1,6 +1,4 @@
-// Package jira wraps the acli jira CLI for reading Jira issue data.
-// It does not call the Jira REST API directly; all operations shell out to
-// `acli jira` which manages its own credentials via `acli jira auth login`.
+// Package jira wraps the twg CLI for Jira work items.
 package jira
 
 import (
@@ -8,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/virtru/wgo/internal/config"
 )
 
-// Issue represents a Jira work item returned by `acli jira workitem view`.
+// Issue represents a Jira work item. Fields preserves the existing standup
+// and spec command interface while twg returns the fields at top level.
 type Issue struct {
 	Key    string      `json:"key"`
 	Fields IssueFields `json:"fields"`
@@ -60,7 +60,7 @@ type User struct {
 	EmailAddress string `json:"emailAddress"`
 }
 
-// Sprint represents a Jira agile sprint returned by `acli jira board list-sprints`.
+// Sprint represents a Jira agile sprint.
 type Sprint struct {
 	ID        int
 	Name      string
@@ -70,85 +70,126 @@ type Sprint struct {
 	EndDate   time.Time
 }
 
-// CheckAuth runs `acli jira auth status` and returns an error if not authenticated.
+// CheckAuth verifies the configured twg identity.
 func CheckAuth() error {
-	out, err := run("auth", "status")
+	return CheckAuthContext(context.Background())
+}
+
+// CheckAuthContext is CheckAuth, stopped when ctx is done.
+func CheckAuthContext(ctx context.Context) error {
+	return LoginStatus(ctx)
+}
+
+// ErrNotLoggedIn says twg's Jira login is absent or expired.
+var ErrNotLoggedIn = errors.New("twg is not authenticated: run `twg login` or `twg doctor`")
+
+// IsAuthError recognizes structured twg error codes and authentication
+// messages without treating an ordinary missing work item as an auth error.
+func IsAuthError(msg string) bool {
+	s := strings.ToLower(msg)
+	return strings.Contains(s, "unauthorized") || strings.Contains(s, "unauthenticated") ||
+		strings.Contains(s, "not authenticated") || strings.Contains(s, "authentication required") ||
+		strings.Contains(s, "auth_required") || strings.Contains(s, "auth_expired") ||
+		strings.Contains(s, "not logged in") || strings.Contains(s, "login required")
+}
+
+// LoginStatus runs twg whoami, stopped when ctx is done.
+func LoginStatus(ctx context.Context) error {
+	data, err := runContext(ctx, "whoami")
 	if err != nil {
-		return fmt.Errorf("acli jira not authenticated — run: acli jira auth login\n%s", out)
+		return err
+	}
+	var user struct {
+		AccountID string `json:"accountId"`
+		Email     string `json:"email"`
+	}
+	if err := json.Unmarshal(data, &user); err != nil {
+		return fmt.Errorf("parse twg whoami: %w", err)
+	}
+	if user.AccountID == "" && user.Email == "" {
+		return ErrNotLoggedIn
 	}
 	return nil
 }
 
-// ErrNotLoggedIn says acli is not logged in to Jira, or its login expired.
-var ErrNotLoggedIn = errors.New("acli is not authenticated: run `acli jira auth login`")
-
-// IsAuthError reports whether acli's output, or an error carrying it, says
-// acli is not logged in or its login expired. acli 1.3 prints "unauthorized:
-// use 'acli jira auth login' to authenticate" (or "acli [product] auth
-// login") for auth status, searches and sprint lists. `workitem view` says
-// only "failed to fetch work item details", which a missing ticket may say
-// too; LoginStatus tells those apart.
-func IsAuthError(msg string) bool {
-	s := strings.ToLower(msg)
-	return strings.Contains(s, "unauthorized") || strings.Contains(s, "auth login") ||
-		strings.Contains(s, "not authenticated") || strings.Contains(s, "unauthenticated")
-}
-
-// LoginStatus runs `acli jira auth status`, stopped when ctx is done. It
-// returns nil when acli is logged in, an error wrapping ErrNotLoggedIn when
-// acli says it is not, and another error when acli failed without saying
-// (no network, say).
-func LoginStatus(ctx context.Context) error {
-	out, err := runContext(ctx, "auth", "status")
-	if IsAuthError(out) {
-		// Whatever the exit status: an acli that says so is logged out.
-		return ErrNotLoggedIn
-	}
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("acli jira auth status: %w: %s", err, strings.Join(strings.Fields(out), " "))
-}
-
-// SiteHost returns the Jira site host (e.g. "virtru.atlassian.net") parsed from
-// `acli jira auth status`. It lets callers build browse/board URLs without any
-// configuration. Returns an error if not authenticated or the site cannot be found.
+// SiteHost returns the configured site or twg's locally saved default site.
 func SiteHost() (string, error) {
-	out, err := run("auth", "status")
-	if err != nil {
-		return "", fmt.Errorf("acli jira not authenticated — run: acli jira auth login\n%s", out)
+	return SiteHostContext(context.Background())
+}
+
+// SiteHostContext is SiteHost, stopped when ctx is done.
+func SiteHostContext(ctx context.Context) (string, error) {
+	if cfg := config.Get(); cfg != nil && cfg.Jira.Site != "" {
+		return cfg.Jira.Site, nil
 	}
-	for line := range strings.SplitSeq(out, "\n") {
-		line = strings.TrimSpace(line)
-		if rest, ok := strings.CutPrefix(line, "Site:"); ok {
-			return strings.TrimSpace(rest), nil
+	data, err := runContext(ctx, "auth", "profile", "list")
+	if err != nil {
+		return "", err
+	}
+	var profiles struct {
+		ActiveEnvironment string            `json:"activeEnvironment"`
+		Defaults          map[string]string `json:"defaults"`
+		Profiles          []struct {
+			ID   string `json:"id"`
+			Site string `json:"site"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(data, &profiles); err != nil {
+		return "", fmt.Errorf("parse twg profiles: %w", err)
+	}
+	id := profiles.Defaults[profiles.ActiveEnvironment]
+	for _, profile := range profiles.Profiles {
+		if profile.ID == id && profile.Site != "" {
+			return profile.Site, nil
 		}
 	}
-	return "", fmt.Errorf("could not determine Jira site from acli auth status")
+	return "", fmt.Errorf("no default Jira site in twg profiles; run `twg doctor`")
 }
 
 // ListSprints returns the sprints for the given board id in the requested states.
 // state is a comma-separated list of "future", "active", and/or "closed"; pass ""
-// for the acli default (active). When paginate is true all pages are fetched —
-// necessary for closed sprints, which acli returns oldest-first across many pages.
+// for active. When paginate is true all pages are fetched.
 func ListSprints(boardID int, state string, paginate bool) ([]Sprint, error) {
 	return ListSprintsContext(context.Background(), boardID, state, paginate)
 }
 
 // ListSprintsContext is ListSprints, stopped when ctx is done.
 func ListSprintsContext(ctx context.Context, boardID int, state string, paginate bool) ([]Sprint, error) {
-	args := []string{"board", "list-sprints", "--id", fmt.Sprintf("%d", boardID), "--json"}
-	if state != "" {
-		args = append(args, "--state", state)
+	if state == "" {
+		state = "active"
 	}
-	if paginate {
-		args = append(args, "--paginate")
+	var all []Sprint
+	for _, oneState := range strings.Split(state, ",") {
+		oneState = strings.TrimSpace(oneState)
+		if oneState != "active" && oneState != "future" && oneState != "closed" {
+			return nil, fmt.Errorf("invalid sprint state %q", oneState)
+		}
+		for offset := 0; ; {
+			args := []string{"jira", "board", "sprints", "query", "--id", fmt.Sprintf("%d", boardID), "--state", oneState, "--start-at", fmt.Sprintf("%d", offset), "--max-results", "50"}
+			data, err := runContext(ctx, args...)
+			if err != nil {
+				return nil, fmt.Errorf("list sprints for board %d: %w", boardID, err)
+			}
+			var page struct {
+				Sprints []rawSprint `json:"sprints"`
+				Total   int         `json:"total"`
+				IsLast  bool        `json:"isLast"`
+			}
+			if err := json.Unmarshal(data, &page); err != nil {
+				return nil, fmt.Errorf("parse sprints: %w", err)
+			}
+			parsed, err := parseSprints(data)
+			if err != nil {
+				return nil, err
+			}
+			all = append(all, parsed...)
+			offset += len(page.Sprints)
+			if !paginate || page.IsLast || len(page.Sprints) == 0 || (page.Total > 0 && offset >= page.Total) {
+				break
+			}
+		}
 	}
-	out, err := runContext(ctx, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list sprints for board %d: %w\n%s", boardID, err, out)
-	}
-	return parseSprints(out)
+	return all, nil
 }
 
 // ListActiveSprints returns the active sprints for the given board id.
@@ -157,26 +198,30 @@ func ListActiveSprints(boardID int) ([]Sprint, error) {
 }
 
 // SearchIssues runs a JQL search and returns the matching issues. fields is the
-// list of issue fields to request; acli restricts these to a fixed allowed set
-// (issuetype, key, assignee, priority, status, summary). Pass nil for the default.
+// list of issue fields to request. Pass nil for the default.
 func SearchIssues(jql string, fields []string) ([]Issue, error) {
-	args := []string{"workitem", "search", "--jql", jql, "--json"}
-	if len(fields) > 0 {
-		args = append(args, "--fields", strings.Join(fields, ","))
-	}
-	out, err := run(args...)
+	return SearchIssuesContext(context.Background(), jql, fields)
+}
+
+// SearchIssuesContext is SearchIssues, stopped when ctx is done.
+func SearchIssuesContext(ctx context.Context, jql string, fields []string) ([]Issue, error) {
+	raws, err := SearchIssuesJSONContext(ctx, jql, fields, int(^uint(0)>>1))
 	if err != nil {
-		return nil, fmt.Errorf("search issues: %w\n%s", err, out)
+		return nil, err
 	}
-	var issues []Issue
-	if err := json.Unmarshal([]byte(out), &issues); err != nil {
-		return nil, fmt.Errorf("parse search results: %w", err)
+	issues := make([]Issue, 0, len(raws))
+	for _, raw := range raws {
+		issue, err := decodeIssue(raw)
+		if err != nil {
+			return nil, err
+		}
+		issues = append(issues, issue)
 	}
 	return issues, nil
 }
 
 // InFlightJQL builds a JQL query for a single sprint's in-flight work assigned to
-// the given assignee ("" means the current acli user). statuses are the workflow
+// the given assignee ("" means the current Jira user). statuses are the workflow
 // states that count as in flight (e.g. In Progress, In Review, In QA).
 func InFlightJQL(sprintID int, assignee string, statuses []string) string {
 	return fmt.Sprintf("sprint = %d AND %s", sprintID, inFlightClause(assignee, statuses))
@@ -211,19 +256,23 @@ func quoteJQL(s string) string {
 
 // GetIssue fetches summary, description, status, priority, and assignee for the given ticket.
 func GetIssue(ticket string) (*Issue, error) {
-	out, err := run("workitem", "view", ticket, "--json",
-		"--fields", "summary,description,status,priority,assignee")
+	return GetIssueContext(context.Background(), ticket)
+}
+
+// GetIssueContext is GetIssue, stopped when ctx is done.
+func GetIssueContext(ctx context.Context, ticket string) (*Issue, error) {
+	raw, err := GetIssueJSONContext(ctx, ticket, "summary,description,status,priority,assignee")
 	if err != nil {
-		return nil, fmt.Errorf("get issue %s: %w\n%s", ticket, err, out)
+		return nil, err
 	}
-	var issue Issue
-	if err := json.Unmarshal([]byte(out), &issue); err != nil {
+	issue, err := decodeIssue(raw)
+	if err != nil {
 		return nil, fmt.Errorf("parse issue %s: %w", ticket, err)
 	}
 	return &issue, nil
 }
 
-// GetIssueJSON returns acli's JSON for one work item, with fields (a
+// GetIssueJSON returns twg's flattened JSON for one work item, with fields (a
 // comma-separated --fields value, such as FactFields) requested. Parse it
 // with ParseFacts.
 func GetIssueJSON(ticket, fields string) ([]byte, error) {
@@ -232,48 +281,91 @@ func GetIssueJSON(ticket, fields string) ([]byte, error) {
 
 // GetIssueJSONContext is GetIssueJSON, stopped when ctx is done.
 func GetIssueJSONContext(ctx context.Context, ticket, fields string) ([]byte, error) {
-	out, err := runContext(ctx, "workitem", "view", ticket, "--json", "--fields", fields)
-	if err != nil {
-		return nil, fmt.Errorf("get issue %s: %w\n%s", ticket, err, out)
+	args := []string{"jira", "workitem", "get", ticket}
+	if fields == "*all" {
+		args = append(args, "--full")
+	} else if fields != "" {
+		args = append(args, "--fields", fields)
 	}
-	return []byte(out), nil
+	data, err := runContext(ctx, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get issue %s: %w", ticket, err)
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, fmt.Errorf("parse issue %s: %w", ticket, err)
+	}
+	if len(items) != 1 || len(items[0]) == 0 || string(items[0]) == "null" {
+		return nil, fmt.Errorf("get issue %s: twg returned %d issues", ticket, len(items))
+	}
+	return items[0], nil
 }
 
-// SearchIssuesJSON runs a JQL search for up to limit work items and
-// returns each one's JSON, for ParseFacts. fields is limited to what acli
-// allows, as for SearchIssues. It asks acli to paginate, since Jira serves
-// at most a page of issues per request; acli may then print one JSON array
-// per page, and every page is read. acli may return more than limit, so a
-// caller that bounds its results cuts them itself.
+// SearchIssuesJSON runs a JQL search for up to limit work items and returns
+// flattened work item JSON for ParseFacts.
 func SearchIssuesJSON(jql string, fields []string, limit int) ([]json.RawMessage, error) {
 	return SearchIssuesJSONContext(context.Background(), jql, fields, limit)
 }
 
 // SearchIssuesJSONContext is SearchIssuesJSON, stopped when ctx is done.
 func SearchIssuesJSONContext(ctx context.Context, jql string, fields []string, limit int) ([]json.RawMessage, error) {
-	args := []string{"workitem", "search", "--jql", jql, "--json", "--paginate", "--limit", fmt.Sprintf("%d", limit)}
-	if len(fields) > 0 {
-		args = append(args, "--fields", strings.Join(fields, ","))
+	if limit <= 0 {
+		return nil, nil
 	}
-	out, err := runContext(ctx, args...)
-	if err != nil {
-		return nil, fmt.Errorf("search issues: %w\n%s", err, out)
-	}
-	return parseIssuePages(out)
-}
-
-// parseIssuePages decodes one or more concatenated JSON arrays of issues.
-func parseIssuePages(raw string) ([]json.RawMessage, error) {
-	dec := json.NewDecoder(strings.NewReader(raw))
 	var issues []json.RawMessage
-	for dec.More() {
-		var page []json.RawMessage
-		if err := dec.Decode(&page); err != nil {
+	cursor := ""
+	seen := map[string]bool{}
+	for len(issues) < limit {
+		pageSize := min(100, limit-len(issues))
+		args := []string{"jira", "workitem", "query", "--jql", jql, "--limit", fmt.Sprintf("%d", pageSize)}
+		if len(fields) > 0 {
+			args = append(args, "--fields", strings.Join(fields, ","))
+		}
+		if cursor != "" {
+			args = append(args, "--after", cursor)
+		}
+		data, err := runContext(ctx, args...)
+		if err != nil {
+			return nil, fmt.Errorf("search issues: %w", err)
+		}
+		var page struct {
+			Issues   []json.RawMessage `json:"issues"`
+			PageInfo struct {
+				HasNextPage bool   `json:"hasNextPage"`
+				NextCursor  string `json:"nextCursor"`
+			} `json:"pageInfo"`
+		}
+		if err := json.Unmarshal(data, &page); err != nil {
 			return nil, fmt.Errorf("parse search results: %w", err)
 		}
-		issues = append(issues, page...)
+		issues = append(issues, page.Issues...)
+		if len(issues) > limit {
+			issues = issues[:limit]
+		}
+		if !page.PageInfo.HasNextPage {
+			break
+		}
+		if page.PageInfo.NextCursor == "" || seen[page.PageInfo.NextCursor] {
+			return nil, fmt.Errorf("search issues: twg returned a repeated or empty pagination cursor")
+		}
+		cursor = page.PageInfo.NextCursor
+		seen[cursor] = true
 	}
 	return issues, nil
+}
+
+func decodeIssue(raw json.RawMessage) (Issue, error) {
+	var flat struct {
+		Key string `json:"key"`
+		IssueFields
+	}
+	if err := json.Unmarshal(raw, &flat); err != nil {
+		return Issue{}, err
+	}
+	if flat.Key == "" {
+		return Issue{}, errors.New("work item has no key")
+	}
+	return Issue{Key: flat.Key, Fields: flat.IssueFields}, nil
 }
 
 // SprintTicketsJQL builds a JQL query for a sprint's tickets assigned to
@@ -304,59 +396,76 @@ func SprintTicketsJQL(sprintID int, assignees []string, unassigned bool) string 
 
 // GetComments fetches up to limit comments for the given ticket, newest last.
 func GetComments(ticket string, limit int) ([]Comment, error) {
-	out, err := run("workitem", "comment", "list",
-		"--key", ticket, "--json",
-		"--limit", fmt.Sprintf("%d", limit),
-		"--order", "+created")
+	return GetCommentsContext(context.Background(), ticket, limit)
+}
+
+// GetCommentsContext is GetComments, stopped when ctx is done.
+func GetCommentsContext(ctx context.Context, ticket string, limit int) ([]Comment, error) {
+	data, err := runContext(ctx, "jira", "workitem", "comment", "query",
+		"--issue-id", ticket, "--first", fmt.Sprintf("%d", limit), "--order-by", "+created")
 	if err != nil {
-		return nil, fmt.Errorf("list comments %s: %w\n%s", ticket, err, out)
+		return nil, fmt.Errorf("list comments %s: %w", ticket, err)
 	}
-	return parseComments(out)
+	return parseComments(data)
 }
 
 // GetWatchers fetches the watcher list for the given ticket.
 func GetWatchers(ticket string) ([]User, error) {
-	out, err := run("workitem", "watcher", "list", "--key", ticket, "--json")
+	return GetWatchersContext(context.Background(), ticket)
+}
+
+// GetWatchersContext is GetWatchers, stopped when ctx is done.
+func GetWatchersContext(ctx context.Context, ticket string) ([]User, error) {
+	data, err := runContext(ctx, "jira", "workitem", "watcher", "query", "--issue-id", ticket)
 	if err != nil {
-		return nil, fmt.Errorf("list watchers %s: %w\n%s", ticket, err, out)
+		return nil, fmt.Errorf("list watchers %s: %w", ticket, err)
 	}
-	return parseWatchers(out)
+	return parseWatchers(data)
 }
 
 // CreateIssue creates a new Jira work item and returns the new ticket key (e.g. "WGO-123").
 func CreateIssue(project, summary, issueType, description string) (string, error) {
+	return CreateIssueContext(context.Background(), project, summary, issueType, description)
+}
+
+// CreateIssueContext is CreateIssue, stopped when ctx is done.
+func CreateIssueContext(ctx context.Context, project, summary, issueType, description string) (string, error) {
 	args := []string{
-		"workitem", "create",
-		"--project", project,
+		"jira", "workitem", "create",
+		"--space", project,
 		"--summary", summary,
 		"--type", issueType,
-		"--json",
+		"--yes",
 	}
 	if description != "" {
-		args = append(args, "--description", description)
+		args = append(args, "--description", description, "--description-format", "markdown")
 	}
-	out, err := run(args...)
+	data, err := runContext(ctx, args...)
 	if err != nil {
-		return "", fmt.Errorf("create issue in %s: %w\n%s", project, err, out)
+		return "", fmt.Errorf("create issue in %s: %w", project, err)
 	}
 	var result struct {
 		Key string `json:"key"`
 	}
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
+	if err := json.Unmarshal(data, &result); err != nil {
 		return "", fmt.Errorf("parse create response: %w", err)
 	}
 	if result.Key == "" {
-		return "", fmt.Errorf("create returned no ticket key; response: %s", out)
+		return "", fmt.Errorf("create returned no ticket key; response: %s", data)
 	}
 	return result.Key, nil
 }
 
 // UpdateIssue pushes a new summary and description to an existing Jira ticket.
 func UpdateIssue(ticket, summary, description string) error {
+	return UpdateIssueContext(context.Background(), ticket, summary, description)
+}
+
+// UpdateIssueContext is UpdateIssue, stopped when ctx is done.
+func UpdateIssueContext(ctx context.Context, ticket, summary, description string) error {
 	args := []string{
-		"workitem", "edit",
-		"--key", ticket,
-		"--yes",
+		"jira", "workitem", "update",
+		"--id", ticket,
 	}
 	if summary != "" {
 		args = append(args, "--summary", summary)
@@ -366,23 +475,25 @@ func UpdateIssue(ticket, summary, description string) error {
 		if len(description) > 32*1024 {
 			description = description[:32*1024]
 		}
-		args = append(args, "--description", description)
+		args = append(args, "--description", description, "--description-format", "markdown")
 	}
-	out, err := run(args...)
+	_, err := runContext(ctx, args...)
 	if err != nil {
-		return fmt.Errorf("update issue %s: %w\n%s", ticket, err, out)
+		return fmt.Errorf("update issue %s: %w", ticket, err)
 	}
 	return nil
 }
 
-// TransitionIssue moves a Jira ticket to the given status name (e.g. "Done").
+// TransitionIssue moves a Jira ticket to the given transition ID or status name.
 func TransitionIssue(ticket, jiraStatus string) error {
-	out, err := run("workitem", "transition",
-		"--key", ticket,
-		"--status", jiraStatus,
-		"--yes")
+	return TransitionIssueContext(context.Background(), ticket, jiraStatus)
+}
+
+// TransitionIssueContext is TransitionIssue, stopped when ctx is done.
+func TransitionIssueContext(ctx context.Context, ticket, jiraStatus string) error {
+	_, err := runContext(ctx, "jira", "workitem", "transition", "--id", ticket, "--transition-id", jiraStatus)
 	if err != nil {
-		return fmt.Errorf("transition %s to %q: %w\n%s", ticket, jiraStatus, err, out)
+		return fmt.Errorf("transition %s to %q: %w", ticket, jiraStatus, err)
 	}
 	return nil
 }
@@ -404,36 +515,9 @@ func MapSpecStatus(specStatus string) string {
 	}
 }
 
-// run executes `acli jira <args>` and returns stdout. Stderr is included in
-// any returned error so auth failures are surfaced clearly.
-func run(args ...string) (string, error) {
-	return runContext(context.Background(), args...)
-}
-
-// acliWaitDelay bounds how long a cancelled acli call may hold on to its
-// output once killed (a child process it started could keep the pipes
-// open).
-const acliWaitDelay = 2 * time.Second
-
-// runContext is run, killing acli when ctx is done.
-func runContext(ctx context.Context, args ...string) (string, error) {
-	fullArgs := append([]string{"jira"}, args...)
-	cmd := exec.CommandContext(ctx, "acli", fullArgs...)
-	cmd.WaitDelay = acliWaitDelay
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		combined := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
-		return combined, err
-	}
-	return stdout.String(), nil
-}
-
 // --- JSON parsing helpers ---
 
-// rawSprintList matches `{"sprints":[...]}` from `acli jira board list-sprints`.
+// rawSprintList matches the data from `twg jira board sprints query`.
 type rawSprintList struct {
 	Sprints []rawSprint `json:"sprints"`
 }
@@ -448,32 +532,27 @@ type rawSprint struct {
 	EndDate   string `json:"endDate"`
 }
 
-// parseSprints decodes one or more `{"sprints":[...]}` documents. `acli --paginate`
-// emits one JSON object per page (concatenated, not a single array), so we stream
-// the input and accumulate across every document.
-func parseSprints(raw string) ([]Sprint, error) {
-	dec := json.NewDecoder(strings.NewReader(raw))
+// parseSprints decodes the sprints from one page's data.
+func parseSprints(raw []byte) ([]Sprint, error) {
+	var wrapper rawSprintList
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, fmt.Errorf("parse sprints: %w", err)
+	}
 	var sprints []Sprint
-	for dec.More() {
-		var wrapper rawSprintList
-		if err := dec.Decode(&wrapper); err != nil {
-			return nil, fmt.Errorf("parse sprints: %w", err)
+	for _, r := range wrapper.Sprints {
+		s := Sprint{ID: r.ID, Name: r.Name, Goal: r.Goal, State: r.State}
+		if t, err := parseJiraTime(r.StartDate); err == nil {
+			s.StartDate = t
 		}
-		for _, r := range wrapper.Sprints {
-			s := Sprint{ID: r.ID, Name: r.Name, Goal: r.Goal, State: r.State}
-			if t, err := parseJiraTime(r.StartDate); err == nil {
-				s.StartDate = t
-			}
-			if t, err := parseJiraTime(r.EndDate); err == nil {
-				s.EndDate = t
-			}
-			sprints = append(sprints, s)
+		if t, err := parseJiraTime(r.EndDate); err == nil {
+			s.EndDate = t
 		}
+		sprints = append(sprints, s)
 	}
 	return sprints, nil
 }
 
-// rawComment matches the JSON shape returned by `acli jira workitem comment list`.
+// rawComment matches `twg jira workitem comment query` data.
 type rawComment struct {
 	ID      string          `json:"id"`
 	Author  User            `json:"author"`
@@ -481,20 +560,10 @@ type rawComment struct {
 	Created string          `json:"created"`
 }
 
-// rawCommentList covers the `{"comments":[...]}` wrapper that some acli versions use.
-type rawCommentList struct {
-	Comments []rawComment `json:"comments"`
-}
-
-func parseComments(raw string) ([]Comment, error) {
+func parseComments(raw []byte) ([]Comment, error) {
 	var raws []rawComment
-	// Try flat array first, then wrapped object.
-	if err := json.Unmarshal([]byte(raw), &raws); err != nil {
-		var wrapper rawCommentList
-		if err2 := json.Unmarshal([]byte(raw), &wrapper); err2 != nil {
-			return nil, fmt.Errorf("parse comments: %w", err)
-		}
-		raws = wrapper.Comments
+	if err := json.Unmarshal(raw, &raws); err != nil {
+		return nil, fmt.Errorf("parse comments: %w", err)
 	}
 	comments := make([]Comment, 0, len(raws))
 	for _, r := range raws {
@@ -516,9 +585,9 @@ type rawWatcherList struct {
 	Watchers []User `json:"watchers"`
 }
 
-func parseWatchers(raw string) ([]User, error) {
+func parseWatchers(raw []byte) ([]User, error) {
 	var wrapper rawWatcherList
-	if err := json.Unmarshal([]byte(raw), &wrapper); err != nil {
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
 		return nil, fmt.Errorf("parse watchers: %w", err)
 	}
 	return wrapper.Watchers, nil
@@ -567,6 +636,7 @@ func collectText(n *adfNode, sb *strings.Builder) {
 // parseJiraTime parses Jira's ISO-8601 timestamp with optional milliseconds.
 func parseJiraTime(s string) (time.Time, error) {
 	formats := []string{
+		time.RFC3339Nano,
 		"2006-01-02T15:04:05.000-0700",
 		"2006-01-02T15:04:05.000Z",
 		"2006-01-02T15:04:05-0700",

@@ -125,23 +125,18 @@ func (g *fakeGitHubAPI) serveIssue(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, `{"message": "Not Found", "documentation_url": "https://docs.github.com/rest"}`)
 }
 
-// fakeAcliOnPath puts an acli on PATH that behaves as acli 1.3 does with an
-// expired login, taking delay per call, and logs each call to the returned
-// file.
-func fakeAcliOnPath(t *testing.T, delay string) string {
+// fakeTwgOnPath returns v2 auth errors and logs each subprocess call.
+func fakeTwgOnPath(t *testing.T, delay string) string {
 	t.Helper()
 	dir := t.TempDir()
 	log := filepath.Join(dir, "calls.log")
 	script := `#!/bin/sh
 echo "$*" >> "` + log + `"
 /bin/sleep ` + delay + `
-case "$*" in
-"jira auth status") echo "✗ Error: unauthorized: use 'acli jira auth login' to authenticate"; exit 1 ;;
-"jira workitem view"*) echo "✗ Error: failed to fetch work item details"; exit 1 ;;
-*) echo "✗ Error: unauthorized: use 'acli [product] auth login' to authenticate"; exit 1 ;;
-esac
+echo '{"apiVersion":"v2","ok":false,"error":{"code":"AUTH_REQUIRED","kind":"authentication","message":"login required"}}'
+exit 1
 `
-	if err := os.WriteFile(filepath.Join(dir, "acli"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "twg"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
@@ -149,26 +144,26 @@ esac
 }
 
 // TestDashRefreshRealDataSituation replays what a real HOME showed: a PR
-// inventory naming a hundred-odd Jira tickets, acli's login expired, the PRs'
+// inventory naming a hundred-odd Jira tickets, twg's login expired, the PRs'
 // GitHub issue references all 404, and a GraphQL page cut off once. A waited
 // refresh finishes quickly, says once that the Jira lookups were skipped,
 // shows the issues as not found, and exits 0. With a board, its sprint list
 // says "unauthorized" and pauses Jira lookups; without one, the first work
-// item view fails without saying why and acli's auth status confirms it.
+// bulk-get reports a structured auth error.
 func TestDashRefreshRealDataSituation(t *testing.T) {
 	for _, tc := range []struct {
 		name, jira string
 		// jobs is the Jira lookups skipped: every ticket, and the board.
 		jobs int
-		// maxViews and authStatus bound the acli calls.
-		maxViews, authStatus int
+		// maxBulk bounds twg bulk-get calls.
+		maxBulk int
 	}{
-		{name: "with a board", jira: "[jira]\nboard = 42\nsite = \"jira.example\"\n", jobs: realDataPRs + 1, maxViews: 0, authStatus: 0},
-		{name: "without a board", jira: "[jira]\nsite = \"jira.example\"\n", jobs: realDataPRs, maxViews: 4, authStatus: 1},
+		{name: "with a board", jira: "[jira]\nboard = 42\nsite = \"jira.example\"\n", jobs: realDataPRs + 1, maxBulk: 0},
+		{name: "without a board", jira: "[jira]\nsite = \"jira.example\"\n", jobs: realDataPRs, maxBulk: 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			goldenHome(t, "[[dash.people]]\ngithub = \"alice\"\n\n[dash]\nticket_prefixes = [\"TEAM\"]\n\n"+tc.jira)
-			acliLog := fakeAcliOnPath(t, "0.2")
+			twgLog := fakeTwgOnPath(t, "0.2")
 			t.Setenv("GITHUB_TOKEN", "test-token")
 			gh := &fakeGitHubAPI{issueDelay: 5 * time.Millisecond}
 			old := http.DefaultTransport
@@ -182,10 +177,10 @@ func TestDashRefreshRealDataSituation(t *testing.T) {
 			err := runDash(context.Background(), &buf, noDashFlags)
 			took := time.Since(start)
 			if err != nil {
-				t.Fatalf("an expired acli login and 404s failed the refresh: %v", err)
+				t.Fatalf("an expired twg login and 404s failed the refresh: %v", err)
 			}
 			// Most of it is the 1 s back-off before the cut-off page's retry.
-			// Without the pause, the acli calls alone would take 6 s.
+			// Without the pause, repeated twg calls would dominate the refresh.
 			if took > 8*time.Second {
 				t.Fatalf("wgo dash --json --refresh took %v", took)
 			}
@@ -201,7 +196,7 @@ func TestDashRefreshRealDataSituation(t *testing.T) {
 			if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
 				t.Fatal(err)
 			}
-			want := fmt.Sprintf("acli is not authenticated: run `acli jira auth login`; %d Jira lookups skipped", tc.jobs)
+			want := fmt.Sprintf("twg is not authenticated: run `twg login` or `twg doctor`; %d Jira lookups skipped", tc.jobs)
 			found := false
 			for _, d := range out.Diagnostics {
 				if strings.Contains(d, "failed") || strings.Contains(d, "not run") {
@@ -212,7 +207,7 @@ func TestDashRefreshRealDataSituation(t *testing.T) {
 			if !found {
 				t.Fatalf("diagnostics %q, want %q", out.Diagnostics, want)
 			}
-			if st := out.Snapshot.Sources[dash.SourceJira]; st.State != dash.Error || st.Detail != "acli is not authenticated: run `acli jira auth login`" {
+			if st := out.Snapshot.Sources[dash.SourceJira]; st.State != dash.Error || st.Detail != "twg is not authenticated: run `twg login` or `twg doctor`" {
 				t.Fatalf("jira source %+v", st)
 			}
 			if st := out.Snapshot.Sources[dash.SourceGitHubIssues]; st.State != dash.Fresh || st.NotFound != realDataPRs || st.Fresh != 0 {
@@ -241,39 +236,39 @@ func TestDashRefreshRealDataSituation(t *testing.T) {
 				t.Fatalf("%d issue lookups, want %d", n, realDataPRs)
 			}
 
-			calls, _ := os.ReadFile(acliLog)
-			if views := strings.Count(string(calls), "workitem view"); views > tc.maxViews || strings.Count(string(calls), "auth status") != tc.authStatus {
-				t.Fatalf("acli calls:\n%s\nwant at most %d views and %d auth status", calls, tc.maxViews, tc.authStatus)
+			calls, _ := os.ReadFile(twgLog)
+			if bulk := strings.Count(string(calls), "bulk-get"); bulk > tc.maxBulk || strings.Count(string(calls), "whoami") != 0 {
+				t.Fatalf("twg calls:\n%s\nwant at most %d bulk-get calls and no whoami", calls, tc.maxBulk)
 			}
 		})
 	}
 }
 
-// hangingAcliOnPath puts an acli on PATH that never answers, writing its
+// hangingTwgOnPath puts a twg on PATH that never answers, writing its
 // process ID to the returned file first.
-func hangingAcliOnPath(t *testing.T) string {
+func hangingTwgOnPath(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	pids := filepath.Join(dir, "pids")
 	script := "#!/bin/sh\necho $$ >> \"" + pids + "\"\nexec /bin/sleep 600\n"
-	if err := os.WriteFile(filepath.Join(dir, "acli"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "twg"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
 	return pids
 }
 
-// TestDashRefreshExitsOnTimeWithHangingAcli: the deadline bounds when wgo
-// dash --json --refresh exits, not only when it prints: an acli that hangs
+// TestDashRefreshExitsOnTimeWithHangingTwg: the deadline bounds when wgo
+// dash --json --refresh exits, not only when it prints: a twg that hangs
 // is killed at the deadline, and the command returns at once after it.
-func TestDashRefreshExitsOnTimeWithHangingAcli(t *testing.T) {
+func TestDashRefreshExitsOnTimeWithHangingTwg(t *testing.T) {
 	for _, tc := range []struct{ name, jira string }{
 		{name: "sprint list hangs", jira: "[jira]\nboard = 42\nsite = \"jira.example\"\n"},
-		{name: "ticket views hang", jira: "[jira]\nsite = \"jira.example\"\n"},
+		{name: "ticket bulk-get hangs", jira: "[jira]\nsite = \"jira.example\"\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			goldenHome(t, "[[dash.people]]\ngithub = \"alice\"\n\n[dash]\nticket_prefixes = [\"TEAM\"]\n\n"+tc.jira)
-			pids := hangingAcliOnPath(t)
+			pids := hangingTwgOnPath(t)
 			t.Setenv("GITHUB_TOKEN", "test-token")
 			old := http.DefaultTransport
 			http.DefaultTransport = &fakeGitHubAPI{noCut: true, noIssues: true}
@@ -291,7 +286,7 @@ func TestDashRefreshExitsOnTimeWithHangingAcli(t *testing.T) {
 			if err != nil {
 				t.Fatalf("runDash: %v", err)
 			}
-			t.Logf("returned after %v with a 1s deadline and acli hanging", took)
+			t.Logf("returned after %v with a 1s deadline and twg hanging", took)
 			if took > 4*time.Second {
 				t.Fatalf("returned after %v: the deadline did not bound the exit", took)
 			}
@@ -311,13 +306,13 @@ func TestDashRefreshExitsOnTimeWithHangingAcli(t *testing.T) {
 			data, _ := os.ReadFile(pids)
 			started := strings.Fields(string(data))
 			if len(started) == 0 {
-				t.Fatal("acli never ran")
+				t.Fatal("twg never ran")
 			}
 			for _, p := range started {
 				pid, _ := strconv.Atoi(p)
 				if err := syscall.Kill(pid, 0); err == nil {
 					_ = syscall.Kill(pid, syscall.SIGKILL)
-					t.Errorf("acli (pid %d) still runs after wgo dash returned", pid)
+					t.Errorf("twg (pid %d) still runs after wgo dash returned", pid)
 				}
 			}
 		})

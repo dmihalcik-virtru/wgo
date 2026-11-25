@@ -15,6 +15,7 @@ import (
 	"github.com/virtru/wgo/internal/github"
 	"github.com/virtru/wgo/internal/inventory"
 	"github.com/virtru/wgo/internal/issuecache"
+	"github.com/virtru/wgo/internal/jira"
 	"github.com/virtru/wgo/internal/jiracache"
 	"github.com/virtru/wgo/internal/prcache"
 )
@@ -107,13 +108,13 @@ type Fetchers struct {
 	Sprints jiracache.SprintFetcher
 	// Timelines reads PR review histories (gh-104).
 	Timelines inventory.TimelineFetcher
-	// Missing optionally says why a kind has no fetcher ("acli not on
-	// PATH"), so a skipped batch can explain itself.
+	// Missing optionally says why a kind has no fetcher, so a skipped
+	// batch can explain itself.
 	Missing map[JobKind]string
-	// JiraLogin optionally says whether acli is logged in: nil when it is,
+	// JiraLogin optionally says whether twg is logged in: nil when it is,
 	// an error wrapping jira.ErrNotLoggedIn when it is not, any other
 	// error when it cannot tell. It confirms that Jira lookups failing
-	// without saying why (acli's `workitem view` does not) failed for a
+	// without saying why failed for a
 	// lapsed login, so the rest are paused (see jiraPause).
 	JiraLogin func(context.Context) error
 }
@@ -176,7 +177,7 @@ type Refresher struct {
 
 	wg sync.WaitGroup
 
-	// jira pauses Jira lookups while acli is logged out.
+	// jira pauses Jira lookups while twg is logged out.
 	jira *jiraPause
 
 	mu      sync.Mutex
@@ -328,7 +329,7 @@ func (b *batch) finish(j Job, err error) {
 // BatchResult is how one Submit batch went.
 type BatchResult struct {
 	// Jobs counts the batch's jobs that have a fetcher. Jobs without one
-	// (no gh, no acli) are not failures: that integration is just absent.
+	// (no gh, no twg) are not failures: that integration is just absent.
 	Jobs int
 	// Skipped counts, per kind, the jobs passed over because that kind has
 	// no fetcher. Not failures: see Jobs.
@@ -339,7 +340,7 @@ type BatchResult struct {
 	// submitted after Close.
 	Dropped int
 	// JiraSkipped counts the Jira ticket and sprint lookups the Jira pause
-	// accounted for: not run while acli was logged out, or run into the
+	// accounted for: not run while twg was logged out, or run into the
 	// lapsed login that paused the rest. Not failures: the jira source
 	// carries JiraSkipReason, the pause's reason.
 	JiraSkipped    int
@@ -530,7 +531,7 @@ var errNotStarted = errors.New("not run: refresh deadline reached")
 var errInterrupted = errors.New("interrupted at the refresh deadline")
 
 // Close stops accepting jobs, fails the ones still queued without fetching
-// them, cancels the running fetches (acli is killed, GitHub requests are
+// them, cancels the running fetches (twg is killed, GitHub requests are
 // abandoned), and waits for the running ones, at most CloseWait when set. Letting the queue drain would hold
 // shutdown hostage to every pending network call.
 func (r *Refresher) Close() {
@@ -586,6 +587,46 @@ func (r *Refresher) work() {
 		if f == nil {
 			return
 		}
+		if !r.closed && !f.expired() && f.job.Kind == JobJira {
+			if _, ok := r.f.Jira.(jiracache.BatchFetcher); ok {
+				group := r.takeJiraBatch(f)
+				ctx, cancel := context.WithCancelCause(r.ctx)
+				cancelWhenExpired := func(cause error) {
+					for _, item := range group {
+						if !item.expired() {
+							return
+						}
+					}
+					cancel(cause)
+				}
+				for _, item := range group {
+					item.cancel = cancelWhenExpired
+				}
+				r.mu.Unlock()
+				errs := r.runJiraBatch(ctx, group)
+				if errors.Is(context.Cause(ctx), errInterrupted) {
+					for i, err := range errs {
+						if err == nil {
+							err = ctx.Err()
+						}
+						errs[i] = fmt.Errorf("%w: %w", errInterrupted, err)
+					}
+				}
+				cancel(nil)
+				r.mu.Lock()
+				for _, item := range group {
+					delete(r.pending, item.job.key())
+				}
+				r.mu.Unlock()
+				for i, item := range group {
+					for _, b := range item.waiters {
+						b.finish(item.job, errs[i])
+					}
+				}
+				r.mu.Lock()
+				continue
+			}
+		}
 		var err error
 		switch {
 		case r.closed:
@@ -611,6 +652,74 @@ func (r *Refresher) work() {
 		}
 		r.mu.Lock()
 	}
+}
+
+// takeJiraBatch pulls up to 20 queued Jira tickets for one bulkfetch. r.mu
+// is held; other job kinds keep their position in the ticket rank's queue.
+func (r *Refresher) takeJiraBatch(first *inflight) []*inflight {
+	group := []*inflight{first}
+	q := r.queue[rankTicket]
+	kept := q[:0]
+	for _, item := range q {
+		if len(group) < 20 && item.job.Kind == JobJira && !item.expired() {
+			group = append(group, item)
+			r.queued--
+		} else {
+			kept = append(kept, item)
+		}
+	}
+	r.queue[rankTicket] = kept
+	return group
+}
+
+func (r *Refresher) runJiraBatch(ctx context.Context, group []*inflight) []error {
+	errs := make([]error, len(group))
+	ok, probe, reason := r.jira.admit()
+	if !ok {
+		for i := range errs {
+			errs[i] = &pausedError{reason: reason}
+		}
+		return errs
+	}
+	keys := make([]string, 0, len(group))
+	for _, item := range group {
+		if r.opts.IgnoreLeases || jiracache.LockRefresh(item.job.Ticket, r.opts.Backoff) {
+			keys = append(keys, item.job.Ticket)
+		}
+	}
+	if len(keys) == 0 {
+		r.jira.release(probe)
+		return errs
+	}
+	results := jiracache.RefreshBatchContext(ctx, r.f.Jira, keys)
+	if ctx.Err() != nil {
+		r.jira.release(probe)
+		for i, item := range group {
+			if err, ok := results[item.job.Ticket]; ok {
+				errs[i] = err
+			}
+		}
+		return errs
+	}
+	var firstErr error
+	for i, item := range group {
+		if err, ok := results[item.job.Ticket]; ok {
+			errs[i] = err
+			if err != nil && (firstErr == nil || jira.IsAuthError(err.Error())) {
+				firstErr = err
+			}
+		}
+	}
+	status := r.jira.done(ctx, firstErr, probe)
+	var paused *pausedError
+	if errors.As(status, &paused) {
+		for i, err := range errs {
+			if err != nil {
+				errs[i] = &pausedError{reason: paused.reason, err: err}
+			}
+		}
+	}
+	return errs
 }
 
 // expire marks b past its deadline: its jobs that have not started will not,

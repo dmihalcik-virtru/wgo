@@ -115,7 +115,7 @@ func TestFailedSearchKeepsTheSprintsTickets(t *testing.T) {
 }
 
 // killedSearch is a SprintContextFetcher whose sprint list worked but whose
-// ticket search acli was killed in when the context ended: it returns the
+// ticket search twg was killed in when the context ended: it returns the
 // board with the search's failure on the sprint, and no error.
 type killedSearch struct{ cancel context.CancelFunc }
 

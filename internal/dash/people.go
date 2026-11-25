@@ -3,7 +3,7 @@ package dash
 import "strings"
 
 // JiraCurrentUser is the Jira identity of the authenticated user when no
-// other is known: the JQL function Jira resolves to whoever acli is
+// other is known: the JQL function Jira resolves to whoever twg is
 // authenticated as.
 const JiraCurrentUser = "currentUser()"
 

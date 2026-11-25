@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Fetcher performs the live (acli) Jira lookup for a ticket. cmd supplies a
+// Fetcher performs the live (twg) Jira lookup for a ticket. cmd supplies a
 // jira-backed implementation; keeping it an interface here avoids a
 // jira -> jiracache -> jira import cycle and lets tests count calls.
 type Fetcher interface {
@@ -20,6 +20,47 @@ type Fetcher interface {
 // done; RefreshContext prefers it.
 type ContextFetcher interface {
 	FetchJiraContext(ctx context.Context, ticket string) (Info, error)
+}
+
+// FetchOutcome is one result of a batch Jira fetch.
+type FetchOutcome struct {
+	Info Info
+	Err  error
+}
+
+// BatchFetcher can hydrate multiple tickets in one Jira request.
+type BatchFetcher interface {
+	FetchJiraBatchContext(ctx context.Context, tickets []string) (map[string]FetchOutcome, error)
+}
+
+// RefreshBatchContext fetches and stores a batch, preserving each ticket's
+// independent cache and error outcome. A cancelled batch writes nothing.
+func RefreshBatchContext(ctx context.Context, f Fetcher, tickets []string) map[string]error {
+	results := make(map[string]error, len(tickets))
+	bf, ok := f.(BatchFetcher)
+	if !ok {
+		for _, ticket := range tickets {
+			_, _, results[ticket] = RefreshContext(ctx, f, ticket)
+		}
+		return results
+	}
+	outcomes, batchErr := bf.FetchJiraBatchContext(ctx, tickets)
+	for _, ticket := range tickets {
+		if ctx.Err() != nil {
+			results[ticket] = ctx.Err()
+			continue
+		}
+		if batchErr != nil {
+			_, _, results[ticket] = storeFetch(ticket, Info{}, batchErr)
+			continue
+		}
+		outcome, exists := outcomes[ticket]
+		if !exists {
+			outcome.Err = fmt.Errorf("Jira returned no result for %s", ticket)
+		}
+		_, _, results[ticket] = storeFetch(ticket, outcome.Info, outcome.Err)
+	}
+	return results
 }
 
 // RefreshContext fetches ticket now and writes the result through the
@@ -59,7 +100,7 @@ type Opts struct {
 
 // refreshBackoff is how long acquiring a refresh lease suppresses further
 // background refreshes for the same ticket, so rapid re-renders don't stampede
-// acli / the Jira API.
+// twg / the Jira API.
 const refreshBackoff = 30 * time.Second
 
 // Resolve returns the Jira info for a ticket, reconciling the on-disk cache with
@@ -99,7 +140,7 @@ func Resolve(f Fetcher, ticket string, opts Opts) (Info, State, error) {
 // are served locally (a failed write is returned alongside the info). On error
 // the cache is left untouched when a usable entry already exists (a transient
 // Jira outage keeps serving the last-known status), and only a cold key gets a
-// short-lived negative entry so an environment without acli doesn't respawn
+// short-lived negative entry so an environment without twg doesn't respawn
 // the background warmer on every render forever.
 func fetchAndStore(f Fetcher, ticket string) (Info, State, error) {
 	if f == nil {

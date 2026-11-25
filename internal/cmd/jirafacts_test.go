@@ -17,16 +17,16 @@ import (
 	"github.com/virtru/wgo/internal/jiracache"
 )
 
-// viewAll is acli's `workitem view --fields '*all' --json` for an invented
+// viewAll is a flattened twg work item for an invented
 // ticket: story points in customfield_10016, sprints in customfield_10020,
 // the team in customfield_10001, and another number field, customfield_10500.
-const viewAll = `{"key":"TEAM-123","fields":{
+const viewAll = `{"key":"TEAM-123",
 	"summary":"Refresh API tokens","status":{"name":"In Review","statusCategory":{"key":"indeterminate"}},
 	"issuetype":{"name":"Story"},"priority":{"name":"High"},"assignee":{"accountId":"acct-alice","displayName":"Alice"},
 	"labels":[],"components":[{"name":"api"}],"parent":{"key":"TEAM-100","fields":{"summary":"Token lifecycle","issuetype":{"name":"Epic"}}},
 	"resolution":null,"resolutiondate":null,"created":"2026-10-01T09:00:00.000+0000","updated":"2026-10-29T14:00:00.000+0000",
 	"customfield_10001":{"id":"0a1b","name":"Platform"},"customfield_10016":5,"customfield_10500":42,
-	"customfield_10020":[{"id":1234,"name":"Sprint 12","state":"active","boardId":42}]}}`
+	"customfield_10020":[{"id":1234,"name":"Sprint 12","state":"active","boardId":42}]}`
 
 // jiraHome points HOME at a temp dir with configTOML as its config, loads
 // it, and restores the default config when the test ends.
@@ -34,6 +34,20 @@ func jiraHome(t *testing.T, configTOML string) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	oldDiscover, oldSite := discoverFieldIDs, siteHostFn
+	discoverFieldIDs = func(context.Context, string) (jira.FieldIDs, error) {
+		return jira.DiscoverFieldIDs([]byte(viewAll))
+	}
+	siteHostFn = func(context.Context) (string, error) { return "", errors.New("no default site") }
+	siteHostMemo.Lock()
+	siteHostMemo.at = time.Time{}
+	siteHostMemo.Unlock()
+	t.Cleanup(func() {
+		discoverFieldIDs, siteHostFn = oldDiscover, oldSite
+		siteHostMemo.Lock()
+		siteHostMemo.at = time.Time{}
+		siteHostMemo.Unlock()
+	})
 	writeConfig := func(content string) {
 		require.NoError(t, os.MkdirAll(filepath.Join(home, ".wgo"), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(home, ".wgo", "config.toml"), []byte(content), 0o644))
@@ -44,7 +58,7 @@ func jiraHome(t *testing.T, configTOML string) string {
 	return home
 }
 
-// stubIssueJSON replaces the acli view seam with canned output per --fields
+// stubIssueJSON replaces the twg get seam with canned output per --fields
 // value, counting calls.
 func stubIssueJSON(t *testing.T, byFields map[string]string) *int {
 	t.Helper()
@@ -100,6 +114,24 @@ func TestFetchTicketFactsDiscoversAndCachesFields(t *testing.T) {
 	assert.Empty(t, info.Sprints)
 }
 
+func TestFetchTicketFactsUsesTwgFieldMetadata(t *testing.T) {
+	jiraHome(t, "")
+	discoverFieldIDs = func(context.Context, string) (jira.FieldIDs, error) {
+		return jira.FieldIDs{StoryPoints: "customfield_10016", Sprint: "customfield_10020", Team: "customfield_10001", EpicLink: "customfield_10014"}, nil
+	}
+	stubIssueJSON(t, map[string]string{jira.FactFields: viewAll})
+	info, err := fetchTicketFacts("TEAM-123")
+	require.NoError(t, err)
+	require.NotNil(t, info.StoryPoints)
+	assert.Equal(t, 5.0, *info.StoryPoints)
+	assert.Equal(t, "Platform", info.Team)
+	assert.Empty(t, info.Notes)
+	fields, ok := jiracache.ReadFieldsForSite("", jiracache.FieldsTTL)
+	require.True(t, ok)
+	assert.Equal(t, "customfield_10016", fields.StoryPoints)
+	assert.Equal(t, "customfield_10001", fields.Team)
+}
+
 // TestFetchTicketFactsConfiguredFields: [jira.fields] overrides discovery,
 // reads story points and team, and "none" silences a field's note.
 func TestFetchTicketFactsConfiguredFields(t *testing.T) {
@@ -149,7 +181,7 @@ func TestFetchTicketFactsIgnoresInvalidFieldIDs(t *testing.T) {
 	assert.Contains(t, strings.Join(info.Notes, "\n"), `ignoring [jira.fields] story_points = "Story Points"`)
 }
 
-// TestFetchTicketFactsFallsBack: should acli refuse '*all', the system
+// TestFetchTicketFactsFallsBack: should twg refuse '*all', the system
 // fields are read by name, the custom ones are unknown with a note, and
 // the entry is marked partial so it is retried soon.
 func TestFetchTicketFactsFallsBack(t *testing.T) {
@@ -163,7 +195,7 @@ func TestFetchTicketFactsFallsBack(t *testing.T) {
 	assert.False(t, info.StoryPointsKnown)
 	assert.True(t, info.Partial)
 	require.Len(t, info.Notes, 1)
-	assert.Contains(t, info.Notes[0], "acli refused to return every Jira field")
+	assert.Contains(t, info.Notes[0], "twg refused to return every Jira field")
 	assert.NotContains(t, info.Notes[0], "TEAM-123", "notes name the cause, not the ticket")
 
 	// When both fail, both errors are returned.
@@ -177,28 +209,28 @@ func TestFetchTicketFactsFallsBack(t *testing.T) {
 		if fields == jira.FactFields {
 			return nil, errors.New("Error: field '*all' is not allowed")
 		}
-		return nil, errors.New("Error: unauthorized: use 'acli jira auth login' to authenticate")
+		return nil, errors.New("AUTH_REQUIRED: login required")
 	}
 	t.Cleanup(func() { getIssueJSON = old })
 	_, err = fetchTicketFacts("TEAM-123")
 	require.Error(t, err)
-	assert.True(t, strings.HasPrefix(err.Error(), "Error: unauthorized"), "got %q", err)
+	assert.True(t, strings.HasPrefix(err.Error(), "AUTH_REQUIRED: login required"), "got %q", err)
 	assert.ErrorContains(t, err, "not allowed")
 }
 
 // TestFetchTicketFactsDoesNotFallBackOnOtherErrors: an expired login fails
-// any field list, so it costs one acli call, not two.
+// any field list, so it costs one twg call, not two.
 func TestFetchTicketFactsDoesNotFallBackOnOtherErrors(t *testing.T) {
 	jiraHome(t, "")
 	calls := 0
 	old := getIssueJSON
 	getIssueJSON = func(_ context.Context, ticket, fields string) ([]byte, error) {
 		calls++
-		return nil, errors.New("get issue TEAM-123: exit status 1\n✗ Error: unauthorized: use 'acli jira auth login' to authenticate")
+		return nil, errors.New("get issue TEAM-123: AUTH_REQUIRED: login required")
 	}
 	t.Cleanup(func() { getIssueJSON = old })
 	_, err := fetchTicketFacts("TEAM-123")
-	assert.ErrorContains(t, err, "unauthorized")
+	assert.ErrorContains(t, err, "AUTH_REQUIRED")
 	assert.Equal(t, 1, calls)
 }
 
@@ -224,13 +256,13 @@ func TestRunRefreshJiraLoadsFieldsConfig(t *testing.T) {
 	assert.NotContains(t, strings.Join(info.Notes, "\n"), "set story_points", "no note asks for a key that is set")
 }
 
-// TestACLISiteHostIsAskedOnce: many tickets cost one site lookup per
+// TestTWGSiteHostIsAskedOnce: many tickets cost one site lookup per
 // siteHostTTL, and none when jira.site is configured.
-func TestACLISiteHostIsAskedOnce(t *testing.T) {
+func TestTWGSiteHostIsAskedOnce(t *testing.T) {
 	jiraHome(t, "")
 	calls := 0
 	old := siteHostFn
-	siteHostFn = func() (string, error) { calls++; return "acme.example", nil }
+	siteHostFn = func(context.Context) (string, error) { calls++; return "acme.example", nil }
 	t.Cleanup(func() { siteHostFn = old })
 	siteHostMemo.Lock()
 	siteHostMemo.at = time.Time{}
@@ -252,14 +284,14 @@ func TestACLISiteHostIsAskedOnce(t *testing.T) {
 	siteHostMemo.Lock()
 	siteHostMemo.at = time.Time{}
 	siteHostMemo.Unlock()
-	assert.Empty(t, acliSiteHost())
-	assert.Equal(t, 1, calls, "a configured site needs no acli call")
+	assert.Equal(t, "acme.example", twgSiteHost(context.Background()))
+	assert.Equal(t, 1, calls, "a configured site needs no twg call")
 }
 
 // TestStatuslineJiraReadGainsNoCall: the statusline's Jira lookup is still
 // one cache read, for an entry written before the facts and for one
 // carrying them. Neither fresh nor stale nor missing entries make a
-// synchronous acli call.
+// synchronous twg call.
 func TestStatuslineJiraReadGainsNoCall(t *testing.T) {
 	home := jiraHome(t, "")
 	dir := filepath.Join(home, ".wgo", "cache", "jira")
@@ -272,13 +304,13 @@ func TestStatuslineJiraReadGainsNoCall(t *testing.T) {
 
 	f := &stubJiraFetcher{info: jiracache.Info{Status: "fetched"}}
 	installJiraFetcher(t, f)
-	views := stubIssueJSON(t, map[string]string{}) // counts any acli view
+	views := stubIssueJSON(t, map[string]string{}) // counts any twg view
 	for ticket, want := range map[string]string{"TEAM-1": "In Review", "TEAM-2": "Done", "TEAM-3": ""} {
 		status, _, _ := resolveJiraStatus(ticket, contextOptions{LocalOnly: true})
 		assert.Equal(t, want, status, ticket)
 	}
 	assert.Equal(t, 0, f.count(), "the statusline hot path made a synchronous fetch")
-	assert.Zero(t, *views, "the statusline hot path ran acli")
+	assert.Zero(t, *views, "the statusline hot path ran twg")
 	_, ok := jiracache.ReadFields(jiracache.FieldsTTL)
 	assert.False(t, ok, "field discovery never runs on the hot path")
 }

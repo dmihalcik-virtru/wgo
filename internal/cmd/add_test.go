@@ -476,7 +476,7 @@ func TestJiraPreflightReadyWhenAuthenticated(t *testing.T) {
 
 func TestJiraPreflightRequireJiraIsFatal(t *testing.T) {
 	ready, err := jiraPreflight("DSPX-4499", false, true, func() error {
-		return errors.New("acli jira not authenticated")
+		return errors.New("twg jira not authenticated")
 	})
 
 	require.Error(t, err, "--require-jira must abort before any repo is touched")
@@ -487,14 +487,14 @@ func TestJiraPreflightRequireJiraIsFatal(t *testing.T) {
 
 func TestJiraPreflightDegradesWithoutRequireJira(t *testing.T) {
 	ready, err := jiraPreflight("DSPX-4499", false, false, func() error {
-		return errors.New("acli jira not authenticated")
+		return errors.New("twg jira not authenticated")
 	})
 
 	assert.NoError(t, err, "a Jira outage must not block worktree creation")
 	assert.False(t, ready, "a failed probe must suppress the duplicate enrichment warning")
 }
 
-// --no-spec has nothing to enrich, so the probe should not spend an acli call.
+// --no-spec has nothing to enrich, so the probe should not spend an twg call.
 func TestJiraPreflightSkippedWithNoSpec(t *testing.T) {
 	ready, err := jiraPreflight("DSPX-4499", true, true, func() error {
 		t.Fatal("auth check must not run when --no-spec is set")

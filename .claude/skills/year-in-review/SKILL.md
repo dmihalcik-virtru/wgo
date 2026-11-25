@@ -38,13 +38,13 @@ python3 .claude/skills/year-in-review/collect.py --period <P> [--refresh] [--jir
 ```
 
 - It prints the `run_dir`, the record counts, and the number of `errors`, `truncation` entries and `unenriched` PRs. Progress goes to stderr.
-- The first run for a year takes a few minutes: GitHub search is limited to 30 requests a minute, and each Jira issue needs its own view call. Reviews are searched on through the current month, because a PR reviewed in the period may have been updated since, so an old period costs a few extra searches the first time.
+- The first run for a year takes a few minutes: GitHub search is limited to 30 requests a minute, while Jira issues are hydrated in batches of 20 through `twg`. Reviews are searched on through the current month, because a PR reviewed in the period may have been updated since, so an old period costs a few extra searches the first time.
 - Closed months are cached under `~/.wgo/cache/review/raw`, so later runs only fetch the current month. Details of closed PRs and resolved Jira issues are cached too; cross-references (reverts, follow-ups, others building on a PR) are fetched fresh every run. `refresh` bypasses all of it.
 - Run it in the background if the period is longer than a quarter.
 - It exits non-zero only when it can't start (bad arguments, `gh` not logged in). A failing source doesn't stop it: the failure lands in `coverage.json` `errors`.
 - **If `errors` or `unenriched` is above 0**, show the user the `errors` list from `coverage.json` (use `jq`) and ask whether to fix and re-run or carry on. Typical fixes:
   - `gh auth status`, or `gh auth refresh -s read:org` for the team map
-  - `acli jira auth login`
+  - `twg login`
   - `--sources github,teams,releases,local`, to skip Jira
 
 ## 2. Slice (no LLM)
@@ -167,5 +167,5 @@ python3 .claude/skills/year-in-review/slice.py <RUN> --focus "<term>, <synonym>,
 - **Read-only** everywhere except `~/.wgo/cache/review` and `~/.wgo/reviews`. Never comment, transition, push, or edit PRs or tickets.
 - **No claim without a URL from the ledger.** The auditor enforces this. Don't bypass it. The one exception is the Confluence pages the gap hunter found, listed under Data caveats.
 - **Keep your own context small.** Never `cat` `ledger.jsonl` or whole slice files. Use `jq` for specific fields.
-- If a data source is missing (no `acli`, or no Atlassian access), carry on with what's left and say so under Data caveats.
+- If a data source is missing (no `twg`, or no Atlassian access), carry on with what's left and say so under Data caveats.
 - The review is about the user's work. Mention collaborators by login only where the data shows the interaction. Never rate other people.

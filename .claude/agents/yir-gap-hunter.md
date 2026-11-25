@@ -33,7 +33,7 @@ You hunt for missing data. A review built on incomplete data undersells the deve
 1. **Source failures.** Report every entry in `errors` and `truncation`, with the command to retry it. For example:
    - `collect.py --period P --refresh`
    - `gh auth refresh -s read:org`
-   - `acli jira auth login`
+   - `twg login`
 2. **Quiet months.** Report `quiet_months` exactly as given. For each one, suggest a likely cause to confirm with the user: leave, on-call, work in a system not covered, or a repo outside GitHub. Report `failed_months` separately, as data gaps to re-run, never as quiet time.
 3. **Link gaps.**
    - Quote `prs_without_ticket` out of `prs_authored`.

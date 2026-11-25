@@ -7,9 +7,9 @@ import (
 )
 
 // refreshJiraCmd is the hidden background warmer for the on-disk Jira cache. It
-// performs the synchronous acli fetch for one ticket and writes it through the
+// performs the synchronous twg fetch for one ticket and writes it through the
 // cache, so short-lived hot-path commands (wgo ., statusline) never block on
-// acli. jiracache spawns it detached via `wgo _refresh-jira <ticket>`; it can
+// twg. jiracache spawns it detached via `wgo _refresh-jira <ticket>`; it can
 // also be run by hand to warm a specific entry.
 var refreshJiraCmd = &cobra.Command{
 	Use:    "_refresh-jira <ticket>",

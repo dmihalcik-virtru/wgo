@@ -36,7 +36,7 @@ overdue) are shown. In-flight work that is not in an active or recent sprint is
 listed in a catch-all group so nothing slips through. Every issue, board, and
 backlog reference is a clickable terminal link.
 
-Requires the Atlassian CLI (acli) authenticated via: acli jira auth login
+Requires the Atlassian CLI (twg) authenticated via: twg login
 Set the board id in ~/.wgo/config.toml under [jira] board, or pass --board.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runStandup()
@@ -49,11 +49,11 @@ func init() {
 	standupCmd.Flags().StringVar(&standupSprint, "sprint", "", "Filter to one sprint by id or name substring (e.g. PQ)")
 	standupCmd.Flags().IntVar(&standupClosed, "closed", 6, "How many recently-closed sprints to attach goals/overdue for (0 = active only)")
 	standupCmd.Flags().BoolVar(&standupAll, "all", false, "Show sprint groups even when you have no in-flight work in them")
-	standupCmd.Flags().StringVar(&standupAssignee, "assignee", "", "Assignee to report on (defaults to the current acli user)")
+	standupCmd.Flags().StringVar(&standupAssignee, "assignee", "", "Assignee to report on (defaults to the current twg user)")
 	standupCmd.Flags().BoolVar(&standupJSON, "json", false, "Emit machine-readable JSON")
 }
 
-// standupFields is the (acli-allowed) set of issue fields we request.
+// standupFields are the issue fields needed for the standup view.
 var standupFields = []string{"key", "summary", "status", "priority"}
 
 // standupGroup is a set of in-flight issues under one sprint. A nil sprint marks
@@ -171,8 +171,6 @@ func assembleGroups(allIssues []jira.Issue, candidates []jira.Sprint, statuses [
 		wg.Add(1)
 		go func(i int, sp jira.Sprint) {
 			defer wg.Done()
-			// Request a real field alongside the key: acli returns null objects when
-			// only "key" is requested, since key is not itself a selectable field.
 			jql := jira.InFlightJQL(sp.ID, standupAssignee, statuses)
 			issues, err := jira.SearchIssues(jql, standupFields)
 			if err != nil {

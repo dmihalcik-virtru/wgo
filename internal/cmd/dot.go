@@ -268,7 +268,7 @@ func buildContextOpts(cwd string, opts contextOptions) (*models.Context, error) 
 // ticketURL returns a browse/issue link for a ticket id, or "" when it can't
 // be resolved. A GH-<n> ticket (from a gh-<n> branch) links to a GitHub issue
 // on the repo's remote; any other key ([A-Z]+-<n>) links to the configured
-// Jira site (config.Jira.Site), falling back to autoSite (the acli-detected
+// Jira site (config.Jira.Site), falling back to autoSite (the twg-detected
 // host cached alongside the ticket's status by resolveJiraStatus) when the
 // config doesn't set one. Nil-safe when config is not initialized.
 func ticketURL(ticket, remoteURL, autoSite string) string {
