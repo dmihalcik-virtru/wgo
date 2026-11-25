@@ -23,16 +23,19 @@ import (
 )
 
 var (
-	addPriority    bool
-	addRepos       []string
-	addNoSpec      bool
-	addSpecRepo    string
-	addNoClaudeMD  bool
-	addNoAgentsMD  bool
-	addJira        bool
-	addJiraProject string
-	addJiraType    string
-	addRequireJira bool
+	addPriority        bool
+	addRepos           []string
+	addNoSpec          bool
+	addSpecRepo        string
+	addNoClaudeMD      bool
+	addNoAgentsMD      bool
+	addJira            bool
+	addJiraProject     string
+	addJiraType        string
+	addRequireJira     bool
+	addGitHub          bool
+	addGitHubLabels    []string
+	addGitHubMilestone string
 )
 
 // Seams for the acli-backed Jira calls made on the `wgo add` path, so the
@@ -124,17 +127,27 @@ func invalidRepoErr(r string) error {
 
 var addCmd = &cobra.Command{
 	Use:   "add [TICKET] <task description> [-r owner/repo]...",
-	Short: "Add a task to the plan, optionally creating worktrees",
+	Short: "Add a task to the plan, optionally creating jj workspaces",
 	Long: `Add a bullet journal task to the Tasks section of plan.md.
 
-If the first argument is a Jira ticket ID (e.g. DSPX-2674), also creates
-git worktrees for one or more repos, branching from latest main:
+If the first argument is a Jira ticket ID or GitHub issue, also creates
+jj workspaces for one or more repos, branching from the default branch:
 
   wgo add DSPX-2674 remove volume directive
   wgo add DSPX-2674 remove volume directive -r virtru/platform -r virtru/cli
+  wgo add 42 improve test coverage
+  wgo add '#42' improve test coverage
+  wgo add owner/repo#42 improve test coverage
+  wgo add gh-42 improve test coverage
 
-When run from inside a git checkout, that repo is used by default.
-Each repo gets a new branch and worktree at:
+For a GitHub issue, wgo fetches its title and body before creating a workspace,
+then writes spec/gh-42.md with a link to the issue. The issue repository is
+inferred from the current jj repo, or from the first -r when outside one.
+Use --github with a description to create a new issue first. Optional
+--github-labels and --github-milestone apply to newly created issues.
+
+When run from inside a jj checkout, that repo is used by default.
+Each repo gets a new bookmark and workspace at:
   <worktrees_dir>/<ticket-slug>/<repo>
 
 The branches are pushed to origin. The shared root is printed to stdout
@@ -166,11 +179,25 @@ Push a scratch branch later with jj git push --bookmark <branch> if it grows
 into real work.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if addGitHub && addJira {
+			return fmt.Errorf("choose either --github or --jira")
+		}
+		if !addGitHub && (len(addGitHubLabels) > 0 || addGitHubMilestone != "") {
+			return fmt.Errorf("--github-labels and --github-milestone require --github")
+		}
+		if addGitHub {
+			return runAddWithGitHubCreate(joinArgs(args), addRepos, addPriority)
+		}
 		if addJira {
 			if len(args) >= 1 && isJiraTicket(args[0]) {
 				return fmt.Errorf("--jira creates a new ticket; pass a description, not an existing ticket key")
 			}
 			return runAddWithJiraCreate(joinArgs(args), addRepos, addPriority)
+		}
+		if ref, ok, err := parseGitHubIssueRef(args[0]); err != nil {
+			return err
+		} else if ok {
+			return runAddWithGitHubIssue(ref, joinArgs(args[1:]), addRepos, addPriority)
 		}
 		if len(args) >= 1 && isJiraTicket(args[0]) {
 			ticket := args[0]
@@ -190,7 +217,7 @@ into real work.`,
 func init() {
 	rootCmd.AddCommand(addCmd)
 	addCmd.Flags().BoolVarP(&addPriority, "priority", "p", false, "Mark as priority task")
-	addCmd.Flags().StringArrayVarP(&addRepos, "repo", "r", nil, "owner/repo or GitHub URL to create worktree for (repeatable)")
+	addCmd.Flags().StringArrayVarP(&addRepos, "repo", "r", nil, "owner/repo or GitHub URL to create workspace for (repeatable)")
 	addCmd.Flags().BoolVar(&addNoSpec, "no-spec", false, "Skip spec scaffold commit")
 	addCmd.Flags().StringVar(&addSpecRepo, "spec-repo", "", "owner/repo to write spec into (default: first -r repo)")
 	addCmd.Flags().BoolVar(&addNoClaudeMD, "no-claude-md", false, "Skip generating the shared CLAUDE.md for multi-repo workspaces")
@@ -199,6 +226,9 @@ func init() {
 	addCmd.Flags().StringVar(&addJiraProject, "jira-project", "", "Jira project key for new ticket (default: jira.default_project in config)")
 	addCmd.Flags().StringVar(&addJiraType, "jira-type", "", "Jira issue type for new ticket (default: jira.default_type in config, e.g. \"Task\")")
 	addCmd.Flags().BoolVar(&addRequireJira, "require-jira", false, "Fail before creating any worktrees if the Jira ticket cannot be fetched")
+	addCmd.Flags().BoolVar(&addGitHub, "github", false, "Create a new GitHub issue first, then proceed with the ticket")
+	addCmd.Flags().StringArrayVar(&addGitHubLabels, "github-labels", nil, "Label for a new GitHub issue (repeatable; requires --github)")
+	addCmd.Flags().StringVar(&addGitHubMilestone, "github-milestone", "", "Milestone title or number for a new GitHub issue (requires --github)")
 }
 
 func joinArgs(args []string) string {
@@ -247,11 +277,18 @@ func addTask(text string, priority bool) error {
 // alone, and the steps that only make sense for tracked work — the Jira probe,
 // the spec scaffold, and the pushes — are skipped.
 func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
+	return addWithWorktreeSource(ticket, desc, repos, priority, nil)
+}
+
+func addWithWorktreeSource(ticket, desc string, repos []string, priority bool, githubIssue *gh.IssueDetails) error {
 	scratch := ticket == ""
 	if scratch && addRequireJira {
 		return fmt.Errorf("--require-jira needs a ticket ID as the first argument")
 	}
 	skipSpec := addNoSpec || scratch
+	if githubIssue != nil && addRequireJira {
+		return fmt.Errorf("--require-jira only applies to Jira tickets")
+	}
 
 	if err := config.Init(); err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -261,9 +298,13 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 		return fmt.Errorf("worktree.worktrees_dir not configured; set it in ~/.wgo/config.toml")
 	}
 
-	jiraReady, err := jiraPreflight(ticket, skipSpec, addRequireJira, jiraCheckAuth)
-	if err != nil {
-		return err
+	jiraReady := false
+	if githubIssue == nil {
+		var err error
+		jiraReady, err = jiraPreflight(ticket, skipSpec, addRequireJira, jiraCheckAuth)
+		if err != nil {
+			return err
+		}
 	}
 
 	jjc := jj.NewCLI()
@@ -378,17 +419,29 @@ func addWithWorktree(ticket, desc string, repos []string, priority bool) error {
 		if _, statErr := os.Stat(specAbs); os.IsNotExist(statErr) {
 			// The preflight already explained why enrichment is unavailable;
 			// don't make the user read the same warning twice.
-			specTitle, specDesc, specPriority, enriched := fetchJiraEnrichment(ticket, desc, jiraReady)
-			if enriched {
-				fmt.Fprintf(os.Stderr, "enriched spec from Jira: %s\n", ticket)
-			} else if addRequireJira {
-				return fmt.Errorf("--require-jira: could not fetch %s from Jira", ticket)
+			specTitle, specDesc, specPriority := desc, desc, ""
+			issueURL := ""
+			if githubIssue != nil {
+				specTitle = githubIssue.Title
+				if strings.TrimSpace(githubIssue.Body) != "" {
+					specDesc = githubIssue.Body
+				}
+				issueURL = githubIssue.URL
+			} else {
+				var enriched bool
+				specTitle, specDesc, specPriority, enriched = fetchJiraEnrichment(ticket, desc, jiraReady)
+				if enriched {
+					fmt.Fprintf(os.Stderr, "enriched spec from Jira: %s\n", ticket)
+				} else if addRequireJira {
+					return fmt.Errorf("--require-jira: could not fetch %s from Jira", ticket)
+				}
 			}
 
 			data, err := spec.RenderTemplate(spec.TemplateData{
 				Ticket:      ticket,
 				Title:       specTitle,
 				Description: specDesc,
+				IssueURL:    issueURL,
 				Authors:     []string{cfg.Author},
 				Branches:    branches,
 				Now:         time.Now(),

@@ -18,6 +18,7 @@ type TemplateData struct {
 	Ticket      string
 	Title       string
 	Description string
+	IssueURL    string
 	Authors     []string
 	Branches    []string
 	Now         time.Time

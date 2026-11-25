@@ -117,6 +117,41 @@ func TestIsJiraTicket(t *testing.T) {
 	}
 }
 
+func TestParseGitHubIssueRef(t *testing.T) {
+	tests := []struct {
+		input string
+		owner string
+		repo  string
+		num   int
+		ok    bool
+		err   bool
+	}{
+		{"42", "", "", 42, true, false},
+		{"#42", "", "", 42, true, false},
+		{"gh-42", "", "", 42, true, false},
+		{"owner/repo#42", "owner", "repo", 42, true, false},
+		{"https://github.com/owner/repo/issues/42", "owner", "repo", 42, true, false},
+		{"DSPX-42", "", "", 0, false, false},
+		{"fix bug", "", "", 0, false, false},
+		{"#0", "", "", 0, false, true},
+		{"owner/repo#oops", "", "", 0, false, true},
+		{"gh-nope", "", "", 0, false, true},
+		{"https://github.com/../repo/issues/42", "", "", 0, false, true},
+	}
+	for _, tt := range tests {
+		ref, ok, err := parseGitHubIssueRef(tt.input)
+		if tt.err {
+			require.Error(t, err, tt.input)
+			continue
+		}
+		require.NoError(t, err, tt.input)
+		assert.Equal(t, tt.ok, ok, tt.input)
+		assert.Equal(t, tt.owner, ref.owner, tt.input)
+		assert.Equal(t, tt.repo, ref.repo, tt.input)
+		assert.Equal(t, tt.num, ref.number, tt.input)
+	}
+}
+
 func TestParseRepoSpecs(t *testing.T) {
 	tests := []struct {
 		input string

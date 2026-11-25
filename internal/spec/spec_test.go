@@ -198,3 +198,15 @@ func TestRenderTemplateTitleRoundTrips(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderTemplateGitHubIssueLink(t *testing.T) {
+	data, err := RenderTemplate(TemplateData{
+		Ticket: "gh-42", Title: "Improve coverage", Description: "Issue body",
+		IssueURL: "https://github.com/o/r/issues/42", Now: time.Now(),
+	})
+	require.NoError(t, err)
+	sf, err := ParseBytes(data)
+	require.NoError(t, err)
+	assert.Equal(t, "https://github.com/o/r/issues/42", sf.Frontmatter.Issue)
+	assert.Contains(t, sf.Body, "Issue body")
+}
